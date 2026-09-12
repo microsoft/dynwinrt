@@ -72,13 +72,27 @@ Buffer bounds come from validated native backing storage, not spoofable JS
 length properties. Unknown ownership or successful out-of-bounds lengths must
 not produce success-shaped fallback values.
 
-Two Registry edge cases have explicit typed policies rather than capability
-removal. Opening a null/empty subkey of a predefined HKEY returns a borrowed
-handle, not a second owner. Performance-data queries remain supported:
-successful results retain their size, while `HKEY_PERFORMANCE_DATA` combined
-with `ERROR_MORE_DATA` exposes `dataSize: null` without reading an undefined
-count. Callers can grow capacity and retry. Normal-key size queries retain
-their prior behavior.
+Output relationships and validity are part of the native call contract, not
+renderer-specific Registry rules. Bounded input predicates are evaluated before
+the call; native return conditions are evaluated immediately after the call.
+The resulting output disposition is applied before decoding, ownership adoption
+or cleanup. Undefined outputs use `Value::Unavailable`; language projection maps
+that outcome to `null`, rather than reading a native value and hiding it afterward.
+
+`RegOpenKeyA/W` with a null/empty subkey returns an alias of its input.
+Managed aliases share the existing owner, close state and leases; borrowed input
+handles stay borrowed. `RegOpenKeyExA/W` applies that relationship only to the
+documented native predefined-key case. Its predicate compares the full,
+pointer-sized signed handle value: on 64-bit Windows, a zero-extended
+`0x80000002` can produce a new owned handle, whereas the native predefined value
+is sign-extended. These representations must not be merged by masking away
+the upper bits. Aliases are authorized by exact contracts and
+checked against the specified input, never discovered by globally merging handle
+numbers. For `RegQueryValueExA/W` and `RegGetValueA/W`, performance-data queries
+remain supported: successful results retain their size, while
+`HKEY_PERFORMANCE_DATA` combined with `ERROR_MORE_DATA` exposes `dataSize: null`
+without decoding the undefined count. Callers grow a separate capacity and retry.
+Normal-key size queries retain their prior behavior.
 
 Native Win32 carriers use type tags rather than mutable JavaScript prototypes.
 Manual aggregate descriptors and MAPI utility initialization are available on
@@ -105,6 +119,18 @@ operation and 256 MiB of pending private buffers. A shared worker set is used,
 not one blocked OS/libuv worker per operation. Subsystem close cannot race
 dependent calls or retained operations.
 
+File completion notification changes have a typed resource state effect.
+Native mode changes are serialized with managed calls and rejected while an
+asynchronous lease exists, including a prepared operation not yet submitted.
+Successful changes only add mode bits; failures do not update state. Before
+each IOCP submission the runtime queries the actual native notification modes,
+so a preconfigured handle is not assumed to use defaults. Synchronous success
+with `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` completes locally through the same
+retirement path; ordinary synchronous success and `ERROR_IO_PENDING` still wait
+for their IOCP packet. Buffers and leases are retired exactly once in either path.
+Raw/unsafe handle escape does not authorize concurrent foreign mutation or close
+of a managed handle.
+
 ## Namespace output
 
 Generated modules use main's lowercase/kebab namespace directory mapping, for
@@ -118,6 +144,13 @@ generation preserves existing root exports and adds explicit Win32 subpaths.
 Namespaces containing COM interfaces retain explicit `--class-name`
 selection; use their `Apis` container for flat exports. Python flat-Win32
 generation remains explicitly unsupported.
+
+Flags declarations permit normal bitwise combinations while ordinary enums
+retain their member types. ABI-width validation remains separate from the
+TypeScript surface. CI uploads the complete `dist` runtime tree, matching the
+npm distribution boundary, rather than maintaining a second filename list.
+It then downloads that artifact and checks every public package entrypoint
+through CommonJS, ESM and native dispatch.
 
 ## Tests
 

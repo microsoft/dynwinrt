@@ -16,6 +16,7 @@ struct Observations {
     cleanup: Vec<CleanupCall>,
     locks: Vec<usize>,
     fail_return_allocation: bool,
+    decoded_outputs: Vec<usize>,
 }
 
 thread_local! {
@@ -38,6 +39,25 @@ pub(super) fn record_call_lock(value: usize) {
     OBSERVED.with(|observed| observed.borrow_mut().locks.push(value));
 }
 
+pub(super) fn record_output_decode(index: usize) {
+    OBSERVED.with(|observed| observed.borrow_mut().decoded_outputs.push(index));
+}
+
+pub(super) fn decoded_outputs() -> Vec<usize> {
+    OBSERVED.with(|observed| observed.borrow().decoded_outputs.clone())
+}
+
+pub(super) fn cleanup_count_for(value: usize) -> usize {
+    OBSERVED.with(|observed| {
+        observed
+            .borrow()
+            .cleanup
+            .iter()
+            .filter(|call| call.value == value)
+            .count()
+    })
+}
+
 pub(super) fn check_aggregate_return_allocation() -> Result<()> {
     if OBSERVED.with(|observed| std::mem::take(&mut observed.borrow_mut().fail_return_allocation)) {
         Err(out_of_memory(
@@ -48,7 +68,7 @@ pub(super) fn check_aggregate_return_allocation() -> Result<()> {
     }
 }
 
-fn reset() {
+pub(super) fn reset() {
     OBSERVED.with(|observed| *observed.borrow_mut() = Observations::default());
     ALLOCATED.set([0; 2]);
     DISPATCHES.set(0);

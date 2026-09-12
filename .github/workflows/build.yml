@@ -415,19 +415,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
-          path: |
-            bindings/js/dist/dynwinrt.win32-x64-msvc.node
-            bindings/js/dist/dynwinrt.win32-arm64-msvc.node
-            bindings/js/dist/index.js
-            bindings/js/dist/index.d.ts
-            bindings/js/dist/winrt.js
-            bindings/js/dist/winrt.d.ts
-            bindings/js/dist/com.js
-            bindings/js/dist/com.d.ts
-            bindings/js/dist/com-projection.js
-            bindings/js/dist/com-unsafe.js
-            bindings/js/dist/com-unsafe.d.ts
-            bindings/js/dist/win32.js
-            bindings/js/dist/win32.d.ts
-            bindings/js/dist/win32-unsafe.js
-            bindings/js/dist/win32-unsafe.d.ts
+          path: bindings/js/dist/
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          name: dynwinrt
+          path: ${{ runner.temp }}\dynwinrt-artifact
+      - name: Verify downloaded JS runtime artifact
+        shell: pwsh
+        run: node .\bindings\js\scripts\verify-runtime-artifact.mjs "$env:RUNNER_TEMP\dynwinrt-artifact"

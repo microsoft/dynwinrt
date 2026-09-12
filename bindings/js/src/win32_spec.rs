@@ -249,6 +249,7 @@ pub(super) fn function_spec(value: Unknown) -> napi::Result<DynWin32FunctionSpec
       "captureLastError",
       "callingConvention",
       "returnAggregateDescriptor",
+      "callContractDescriptor",
     ],
   )?;
   let dll = string(env, property(env, raw, c"dll")?, 1024, "Win32 DLL name")?;
@@ -331,6 +332,12 @@ pub(super) fn function_spec(value: Unknown) -> napi::Result<DynWin32FunctionSpec
       env,
       raw,
       c"returnAggregateDescriptor",
+      MAX_NATIVE_AGGREGATE_DESCRIPTOR_LENGTH,
+    )?,
+    call_contract_descriptor: optional_string(
+      env,
+      raw,
+      c"callContractDescriptor",
       MAX_NATIVE_AGGREGATE_DESCRIPTOR_LENGTH,
     )?,
   })

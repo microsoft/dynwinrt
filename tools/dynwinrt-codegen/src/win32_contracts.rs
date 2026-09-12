@@ -12,7 +12,9 @@ use std::{
 };
 use windows_metadata::{AsRow, HasAttributes, reader};
 
-use crate::codegen::win32::ir::{AsyncIoKind, Cleanup, Subsystem};
+use crate::codegen::win32::ir::{
+    AsyncIoKind, CallContract, Cleanup, InputPredicate, OutputAction, ResourceEffect, Subsystem,
+};
 use crate::win32_metadata::{RawFunction, RawScalar};
 
 pub(crate) const METADATA_SHA256: &str =
@@ -20,6 +22,10 @@ pub(crate) const METADATA_SHA256: &str =
 
 pub(crate) fn sha256(bytes: &[u8]) -> String {
     format!("{:X}", Sha256::digest(bytes))
+}
+
+fn text_sha256(text: &str) -> String {
+    sha256(text.replace("\r\n", "\n").as_bytes())
 }
 
 fn string_enum<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -191,16 +197,8 @@ pub(crate) enum FunctionEffect {
     MutableString {
         parameter: usize,
     },
-    HkeyPerformanceDataCount {
-        handle_parameter: usize,
-        count_parameter: usize,
-        #[serde(deserialize_with = "string_enum")]
-        undefined_on: UndefinedCountStatus,
-    },
-    BorrowedPredefinedHkeyOutput {
-        handle_parameter: usize,
-        string_parameter: usize,
-        output_parameter: usize,
+    CallContract {
+        contract: CallContract,
     },
     OverlappedIo {
         #[serde(deserialize_with = "string_enum")]
@@ -233,22 +231,13 @@ impl FunctionEffect {
                 format!("ownership:{parameter}")
             }
             Self::MutableString { parameter } => format!("mutable-string:{parameter}"),
-            Self::HkeyPerformanceDataCount {
-                count_parameter, ..
-            } => format!("conditional-count:{count_parameter}"),
-            Self::BorrowedPredefinedHkeyOutput { .. } => "conditional-hkey-output".into(),
+            Self::CallContract { .. } => "call-contract".into(),
             Self::OverlappedIo { .. } => "async".into(),
             Self::Subsystem { .. } | Self::SubsystemExempt {} | Self::ManagedLifecycle { .. } => {
                 "subsystem".into()
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum UndefinedCountStatus {
-    MoreData,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -521,6 +510,15 @@ impl FunctionPolicy<'_> {
         self.effects().any(|effect|matches!(effect,FunctionEffect::MutableString { parameter } if *parameter == index))
     }
 
+    pub fn call_contract(&self) -> CallContract {
+        self.effects()
+            .find_map(|effect| match effect {
+                FunctionEffect::CallContract { contract } => Some(contract.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     pub fn apply_buffers(&self, raw: &RawFunction) -> Result<RawFunction, String> {
         use crate::win32_metadata::{RawBuffer, RawBufferSize, RawDirection, buffer_element};
         let mut result = raw.clone();
@@ -567,8 +565,7 @@ impl FunctionPolicy<'_> {
                 | FunctionEffect::OwnedOutput { .. }
                 | FunctionEffect::ConsumedInput { .. }
                 | FunctionEffect::MutableString { .. }
-                | FunctionEffect::HkeyPerformanceDataCount { .. }
-                | FunctionEffect::BorrowedPredefinedHkeyOutput { .. }
+                | FunctionEffect::CallContract { .. }
                 | FunctionEffect::OverlappedIo { .. }
                 | FunctionEffect::Subsystem { .. }
                 | FunctionEffect::SubsystemExempt {}
@@ -623,6 +620,67 @@ fn dll_name(dll: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
 }
 
+pub(crate) fn validate_call_contract_structure(contract: &CallContract) -> Result<(), String> {
+    if contract.outputs.len() > 1024 || contract.resource_effects.len() > 1024 {
+        return Err("win32.contract-conflict: too many native call rules".into());
+    }
+    let mut outputs = BTreeSet::new();
+    for rule in &contract.outputs {
+        if rule.parameter > 1023 || !outputs.insert(rule.parameter) || rule.when.inputs.len() > 16 {
+            return Err("win32.contract-conflict: output rule parameter or predicates".into());
+        }
+        for predicate in &rule.when.inputs {
+            let valid = match predicate {
+                InputPredicate::BitsIn {
+                    parameter,
+                    mask,
+                    values,
+                } => {
+                    *parameter <= 1023
+                        && *mask != 0
+                        && !values.is_empty()
+                        && values.len() <= 64
+                        && values.iter().all(|value| value & !mask == 0)
+                        && values.iter().copied().collect::<BTreeSet<_>>().len() == values.len()
+                }
+                InputPredicate::HandleIn { parameter, values } => {
+                    *parameter <= 1023
+                        && !values.is_empty()
+                        && values.len() <= 64
+                        && values.iter().copied().collect::<BTreeSet<_>>().len() == values.len()
+                }
+                InputPredicate::NullOrEmpty {
+                    parameter,
+                    element_width,
+                } => *parameter <= 1023 && matches!(element_width, 1 | 2),
+            };
+            if !valid {
+                return Err("win32.contract-conflict: invalid native input predicate".into());
+            }
+        }
+        if let OutputAction::AliasInput { parameter } = rule.action
+            && (parameter > 1023 || parameter == rule.parameter)
+        {
+            return Err("win32.contract-conflict: invalid native alias input".into());
+        }
+    }
+    let mut resources = BTreeSet::new();
+    for effect in &contract.resource_effects {
+        let ResourceEffect::AddFileCompletionModes {
+            handle_parameter,
+            flags_parameter,
+        } = *effect;
+        if handle_parameter > 1023
+            || flags_parameter > 1023
+            || handle_parameter == flags_parameter
+            || !resources.insert(handle_parameter)
+        {
+            return Err("win32.contract-conflict: resource state effect parameters".into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_recipe(recipe: &LayoutRecipe, depth: usize) -> Result<(), String> {
     if depth > 16
         || !native_identifier(&recipe.name)
@@ -675,7 +733,7 @@ impl Registry {
             || manifest.metadata.version != "71.0.14-preview"
             || manifest.metadata.sha256 != METADATA_SHA256
             || manifest.schema.file != "schema.json"
-            || manifest.schema.sha256 != sha256(schema.as_bytes())
+            || manifest.schema.sha256 != text_sha256(schema)
             || manifest.files.len() != FILES.len()
             || files.len() != FILES.len()
         {
@@ -689,7 +747,7 @@ impl Registry {
             let Some((_, bytes)) = files.iter().find(|(name, _)| *name == file.file) else {
                 return Err("win32.contract-integrity: unknown data file".into());
             };
-            if sha256(bytes.as_bytes()) != file.sha256 {
+            if text_sha256(bytes) != file.sha256 {
                 return Err(format!("win32.contract-integrity: {}", file.file));
             }
         }
@@ -748,6 +806,19 @@ impl Registry {
                 if !effects.insert(effect.key()) {
                     return Err(format!("win32.contract-conflict: {}", entry.id));
                 }
+                if let FunctionEffect::CallContract { contract } = effect {
+                    validate_call_contract_structure(contract)?;
+                    if entry
+                        .contracts
+                        .iter()
+                        .any(|effect| matches!(effect, FunctionEffect::OverlappedIo { .. }))
+                    {
+                        return Err(format!(
+                            "win32.contract-conflict: asynchronous adapter call rules {}",
+                            entry.id
+                        ));
+                    }
+                }
                 let positions: Vec<usize> = match effect {
                     FunctionEffect::CountedBuffer {
                         parameter,
@@ -758,16 +829,6 @@ impl Registry {
                     | FunctionEffect::OwnedOutput { parameter, .. }
                     | FunctionEffect::ConsumedInput { parameter, .. }
                     | FunctionEffect::MutableString { parameter } => vec![*parameter],
-                    FunctionEffect::HkeyPerformanceDataCount {
-                        handle_parameter,
-                        count_parameter,
-                        ..
-                    } => vec![*handle_parameter, *count_parameter],
-                    FunctionEffect::BorrowedPredefinedHkeyOutput {
-                        handle_parameter,
-                        string_parameter,
-                        output_parameter,
-                    } => vec![*handle_parameter, *string_parameter, *output_parameter],
                     FunctionEffect::OverlappedIo {
                         file_parameter,
                         buffer_parameter,
@@ -937,12 +998,6 @@ impl Registry {
                 return Err(format!("win32.signature-drift: {}", entry.id));
             }
             use crate::win32_metadata::{RawBaseType, RawDirection, RawNamedKind};
-            let hkey = |parameter: usize, direction, depth| {
-                raw.parameters.get(parameter).is_some_and(|p|
-                p.direction == direction && p.typ.pointer_depth == depth
-                && matches!(&p.typ.base, RawBaseType::Named { namespace, name, kind:RawNamedKind::Handle { .. } }
-                    if namespace == "Windows.Win32.System.Registry" && name == "HKEY"))
-            };
             for effect in &entry.contracts {
                 let valid = match effect {
                     FunctionEffect::OwnedReturn { .. } | FunctionEffect::BorrowedReturn {} => {
@@ -1004,21 +1059,16 @@ impl Registry {
                     FunctionEffect::UnsupportedCountUnit { parameter } => {
                         *parameter < raw.parameters.len()
                     }
-                    FunctionEffect::HkeyPerformanceDataCount { handle_parameter, count_parameter, .. } =>
-                        hkey(*handle_parameter,RawDirection::In,0)
-                        && raw.return_status == crate::win32_metadata::RawStatusSemantics::ZeroIsSuccess
-                        && raw.parameters.get(*count_parameter).is_some_and(|p|
-                            p.direction == RawDirection::InOut && p.typ.pointer_depth == 1
-                            && p.typ.base == RawBaseType::Scalar(RawScalar::U32))
-                        && raw.parameters.iter().any(|p| p.direction == RawDirection::Out
-                            && p.buffer.as_ref().is_some_and(|b| b.size == crate::win32_metadata::RawBufferSize::ByteCountParam(*count_parameter))),
-                    FunctionEffect::BorrowedPredefinedHkeyOutput { handle_parameter, string_parameter, output_parameter } =>
-                        hkey(*handle_parameter,RawDirection::In,0) && hkey(*output_parameter,RawDirection::Out,1)
-                        && raw.return_status == crate::win32_metadata::RawStatusSemantics::ZeroIsSuccess
-                        && raw.parameters.get(*string_parameter).is_some_and(|p|
-                            p.nullable && p.direction == RawDirection::In && p.typ.pointer_depth == 0
-                            && matches!(p.typ.base,RawBaseType::Named { kind:RawNamedKind::StringPointer { .. }, .. }))
-                        && entry.contracts.iter().any(|effect| matches!(effect,FunctionEffect::OwnedOutput { parameter,cleanup:Cleanup::RegCloseKey } if parameter == output_parameter)),
+                    FunctionEffect::CallContract { contract } => {
+                        validate_call_contract_structure(contract)?;
+                        contract.outputs.iter().all(|rule| {
+                            raw.parameters.get(rule.parameter).is_some_and(|parameter| {
+                                parameter.direction != RawDirection::In
+                                    && parameter.typ.pointer_depth > 0
+                                    && parameter.buffer.is_none()
+                            })
+                        })
+                    }
                     FunctionEffect::OverlappedIo {
                         file_parameter,
                         buffer_parameter,

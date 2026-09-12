@@ -18,16 +18,11 @@ fn strict_bindings_and_generated_locals_have_unique_projected_parameter_names() 
         "_return",
         "_outputs",
         "_subsystem",
-        "_borrowedHkeyOutput",
-        "_performanceDataCount0",
         "_nativeAggregate",
         "_bufferCount",
         "_scalarPointer",
-        "_emptyNativeString",
-        "_isPredefinedHkey",
-        "_hkeyBits",
+        "_u32Flags",
         "_bindCollisionValuesPlan",
-        "_bindCollisionValuesPlanBorrowed",
         "undefined",
         "pClass",
         "class",
@@ -96,6 +91,33 @@ assert.equal(typeof projected.Apis.collisionValues,'function')
             raw_names.len()
         ),
     );
+}
+
+#[test]
+fn retired_policy_helpers_no_longer_reserve_native_parameter_names() {
+    let raw_names = [
+        "_borrowedHkeyOutput",
+        "_performanceDataCount0",
+        "_hkeyBits",
+        "_isPredefinedHkey",
+        "_emptyNativeString",
+        "_bindNoPoliciesPlanBorrowed",
+    ];
+    let mut function = synthetic_function("NoPolicies");
+    function.parameters = raw_names
+        .iter()
+        .map(|name| parameter(name, scalar(RawScalar::U32), RawDirection::In))
+        .collect();
+    let projected = project_one(function);
+    assert_eq!(
+        projected
+            .parameters
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        raw_names
+    );
+    assert!(projected.runtime.call_contract.is_empty());
 }
 
 #[test]

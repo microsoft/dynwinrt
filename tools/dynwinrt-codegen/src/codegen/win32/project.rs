@@ -10,9 +10,9 @@ use crate::win32_metadata::{
 };
 
 use super::ir::{
-    AbiType, AsyncIoKind, CallPolicy, Cleanup, Conversion, Direction, FunctionContract,
-    InputExpression, NativeBuilderFieldKind, NativeLayout, NativeOutputFieldKind, OmittedFunction,
-    ProjectedApis, ProjectedAsyncFunction, ProjectedCallPolicy, ProjectedFunction,
+    AbiType, AsyncIoKind, Cleanup, Conversion, Direction, EnumDefinition, EnumUnderlying,
+    FunctionContract, InputExpression, NativeBuilderFieldKind, NativeLayout, NativeOutputFieldKind,
+    OmittedFunction, OutputAction, ProjectedApis, ProjectedAsyncFunction, ProjectedFunction,
     ProjectedNativeBuilder, ProjectedNativeBuilderField, ProjectedNativeOutputField,
     ProjectedOutput, ProjectionResult, ReturnShape, RuntimeParameter, RuntimePlan, Scalar,
     StringEncoding, SurfaceParameter, SurfaceType, ValueType,
@@ -257,7 +257,8 @@ fn project_native_builder(layout: &NativeLayout) -> Option<ProjectedNativeBuilde
     })
 }
 
-fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, String> {
+pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, String> {
+    model::validate_call_contract(contract)?;
     let count_buffers = count_buffer_relations(contract)?;
     let mut input_names = reserved_input_bindings(contract);
     let mut output_names = BTreeSet::from([
@@ -270,7 +271,6 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
     let mut inputs = Vec::<InputExpression>::new();
     let mut runtime_parameters = Vec::<RuntimeParameter>::new();
     let mut output_index = 0;
-    let mut native_output = vec![None; contract.parameters.len()];
     let mut outputs = Vec::new();
 
     for (index, parameter) in contract.parameters.iter().enumerate() {
@@ -530,19 +530,34 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
                 })?;
                 InputExpression::Surface {
                     parameter_index: surface,
-                    conversion: input_conversion(parameter),
+                    conversion: input_conversion(parameter, &contract.enums),
                 }
             };
             inputs.push(expression);
         }
 
         if matches!(runtime.direction, Direction::Out | Direction::InOut) {
-            native_output[index] = Some(output_index);
+            let action = contract
+                .call_contract
+                .outputs
+                .iter()
+                .find(|rule| rule.parameter == index)
+                .map(|rule| rule.action);
+            let aliases_input = matches!(action, Some(OutputAction::AliasInput { .. }));
             outputs.push(ProjectedOutput {
                 name: unique_name(output_name(parameter), &mut output_names),
                 output_index,
-                typ: output_surface_type(parameter),
-                conversion: output_conversion(parameter),
+                typ: if aliases_input {
+                    SurfaceType::ResourceOrHandle
+                } else {
+                    output_surface_type(parameter)
+                },
+                conversion: if aliases_input {
+                    Conversion::ResourceOrHandle
+                } else {
+                    output_conversion(parameter)
+                },
+                may_be_unavailable: matches!(action, Some(OutputAction::Unavailable {})),
             });
             output_index += 1;
         }
@@ -587,70 +602,8 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
         success_rule: contract.success_rule,
         capture_last_error: contract.capture_last_error,
         calling_convention: contract.calling_convention,
+        call_contract: contract.call_contract.clone(),
     };
-    let mut call_policies = Vec::new();
-    for policy in &contract.call_policies {
-        let surface = |index: usize| {
-            native_surface
-                .get(index)
-                .copied()
-                .flatten()
-                .ok_or_else(|| "call policy requires an exposed input".to_string())
-        };
-        call_policies.push(match *policy {
-            CallPolicy::HkeyPerformanceDataCount {
-                handle_parameter,
-                count_parameter,
-                undefined_status,
-            } => {
-                let slot = runtime
-                    .parameters
-                    .get(count_parameter)
-                    .ok_or("missing conditional count")?;
-                if slot.direction != Direction::InOut || slot.abi != AbiType::U32 {
-                    return Err(
-                        "conditional count validity requires a native u32 InOut slot".into(),
-                    );
-                }
-                ProjectedCallPolicy::HkeyPerformanceDataCount {
-                    handle_parameter: surface(handle_parameter)?,
-                    output_index: native_output[count_parameter]
-                        .ok_or("missing count output projection")?,
-                    undefined_status,
-                }
-            }
-            CallPolicy::BorrowedPredefinedHkeyOutput {
-                handle_parameter,
-                string_parameter,
-                output_parameter,
-            } => {
-                let ValueType::StringPointer(encoding) = contract.parameters[string_parameter].typ
-                else {
-                    return Err("conditional HKEY output requires a native string input".into());
-                };
-                let mut borrowed = runtime.clone();
-                let slot = borrowed
-                    .parameters
-                    .get_mut(output_parameter)
-                    .ok_or("missing conditional output")?;
-                if slot.direction != Direction::Out
-                    || slot.abi != AbiType::Handle
-                    || slot.cleanup != Cleanup::RegCloseKey
-                {
-                    return Err("conditional HKEY output has incompatible ownership".into());
-                }
-                slot.cleanup = Cleanup::None;
-                ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
-                    handle_parameter: surface(handle_parameter)?,
-                    string_parameter: surface(string_parameter)?,
-                    encoding,
-                    output_index: native_output[output_parameter]
-                        .ok_or("missing HKEY output projection")?,
-                    runtime: Box::new(borrowed),
-                }
-            }
-        });
-    }
     Ok(ProjectedFunction {
         metadata_name: contract.name.clone(),
         js_name: camel_case(&contract.name),
@@ -660,7 +613,6 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
         runtime,
         return_shape,
         subsystem: contract.subsystem,
-        call_policies,
     })
 }
 
@@ -779,7 +731,10 @@ fn return_surface_type(typ: &ValueType, cleanup: Cleanup) -> SurfaceType {
     }
 }
 
-fn input_conversion(parameter: &super::ir::ParameterContract) -> Conversion {
+fn input_conversion(
+    parameter: &super::ir::ParameterContract,
+    enums: &[EnumDefinition],
+) -> Conversion {
     if parameter.consumes_resource {
         return Conversion::ResourceInput(parameter.resource_cleanup);
     }
@@ -789,6 +744,17 @@ fn input_conversion(parameter: &super::ir::ParameterContract) -> Conversion {
             ValueType::StringPointer(StringEncoding::Ansi) => Conversion::AnsiMultiString,
             _ => unreachable!("validated NullNullTerminated string pointer"),
         };
+    }
+    if let ValueType::Enum {
+        namespace,
+        name,
+        underlying: EnumUnderlying::U32,
+    } = &parameter.typ
+        && enums.iter().any(|definition| {
+            definition.namespace == *namespace && definition.name == *name && definition.is_flags
+        })
+    {
+        return Conversion::U32Flags;
     }
     match &parameter.typ {
         ValueType::Scalar(Scalar::Bool8) => Conversion::Boolean8,
@@ -896,13 +862,10 @@ fn reserved_input_bindings(contract: &FunctionContract) -> BTreeSet<String> {
         "_return",
         "_outputs",
         "_subsystem",
-        "_borrowedHkeyOutput",
         "_nativeAggregate",
         "_bufferCount",
         "_scalarPointer",
-        "_hkeyBits",
-        "_isPredefinedHkey",
-        "_emptyNativeString",
+        "_u32Flags",
         "DynWin32",
         "DynWin32Function",
         "BigInt",
@@ -914,10 +877,6 @@ fn reserved_input_bindings(contract: &FunctionContract) -> BTreeSet<String> {
     .map(str::to_owned)
     .collect::<BTreeSet<_>>();
     names.insert(format!("_bind{}Plan", contract.name));
-    names.insert(format!("_bind{}PlanBorrowed", contract.name));
-    for index in 0..contract.parameters.len() {
-        names.insert(format!("_performanceDataCount{index}"));
-    }
     for parameter in &contract.parameters {
         match &parameter.typ {
             ValueType::NativeStruct { layout }
@@ -1052,6 +1011,7 @@ mod tests {
                 success_rule: super::super::ir::SuccessRule::ReturnZero,
                 capture_last_error: false,
                 calling_convention: super::super::ir::CallingConvention::System,
+                call_contract: super::super::ir::CallContract::default(),
             },
             return_shape: ReturnShape::Object {
                 status: true,
@@ -1060,7 +1020,6 @@ mod tests {
                 last_error: false,
             },
             subsystem: None,
-            call_policies: Vec::new(),
         }];
         assign_unicode_aliases(&mut functions);
         assert_eq!(functions[0].unicode_alias.as_deref(), Some("regOpenKeyEx"));

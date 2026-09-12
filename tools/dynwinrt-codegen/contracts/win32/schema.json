@@ -58,7 +58,7 @@
         },
         "dll": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.-]+\\.(dll|drv)$"
+          "pattern": "^[A-Za-z0-9_.-]+\\.([dD][lL][lL]|[dD][rR][vV])$"
         },
         "entryPoint": {
           "type": "string",
@@ -138,6 +138,229 @@
             "file": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_.-]+\\.h$"
+            }
+          }
+        }
+      ]
+    },
+    "nativeParameter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1023
+    },
+    "nativeBits": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "nativeSignedHandle": {
+      "type": "integer",
+      "minimum": -9223372036854775808,
+      "maximum": 9223372036854775807
+    },
+    "callContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "maxItems": 1024,
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/outputRule"
+          }
+        },
+        "resourceEffects": {
+          "type": "array",
+          "maxItems": 1024,
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/resourceEffect"
+          }
+        }
+      }
+    },
+    "outputRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parameter",
+        "when",
+        "action"
+      ],
+      "properties": {
+        "parameter": {
+          "$ref": "#/$defs/nativeParameter"
+        },
+        "when": {
+          "$ref": "#/$defs/condition"
+        },
+        "action": {
+          "$ref": "#/$defs/outputAction"
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "type": "array",
+          "maxItems": 16,
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/inputPredicate"
+          }
+        },
+        "returnValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nativeBits"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "inputPredicate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "mask",
+            "values"
+          ],
+          "properties": {
+            "kind": {
+              "const": "bits-in"
+            },
+            "parameter": {
+              "$ref": "#/$defs/nativeParameter"
+            },
+            "mask": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/nativeBits"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "elementWidth"
+          ],
+          "properties": {
+            "kind": {
+              "const": "null-or-empty"
+            },
+            "parameter": {
+              "$ref": "#/$defs/nativeParameter"
+            },
+            "elementWidth": {
+              "enum": [
+                1,
+                2
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "values"
+          ],
+          "properties": {
+            "kind": {
+              "const": "handle-in"
+            },
+            "parameter": {
+              "$ref": "#/$defs/nativeParameter"
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/nativeSignedHandle"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "outputAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unavailable"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter"
+          ],
+          "properties": {
+            "kind": {
+              "const": "alias-input"
+            },
+            "parameter": {
+              "$ref": "#/$defs/nativeParameter"
+            }
+          }
+        }
+      ]
+    },
+    "resourceEffect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "handleParameter",
+            "flagsParameter"
+          ],
+          "properties": {
+            "kind": {
+              "const": "add-file-completion-modes"
+            },
+            "handleParameter": {
+              "$ref": "#/$defs/nativeParameter"
+            },
+            "flagsParameter": {
+              "$ref": "#/$defs/nativeParameter"
             }
           }
         }
@@ -316,56 +539,14 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "handleParameter",
-            "countParameter",
-            "undefinedOn"
+            "contract"
           ],
           "properties": {
             "kind": {
-              "const": "hkey-performance-data-count"
+              "const": "call-contract"
             },
-            "handleParameter": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1023
-            },
-            "countParameter": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1023
-            },
-            "undefinedOn": {
-              "enum": ["more-data"]
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "handleParameter",
-            "stringParameter",
-            "outputParameter"
-          ],
-          "properties": {
-            "kind": {
-              "const": "borrowed-predefined-hkey-output"
-            },
-            "handleParameter": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1023
-            },
-            "stringParameter": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1023
-            },
-            "outputParameter": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1023
+            "contract": {
+              "$ref": "#/$defs/callContract"
             }
           }
         },

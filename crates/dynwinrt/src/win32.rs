@@ -37,6 +37,12 @@ use crate::abi::{AbiType, AbiValue};
 use crate::native_call::system_cif;
 use crate::result::{Error, Result};
 
+#[path = "win32_contract.rs"]
+mod contract;
+pub use contract::{
+    CallContract, Condition, InputPredicate, OutputAction, OutputRule, ResourceEffect,
+};
+
 const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
 #[cfg(all(windows, target_pointer_width = "32"))]
 const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
@@ -308,6 +314,7 @@ pub struct OwnedResource {
     cleanup: Cleanup,
     async_leases: AtomicUsize,
     active_async_io: AtomicUsize,
+    file_completion_modes: Mutex<Option<u32>>,
 }
 
 pub struct OwnedResourceLease<'a> {
@@ -323,6 +330,41 @@ pub struct OwnedResourceAsyncLease {
 impl OwnedResourceAsyncLease {
     pub fn raw(&self) -> usize {
         self.value
+    }
+
+    pub fn completion_modes(&self) -> Result<u32> {
+        use windows::Wdk::Storage::FileSystem::{
+            FileIoCompletionNotificationInformation, NtQueryInformationFile,
+        };
+        use windows::Wdk::System::SystemServices::FILE_IO_COMPLETION_NOTIFICATION_INFORMATION;
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let mut information = FILE_IO_COMPLETION_NOTIFICATION_INFORMATION::default();
+        let status = unsafe {
+            NtQueryInformationFile(
+                HANDLE(self.value as *mut c_void),
+                &mut status_block,
+                (&mut information as *mut FILE_IO_COMPLETION_NOTIFICATION_INFORMATION).cast(),
+                size_of::<FILE_IO_COMPLETION_NOTIFICATION_INFORMATION>() as u32,
+                FileIoCompletionNotificationInformation,
+            )
+        };
+        if status.0 != 0 {
+            return Err(Error::WindowsError(windows_core::Error::new(
+                HRESULT(status.0 | 0x1000_0000),
+                format!(
+                    "Cannot query file completion notification modes: NTSTATUS 0x{:08x}",
+                    status.0 as u32
+                ),
+            )));
+        }
+        *self
+            .resource
+            .file_completion_modes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(information.Flags);
+        Ok(information.Flags)
     }
 
     pub fn mark_active(&mut self) {
@@ -362,6 +404,7 @@ impl OwnedResource {
             cleanup,
             async_leases: AtomicUsize::new(0),
             active_async_io: AtomicUsize::new(0),
+            file_completion_modes: Mutex::new(None),
         }
     }
 
@@ -409,11 +452,20 @@ impl OwnedResource {
         Ok(OwnedResourceLease { value })
     }
 
-    fn lock_for_call(&self, consumes_resource: bool) -> Result<std::sync::MutexGuard<'_, usize>> {
+    fn lock_for_call(
+        &self,
+        consumes_resource: bool,
+        changes_completion_modes: bool,
+    ) -> Result<std::sync::MutexGuard<'_, usize>> {
         let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
         if consumes_resource && self.has_async_leases() {
             return Err(invalid_argument(
                 "cannot consume a Win32 resource while asynchronous I/O is pending",
+            ));
+        }
+        if changes_completion_modes && self.has_async_leases() {
+            return Err(invalid_argument(
+                "cannot change file completion modes while asynchronous I/O is pending",
             ));
         }
         Ok(value)
@@ -490,6 +542,7 @@ pub enum Value {
         bytes: Vec<u8>,
     },
     Null,
+    Unavailable,
 }
 
 // Values contain immutable layouts and opaque pointer bits. Calling through a
@@ -605,6 +658,7 @@ pub struct CallPlan {
     calling_convention: CallingConvention,
     parameter_aggregates: Vec<Option<Arc<NativeAggregateLayout>>>,
     return_aggregate: Option<Arc<NativeAggregateLayout>>,
+    contract: CallContract,
     cif: Cif,
 }
 
@@ -625,6 +679,7 @@ struct NativeOutputs<'a> {
     values: Vec<AbiValue>,
     parameters: &'a [PlannedParameter],
     initialized: bool,
+    cleanup: Vec<Cleanup>,
 }
 
 impl Drop for NativeOutputs<'_> {
@@ -634,11 +689,11 @@ impl Drop for NativeOutputs<'_> {
         }
         for parameter in self.parameters {
             if let Some(index) = parameter.output_index
+                && self.cleanup[index].owns_resource()
                 && let AbiValue::Pointer(pointer) = &mut self.values[index]
-                && parameter.spec.cleanup.owns_resource()
             {
                 let value = std::mem::replace(pointer, std::ptr::null_mut());
-                let _ = unsafe { parameter.spec.cleanup.run(value as usize) };
+                let _ = unsafe { self.cleanup[index].run(value as usize) };
             }
         }
     }
@@ -649,9 +704,19 @@ impl CallPlan {
     ///
     /// The specification must exactly match the target export's native ABI.
     pub unsafe fn new(spec: CallPlanSpec) -> Result<Arc<Self>> {
+        unsafe { Self::new_with_contract(spec, CallContract::default()) }
+    }
+
+    /// # Safety
+    ///
+    /// The ABI and semantic contract must both describe the native export exactly.
+    pub unsafe fn new_with_contract(
+        spec: CallPlanSpec,
+        contract: CallContract,
+    ) -> Result<Arc<Self>> {
         #[cfg(all(windows, target_pointer_width = "32"))]
         {
-            let _ = spec;
+            let _ = (spec, contract);
             return Err(not_implemented(
                 "flat Win32 plans currently reject 32-bit targets because metadata calling conventions are not yet projected",
             ));
@@ -660,6 +725,7 @@ impl CallPlan {
         #[cfg(not(all(windows, target_pointer_width = "32")))]
         {
             validate_spec(&spec)?;
+            contract.validate(&spec)?;
             let module = get_cached_module(&spec.dll)?;
             let function = proc_address(module, &spec.dll, &spec.entry_point)? as usize;
 
@@ -731,6 +797,7 @@ impl CallPlan {
                 calling_convention: spec.calling_convention,
                 parameter_aggregates: spec.parameter_aggregates,
                 return_aggregate: spec.return_aggregate,
+                contract,
                 cif,
             }))
         }
@@ -812,7 +879,15 @@ impl CallPlan {
             let consumes_resource = self.parameters.iter().any(|parameter| {
                 parameter.input_index == Some(arg_index) && parameter.spec.consumes_resource
             });
-            let guard = resource.lock_for_call(consumes_resource)?;
+            let changes_completion_modes =
+                self.parameters
+                    .iter()
+                    .enumerate()
+                    .any(|(index, parameter)| {
+                        parameter.input_index == Some(arg_index)
+                            && self.contract.changes_resource(index)
+                    });
+            let guard = resource.lock_for_call(consumes_resource, changes_completion_modes)?;
             #[cfg(test)]
             outcome_tests::record_call_lock(Arc::as_ptr(resource) as usize);
             let guard_index = resource_guards.len();
@@ -843,6 +918,13 @@ impl CallPlan {
                     .transpose()
             })
             .collect::<Result<Vec<_>>>()?;
+        let conditions = self
+            .contract
+            .outputs
+            .iter()
+            .map(|rule| unsafe { rule.when.matches_inputs(&input_storage) })
+            .collect::<Vec<_>>();
+        let mut output_actions = vec![None; self.output_count];
         let output_values = self
             .parameters
             .iter()
@@ -868,6 +950,12 @@ impl CallPlan {
             values: output_values,
             parameters: &self.parameters,
             initialized: false,
+            cleanup: self
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.output_index.is_some())
+                .map(|parameter| parameter.spec.cleanup)
+                .collect(),
         };
         debug_assert_eq!(output_storage.values.len(), self.output_count);
         let output_pointers = output_storage
@@ -932,9 +1020,44 @@ impl CallPlan {
             }
         };
         let last_error = self.capture_last_error.then(|| unsafe { GetLastError().0 });
-        output_storage.initialized = true;
         let succeeded = success_matches(self.success_rule, raw_return.as_ref())?;
+        for (rule, matches_inputs) in self.contract.outputs.iter().zip(conditions) {
+            if matches_inputs
+                && rule.when.return_value.is_none_or(|expected| {
+                    raw_return.as_ref().and_then(contract::abi_bits) == Some(expected)
+                })
+            {
+                let index = self.parameters[rule.parameter]
+                    .output_index
+                    .expect("validated output rule");
+                output_actions[index] = Some(rule.action);
+                output_storage.cleanup[index] = Cleanup::None;
+            }
+        }
+        output_storage.initialized = true;
         if succeeded {
+            for effect in &self.contract.resource_effects {
+                let ResourceEffect::AddFileCompletionModes {
+                    handle_parameter,
+                    flags_parameter,
+                } = *effect;
+                let input = self.parameters[handle_parameter]
+                    .input_index
+                    .expect("validated resource state input");
+                if let Value::Resource(resource) = &args[input] {
+                    let Some(AbiValue::U8(flags)) = &input_storage[flags_parameter] else {
+                        unreachable!("validated file completion mode flags");
+                    };
+                    if let Some(modes) = resource
+                        .file_completion_modes
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .as_mut()
+                    {
+                        *modes |= u32::from(*flags);
+                    }
+                }
+            }
             for parameter in &self.parameters {
                 if !parameter.spec.consumes_resource {
                     continue;
@@ -987,6 +1110,42 @@ impl CallPlan {
             let Some(output_index) = parameter.output_index else {
                 continue;
             };
+            match output_actions[output_index] {
+                Some(OutputAction::Unavailable {}) => {
+                    outputs.push(Value::Unavailable);
+                    continue;
+                }
+                Some(OutputAction::AliasInput {
+                    parameter: input_parameter,
+                }) => {
+                    if !succeeded {
+                        outputs.push(Value::Handle(0));
+                        continue;
+                    }
+                    #[cfg(test)]
+                    outcome_tests::record_output_decode(output_index);
+                    let expected = input_storage[input_parameter]
+                        .as_ref()
+                        .and_then(contract::abi_bits)
+                        .expect("validated handle input");
+                    if contract::abi_bits(&output_storage.values[output_index]) != Some(expected) {
+                        return Err(invalid_argument(
+                            "Win32 alias output does not equal its contracted input handle",
+                        ));
+                    }
+                    let input = self.parameters[input_parameter]
+                        .input_index
+                        .expect("validated alias input");
+                    outputs.push(match &args[input] {
+                        Value::Resource(resource) => Value::Resource(Arc::clone(resource)),
+                        _ => Value::Handle(expected as usize),
+                    });
+                    continue;
+                }
+                None => {}
+            }
+            #[cfg(test)]
+            outcome_tests::record_output_decode(output_index);
             let raw = std::mem::replace(
                 &mut output_storage.values[output_index],
                 parameter.spec.typ.default_abi_value(),
@@ -994,7 +1153,7 @@ impl CallPlan {
             outputs.push(finalize_value(
                 parameter.spec.typ,
                 raw,
-                parameter.spec.cleanup,
+                output_storage.cleanup[output_index],
                 succeeded,
                 true,
             )?);
@@ -1375,6 +1534,9 @@ fn not_implemented(message: &str) -> Error {
     Error::WindowsError(windows_core::Error::new(E_NOTIMPL, message))
 }
 
+#[cfg(all(test, target_pointer_width = "64"))]
+#[path = "win32_contract_tests.rs"]
+mod contract_tests;
 #[cfg(test)]
 #[path = "win32_outcome_tests.rs"]
 mod outcome_tests;
@@ -1883,11 +2045,11 @@ mod tests {
         let resource =
             unsafe { OwnedResource::adopt(allocation.0 as usize, Cleanup::GlobalFree) }.unwrap();
         let lease = resource.async_lease(Cleanup::GlobalFree).unwrap();
-        let error = resource.lock_for_call(true).unwrap_err();
+        let error = resource.lock_for_call(true, false).unwrap_err();
         assert!(error.message().contains("asynchronous I/O is pending"));
         drop(lease);
 
-        let guard = resource.lock_for_call(true).unwrap();
+        let guard = resource.lock_for_call(true, false).unwrap();
         assert_eq!(*guard, allocation.0 as usize);
         drop(guard);
         resource.close().unwrap();
@@ -1899,7 +2061,7 @@ mod tests {
         let allocation = unsafe { GlobalAlloc(GMEM_FIXED, 16) }.unwrap();
         let resource =
             unsafe { OwnedResource::adopt(allocation.0 as usize, Cleanup::GlobalFree) }.unwrap();
-        let mut consuming = resource.lock_for_call(true).unwrap();
+        let mut consuming = resource.lock_for_call(true, false).unwrap();
         let other = Arc::clone(&resource);
         let (started, ready) = std::sync::mpsc::channel();
         let acquiring = std::thread::spawn(move || {

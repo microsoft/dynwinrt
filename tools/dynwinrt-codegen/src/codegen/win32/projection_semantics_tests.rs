@@ -85,7 +85,8 @@ fn byte_and_element_capacity_relations_preserve_inout_output_order_and_nullabili
                                 name: "count".into(),
                                 output_index: 0,
                                 typ: SurfaceType::Number,
-                                conversion: Conversion::Number
+                                conversion: Conversion::Number,
+                                may_be_unavailable: false,
                             }],
                         }
                     );
@@ -396,19 +397,22 @@ fn mixed_out_inout_and_input_slots_keep_native_and_projected_result_order() {
                     name: "first".into(),
                     output_index: 0,
                     typ: SurfaceType::Number,
-                    conversion: Conversion::Number
+                    conversion: Conversion::Number,
+                    may_be_unavailable: false,
                 },
                 ProjectedOutput {
                     name: "cursor".into(),
                     output_index: 1,
                     typ: SurfaceType::BigInt,
-                    conversion: Conversion::BigInt
+                    conversion: Conversion::BigInt,
+                    may_be_unavailable: false,
                 },
                 ProjectedOutput {
                     name: "enabled".into(),
                     output_index: 2,
                     typ: SurfaceType::Boolean,
-                    conversion: Conversion::Boolean
+                    conversion: Conversion::Boolean,
+                    may_be_unavailable: false,
                 },
             ],
         }

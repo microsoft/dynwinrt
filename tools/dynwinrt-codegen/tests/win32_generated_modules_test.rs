@@ -48,8 +48,10 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
         !require_tsc || tsc.is_file(),
         "DYNWINRT_REQUIRE_TSC=1 requires a TypeScript compiler"
     );
-    let directory =
-        std::env::temp_dir().join(format!("dynwinrt-win32-modules-{}", std::process::id()));
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("win32-generated-modules-{}", std::process::id()));
+    fs::create_dir_all(directory.parent().unwrap()).unwrap();
     fs::create_dir(&directory).unwrap();
     let scratch = Scratch(directory);
     let functions = win32_metadata::parse_all_functions(&metadata).expect("parse native exports");
@@ -148,10 +150,25 @@ module.exports = { DynWin32: forbidCall, DynWin32Function: forbidCall };
     fs::write(
         runtime.join("win32.d.ts"),
         r#"
-export declare class DynWin32NativeStruct { private constructor(); }
-export declare class DynWin32Resource { private constructor(); }
-export declare class DynWin32SubsystemContext { private constructor(); }
-export declare class DynWinRtValue { private constructor(); }
+export declare class DynWin32NativeStruct {
+  private constructor();
+  private readonly nativeStructBrand: never;
+  readonly length: number;
+}
+export declare class DynWin32Resource {
+  private constructor();
+  private readonly resourceBrand: never;
+  readonly value: bigint;
+  close(): boolean;
+}
+export declare class DynWin32SubsystemContext {
+  private constructor();
+  private readonly subsystemBrand: never;
+}
+export declare class DynWinRtValue {
+  private constructor();
+  private readonly comValueBrand: never;
+}
 "#,
     )
     .unwrap();
@@ -201,6 +218,61 @@ const { pathToFileURL } = require('node:url');
         eprintln!("Skipping declaration compilation only: TypeScript is not installed");
         return;
     }
+    let module = |namespace, name| {
+        format!(
+            "./{}.js",
+            com::canonical_module_path(namespace, name)
+                .unwrap()
+                .replace('\\', "/")
+        )
+    };
+    fs::write(
+        scratch.0.join("consumer.ts"),
+        format!(
+            r#"
+import type {{ DynWin32Resource }} from '@microsoft/dynwinrt/win32'
+import {{ Apis as Registry, regOpenKey, regOpenKeyEx, regGetValue, regQueryValueEx }} from {registry:?}
+import {{ REG_SAM_FLAGS }} from {access:?}
+import {{ REG_ROUTINE_FLAGS }} from {routine:?}
+import {{ REG_VALUE_TYPE }} from {value_type:?}
+import {{ FILE_FLAGS_AND_ATTRIBUTES }} from {file_flags:?}
+import {{ setFileAttributes }} from {files:?}
+
+const access: REG_SAM_FLAGS = REG_SAM_FLAGS.KEY_QUERY_VALUE | REG_SAM_FLAGS.KEY_SET_VALUE
+const flags: REG_ROUTINE_FLAGS = REG_ROUTINE_FLAGS.RRF_RT_REG_DWORD | REG_ROUTINE_FLAGS.RRF_ZEROONFAILURE
+const fileFlags: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_WRITE_THROUGH | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OVERLAPPED
+setFileAttributes('fixture', fileFlags)
+regOpenKeyEx(0x80000001n, 'Software', 0, access)
+Registry.regOpenKeyEx(0x80000001n, 'Software', 0, REG_SAM_FLAGS.KEY_QUERY_VALUE | REG_SAM_FLAGS.KEY_NOTIFY)
+const get = regGetValue(0x80000004n, null, 'Global', flags, null)
+const query = regQueryValueEx(0x80000004n, 'Global', null)
+const getCount: number | null = get.dataSize
+const queryCount: number | null = query.dataSize
+const borrowed: ReturnType<typeof regOpenKey>['key'] = 0x80000001n
+declare const managed: DynWin32Resource
+const alias: DynWin32Resource | bigint | null = regOpenKey(managed, '').key
+if (alias !== null && typeof alias !== 'bigint') alias.close()
+const ordinary: REG_VALUE_TYPE = REG_VALUE_TYPE.REG_DWORD
+const exactOrdinaryMember: 4 = REG_VALUE_TYPE.REG_DWORD
+
+// @ts-expect-error native unavailable output remains nullable
+const invalidGetCount: number = get.dataSize
+// @ts-expect-error native unavailable output remains nullable
+const invalidQueryCount: number = query.dataSize
+// @ts-expect-error ordinary enums retain their closed member union
+const invalidOrdinary: REG_VALUE_TYPE = 2147483647
+// @ts-expect-error flags permit numbers, not arbitrary values
+const invalidFlags: REG_SAM_FLAGS = 'read'
+"#,
+            registry = module("Windows.Win32.System.Registry", "Apis"),
+            access = module("Windows.Win32.System.Registry", "REG_SAM_FLAGS"),
+            routine = module("Windows.Win32.System.Registry", "REG_ROUTINE_FLAGS"),
+            value_type = module("Windows.Win32.System.Registry", "REG_VALUE_TYPE"),
+            file_flags = module("Windows.Win32.Storage.FileSystem", "FILE_FLAGS_AND_ATTRIBUTES"),
+            files = module("Windows.Win32.Storage.FileSystem", "Apis"),
+        ),
+    )
+    .unwrap();
     fs::write(
         scratch.0.join("tsconfig.json"),
         r#"{
@@ -208,7 +280,7 @@ const { pathToFileURL } = require('node:url');
         "noEmit":true,"strict":true,"skipLibCheck":false,
         "target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","types":[]
       },
-      "include":["**/*.d.ts"]
+      "include":["**/*.ts"]
     }"#,
     )
     .unwrap();

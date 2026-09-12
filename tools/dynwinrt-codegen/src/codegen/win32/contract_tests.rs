@@ -2,13 +2,15 @@
 // Licensed under the MIT License.
 
 use super::*;
+#[path = "call_contract_json_tests.rs"]
+mod call_contract_json;
 #[path = "contract_validation_tests.rs"]
 mod validation;
 
 use crate::codegen::win32::{
     ir::{
-        AbiType, CallingConvention, Conversion, Direction, EnumUnderlying, InputExpression,
-        ProjectedCallPolicy, ProjectedOutput, ReturnShape, RuntimeParameter, RuntimePlan,
+        AbiType, CallingConvention, Condition, Conversion, Direction, EnumUnderlying,
+        InputExpression, OutputRule, ProjectedOutput, ReturnShape, RuntimeParameter, RuntimePlan,
         StringEncoding, SuccessRule, SurfaceParameter, SurfaceType, ValueType,
     },
     test_support::{metadata, metadata_function, project_one, semantic},
@@ -21,6 +23,16 @@ use crate::win32_metadata::{
 #[test]
 fn win32_contracts_are_strict_and_integrity_checked() {
     let registry = Registry::builtin().unwrap();
+    let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+    let dll_pattern = regex::Regex::new(
+        schema["$defs"]["functionSelector"]["properties"]["dll"]["pattern"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    for entry in registry.functions.values() {
+        assert!(dll_pattern.is_match(&entry.selector.dll), "{}", entry.id);
+    }
     assert!(registry.functions.contains_key(&(
         "Windows.Win32.Foundation".into(),
         "Apis".into(),
@@ -50,7 +62,9 @@ fn win32_contracts_are_strict_and_integrity_checked() {
         r#"{"kind":"owned-return","cleanup":{"close-handle":null}}"#,
         r#"{"kind":"overlapped-io","runtimeMethod":"beginWhatever"}"#,
         r#"{"kind":"reject-hkey-performance-data","parameter":0}"#,
-        r#"{"kind":"hkey-performance-data-count","handleParameter":0,"countParameter":5,"undefinedOn":"success"}"#,
+        r#"{"kind":"hkey-performance-data-count","handleParameter":0,"countParameter":5,"undefinedOn":"more-data"}"#,
+        r#"{"kind":"borrowed-predefined-hkey-output","handleParameter":0,"stringParameter":1,"outputParameter":4}"#,
+        r#"{"kind":"call-contract","contract":{"outputs":[],"javascript":"unchecked()"} }"#,
     ] {
         assert!(
             serde_json::from_str::<FunctionEffect>(data).is_err(),
@@ -74,6 +88,25 @@ fn win32_contracts_are_strict_and_integrity_checked() {
     let mut one = registry.functions.values().next().unwrap().clone();
     one.contracts.push(one.contracts[0].clone());
     assert!(Registry::validate(vec![one], Vec::new(), Vec::new()).is_err());
+}
+
+#[test]
+fn win32_contract_text_pins_use_lf_normalization_without_changing_binary_fingerprints() {
+    let files = FILES
+        .iter()
+        .map(|(name, contents)| (*name, contents.replace('\n', "\r\n")))
+        .collect::<Vec<_>>();
+    let files = files
+        .iter()
+        .map(|(name, contents)| (*name, contents.as_str()))
+        .collect::<Vec<_>>();
+    Registry::load(
+        &MANIFEST.replace('\n', "\r\n"),
+        &SCHEMA.replace('\n', "\r\n"),
+        &files,
+    )
+    .unwrap();
+    assert_ne!(sha256(b"native\r\nbytes"), sha256(b"native\nbytes"));
 }
 
 #[test]
@@ -215,7 +248,7 @@ fn win32_free_library_has_a_consuming_hmodule_abi_and_ordered_bool_result() {
     assert_eq!(projected.js_name, "freeLibrary");
     assert_eq!(projected.unicode_alias, None);
     assert_eq!(projected.subsystem, None);
-    assert!(projected.call_policies.is_empty());
+    assert!(projected.runtime.call_contract.is_empty());
     assert_eq!(
         projected.parameters,
         vec![surface(
@@ -252,6 +285,7 @@ fn win32_free_library_has_a_consuming_hmodule_abi_and_ordered_bool_result() {
             success_rule: SuccessRule::ReturnNonZero,
             capture_last_error: true,
             calling_convention: CallingConvention::System,
+            call_contract: CallContract::default(),
         }
     );
     assert_eq!(
@@ -341,7 +375,7 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
                 },
                 InputExpression::Surface {
                     parameter_index: 3,
-                    conversion: Conversion::U32
+                    conversion: Conversion::U32Flags
                 },
             ]
         );
@@ -394,24 +428,51 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
                 outputs: vec![ProjectedOutput {
                     name: "key".into(),
                     output_index: 0,
-                    typ: SurfaceType::Resource,
-                    conversion: Conversion::Resource
+                    typ: SurfaceType::ResourceOrHandle,
+                    conversion: Conversion::ResourceOrHandle,
+                    may_be_unavailable: false,
                 }],
                 last_error: false,
             }
         );
-        let mut borrowed = open.runtime.clone();
-        borrowed.parameters[4].cleanup = Cleanup::None;
         assert_eq!(
-            open.call_policies,
-            vec![ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
-                handle_parameter: 0,
-                string_parameter: 1,
-                encoding,
-                output_index: 0,
-                runtime: Box::new(borrowed),
-            }]
+            open.runtime.call_contract,
+            CallContract {
+                outputs: vec![OutputRule {
+                    parameter: 4,
+                    when: Condition {
+                        inputs: vec![
+                            InputPredicate::HandleIn {
+                                parameter: 0,
+                                values: vec![
+                                    -2147483648,
+                                    -2147483647,
+                                    -2147483646,
+                                    -2147483645,
+                                    -2147483644,
+                                    -2147483643,
+                                    -2147483642,
+                                    -2147483568,
+                                    -2147483552,
+                                ],
+                            },
+                            InputPredicate::NullOrEmpty {
+                                parameter: 1,
+                                element_width: if encoding == StringEncoding::Wide {
+                                    2
+                                } else {
+                                    1
+                                },
+                            },
+                        ],
+                        return_value: None,
+                    },
+                    action: OutputAction::AliasInput { parameter: 0 },
+                }],
+                resource_effects: Vec::new(),
+            }
         );
+        assert_eq!(native.call_contract, open.runtime.call_contract);
 
         let query = raw
             .functions
@@ -545,30 +606,252 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
                         name: "type".into(),
                         output_index: 0,
                         typ: SurfaceType::Enum("REG_VALUE_TYPE".into()),
-                        conversion: Conversion::Number
+                        conversion: Conversion::Number,
+                        may_be_unavailable: false,
                     },
                     ProjectedOutput {
                         name: "dataSize".into(),
                         output_index: 1,
                         typ: SurfaceType::Number,
-                        conversion: Conversion::Number
+                        conversion: Conversion::Number,
+                        may_be_unavailable: true,
                     },
                 ],
             }
         );
         assert_eq!(
-            query.call_policies,
-            vec![ProjectedCallPolicy::HkeyPerformanceDataCount {
-                handle_parameter: 0,
-                output_index: 1,
-                undefined_status: 234,
-            }]
+            query.runtime.call_contract,
+            CallContract {
+                outputs: vec![OutputRule {
+                    parameter: 5,
+                    when: Condition {
+                        inputs: vec![InputPredicate::BitsIn {
+                            parameter: 0,
+                            mask: 0xffff_ffff,
+                            values: vec![0x8000_0004],
+                        }],
+                        return_value: Some(234),
+                    },
+                    action: OutputAction::Unavailable {},
+                }],
+                resource_effects: Vec::new(),
+            }
         );
+        assert_eq!(native.call_contract, query.runtime.call_contract);
         for function in [&open, &query] {
             assert_eq!(function.subsystem, None);
             assert_eq!(function.unicode_alias.is_some(), suffix == "W");
         }
     }
+}
+
+#[test]
+fn win32_registry_base_open_and_get_value_use_exact_native_output_rules() {
+    let Some(path) = metadata() else {
+        return;
+    };
+    let raw =
+        crate::win32_metadata::parse_apis(&path, "Windows.Win32.System.Registry", "Apis").unwrap();
+    for (suffix, encoding, width) in [
+        ("A", StringEncoding::Ansi, 1),
+        ("W", StringEncoding::Wide, 2),
+    ] {
+        let open = raw
+            .functions
+            .iter()
+            .find(|f| f.name == format!("RegOpenKey{suffix}"))
+            .unwrap();
+        assert_eq!(open.parameters.len(), 3);
+        assert_eq!(open.parameters[0].direction, RawDirection::In);
+        assert_eq!(open.parameters[0].typ.pointer_depth, 0);
+        assert!(open.parameters[1].nullable);
+        assert_eq!(open.parameters[1].typ.constness, RawConstness::Const);
+        assert_eq!(open.parameters[2].direction, RawDirection::Out);
+        assert_eq!(open.parameters[2].typ.pointer_depth, 1);
+        let native = semantic(open);
+        assert_eq!(native.parameters[0].resource_cleanup, Cleanup::RegCloseKey);
+        assert_eq!(native.parameters[1].typ, ValueType::StringPointer(encoding));
+        assert_eq!(native.parameters[2].cleanup, Cleanup::RegCloseKey);
+        assert_eq!(
+            native.call_contract,
+            CallContract {
+                outputs: vec![OutputRule {
+                    parameter: 2,
+                    when: Condition {
+                        inputs: vec![InputPredicate::NullOrEmpty {
+                            parameter: 1,
+                            element_width: width,
+                        }],
+                        return_value: None,
+                    },
+                    action: OutputAction::AliasInput { parameter: 0 },
+                }],
+                resource_effects: Vec::new(),
+            }
+        );
+        let projected = project_one(open.clone());
+        assert_eq!(projected.parameters.len(), 2);
+        assert_eq!(
+            projected.runtime.parameters[2].cleanup,
+            Cleanup::RegCloseKey
+        );
+        assert_eq!(projected.runtime.call_contract, native.call_contract);
+        assert_status_plan(&projected.runtime, &format!("RegOpenKey{suffix}"));
+        assert_eq!(
+            projected.return_shape,
+            ReturnShape::Object {
+                status: true,
+                return_value: None,
+                outputs: vec![ProjectedOutput {
+                    name: "key".into(),
+                    output_index: 0,
+                    typ: SurfaceType::ResourceOrHandle,
+                    conversion: Conversion::ResourceOrHandle,
+                    may_be_unavailable: false,
+                }],
+                last_error: false,
+            }
+        );
+
+        let get = raw
+            .functions
+            .iter()
+            .find(|f| f.name == format!("RegGetValue{suffix}"))
+            .unwrap();
+        assert_eq!(get.parameters.len(), 7);
+        assert_eq!(get.parameters[5].direction, RawDirection::Out);
+        assert_eq!(get.parameters[5].typ.pointer_depth, 1);
+        assert_eq!(
+            get.parameters[5].buffer.as_ref().unwrap().size,
+            RawBufferSize::ByteCountParam(6)
+        );
+        assert_eq!(get.parameters[6].direction, RawDirection::InOut);
+        assert_eq!(get.parameters[6].typ.pointer_depth, 1);
+        assert_eq!(
+            get.parameters[6].typ.base,
+            RawBaseType::Scalar(RawScalar::U32)
+        );
+        assert!(get.parameters[5].nullable && get.parameters[6].nullable);
+        let native = semantic(get);
+        assert_eq!(
+            native.call_contract,
+            CallContract {
+                outputs: vec![OutputRule {
+                    parameter: 6,
+                    when: Condition {
+                        inputs: vec![InputPredicate::BitsIn {
+                            parameter: 0,
+                            mask: 0xffff_ffff,
+                            values: vec![0x8000_0004],
+                        }],
+                        return_value: Some(234),
+                    },
+                    action: OutputAction::Unavailable {},
+                }],
+                resource_effects: Vec::new(),
+            }
+        );
+        let projected = project_one(get.clone());
+        assert_eq!(projected.parameters.len(), 5);
+        assert_eq!(projected.runtime.call_contract, native.call_contract);
+        assert_eq!(projected.runtime.parameters[6].abi, AbiType::U32);
+        assert_eq!(projected.runtime.parameters[6].direction, Direction::InOut);
+        assert_eq!(
+            projected.inputs[3],
+            InputExpression::Surface {
+                parameter_index: 3,
+                conversion: Conversion::U32Flags
+            }
+        );
+        assert_eq!(
+            projected.inputs[5],
+            InputExpression::BufferLength {
+                parameter_index: 4,
+                divisor: 1,
+                abi: AbiType::U32
+            }
+        );
+        assert_status_plan(&projected.runtime, &format!("RegGetValue{suffix}"));
+        let ReturnShape::Object { outputs, .. } = &projected.return_shape else {
+            panic!("native status and output slots")
+        };
+        assert_eq!(outputs.len(), 2);
+        assert!(!outputs[0].may_be_unavailable);
+        assert_eq!(
+            outputs[1],
+            ProjectedOutput {
+                name: "dataSize".into(),
+                output_index: 1,
+                typ: SurfaceType::Number,
+                conversion: Conversion::Number,
+                may_be_unavailable: true,
+            }
+        );
+    }
+}
+
+#[test]
+fn win32_file_completion_modes_declare_shared_native_resource_state() {
+    let Some(path) = metadata() else {
+        return;
+    };
+    let raw = metadata_function(
+        &path,
+        "Windows.Win32.Storage.FileSystem",
+        "SetFileCompletionNotificationModes",
+    );
+    assert_eq!(raw.parameters.len(), 2);
+    assert_eq!(raw.parameters[0].direction, RawDirection::In);
+    assert_eq!(raw.parameters[0].typ.pointer_depth, 0);
+    assert_eq!(raw.parameters[1].direction, RawDirection::In);
+    assert_eq!(raw.parameters[1].typ.pointer_depth, 0);
+    assert_eq!(
+        raw.parameters[1].typ.base,
+        RawBaseType::Scalar(RawScalar::U8)
+    );
+    assert_eq!(raw.return_type.base, RawBaseType::Scalar(RawScalar::Bool32));
+    assert!(raw.supports_last_error);
+    let native = semantic(&raw);
+    assert_eq!(native.parameters[0].cleanup, Cleanup::None);
+    assert_eq!(native.parameters[0].resource_cleanup, Cleanup::CloseHandle);
+    assert!(!native.parameters[0].consumes_resource);
+    assert_eq!(
+        native.call_contract,
+        CallContract {
+            outputs: Vec::new(),
+            resource_effects: vec![ResourceEffect::AddFileCompletionModes {
+                handle_parameter: 0,
+                flags_parameter: 1,
+            }],
+        }
+    );
+    let projected = project_one(raw);
+    assert_eq!(projected.runtime.call_contract, native.call_contract);
+    assert_eq!(projected.runtime.return_abi, Some(AbiType::Bool32));
+    assert_eq!(projected.runtime.success_rule, SuccessRule::ReturnNonZero);
+    assert!(projected.runtime.capture_last_error);
+    assert_eq!(
+        projected.inputs,
+        [
+            InputExpression::Surface {
+                parameter_index: 0,
+                conversion: Conversion::Handle
+            },
+            InputExpression::Surface {
+                parameter_index: 1,
+                conversion: Conversion::U8
+            },
+        ]
+    );
+    assert_eq!(
+        projected.return_shape,
+        ReturnShape::Object {
+            status: false,
+            return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
+            outputs: Vec::new(),
+            last_error: true,
+        }
+    );
 }
 
 fn slot(

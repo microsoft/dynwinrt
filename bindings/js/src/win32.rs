@@ -5,13 +5,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
-use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, Function, ToNapiValue, Unknown};
+use napi::bindgen_prelude::{
+  BigInt, Buffer, Either, FromNapiValue, Function, ToNapiValue, Unknown,
+};
 use napi::JsValue;
 use napi_derive::napi;
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 use windows::Win32::System::IO::{
-  CancelIoEx, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, OVERLAPPED_0_0,
+  CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED,
+  OVERLAPPED_0_0,
 };
 
 use super::{
@@ -58,6 +62,7 @@ pub struct DynWin32FunctionSpec {
   pub capture_last_error: Option<bool>,
   pub calling_convention: Option<String>,
   pub return_aggregate_descriptor: Option<String>,
+  pub call_contract_descriptor: Option<String>,
 }
 
 pub struct DynWin32Value {
@@ -821,7 +826,6 @@ impl IocpRuntime {
         "OVERLAPPED operation has no capacity reservation",
       ));
     }
-
     let mut overlapped = OVERLAPPED::default();
     overlapped.Anonymous.Anonymous = OVERLAPPED_0_0 {
       Offset: task.offset as u32,
@@ -840,6 +844,11 @@ impl IocpRuntime {
       .lock()
       .unwrap_or_else(|error| error.into_inner());
     self.associate(&operation.task.resource, handle)?;
+    let completion_modes = operation
+      .task
+      .lease
+      .completion_modes()
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     if registry.operations.contains_key(&key) {
       return Err(napi::Error::from_reason(
         "duplicate OVERLAPPED operation address",
@@ -893,6 +902,21 @@ impl IocpRuntime {
         },
         error,
       ));
+    }
+    if error.is_none() && completion_modes & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS != 0 {
+      let mut transferred = 0;
+      let result = unsafe {
+        GetOverlappedResult(
+          HANDLE(handle as *mut std::ffi::c_void),
+          overlapped_ptr,
+          &mut transferred,
+          false,
+        )
+      };
+      let error = result.err().map(|error| win32_error_code(&error));
+      drop(registry);
+      self.complete(overlapped_ptr, transferred, error);
+      return Ok(());
     }
     if registry
       .operations
@@ -1851,6 +1875,27 @@ impl DynWin32 {
       .map(Some)
       .ok_or_else(|| napi::Error::from_reason("Win32 value is not an owned resource"))
   }
+
+  #[napi]
+  pub fn is_unavailable(value: &DynWin32Value) -> bool {
+    matches!(value.value, dynwinrt::win32::Value::Unavailable)
+  }
+
+  #[napi]
+  pub fn to_resource_or_handle(
+    value: &DynWin32Value,
+  ) -> napi::Result<Option<Either<DynWin32Resource, BigInt>>> {
+    match &value.value {
+      dynwinrt::win32::Value::Resource(resource) => {
+        Ok(Some(Either::A(DynWin32Resource(Arc::clone(resource)))))
+      }
+      dynwinrt::win32::Value::Handle(0) | dynwinrt::win32::Value::Null => Ok(None),
+      dynwinrt::win32::Value::Handle(bits) => Ok(Some(Either::B(BigInt::from(*bits as u64)))),
+      _ => Err(napi::Error::from_reason(
+        "Win32 value is not a resource or borrowed handle",
+      )),
+    }
+  }
 }
 
 fn reject_required_null_pointer(value: &DynWin32Value, nullable: bool) -> napi::Result<()> {
@@ -2475,6 +2520,13 @@ impl DynWin32Unsafe {
 }
 
 fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
+  let contract = spec
+    .call_contract_descriptor
+    .as_deref()
+    .map(serde_json::from_str::<dynwinrt::win32::CallContract>)
+    .transpose()
+    .map_err(|error| napi::Error::from_reason(format!("Invalid Win32 call contract: {error}")))?
+    .unwrap_or_default();
   let mut parameter_aggregates = Vec::with_capacity(spec.parameters.len());
   let parameters = spec
     .parameters
@@ -2514,20 +2566,23 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
     .transpose()?
     .filter(|_| return_aggregate.is_none());
   let plan = unsafe {
-    dynwinrt::win32::CallPlan::new(dynwinrt::win32::CallPlanSpec {
-      dll: spec.dll,
-      entry_point: spec.entry_point,
-      parameters,
-      return_type,
-      return_cleanup: parse_cleanup(spec.return_cleanup.as_deref().unwrap_or("none"))?,
-      success_rule: parse_success_rule(spec.success_rule.as_deref().unwrap_or("always"))?,
-      capture_last_error: spec.capture_last_error.unwrap_or(false),
-      calling_convention: parse_calling_convention(
-        spec.calling_convention.as_deref().unwrap_or("system"),
-      )?,
-      parameter_aggregates,
-      return_aggregate,
-    })
+    dynwinrt::win32::CallPlan::new_with_contract(
+      dynwinrt::win32::CallPlanSpec {
+        dll: spec.dll,
+        entry_point: spec.entry_point,
+        parameters,
+        return_type,
+        return_cleanup: parse_cleanup(spec.return_cleanup.as_deref().unwrap_or("none"))?,
+        success_rule: parse_success_rule(spec.success_rule.as_deref().unwrap_or("always"))?,
+        capture_last_error: spec.capture_last_error.unwrap_or(false),
+        calling_convention: parse_calling_convention(
+          spec.calling_convention.as_deref().unwrap_or("system"),
+        )?,
+        parameter_aggregates,
+        return_aggregate,
+      },
+      contract,
+    )
   }
   .map_err(|error| napi::Error::from_reason(error.message()))?;
   Ok(DynWin32Function(plan))

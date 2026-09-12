@@ -5,9 +5,10 @@ import test from 'ava'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { writeFileSync, unlinkSync } from 'node:fs'
+import { cpSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer, type Socket } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
@@ -109,6 +110,22 @@ test('Win32 facades retain the full isolated runtime without manual safe descrip
   }
 })
 
+test('Win32 artifact consumers require the complete runtime dependency tree', (t) => {
+  const artifact = mkdtempSync(join(tmpdir(), 'dynwinrt-artifact-'))
+  const consumer = fileURLToPath(new URL('../scripts/verify-runtime-artifact.mjs', import.meta.url))
+  try {
+    cpSync(fileURLToPath(new URL('../dist/', import.meta.url)), artifact, { recursive: true })
+    const complete = spawnSync(process.execPath, [consumer, artifact], { encoding: 'utf8', timeout: 15000 })
+    t.is(complete.status, 0, `${complete.error}\n${complete.stdout}\n${complete.stderr}`)
+    unlinkSync(join(artifact, 'win32-internal.js'))
+    const incomplete = spawnSync(process.execPath, [consumer, artifact], { encoding: 'utf8', timeout: 15000 })
+    t.is(incomplete.status, 1, `${incomplete.error}\n${incomplete.stdout}\n${incomplete.stderr}`)
+    t.regex(incomplete.stderr, /Cannot find module '\.\/win32-internal\.js'/)
+  } finally {
+    rmSync(artifact, { recursive: true, force: true })
+  }
+})
+
 test('Win32 native tags reject forged handles, structs, values and receivers', (t) => {
   const resource = openKey()
   const descriptor = pointDescriptor()
@@ -145,6 +162,110 @@ test('Win32 native tags reject forged handles, structs, values and receivers', (
     t.throws(() => DynWin32.resource(resource, 'regCloseKey'), { message: /closed/ })
   } finally {
     resource.close()
+  }
+})
+
+test('Win32 native alias contracts share HKEY ownership and preserve borrowed inputs', (t) => {
+  for (const suffix of ['A', 'W']) {
+    const open = DynWin32Function.bind({
+      dll: 'advapi32.dll',
+      entryPoint: `RegOpenKey${suffix}`,
+      parameters: [
+        { type: 'handle', direction: 'in', resourceCleanup: 'regCloseKey' },
+        { type: 'pointer', direction: 'in', nullable: true },
+        { type: 'handle', direction: 'out', cleanup: 'regCloseKey' },
+      ],
+      returnType: 'i32',
+      successRule: 'zero',
+      callContractDescriptor: JSON.stringify({
+        outputs: [
+          {
+            parameter: 2,
+            when: { inputs: [{ kind: 'null-or-empty', parameter: 1, elementWidth: suffix === 'W' ? 2 : 1 }] },
+            action: { kind: 'alias-input', parameter: 0 },
+          },
+        ],
+      }),
+    })
+    for (const empty of [null, '']) {
+      const text =
+        empty === null
+          ? DynWin32.nullPointer()
+          : suffix === 'W'
+            ? DynWin32.wideString(empty)
+            : DynWin32.ansiString(empty)
+      const owner = openKey()
+      try {
+        const result = open.invoke([DynWin32.resource(owner, 'regCloseKey'), text])
+        t.true(result.succeeded)
+        const alias = DynWin32.toResourceOrHandle(result.outputs[0])
+        if (!(alias instanceof DynWin32Resource)) throw new Error('Expected a shared managed HKEY')
+        t.is(alias.value, owner.value)
+        alias.close()
+        t.true(owner.closed)
+        t.true(alias.closed)
+        t.throws(() => DynWin32.resource(owner, 'regCloseKey'), { message: /closed/ })
+        t.notThrows(() => alias.close())
+      } finally {
+        owner.close()
+      }
+      const borrowed = open.invoke([machine(), text])
+      t.true(borrowed.succeeded)
+      t.is(DynWin32.toResourceOrHandle(borrowed.outputs[0]), 0x80000002n)
+    }
+  }
+})
+
+test('Win32 predefined HKEY aliases use native pointer-width values, not truncated bits', (t) => {
+  for (const suffix of ['A', 'W']) {
+    const open = DynWin32Function.bind({
+      dll: 'advapi32.dll',
+      entryPoint: `RegOpenKeyEx${suffix}`,
+      parameters: [
+        { type: 'handle', direction: 'in', resourceCleanup: 'regCloseKey' },
+        { type: 'pointer', direction: 'in', nullable: true },
+        { type: 'u32', direction: 'in' },
+        { type: 'u32', direction: 'in' },
+        { type: 'handle', direction: 'out', cleanup: 'regCloseKey' },
+      ],
+      returnType: 'i32',
+      successRule: 'zero',
+      callContractDescriptor: JSON.stringify({
+        outputs: [
+          {
+            parameter: 4,
+            when: {
+              inputs: [
+                { kind: 'handle-in', parameter: 0, values: [-2147483646] },
+                { kind: 'null-or-empty', parameter: 1, elementWidth: suffix === 'W' ? 2 : 1 },
+              ],
+            },
+            action: { kind: 'alias-input', parameter: 0 },
+          },
+        ],
+      }),
+    })
+    for (const key of [-2147483646n, 0x80000002n]) {
+      for (const empty of [null, '']) {
+        const text =
+          empty === null
+            ? DynWin32.nullPointer()
+            : suffix === 'W'
+              ? DynWin32.wideString(empty)
+              : DynWin32.ansiString(empty)
+        const result = open.invoke([DynWin32.handle(key), text, DynWin32.u32(0), DynWin32.u32(0x20019)])
+        t.true(result.succeeded)
+        const output = DynWin32.toResourceOrHandle(result.outputs[0])
+        if (key < 0n) {
+          t.is(output, DynWin32.toBigint(DynWin32.handle(key)))
+        } else {
+          if (!(output instanceof DynWin32Resource)) throw new Error('Expected a new owned HKEY')
+          t.not(output.value, key)
+          output.close()
+          t.true(output.closed)
+        }
+      }
+    }
   }
 })
 
@@ -256,37 +377,56 @@ test.serial('Win32 performance-data queries preserve success without failure-siz
     successRule: 'zero',
   })
   try {
-    for (const suffix of ['A', 'W']) {
+    for (const name of ['RegQueryValueExA', 'RegQueryValueExW', 'RegGetValueA', 'RegGetValueW']) {
+      const get = name.startsWith('RegGetValue')
+      const wide = name.endsWith('W')
       const query = DynWin32Function.bind({
         dll: 'advapi32.dll',
-        entryPoint: `RegQueryValueEx${suffix}`,
+        entryPoint: name,
         parameters: [
           { type: 'handle', direction: 'in', resourceCleanup: 'regCloseKey' },
-          { type: 'pointer', direction: 'in' },
+          { type: 'pointer', direction: 'in', nullable: get },
           { type: 'pointer', direction: 'in', nullable: true },
+          ...(get ? [{ type: 'u32', direction: 'in' }] : []),
           { type: 'u32', direction: 'out' },
           { type: 'pointer', direction: 'in', nullable: true },
           { type: 'u32', direction: 'inout' },
         ],
         returnType: 'i32',
         successRule: 'zero',
+        callContractDescriptor: JSON.stringify({
+          outputs: [
+            {
+              parameter: get ? 6 : 5,
+              when: {
+                inputs: [{ kind: 'bits-in', parameter: 0, mask: 0xffffffff, values: [0x80000004] }],
+                returnValue: 234,
+              },
+              action: { kind: 'unavailable' },
+            },
+          ],
+        }),
       })
-      const read = (performance: boolean, buffer: Buffer | null) =>
-        query.invoke([
+      const read = (performance: boolean, buffer: Buffer | null) => {
+        const name = wide
+          ? DynWin32.wideString(performance ? '2' : 'ProductName')
+          : DynWin32.ansiString(performance ? '2' : 'ProductName')
+        return query.invoke([
           performance ? performanceKey : DynWin32.handle(normalKey),
-          suffix === 'W'
-            ? DynWin32.wideString(performance ? '2' : 'ProductName')
-            : DynWin32.ansiString(performance ? '2' : 'ProductName'),
-          DynWin32.nullPointer(),
+          ...(get ? [DynWin32.nullPointer(), name, DynWin32.u32(0xffff)] : [name, DynWin32.nullPointer()]),
           buffer === null ? DynWin32.nullPointer() : DynWin32.dataPointer(buffer),
           DynWin32.u32(buffer === null ? 0 : DynWin32.byteLength(buffer)),
         ])
+      }
 
       // ERROR_MORE_DATA does not authorize reading the performance-data size.
-      for (const buffer of [null, DynWin32.allocateBuffer(1)]) {
+      for (const buffer of [DynWin32.allocateBuffer(1), DynWin32.allocateBuffer(64)]) {
         const result = read(true, buffer)
         t.is(DynWin32.toNumber(result.returnValue!), 234)
         t.false(result.succeeded)
+        const count = result.outputs[1]
+        t.true(DynWin32.isUnavailable(count))
+        t.throws(() => DynWin32.toNumber(count), { message: /not a JavaScript number/ })
       }
 
       let succeeded = false
@@ -303,7 +443,7 @@ test.serial('Win32 performance-data queries preserve success without failure-siz
         succeeded = true
         break
       }
-      t.true(succeeded, `${suffix}: performance data must remain queryable by growing capacity`)
+      t.true(succeeded, `${name}: performance data must remain queryable by growing capacity`)
 
       const normalProbe = read(false, null)
       t.true(normalProbe.succeeded)
@@ -312,13 +452,38 @@ test.serial('Win32 performance-data queries preserve success without failure-siz
       const normalSmall = read(false, DynWin32.allocateBuffer(1))
       t.is(DynWin32.toNumber(normalSmall.returnValue!), 234)
       t.is(DynWin32.toNumber(normalSmall.outputs[1]), required)
-      const normalSuccess = read(false, DynWin32.allocateBuffer(required))
+      const normalData = DynWin32.allocateBuffer(required)
+      const normalSuccess = read(false, normalData)
       t.true(normalSuccess.succeeded)
-      t.is(DynWin32.toNumber(normalSuccess.outputs[1]), required)
+      const actual = DynWin32.toNumber(normalSuccess.outputs[1])
+      t.true(actual > 0 && actual <= required)
+      t.regex(normalData.toString(wide ? 'utf16le' : 'latin1', 0, actual), /Windows/i)
+      if (!get) t.is(actual, required)
     }
   } finally {
     normalKey.close()
     t.is(DynWin32.toNumber(closePerformance.invoke([performanceKey]).returnValue!), 0)
+  }
+})
+
+test('Win32 semantic descriptors reject unknown fields and invalid native relationships', (t) => {
+  const spec = {
+    dll: 'absent-dynwinrt-test.dll',
+    entryPoint: 'Missing',
+    parameters: [{ type: 'u32', direction: 'inout' }],
+    returnType: 'u32',
+  }
+  for (const descriptor of [
+    '{',
+    '{"outputs":[],"unknown":true}',
+    '{"outputs":[{"parameter":0,"when":{},"action":{"kind":"invented"}}]}',
+    '{"outputs":[{"parameter":0,"when":{"inputs":[{"kind":"null-or-empty","parameter":0,"elementWidth":2}]},"action":{"kind":"unavailable"}}]}',
+    '{"outputs":[{"parameter":0,"when":{"inputs":[{"kind":"handle-in","parameter":0,"values":[-1]}]},"action":{"kind":"unavailable"}}]}',
+    '{"outputs":[{"parameter":0,"when":{},"action":{"kind":"alias-input","parameter":0}}]}',
+    '{"resourceEffects":[{"kind":"add-file-completion-modes","handleParameter":0,"flagsParameter":0}]}',
+  ]) {
+    const error = t.throws(() => DynWin32Function.bind({ ...spec, callContractDescriptor: descriptor }))!
+    t.notRegex(error.message, /Failed to load|cannot find the file/i)
   }
 })
 
@@ -779,6 +944,19 @@ const openFile = (path: string, access = 0xc0000000) => {
   if (!result.succeeded) throw new Error(`CreateFileW: ${result.lastError}`)
   return DynWin32.toResource(result.returnValue!)!
 }
+
+test.serial('Win32 IOCP completion modes preserve immediate, pending and cancelled operations', (t) => {
+  t.timeout(40000)
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./fixtures/win32-completion-modes.cjs', import.meta.url)), JSON.stringify(fileSpec)],
+    { encoding: 'utf8', timeout: 30000 },
+  )
+  t.is(result.error, undefined, `${result.error}\n${result.stdout}\n${result.stderr}`)
+  t.is(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  t.is(result.stderr, '')
+  t.regex(result.stdout, /PASS completion modes/)
+})
 
 test.serial('Win32 IOCP AbortSignal cancels active native pipe I/O through CancelIoEx', async (t) => {
   t.timeout(20000)

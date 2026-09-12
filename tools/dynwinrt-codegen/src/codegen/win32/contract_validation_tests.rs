@@ -114,30 +114,8 @@ fn every_closed_function_effect_has_typed_json_and_rejects_extra_or_missing_fiel
             matches!(e, FunctionEffect::MutableString { parameter: 1 })
         }),
         (
-            json!({"kind":"hkey-performance-data-count","handleParameter":0,"countParameter":5,"undefinedOn":"more-data"}),
-            |e| {
-                matches!(
-                    e,
-                    FunctionEffect::HkeyPerformanceDataCount {
-                        handle_parameter: 0,
-                        count_parameter: 5,
-                        undefined_on: UndefinedCountStatus::MoreData
-                    }
-                )
-            },
-        ),
-        (
-            json!({"kind":"borrowed-predefined-hkey-output","handleParameter":0,"stringParameter":1,"outputParameter":4}),
-            |e| {
-                matches!(
-                    e,
-                    FunctionEffect::BorrowedPredefinedHkeyOutput {
-                        handle_parameter: 0,
-                        string_parameter: 1,
-                        output_parameter: 4
-                    }
-                )
-            },
+            json!({"kind":"call-contract","contract":{}}),
+            |e| matches!(e, FunctionEffect::CallContract { contract } if contract.is_empty()),
         ),
         (
             json!({"kind":"overlapped-io","operation":"read","fileParameter":0,"bufferParameter":1,"countParameter":2,"transferredParameter":3,"overlappedParameter":4}),
@@ -446,10 +424,15 @@ fn contract_conflicts_and_invalid_roles_are_rejected_not_prioritized() {
             parameter: 1024,
             cleanup: Cleanup::CloseHandle,
         }],
-        vec![FunctionEffect::BorrowedPredefinedHkeyOutput {
-            handle_parameter: 0,
-            string_parameter: 0,
-            output_parameter: 2,
+        vec![FunctionEffect::CallContract {
+            contract: CallContract {
+                outputs: vec![OutputRule {
+                    parameter: 0,
+                    when: Condition::default(),
+                    action: OutputAction::AliasInput { parameter: 0 },
+                }],
+                resource_effects: Vec::new(),
+            },
         }],
         vec![FunctionEffect::OverlappedIo {
             operation: AsyncIoKind::Read,

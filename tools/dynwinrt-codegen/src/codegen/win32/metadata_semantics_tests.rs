@@ -33,7 +33,7 @@ fn metadata_complete_exports_do_not_require_method_allowlisting() {
         assert_eq!(projected.runtime.return_abi, Some(abi));
         assert_eq!(projected.runtime.success_rule, SuccessRule::Always);
         assert_eq!(projected.runtime.return_cleanup, Cleanup::None);
-        assert_eq!(projected.call_policies, []);
+        assert!(projected.runtime.call_contract.is_empty());
         assert!(matches!(&projected.return_shape,ReturnShape::Direct { typ,.. } if typ == &shape));
     }
     let function = metadata_function(

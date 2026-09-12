@@ -276,20 +276,88 @@ pub struct FunctionContract {
     pub calling_convention: CallingConvention,
     pub subsystem: Option<Subsystem>,
     pub enums: Vec<EnumDefinition>,
-    pub call_policies: Vec<CallPolicy>,
+    pub call_contract: CallContract,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallPolicy {
-    HkeyPerformanceDataCount {
-        handle_parameter: usize,
-        count_parameter: usize,
-        undefined_status: u32,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallContract {
+    #[serde(default)]
+    pub outputs: Vec<OutputRule>,
+    #[serde(default)]
+    pub resource_effects: Vec<ResourceEffect>,
+}
+
+impl CallContract {
+    pub fn is_empty(&self) -> bool {
+        self.outputs.is_empty() && self.resource_effects.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutputRule {
+    pub parameter: usize,
+    pub when: Condition,
+    pub action: OutputAction,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Condition {
+    #[serde(default)]
+    pub inputs: Vec<InputPredicate>,
+    #[serde(default)]
+    pub return_value: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum InputPredicate {
+    BitsIn {
+        parameter: usize,
+        mask: u64,
+        values: Vec<u64>,
     },
-    BorrowedPredefinedHkeyOutput {
+    /// Native pointer-sized signed handle values, widened to i64.
+    HandleIn {
+        parameter: usize,
+        values: Vec<i64>,
+    },
+    NullOrEmpty {
+        parameter: usize,
+        element_width: u8,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum OutputAction {
+    Unavailable {},
+    AliasInput { parameter: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResourceEffect {
+    AddFileCompletionModes {
         handle_parameter: usize,
-        string_parameter: usize,
-        output_parameter: usize,
+        flags_parameter: usize,
     },
 }
 
@@ -305,6 +373,7 @@ pub enum SurfaceType {
     MultiString(StringEncoding),
     ManagedResource,
     Resource,
+    ResourceOrHandle,
     NativeStruct(String),
     NativeUnion(String),
     ComInterface(String),
@@ -364,6 +433,7 @@ pub enum Conversion {
     U16,
     I32,
     U32,
+    U32Flags,
     I64,
     U64,
     F32,
@@ -378,6 +448,7 @@ pub enum Conversion {
     Number,
     BigInt,
     Resource,
+    ResourceOrHandle,
     NativeAggregate,
 }
 
@@ -387,6 +458,7 @@ pub struct ProjectedOutput {
     pub output_index: usize,
     pub typ: SurfaceType,
     pub conversion: Conversion,
+    pub may_be_unavailable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,6 +483,7 @@ pub struct RuntimePlan {
     pub success_rule: SuccessRule,
     pub capture_last_error: bool,
     pub calling_convention: CallingConvention,
+    pub call_contract: CallContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,23 +511,6 @@ pub struct ProjectedFunction {
     pub runtime: RuntimePlan,
     pub return_shape: ReturnShape,
     pub subsystem: Option<Subsystem>,
-    pub call_policies: Vec<ProjectedCallPolicy>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectedCallPolicy {
-    HkeyPerformanceDataCount {
-        handle_parameter: usize,
-        output_index: usize,
-        undefined_status: u32,
-    },
-    BorrowedPredefinedHkeyOutput {
-        handle_parameter: usize,
-        string_parameter: usize,
-        encoding: StringEncoding,
-        output_index: usize,
-        runtime: Box<RuntimePlan>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

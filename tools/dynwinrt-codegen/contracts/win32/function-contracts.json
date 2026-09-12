@@ -350,6 +350,39 @@
       ]
     },
     {
+      "id": "windows.win32.storage.filesystem.apis.setfilecompletionnotificationmodes.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "SetFileCompletionNotificationModes",
+        "name": "SetFileCompletionNotificationModes",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "2E74759C4B8596718484FD123CD014E74C8BB71CF49A852DAB2547C7D8FCBBE6"
+      },
+      "contracts": [
+        {
+          "kind": "call-contract",
+          "contract": {
+            "resourceEffects": [
+              {
+                "kind": "add-file-completion-modes",
+                "handleParameter": 0,
+                "flagsParameter": 1
+              }
+            ]
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setfilecompletionnotificationmodes"
+        }
+      ]
+    },
+    {
       "id": "windows.win32.storage.filesystem.apis.writefile.v1",
       "selector": {
         "architectures": 7,
@@ -1045,6 +1078,100 @@
       ]
     },
     {
+      "id": "windows.win32.system.registry.apis.reggetvaluea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegGetValueA",
+        "name": "RegGetValueA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "E82626197D4317DB6FA2595045E022E70E3AE87B6C636D9877C3AA8CF2F91CC6"
+      },
+      "contracts": [
+        {
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 6,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "bits-in",
+                      "parameter": 0,
+                      "mask": 4294967295,
+                      "values": [
+                        2147483652
+                      ]
+                    }
+                  ],
+                  "returnValue": 234
+                },
+                "action": {
+                  "kind": "unavailable"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-reggetvaluea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.reggetvaluew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegGetValueW",
+        "name": "RegGetValueW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "C59829150B63B5DECDD56002EB293AC860DE827EFD8556D0B848CC36D2A9AFA3"
+      },
+      "contracts": [
+        {
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 6,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "bits-in",
+                      "parameter": 0,
+                      "mask": 4294967295,
+                      "values": [
+                        2147483652
+                      ]
+                    }
+                  ],
+                  "returnValue": 234
+                },
+                "action": {
+                  "kind": "unavailable"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-reggetvaluew"
+        }
+      ]
+    },
+    {
       "id": "windows.win32.system.registry.apis.regloadappkeya.v1",
       "selector": {
         "architectures": 7,
@@ -1139,6 +1266,29 @@
           "kind": "owned-output",
           "parameter": 2,
           "cleanup": "reg-close-key"
+        },
+        {
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 2,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "null-or-empty",
+                      "parameter": 1,
+                      "elementWidth": 1
+                    }
+                  ]
+                },
+                "action": {
+                  "kind": "alias-input",
+                  "parameter": 0
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [
@@ -1167,10 +1317,42 @@
           "cleanup": "reg-close-key"
         },
         {
-          "kind": "borrowed-predefined-hkey-output",
-          "handleParameter": 0,
-          "stringParameter": 1,
-          "outputParameter": 4
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 4,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "handle-in",
+                      "parameter": 0,
+                      "values": [
+                        -2147483648,
+                        -2147483647,
+                        -2147483646,
+                        -2147483645,
+                        -2147483644,
+                        -2147483643,
+                        -2147483642,
+                        -2147483568,
+                        -2147483552
+                      ]
+                    },
+                    {
+                      "kind": "null-or-empty",
+                      "parameter": 1,
+                      "elementWidth": 1
+                    }
+                  ]
+                },
+                "action": {
+                  "kind": "alias-input",
+                  "parameter": 0
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [
@@ -1199,10 +1381,42 @@
           "cleanup": "reg-close-key"
         },
         {
-          "kind": "borrowed-predefined-hkey-output",
-          "handleParameter": 0,
-          "stringParameter": 1,
-          "outputParameter": 4
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 4,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "handle-in",
+                      "parameter": 0,
+                      "values": [
+                        -2147483648,
+                        -2147483647,
+                        -2147483646,
+                        -2147483645,
+                        -2147483644,
+                        -2147483643,
+                        -2147483642,
+                        -2147483568,
+                        -2147483552
+                      ]
+                    },
+                    {
+                      "kind": "null-or-empty",
+                      "parameter": 1,
+                      "elementWidth": 2
+                    }
+                  ]
+                },
+                "action": {
+                  "kind": "alias-input",
+                  "parameter": 0
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [
@@ -1281,6 +1495,29 @@
           "kind": "owned-output",
           "parameter": 2,
           "cleanup": "reg-close-key"
+        },
+        {
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 2,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "null-or-empty",
+                      "parameter": 1,
+                      "elementWidth": 2
+                    }
+                  ]
+                },
+                "action": {
+                  "kind": "alias-input",
+                  "parameter": 0
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [
@@ -1330,10 +1567,30 @@
       },
       "contracts": [
         {
-          "kind": "hkey-performance-data-count",
-          "handleParameter": 0,
-          "countParameter": 5,
-          "undefinedOn": "more-data"
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 5,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "bits-in",
+                      "parameter": 0,
+                      "mask": 4294967295,
+                      "values": [
+                        2147483652
+                      ]
+                    }
+                  ],
+                  "returnValue": 234
+                },
+                "action": {
+                  "kind": "unavailable"
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [
@@ -1357,10 +1614,30 @@
       },
       "contracts": [
         {
-          "kind": "hkey-performance-data-count",
-          "handleParameter": 0,
-          "countParameter": 5,
-          "undefinedOn": "more-data"
+          "kind": "call-contract",
+          "contract": {
+            "outputs": [
+              {
+                "parameter": 5,
+                "when": {
+                  "inputs": [
+                    {
+                      "kind": "bits-in",
+                      "parameter": 0,
+                      "mask": 4294967295,
+                      "values": [
+                        2147483652
+                      ]
+                    }
+                  ],
+                  "returnValue": 234
+                },
+                "action": {
+                  "kind": "unavailable"
+                }
+              }
+            ]
+          }
         }
       ],
       "evidence": [

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::win32_contracts::{
-    AggregateContract, FieldContract, FunctionEffect, FunctionPolicy, Registry,
+    AggregateContract, FieldContract, FunctionPolicy, Registry, validate_call_contract_structure,
 };
 use crate::win32_metadata::{
     RawApis, RawArchitectures, RawBaseType, RawBufferSize, RawCallingConvention, RawDirection,
@@ -14,9 +14,10 @@ use crate::win32_metadata::{
 
 use super::ir::{
     AbiType, BufferContract, CallingConvention, Cleanup, Constness, Direction, EnumDefinition,
-    EnumMember, EnumUnderlying, FunctionContract, NativeAggregateKind, NativeArchitectureLayout,
-    NativeField, NativeFieldType, NativeLayout, NativeScalar, ParameterContract, Scalar,
-    StringEncoding, SuccessRule, ValueType,
+    EnumMember, EnumUnderlying, FunctionContract, InputPredicate, NativeAggregateKind,
+    NativeArchitectureLayout, NativeField, NativeFieldType, NativeLayout, NativeScalar,
+    OutputAction, ParameterContract, ResourceEffect, Scalar, StringEncoding, SuccessRule,
+    ValueType,
 };
 
 pub(super) fn validate_apis(raw: &RawApis) -> (Vec<FunctionContract>, Vec<(String, String)>) {
@@ -334,7 +335,7 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
         RawStatusSemantics::None => SuccessRule::Always,
     };
 
-    Ok(FunctionContract {
+    let contract = FunctionContract {
         namespace: raw.namespace.clone(),
         container: raw.container.clone(),
         name: raw.name.clone(),
@@ -354,33 +355,168 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
         calling_convention,
         subsystem,
         enums,
-        call_policies: policy
-            .effects()
-            .filter_map(|effect| match effect {
-                FunctionEffect::HkeyPerformanceDataCount {
-                    handle_parameter,
-                    count_parameter,
-                    undefined_on,
-                } => Some(super::ir::CallPolicy::HkeyPerformanceDataCount {
-                    handle_parameter: *handle_parameter,
-                    count_parameter: *count_parameter,
-                    undefined_status: match undefined_on {
-                        crate::win32_contracts::UndefinedCountStatus::MoreData => 234,
-                    },
-                }),
-                FunctionEffect::BorrowedPredefinedHkeyOutput {
-                    handle_parameter,
-                    string_parameter,
-                    output_parameter,
-                } => Some(super::ir::CallPolicy::BorrowedPredefinedHkeyOutput {
-                    handle_parameter: *handle_parameter,
-                    string_parameter: *string_parameter,
-                    output_parameter: *output_parameter,
-                }),
-                _ => None,
-            })
-            .collect(),
-    })
+        call_contract: policy.call_contract(),
+    };
+    validate_call_contract(&contract)?;
+    Ok(contract)
+}
+
+pub(super) fn validate_call_contract(function: &FunctionContract) -> Result<(), String> {
+    let contract = &function.call_contract;
+    validate_call_contract_structure(contract)?;
+    let parameter = |index: usize| {
+        function.parameters.get(index).ok_or_else(|| {
+            format!("win32.contract-shape-conflict: missing native parameter {index}")
+        })
+    };
+    for rule in &contract.outputs {
+        let output = parameter(rule.parameter)?;
+        if output.direction == Direction::In
+            || output.pointer_depth == 0
+            || output.buffer.is_some()
+            || !matches!(
+                output.typ,
+                ValueType::Scalar(_)
+                    | ValueType::Enum { .. }
+                    | ValueType::Handle { .. }
+                    | ValueType::DataPointer
+            )
+        {
+            return Err("win32.contract-shape-conflict: rule requires a native output slot".into());
+        }
+        if let Some(value) = rule.when.return_value {
+            let mask = function.return_abi.and_then(integer_mask).ok_or(
+                "win32.contract-shape-conflict: return condition requires native integer bits",
+            )?;
+            if value & !mask != 0 {
+                return Err(
+                    "win32.contract-shape-conflict: return condition exceeds native width".into(),
+                );
+            }
+        }
+        for predicate in &rule.when.inputs {
+            match predicate {
+                InputPredicate::BitsIn {
+                    parameter: index,
+                    mask,
+                    ..
+                } => {
+                    let input = parameter(*index)?;
+                    if input.direction == Direction::Out
+                        || input.buffer.is_some()
+                        || !matches!(
+                            (input.direction, input.pointer_depth),
+                            (Direction::In, 0) | (Direction::InOut, 1)
+                        )
+                        || !matches!(
+                            input.typ,
+                            ValueType::Scalar(_)
+                                | ValueType::Enum { .. }
+                                | ValueType::Handle { .. }
+                        )
+                        || !integer_mask(input.abi).is_some_and(|width| mask & !width == 0)
+                    {
+                        return Err("win32.contract-shape-conflict: bits predicate requires a width-compatible native integer input".into());
+                    }
+                }
+                InputPredicate::HandleIn {
+                    parameter: index, ..
+                } => {
+                    let input = parameter(*index)?;
+                    if input.abi != AbiType::Handle
+                        || !matches!(input.typ, ValueType::Handle { .. })
+                        || input.buffer.is_some()
+                        || !matches!(
+                            (input.direction, input.pointer_depth),
+                            (Direction::In, 0) | (Direction::InOut, 1)
+                        )
+                    {
+                        return Err("win32.contract-shape-conflict: handle-in requires a native handle input".into());
+                    }
+                }
+                InputPredicate::NullOrEmpty {
+                    parameter: index,
+                    element_width,
+                } => {
+                    let input = parameter(*index)?;
+                    let encoding_matches = matches!(
+                        (&input.typ, element_width),
+                        (ValueType::StringPointer(StringEncoding::Ansi), 1)
+                            | (ValueType::StringPointer(StringEncoding::Wide), 2)
+                    );
+                    if input.direction != Direction::In
+                        || input.pointer_depth != 0
+                        || input.buffer.is_some()
+                        || input.abi != AbiType::Pointer
+                        || !encoding_matches
+                    {
+                        return Err("win32.contract-shape-conflict: null-or-empty requires a verified native string input and matching encoding width".into());
+                    }
+                }
+            }
+        }
+        if let OutputAction::AliasInput { parameter: index } = rule.action {
+            let input = parameter(index)?;
+            if !matches!(output.typ, ValueType::Handle { .. })
+                || output.abi != AbiType::Handle
+                || output.direction != Direction::Out
+                || output.pointer_depth != 1
+                || output.cleanup == Cleanup::None
+                || !matches!(input.typ, ValueType::Handle { .. })
+                || input.abi != AbiType::Handle
+                || input.direction != Direction::In
+                || input.pointer_depth != 0
+                || input.buffer.is_some()
+                || input.cleanup != Cleanup::None
+                || input.consumes_resource
+                || input.resource_cleanup != output.cleanup
+            {
+                return Err("win32.contract-shape-conflict: alias requires an owned handle output and matching borrowed input resource".into());
+            }
+        }
+    }
+    for effect in &contract.resource_effects {
+        let ResourceEffect::AddFileCompletionModes {
+            handle_parameter,
+            flags_parameter,
+        } = *effect;
+        let handle = parameter(handle_parameter)?;
+        let flags = parameter(flags_parameter)?;
+        if !matches!(handle.typ, ValueType::Handle { .. })
+            || handle.abi != AbiType::Handle
+            || handle.direction != Direction::In
+            || handle.pointer_depth != 0
+            || handle.buffer.is_some()
+            || handle.cleanup != Cleanup::None
+            || handle.consumes_resource
+            || handle.resource_cleanup != Cleanup::CloseHandle
+            || flags.abi != AbiType::U8
+            || flags.direction != Direction::In
+            || flags.pointer_depth != 0
+            || flags.buffer.is_some()
+            || !matches!(
+                flags.typ,
+                ValueType::Scalar(Scalar::U8)
+                    | ValueType::Enum {
+                        underlying: EnumUnderlying::U8,
+                        ..
+                    }
+            )
+        {
+            return Err("win32.contract-shape-conflict: file completion state requires a borrowed CloseHandle resource and native U8 input flags".into());
+        }
+    }
+    Ok(())
+}
+
+fn integer_mask(abi: AbiType) -> Option<u64> {
+    match abi {
+        AbiType::I8 | AbiType::U8 => Some(u8::MAX.into()),
+        AbiType::I16 | AbiType::U16 => Some(u16::MAX.into()),
+        AbiType::Bool32 | AbiType::I32 | AbiType::U32 => Some(u32::MAX.into()),
+        AbiType::I64 | AbiType::U64 | AbiType::Handle => Some(u64::MAX),
+        AbiType::F32 | AbiType::F64 | AbiType::Pointer | AbiType::FunctionPointer => None,
+    }
 }
 
 fn map_return(

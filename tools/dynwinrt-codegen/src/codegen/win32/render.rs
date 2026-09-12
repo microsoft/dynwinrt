@@ -6,9 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::ir::{
     AbiType, AsyncIoKind, Cleanup, Conversion, Direction, EnumDefinition, InputExpression,
     NativeArchitectureLayout, NativeBuilderFieldKind, NativeFieldType, NativeLayout,
-    NativeOutputFieldKind, NativeScalar, ProjectedApis, ProjectedAsyncFunction,
-    ProjectedCallPolicy, ProjectedFunction, ProjectedNativeBuilder, ReturnShape, RuntimePlan,
-    StringEncoding, Subsystem, SurfaceType,
+    NativeOutputFieldKind, NativeScalar, ProjectedApis, ProjectedAsyncFunction, ProjectedFunction,
+    ProjectedNativeBuilder, ReturnShape, RuntimePlan, StringEncoding, Subsystem, SurfaceType,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,19 +221,21 @@ fn render_js(apis: &ProjectedApis, runtime_import: &str, unsafe_runtime_import: 
         );
     }
 
-    if apis
-        .functions
-        .iter()
-        .any(|function| !function.call_policies.is_empty())
-    {
+    if apis.functions.iter().any(|function| {
+        function.inputs.iter().any(|input| {
+            matches!(
+                input,
+                InputExpression::Surface {
+                    conversion: Conversion::U32Flags,
+                    ..
+                }
+            )
+        })
+    }) {
         output.push_str(
-            "function _hkeyBits(value) { return BigInt.asUintN(32, DynWin32.toBigint(DynWin32.handle(value))) }\n\
-             function _isPredefinedHkey(bits) { return (bits >= 0x80000000n && bits <= 0x80000006n) || bits === 0x80000050n || bits === 0x80000060n }\n\
-             function _emptyNativeString(value, width) {\n\
-             \x20 if (value == null || value === '') return true\n\
-             \x20 if (typeof value === 'string') return value.charCodeAt(0) === 0\n\
-             \x20 const first = DynWin32.copyBuffer(value, width)\n\
-             \x20 return first[0] === 0 && (width === 1 || first[1] === 0)\n\
+            "function _u32Flags(value) {\n\
+             \x20 if (!Number.isInteger(value) || value < -0x80000000 || value > 0xffffffff) throw new RangeError('flags must be a native 32-bit integer or bitwise combination')\n\
+             \x20 return DynWin32.u32(value >>> 0)\n\
              }\n\n",
         );
     }
@@ -321,7 +322,7 @@ fn render_runtime_plan(
         ));
     }
     output.push_str(&format!(
-        "    ],\n    returnType: {:?},\n    returnCleanup: {:?},\n    successRule: {:?},\n    captureLastError: {},\n    callingConvention: {:?},\n    returnAggregateDescriptor: {},\n  }})\n}}\n",
+        "    ],\n    returnType: {:?},\n    returnCleanup: {:?},\n    successRule: {:?},\n    captureLastError: {},\n    callingConvention: {:?},\n    returnAggregateDescriptor: {},\n",
         runtime.return_abi
             .map(abi_name)
             .unwrap_or("void"),
@@ -334,27 +335,21 @@ fn render_runtime_plan(
             .map(native_layout_descriptor_js)
             .unwrap_or_else(|| "undefined".into()),
     ));
+    if !runtime.call_contract.is_empty() {
+        let descriptor =
+            serde_json::to_string(&runtime.call_contract).expect("validated native call contract");
+        output.push_str(&format!(
+            "    callContractDescriptor: {},\n",
+            serde_json::to_string(&descriptor).expect("native call descriptor string")
+        ));
+    }
+    output.push_str("  })\n}\n");
 }
 
 fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &ProjectedApis) {
     let plan_name = format!("_{}Plan", function.js_name);
     let bind_name = format!("_bind{}Plan", function.metadata_name);
     render_runtime_plan(output, &function.runtime, &plan_name, &bind_name);
-    let borrowed = function
-        .call_policies
-        .iter()
-        .find_map(|policy| match policy {
-            ProjectedCallPolicy::BorrowedPredefinedHkeyOutput { runtime, .. } => Some(runtime),
-            ProjectedCallPolicy::HkeyPerformanceDataCount { .. } => None,
-        });
-    if let Some(runtime) = borrowed {
-        render_runtime_plan(
-            output,
-            runtime,
-            &format!("{plan_name}Borrowed"),
-            &format!("{bind_name}Borrowed"),
-        );
-    }
     let mut surface_parameters = function
         .parameters
         .iter()
@@ -368,36 +363,6 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
         function.js_name,
         surface_parameters.join(", ")
     ));
-    for policy in &function.call_policies {
-        match policy {
-            ProjectedCallPolicy::HkeyPerformanceDataCount {
-                handle_parameter,
-                output_index,
-                ..
-            } => {
-                let value = &function.parameters[*handle_parameter].name;
-                output.push_str(&format!(
-                    "  const _performanceDataCount{output_index} = _hkeyBits({value}) === 0x80000004n\n"
-                ));
-            }
-            ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
-                handle_parameter,
-                string_parameter,
-                encoding,
-                ..
-            } => {
-                let handle = &function.parameters[*handle_parameter].name;
-                let value = &function.parameters[*string_parameter].name;
-                let width = match encoding {
-                    StringEncoding::Wide => 2,
-                    StringEncoding::Ansi => 1,
-                };
-                output.push_str(&format!(
-                    "  const _borrowedHkeyOutput = _isPredefinedHkey(_hkeyBits({handle})) && _emptyNativeString({value}, {width})\n"
-                ));
-            }
-        }
-    }
     for parameter in &function.parameters {
         if let Some(minimum) = parameter.minimum_bytes {
             output.push_str(&format!(
@@ -442,11 +407,7 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
             "  _nativeAggregate.prepareNativeStructCall({parameter}, _nativeLayout_{layout})\n"
         ));
     }
-    let plan = if borrowed.is_some() {
-        format!("(_borrowedHkeyOutput ? {bind_name}Borrowed() : {bind_name}())")
-    } else {
-        format!("{bind_name}()")
-    };
+    let plan = format!("{bind_name}()");
     let invocation = function.subsystem.map_or_else(
         || format!("{plan}.invoke([{arguments}])"),
         |subsystem| {
@@ -502,22 +463,8 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
             for result in outputs {
                 let value = format!("_outputs[{}]", result.output_index);
                 let mut converted = render_output_conversion(result.conversion, &value);
-                if function.call_policies.iter().any(|policy| matches!(policy,
-                    ProjectedCallPolicy::BorrowedPredefinedHkeyOutput { output_index, .. } if *output_index == result.output_index)) {
-                    converted = format!("_borrowedHkeyOutput ? (_call.succeeded ? DynWin32.toBigint({value}) : null) : ({converted})");
-                }
-                for policy in &function.call_policies {
-                    if let ProjectedCallPolicy::HkeyPerformanceDataCount {
-                        output_index,
-                        undefined_status,
-                        ..
-                    } = policy
-                        && *output_index == result.output_index
-                    {
-                        converted = format!(
-                            "(_performanceDataCount{output_index} && DynWin32.toNumber(_return) === {undefined_status}) ? null : ({converted})"
-                        );
-                    }
+                if result.may_be_unavailable {
+                    converted = format!("DynWin32.isUnavailable({value}) ? null : ({converted})");
                 }
                 output.push_str(&format!("    {}: {},\n", result.name, converted,));
             }
@@ -554,6 +501,7 @@ fn render_input(input: &InputExpression, function: &ProjectedFunction) -> String
                 Conversion::U16 => format!("DynWin32.u16({value})"),
                 Conversion::I32 => format!("DynWin32.i32({value})"),
                 Conversion::U32 => format!("DynWin32.u32({value})"),
+                Conversion::U32Flags => format!("_u32Flags({value})"),
                 Conversion::I64 => format!("DynWin32.i64({value})"),
                 Conversion::U64 => format!("DynWin32.u64({value})"),
                 Conversion::F32 => format!("DynWin32.f32({value})"),
@@ -588,7 +536,10 @@ fn render_input(input: &InputExpression, function: &ProjectedFunction) -> String
                     format!("DynWin32.resource({value}, {:?})", cleanup_name(*cleanup))
                 }
                 Conversion::BigInt => format!("DynWin32.handle({value})"),
-                Conversion::Number | Conversion::Resource | Conversion::NativeAggregate => {
+                Conversion::Number
+                | Conversion::Resource
+                | Conversion::ResourceOrHandle
+                | Conversion::NativeAggregate => {
                     unreachable!("result conversion cannot be an input")
                 }
             }
@@ -678,6 +629,7 @@ fn render_output_conversion(conversion: Conversion, value: &str) -> String {
         Conversion::Number => format!("DynWin32.toNumber({value})"),
         Conversion::BigInt => format!("DynWin32.toBigint({value})"),
         Conversion::Resource => format!("DynWin32.toResource({value})"),
+        Conversion::ResourceOrHandle => format!("DynWin32.toResourceOrHandle({value})"),
         Conversion::NativeAggregate => {
             unreachable!("native aggregate output requires its descriptor")
         }
@@ -688,6 +640,7 @@ fn render_output_conversion(conversion: Conversion, value: &str) -> String {
         | Conversion::U16
         | Conversion::I32
         | Conversion::U32
+        | Conversion::U32Flags
         | Conversion::I64
         | Conversion::U64
         | Conversion::F32
@@ -822,7 +775,7 @@ fn render_dts(apis: &ProjectedApis, runtime_import: &str) -> String {
         output.push_str(&format!(
             "export declare function {}({parameters}): {}\n",
             function.js_name,
-            dts_return_shape(&function.return_shape, &function.call_policies)
+            dts_return_shape(&function.return_shape)
         ));
         if let Some(alias) = &function.unicode_alias {
             output.push_str(&format!(
@@ -867,7 +820,7 @@ fn collect_handle_alias(typ: &SurfaceType, handles: &mut BTreeSet<String>) {
     }
 }
 
-fn dts_return_shape(shape: &ReturnShape, policies: &[ProjectedCallPolicy]) -> String {
+fn dts_return_shape(shape: &ReturnShape) -> String {
     match shape {
         ReturnShape::Void => "void".into(),
         ReturnShape::Direct { typ, .. } => dts_type(typ),
@@ -883,22 +836,18 @@ fn dts_return_shape(shape: &ReturnShape, policies: &[ProjectedCallPolicy]) -> St
             } else if let Some((typ, _)) = return_value {
                 fields.push(format!("readonly result: {}", dts_type(typ)));
             }
-            fields.extend(
-                outputs
-                    .iter()
-                    .map(|output| {
-                        let mut typ = dts_type(&output.typ);
-                        if policies.iter().any(|policy| matches!(policy,
-                            ProjectedCallPolicy::BorrowedPredefinedHkeyOutput { output_index, .. } if *output_index == output.output_index)) {
-                            typ.push_str(" | bigint");
-                        }
-                        if policies.iter().any(|policy| matches!(policy,
-                            ProjectedCallPolicy::HkeyPerformanceDataCount { output_index, .. } if *output_index == output.output_index)) {
-                            typ.push_str(" | null");
-                        }
-                        format!("readonly {}: {typ}",output.name)
-                    }),
-            );
+            fields.extend(outputs.iter().map(|output| {
+                let mut typ = dts_type(&output.typ);
+                if output.may_be_unavailable
+                    && !matches!(
+                        output.typ,
+                        SurfaceType::Resource | SurfaceType::ResourceOrHandle
+                    )
+                {
+                    typ.push_str(" | null");
+                }
+                format!("readonly {}: {typ}", output.name)
+            }));
             if *last_error {
                 fields.push("readonly lastError: number".into());
             }
@@ -922,6 +871,7 @@ fn dts_type(typ: &SurfaceType) -> String {
         }
         SurfaceType::ManagedResource => "DynWin32Resource".into(),
         SurfaceType::Resource => "DynWin32Resource | null".into(),
+        SurfaceType::ResourceOrHandle => "DynWin32Resource | bigint | null".into(),
         SurfaceType::NativeStruct(name) | SurfaceType::NativeUnion(name) => name.clone(),
         SurfaceType::ComInterface(_) => "DynWinRtValue".into(),
     }
@@ -1085,10 +1035,15 @@ fn render_enum(definition: &EnumDefinition) -> (String, String) {
     js.push_str(&format!("}})\nexports.{0} = {0}\n", definition.name));
 
     let mut dts = String::from("// Generated by dynwinrt-codegen - do not edit\n");
-    dts.push_str(&format!(
-        "export type {0} = (typeof {0})[keyof typeof {0}]\nexport declare const {0}: {{\n",
-        definition.name
-    ));
+    if definition.is_flags {
+        dts.push_str(&format!("export type {} = number\n", definition.name));
+    } else {
+        dts.push_str(&format!(
+            "export type {0} = (typeof {0})[keyof typeof {0}]\n",
+            definition.name
+        ));
+    }
+    dts.push_str(&format!("export declare const {}: {{\n", definition.name));
     for member in &definition.members {
         dts.push_str(&format!("  readonly {}: {}\n", member.name, member.value));
     }

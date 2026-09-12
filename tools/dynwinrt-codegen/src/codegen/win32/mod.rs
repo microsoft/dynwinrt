@@ -2,13 +2,17 @@
 // Licensed under the MIT License.
 
 #[cfg(test)]
-mod hkey_policy_tests;
+mod call_contract_tests;
+#[cfg(test)]
+mod flags_tests;
 pub mod ir;
 #[cfg(test)]
 mod metadata_semantics_tests;
 mod model;
 #[cfg(test)]
 mod naming_tests;
+#[cfg(test)]
+mod native_call_outcome_tests;
 mod project;
 #[cfg(test)]
 mod projection_semantics_tests;
@@ -1075,14 +1079,14 @@ mod tests {
         assert!(matches!(
             projected.inputs[0],
             super::ir::InputExpression::Surface {
-                conversion: Conversion::U32,
+                conversion: Conversion::U32Flags,
                 ..
             }
         ));
 
         let (output, omitted) = generate_apis_files(&raw, "@microsoft/dynwinrt/win32");
         assert!(omitted.is_empty());
-        assert!(output.js.contains("DynWin32.u32(securityInformation)"));
+        assert!(output.js.contains("_u32Flags(securityInformation)"));
         let enum_js = output
             .extra_files
             .iter()
