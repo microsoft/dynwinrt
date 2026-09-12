@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod win32_census;
+mod win32_output;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -16,6 +19,7 @@ use dynwinrt_codegen::codegen::javascript;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::win32;
 use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
@@ -30,7 +34,8 @@ use dynwinrt_codegen::xml_doc::DocTable;
     long_about = "dynwinrt-codegen reads .winmd metadata and generates typed bindings\n\
     for dynamic Windows API invocation. JavaScript and TypeScript output uses\n\
     @microsoft/dynwinrt; Python output uses dynwinrt. Supported Classic COM APIs\n\
-    from Windows.Win32 metadata are available for JavaScript and TypeScript.\n\n\
+    from Windows.Win32 metadata are available for JavaScript and TypeScript.\n\
+    An initial contract-audited flat Win32 slice emits isolated JavaScript bindings.\n\n\
     It auto-detects Windows SDK metadata and discovers sibling .winmd files\n\
     in the same directory, so you typically only need to point at one file."
 )]
@@ -74,6 +79,15 @@ enum Commands {
         winmd: String,
 
         /// Emit one machine-readable JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Measure complete flat Win32 generation from native metadata and contracts.
+    Win32Census {
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
         #[arg(long)]
         json: bool,
     },
@@ -339,6 +353,9 @@ fn run() -> Result<(), String> {
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
         }
+        Commands::Win32Census { winmd, json } => {
+            win32_census::run(&winmd, json)?;
+        }
         Commands::ComCapabilityCensus {
             winmd,
             output_dir,
@@ -520,13 +537,25 @@ fn run() -> Result<(), String> {
             if let Some(ref cls_arg) = class_name {
                 let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
 
-                // First: partition into WinRT classes and classic-COM interfaces.
+                // Partition the native domains before language projection.
                 let mut classes = Vec::new();
+                let mut win32_namespaces = BTreeSet::new();
                 let mut requested_winrt_interfaces = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
                 let mut native_audio_completion = false;
                 for (ns, cls) in &class_requests {
+                    if ns.starts_with("Windows.Win32.")
+                        && win32::has_flat_functions(&winmd, ns, cls)?
+                    {
+                        if cls != "Apis" {
+                            return Err(format!(
+                                "Flat Win32 generation currently supports Apis containers, not {ns}.{cls}"
+                            ));
+                        }
+                        win32_namespaces.insert(ns.clone());
+                        continue;
+                    }
                     if ns == com_metadata::completion::AUDIO_NAMESPACE
                         && cls == com_metadata::completion::AUDIO_EXPORT
                     {
@@ -583,6 +612,31 @@ fn run() -> Result<(), String> {
                         None => {
                             return Err(format!("Class {}.{} not found in {}", ns, cls, winmd));
                         }
+                    }
+                }
+                if !win32_namespaces.is_empty() {
+                    if lang != "js" {
+                        return Err(format!(
+                            "--lang {lang} is not supported for flat Win32 DLL exports; use --lang js"
+                        ));
+                    }
+                    win32_output::generate(
+                        output_dir,
+                        &winmd,
+                        &win32_namespaces,
+                        &import_name,
+                        dry_run,
+                    )?;
+                    if classes.is_empty()
+                        && requested_winrt_interfaces.is_empty()
+                        && com_interfaces.is_empty()
+                        && com_coclasses.is_empty()
+                        && !native_audio_completion
+                    {
+                        if let Some(transaction) = output_transaction.take() {
+                            transaction.commit()?;
+                        }
+                        return Ok(());
                     }
                 }
                 // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
@@ -992,6 +1046,29 @@ fn run() -> Result<(), String> {
                     }
                 }
             } else {
+                if let Some(ns) = namespace
+                    .as_deref()
+                    .filter(|ns| ns.starts_with("Windows.Win32."))
+                    && com_metadata::first_classic_com_interface_in_namespace(&winmd, ns).is_none()
+                    && win32::has_flat_functions(&winmd, ns, "Apis")?
+                {
+                    if lang != "js" {
+                        return Err(format!(
+                            "--lang {lang} is not supported for flat Win32 DLL exports; use --lang js"
+                        ));
+                    }
+                    win32_output::generate(
+                        output_dir,
+                        &winmd,
+                        &BTreeSet::from([ns.to_string()]),
+                        &import_name,
+                        dry_run,
+                    )?;
+                    if let Some(transaction) = output_transaction.take() {
+                        transaction.commit()?;
+                    }
+                    return Ok(());
+                }
                 if lang == "py" && !dry_run {
                     clean_python_generated_output(output_dir)?;
                 }
@@ -1650,7 +1727,11 @@ fn check_javascript_layout_inventory(output_dir: &Path) -> Result<(), String> {
                 continue;
             }
             if metadata.is_dir() {
-                if current == root && path.file_name().is_some_and(|name| name == "com") {
+                if current == root
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name == "com" || name == "win32")
+                {
                     continue;
                 }
                 if contains_generated_implementation(root, &path) {
@@ -1990,7 +2071,15 @@ fn validate_javascript_inventory_files(
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if path == root.join("com") && !expected_namespace_roots.contains("com") {
+                if current == root
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            matches!(name, "com" | "win32")
+                                && !expected_namespace_roots.contains(name)
+                        })
+                {
                     continue;
                 }
                 if shared_output
@@ -3675,11 +3764,15 @@ fn write_bindings_manifest_with_plan(
         BTreeSet::new()
     };
     let has_com_output = has_com_output(&output_dir.join("com"))?;
-    let content = package::render_bindings_package_json(&package::BindingsPackageManifestInput {
-        has_winrt_root,
-        has_com_output,
-        winrt_subpath_names: &winrt_subpath_names,
-    });
+    let win32_namespaces = win32_output::namespace_paths(output_dir)?;
+    let content = package::render_bindings_package_json_with_win32(
+        &package::BindingsPackageManifestInput {
+            has_winrt_root,
+            has_com_output,
+            winrt_subpath_names: &winrt_subpath_names,
+        },
+        &win32_namespaces,
+    );
     let path = output_dir.join("package.json");
     ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, content)

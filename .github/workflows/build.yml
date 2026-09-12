@@ -72,13 +72,26 @@ jobs:
           "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
           "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
-        run: cargo test -p dynwinrt-com-contracts -p dynwinrt
-      - name: Test borrowed-copy contracts on i686
-        run: cargo test -p dynwinrt-com-contracts --target i686-pc-windows-msvc
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts -p dynwinrt
+      - name: Test native-independent contracts on i686
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts --target i686-pc-windows-msvc
       - name: Test borrowed-copy ABI on live i686
         run: cargo test -p dynwinrt --target i686-pc-windows-msvc --lib borrowed_copy
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Test Win32 binding boundaries and lifetimes
+        run: cargo test -p jswinrt_rs --lib win32
+      - name: Enforce flat Win32 coverage baseline
+        shell: pwsh
+        run: |
+          $json = cargo run -p dynwinrt-codegen --quiet -- win32-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $json | ConvertFrom-Json
+          if ($result.eligible_functions -ne 18321 -or $result.complete_functions -lt 8936) {
+            throw "Flat Win32 coverage regressed: $($result.complete_functions)/$($result.eligible_functions)"
+          }
+          Write-Host "Flat Win32 coverage: $($result.complete_functions)/$($result.eligible_functions)"
       - name: Test raw union MSVC C oracle (x64)
         run: cargo test -p jswinrt_rs --features test-hooks com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
       - name: Test raw union MSVC C oracle (live i686)
@@ -274,6 +287,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:entrypoints --silent
           npm install --no-save tsx
+      - name: Test JS binding
+        working-directory: bindings/js
+        run: npm test
       - name: Build Python binding
         run: |
           cd bindings/py
@@ -399,15 +415,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
-          path: |
-            bindings/js/dist/dynwinrt.win32-x64-msvc.node
-            bindings/js/dist/dynwinrt.win32-arm64-msvc.node
-            bindings/js/dist/index.js
-            bindings/js/dist/index.d.ts
-            bindings/js/dist/winrt.js
-            bindings/js/dist/winrt.d.ts
-            bindings/js/dist/com.js
-            bindings/js/dist/com.d.ts
-            bindings/js/dist/com-projection.js
-            bindings/js/dist/com-unsafe.js
-            bindings/js/dist/com-unsafe.d.ts
+          path: bindings/js/dist/
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          name: dynwinrt
+          path: ${{ runner.temp }}\dynwinrt-artifact
+      - name: Verify downloaded JS runtime artifact
+        shell: pwsh
+        run: node .\bindings\js\scripts\verify-runtime-artifact.mjs "$env:RUNNER_TEMP\dynwinrt-artifact"

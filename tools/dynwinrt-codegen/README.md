@@ -97,6 +97,31 @@ dynwinrt-codegen generate `
   --dry-run
 ```
 
+### Contract-driven flat Win32
+
+The JavaScript flat DLL-export migration targets the full PR #102 capability
+set from the pinned `Microsoft.Windows.SDK.Win32Metadata` `71.0.14-preview`
+package. A five-export foundation is not a complete replacement. Metadata
+provides generic ABI facts; the independent Win32 registry supplies exact
+manual evidence where required.
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd $env:DYNWINRT_WIN32_WINMD `
+  --class-name "Windows.Win32.System.SystemInformation.Apis,Windows.Win32.System.Registry.Apis" `
+  --output .\generated
+```
+
+`--namespace Windows.Win32.System.Registry` is equivalent to selecting its
+`Apis` container. Unsupported shapes are explicitly diagnosed. Generated modules live under
+`win32/windows/win32/system/registry/` and
+`win32/windows/win32/system/system-information/`, outside the WinRT root.
+The runtime package must include the matching `win32` entrypoint. The
+`win32-census --winmd <PATH> --json` command preserves the original census
+format; the exact baseline parity gate additionally checks individual exports,
+aliases, ABI contracts, builders, enums and subsystem requirements.
+See the [contract architecture and migration scope](../../docs/architecture/flat-win32-contracts.md).
+
 ### Other commands
 
 `dynwinrt-codegen capabilities` prints the command's supported features, one
@@ -158,6 +183,44 @@ cargo test -p dynwinrt-codegen
 
 Official npm and PyPI packages are built and published by the repository release
 pipelines.
+
+### Win32 result contracts
+
+Flat Win32 generation uses `dynwinrt-win32-contracts` as its single wire-protocol
+authority. Native metadata still determines pointer depth, constness, encoding,
+type identity, and ownership provenance. After caller-owned buffers become
+physical input pointers, projection resolves a version 2 descriptor covering
+every direct return and native output cell.
+
+`contracts\win32\function-contracts.json` accepts `result-contract` effects
+containing the shared `ResultContract` type. These replace the default or
+upgraded policy for that native target; legacy `call-contract` evidence remains
+readable. New generation uses `upgrade_metadata()`: legacy ownership evidence
+alone does not establish defined output storage on failure, so owned failure
+results default to undefined. An explicit result policy may instead guarantee a
+defined failure result, including a discarded owned value requiring cleanup.
+Historical version 1 cleanup behavior is confined to compatibility decoding;
+scalar/status/count defaults remain unchanged.
+Success, failure, and disjoint conditional overrides distinguish
+undefined storage from defined values, ownership/cleanup, and delivery/discard.
+Projection derives nullable results and resource conversions from those
+policies; renderers neither infer ownership nor bind native functions on import.
+
+The production registry schema references generated
+`contracts\win32\call-contract.schema.json`, not a second handwritten protocol.
+After changing the shared protocol or reviewed registry data, update its schema
+and LF-normalized production manifest hashes using the existing test runner:
+
+```powershell
+$env:DYNWINRT_UPDATE_WIN32_SCHEMA = '1'
+cargo test -p dynwinrt-codegen --test win32_contract_schema_test
+Remove-Item Env:DYNWINRT_UPDATE_WIN32_SCHEMA
+```
+
+Without the update variable, the same test checks schema and manifest
+consistency. Synthetic result matrices cover failure-only cleanup/delivery
+combinations; metadata regressions and complete CommonJS/ESM/TypeScript module
+tests preserve the pinned 8,936/18,321 export census.
 
 ## License
 

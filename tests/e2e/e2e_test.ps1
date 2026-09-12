@@ -12,6 +12,7 @@
 #   .\tests\e2e\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e\e2e_test.ps1 -Lang ts           # TypeScript only
 #   .\tests\e2e\e2e_test.ps1 -Lang com          # Classic COM only
+#   .\tests\e2e\e2e_test.ps1 -Lang win32        # Contract-driven flat Win32 slice
 #   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite implementations -Lang py,ts -KeepGenerated
 #   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite standard  # Existing WinRT/COM cases only
 
@@ -23,8 +24,8 @@ param(
     [string]$Python,
     [ValidateSet("all", "standard", "implementations")]
     [string]$Suite = "all",
-    [ValidateSet("py", "ts", "com")]
-    [string[]]$Lang = @("py", "ts", "com")
+    [ValidateSet("py", "ts", "com", "win32")]
+    [string[]]$Lang = @("py", "ts", "com", "win32")
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +47,7 @@ $comStreamDir = Join-Path $comBindingsDir "stream"
 $comAutomationDir = Join-Path $comBindingsDir "automation"
 $comInfrastructureDir = Join-Path $comBindingsDir "infrastructure"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
+$win32BindingsDir = Join-Path $e2eDir "win32"
 [string[]]$cargoProfileArgs = @(
     if ($CargoProfile -eq "release") {
         "--release"
@@ -83,9 +85,9 @@ if ("py" -in $Lang -and -not $hasPython) {
     Write-Host "  SKIP Python (not installed)" -ForegroundColor DarkYellow
     $Lang = $Lang | Where-Object { $_ -ne "py" }
 }
-if (("ts" -in $Lang -or "com" -in $Lang) -and -not $hasNode) {
+if (("ts" -in $Lang -or "com" -in $Lang -or "win32" -in $Lang) -and -not $hasNode) {
     Write-Host "  SKIP JavaScript E2E (Node.js not installed)" -ForegroundColor DarkYellow
-    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com") })
+    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com", "win32") })
 }
 
 function Find-Win32Winmd {
@@ -107,15 +109,15 @@ function Find-Win32Winmd {
 }
 
 $win32Winmd = $null
-if ("com" -in $Lang) {
+if ("com" -in $Lang -or "win32" -in $Lang) {
     $win32Winmd = Find-Win32Winmd
     if (-not $win32Winmd) {
         if ($langWasExplicit -or $env:DYNWINRT_REQUIRE_WIN32_METADATA -eq "1") {
-            Write-Error "Classic COM E2E requires Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
+            Write-Error "Classic COM and flat Win32 E2E require Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
             exit 1
         }
-        Write-Host "  SKIP Classic COM (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
-        $Lang = @($Lang | Where-Object { $_ -ne "com" })
+        Write-Host "  SKIP Classic COM and flat Win32 (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
+        $Lang = @($Lang | Where-Object { $_ -notin @("com", "win32") })
     } else {
         $env:DYNWINRT_WIN32_WINMD = $win32Winmd
         Write-Host "  Win32 metadata: $win32Winmd"
@@ -123,6 +125,25 @@ if ("com" -in $Lang) {
 }
 
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
+
+function Invoke-NodeRunner([string]$runnerPath, [string[]]$runnerArguments = @(), [int]$timeoutSeconds = 180) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new((Get-Command node).Source)
+    $start.UseShellExecute = $false
+    $start.ArgumentList.Add($runnerPath)
+    foreach ($argument in $runnerArguments) { $start.ArgumentList.Add($argument) }
+    $process = [System.Diagnostics.Process]::Start($start)
+    try {
+        if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+            Write-Host "TIMEOUT: $runnerPath exceeded ${timeoutSeconds}s" -ForegroundColor Red
+            Stop-Process -Id $process.Id -Force
+            $process.WaitForExit()
+            return 124
+        }
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
 
 # --------------------------------------------------------------------------
 # Build (optional)
@@ -163,7 +184,7 @@ if (-not $SkipBuild) {
         Pop-Location
     }
 
-    if ("ts" -in $Lang -or "com" -in $Lang) {
+    if ("ts" -in $Lang -or "com" -in $Lang -or "win32" -in $Lang) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
@@ -333,6 +354,31 @@ if ("com" -in $Lang) {
 }
 
 # --------------------------------------------------------------------------
+if ("win32" -in $Lang) {
+    Write-Host "`n--- Generate contract-driven flat Win32 ---" -ForegroundColor Yellow
+    $win32Classes = @(
+        "Windows.Win32.System.Registry",
+        "Windows.Win32.System.SystemInformation",
+        "Windows.Win32.System.LibraryLoader",
+        "Windows.Win32.Graphics.Gdi",
+        "Windows.Win32.System.Threading",
+        "Windows.Win32.System.Com",
+        "Windows.Win32.Networking.Ldap",
+        "Windows.Win32.Networking.WinSock",
+        "Windows.Win32.NetworkManagement.IpHelper",
+        "Windows.Win32.Graphics.GdiPlus",
+        "Windows.Win32.Media.MediaFoundation",
+        "Windows.Win32.System.Pipes",
+        "Windows.Win32.Storage.FileSystem"
+    ) | ForEach-Object { "$_.Apis" }
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --class-name ($win32Classes -join ",") `
+        --output $win32BindingsDir `
+        --import-name "../../../../bindings/js/dist/win32.js"
+    if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 contract generation failed"; exit 1 }
+}
+
 # Run language-specific runners
 # --------------------------------------------------------------------------
 $totalPass = 0
@@ -411,8 +457,8 @@ if ("com" -in $Lang) {
     $comFailed = 0
     foreach ($runner in $comRunners) {
         Write-Host "  $runner"
-        & node (Join-Path $runnersDir "com\$runner")
-        if ($LASTEXITCODE -eq 0) {
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "com\$runner")
+        if ($runnerExitCode -eq 0) {
             $comPassed++
         } else {
             $comFailed++
@@ -423,6 +469,30 @@ if ("com" -in $Lang) {
         language = "com"
         passed = $comPassed
         total = $comRunners.Count
+    }
+}
+
+if ("win32" -in $Lang) {
+    Write-Host "`n--- Flat Win32 contract E2E ---" -ForegroundColor Yellow
+    $tsc = Join-Path $root "bindings\js\node_modules\.bin\tsc.cmd"
+    if (-not (Test-Path -LiteralPath $tsc)) { Write-Error "Flat Win32 typecheck requires the JS development dependencies."; exit 1 }
+    & $tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext `
+        --types node --typeRoots (Join-Path $root "bindings\js\node_modules\@types") `
+        (Join-Path $PSScriptRoot "typecheck\win32_contracts.ts")
+    if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 declarations failed typecheck"; exit 1 }
+    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs", "contracts.mjs")
+    $win32Passed = 0
+    foreach ($runner in $win32Runners) {
+        Write-Host "  $runner"
+        $arguments = if ($runner -eq "contracts.mjs") { @("--generated", $win32BindingsDir) } else { @() }
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "win32\$runner") -runnerArguments $arguments
+        if ($runnerExitCode -eq 0) { $win32Passed++ }
+    }
+    if ($win32Passed -eq $win32Runners.Count) { $totalPass++ } else { $totalFail++ }
+    $allResults += [pscustomobject]@{
+        language = "win32"
+        passed = $win32Passed
+        total = $win32Runners.Count
     }
 }
 

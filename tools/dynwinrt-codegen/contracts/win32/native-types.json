@@ -1,0 +1,3332 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "windows.win32.devices.bluetooth.hbluetooth_device_find.native-type.v1",
+      "selector": {
+        "name": "HBLUETOOTH_DEVICE_FIND",
+        "namespace": "Windows.Win32.Devices.Bluetooth",
+        "sourceFingerprint": "D3A6DB66E3F1001F7C7CE08D08579368511FCE1DFF51635463E2B01EEFDF7FC6"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.bluetooth.hbluetooth_radio_find.native-type.v1",
+      "selector": {
+        "name": "HBLUETOOTH_RADIO_FIND",
+        "namespace": "Windows.Win32.Devices.Bluetooth",
+        "sourceFingerprint": "420729024C31E869567B6F570D31417C588233011DAACE1F8B94A4FE9F259576"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.deviceanddriverinstallation.configret.native-type.v1",
+      "selector": {
+        "name": "CONFIGRET",
+        "namespace": "Windows.Win32.Devices.DeviceAndDriverInstallation",
+        "sourceFingerprint": "7EA382FB87AB3C3A85CBDA58BDB47F991BD0C99AFCC27EB57476D641D3FF88DF"
+      },
+      "meaning": null,
+      "status": "zero",
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.deviceanddriverinstallation.hcmnotification.native-type.v1",
+      "selector": {
+        "name": "HCMNOTIFICATION",
+        "namespace": "Windows.Win32.Devices.DeviceAndDriverInstallation",
+        "sourceFingerprint": "0A44EDA4F7B56E32088910EC7B9FF403F351DFA186A401659921D37EBB74C5CE"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.deviceanddriverinstallation.hdevinfo.native-type.v1",
+      "selector": {
+        "name": "HDEVINFO",
+        "namespace": "Windows.Win32.Devices.DeviceAndDriverInstallation",
+        "sourceFingerprint": "4635C19ADDA0E7CC41BDCF486C83DD368E8DEE3A3C0B2D365B25DF4E31F32802"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.display.hsemaphore.native-type.v1",
+      "selector": {
+        "name": "HSEMAPHORE",
+        "namespace": "Windows.Win32.Devices.Display",
+        "sourceFingerprint": "62457E96C77F70050952EFFA29B111BD60819DEE65BDE3A45BB8CD90F67311EA"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.enumeration.pnp.hswdevice.native-type.v1",
+      "selector": {
+        "name": "HSWDEVICE",
+        "namespace": "Windows.Win32.Devices.Enumeration.Pnp",
+        "sourceFingerprint": "B599502895784393578455655236281C14DCD13C541036DAA564D45470B8989C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.serialcommunication.hcomdb.native-type.v1",
+      "selector": {
+        "name": "HCOMDB",
+        "namespace": "Windows.Win32.Devices.SerialCommunication",
+        "sourceFingerprint": "3F1ABD7F3926B42B69061CC7F4B68935408B9FF6BFEDDE079F22CD767C24E156"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.devices.usb.winusb_interface_handle.native-type.v1",
+      "selector": {
+        "name": "WINUSB_INTERFACE_HANDLE",
+        "namespace": "Windows.Win32.Devices.Usb",
+        "sourceFingerprint": "4DCF430DA44B4DB0246F723B3988E94AD3D7B5455755F1D7459717B366232A3C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.bool.native-type.v1",
+      "selector": {
+        "name": "BOOL",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "EE7E5C10C1777B071DA1D3879BCE141A638C8EAB36646C1832DF08FEE90EE7CE"
+      },
+      "meaning": {
+        "kind": "scalar",
+        "scalar": "bool32"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.boolean.native-type.v1",
+      "selector": {
+        "name": "BOOLEAN",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "DCF21AC36B28AF818B1A50EC2146A2F793FF29D79DE608259CF9C4FFA401A012"
+      },
+      "meaning": {
+        "kind": "scalar",
+        "scalar": "u8"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.bstr.native-type.v1",
+      "selector": {
+        "name": "BSTR",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "FFB8FB56DD9086B1D16B20A9033F8C2948549D18355DA084143A5636C9A16DF9"
+      },
+      "meaning": {
+        "kind": "unsupported"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.farproc.native-type.v1",
+      "selector": {
+        "name": "FARPROC",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "A11AFAD73C71930EF9435BCCF6996D3FFFA4781B3A8407F73622D0B6C9397AB4"
+      },
+      "meaning": {
+        "kind": "function-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.handle.native-type.v1",
+      "selector": {
+        "name": "HANDLE",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "D1FB8BBFD4952CA2E3A0980100FE46AEB67D1FACC11F4EC348030A552F63B57A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hglobal.native-type.v1",
+      "selector": {
+        "name": "HGLOBAL",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "6E4BFFED330AD889CA6E17C0E1B1E4307702E3D2A33D338BABA11E429D0F4F1D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hinstance.native-type.v1",
+      "selector": {
+        "name": "HINSTANCE",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "42AB7BC3B562CE4C63AE3FC13C6DD8A5E4A8DAD8C22B167983F95348FC2CBC31"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hlocal.native-type.v1",
+      "selector": {
+        "name": "HLOCAL",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "45CEBFEBBFEFA5E2DA078AF1DDF1A765A987339765717E1E6282CF5FC15D214A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hmodule.native-type.v1",
+      "selector": {
+        "name": "HMODULE",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "DF9C1B98ED00E56D38A3C03A7D8A20F8AB3A1AB58D821B282A519BE2DB25EAA0"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hresult.native-type.v1",
+      "selector": {
+        "name": "HRESULT",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "BE192035848AAA35CEEE1895A27BD7B82C3B6520E66D1FEEEB095DEC572EE921"
+      },
+      "meaning": {
+        "kind": "scalar",
+        "scalar": "i32"
+      },
+      "status": "signed-nonnegative",
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/office/client-developer/outlook/mapi/hresult"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hrsrc.native-type.v1",
+      "selector": {
+        "name": "HRSRC",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "D1A1AD550715D7E44033352BE7ACD9A376DF6CA888A0FE1B28447C879B0FE9E5"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.hwnd.native-type.v1",
+      "selector": {
+        "name": "HWND",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "00D0CAD4A438C7093CD04D42C42FF3BC2F9EBA3B21D6AFFDBBF16B5696C75AD9"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.nearproc.native-type.v1",
+      "selector": {
+        "name": "NEARPROC",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "0B626C4C966BEF597F70F9C48372286D9A7DF5E1036EBC2AB8D6599F4D475FF2"
+      },
+      "meaning": {
+        "kind": "function-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.ntstatus.native-type.v1",
+      "selector": {
+        "name": "NTSTATUS",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "3F9AEF7F043D0637E4FB7DCFCF9F3196020493EB342C5C516D2D3BCE805697F3"
+      },
+      "meaning": {
+        "kind": "scalar",
+        "scalar": "i32"
+      },
+      "status": "signed-nonnegative",
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.proc.native-type.v1",
+      "selector": {
+        "name": "PROC",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "4F4B8DBC2FEFD78D40322A2DEC407C121A9CB94691F6845465BFAEC1A7D7D010"
+      },
+      "meaning": {
+        "kind": "function-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.pstr.native-type.v1",
+      "selector": {
+        "name": "PSTR",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "60AB2A298F1A10B40E0D4E44A2D48896AA9A3D5302F5B20BF3AEE1F8F60B898D"
+      },
+      "meaning": {
+        "kind": "string-pointer",
+        "encoding": "ansi",
+        "isConst": false
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.pwstr.native-type.v1",
+      "selector": {
+        "name": "PWSTR",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "F33CCD067FB27C623204D7E8024A528A508B9FD7CB87B8BDD19C644A5D91AF5B"
+      },
+      "meaning": {
+        "kind": "string-pointer",
+        "encoding": "utf16",
+        "isConst": false
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.win32_error.native-type.v1",
+      "selector": {
+        "name": "WIN32_ERROR",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "9884F9F5E8B09A88DA011FF18091E3F0750E9B95122F255815AFEE6A048C80B5"
+      },
+      "meaning": null,
+      "status": "zero",
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hbitmap.native-type.v1",
+      "selector": {
+        "name": "HBITMAP",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "76ED7DDD9969E06550388DB22222EE87A255ADC693EF18FB6E1756AC1DC3432A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hbrush.native-type.v1",
+      "selector": {
+        "name": "HBRUSH",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "B59D0818A5E43F0E6DFD8E934DC90F481DA60542F1B3D1174892082AD0CF111E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hdc.native-type.v1",
+      "selector": {
+        "name": "HDC",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "80597D7277B6824034459AAA4A561BC68B743924D83CD340C6DC8F8C4A0FA845"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.henhmetafile.native-type.v1",
+      "selector": {
+        "name": "HENHMETAFILE",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "D3643B0E1E0E6B1DCFB9C33AB57D38161C8725FDC9F4ABF734E040E255EA276C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hfont.native-type.v1",
+      "selector": {
+        "name": "HFONT",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "E361F3CA1653A8927DDB18F22D74BB866BFEFFFCC4B97ADD442B4D08413A191B"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hgdiobj.native-type.v1",
+      "selector": {
+        "name": "HGDIOBJ",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "F889A474B2A72C8B103E293D1EC44839462B41F950AAFDB4A5712686411F0F1D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hmetafile.native-type.v1",
+      "selector": {
+        "name": "HMETAFILE",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "39C2BEF4D9984E67C3861FD9AFD547595F135483E63299CFE25E42700FB12E53"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hmonitor.native-type.v1",
+      "selector": {
+        "name": "HMONITOR",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "F77564A2FC849465F30BE391532A4E46E9F6C725F8A4A2B25B09E9332846EBFD"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hpalette.native-type.v1",
+      "selector": {
+        "name": "HPALETTE",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "32B9B21AFDB0EFAEFD7DDC139B92F98A6673C4EE8C22DE3DEACD22C15009B95E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hpen.native-type.v1",
+      "selector": {
+        "name": "HPEN",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "CA0AD7803BE2F06D1871D5A90018C877F73150E95735E195E0DC75EF9E65912F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.gdi.hrgn.native-type.v1",
+      "selector": {
+        "name": "HRGN",
+        "namespace": "Windows.Win32.Graphics.Gdi",
+        "sourceFingerprint": "D090188AE69B22698077EB10855AF9DE919E660390A5729FC3D06AD0B7660FDF"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.opengl.hglrc.native-type.v1",
+      "selector": {
+        "name": "HGLRC",
+        "namespace": "Windows.Win32.Graphics.OpenGL",
+        "sourceFingerprint": "EF2DC4AB01E057C3CBA918CEBB8176A8DD51A78D279E1103605531FF88FFAF91"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.printing.findprinterchangenotification_handle.native-type.v1",
+      "selector": {
+        "name": "FINDPRINTERCHANGENOTIFICATION_HANDLE",
+        "namespace": "Windows.Win32.Graphics.Printing",
+        "sourceFingerprint": "ECDD61D34DD2885270EC45F191088671C04F5E3A9D77E7F7BB09F11F8182E007"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.printing.printer_handle.native-type.v1",
+      "selector": {
+        "name": "PRINTER_HANDLE",
+        "namespace": "Windows.Win32.Graphics.Printing",
+        "sourceFingerprint": "6FEEA5F000E49B785F412DB5A26D0EA904B5644E004F2047D9064BFD7CC48848"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.graphics.printing.printticket.hptprovider.native-type.v1",
+      "selector": {
+        "name": "HPTPROVIDER",
+        "namespace": "Windows.Win32.Graphics.Printing.PrintTicket",
+        "sourceFingerprint": "D0A5BB03957B546D2B7B6C2C05B7A230334B8043036BCF1260151291D0F994CC"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hacmdriver.native-type.v1",
+      "selector": {
+        "name": "HACMDRIVER",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "7D7C070E05CE402CE21E9F88AD461E7FAD5254D5060CC281DEB104E13C96C83E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hacmstream.native-type.v1",
+      "selector": {
+        "name": "HACMSTREAM",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "1F1B12A7B11373A123C4AB712C5E4A7CE3B4A8B58320CBE9ADAEB02AC0658EAA"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hmidiin.native-type.v1",
+      "selector": {
+        "name": "HMIDIIN",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "081F2248F2C0916460836E4C10829B36337B1089A8E79C6174483A8ABE5699C9"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hmidiout.native-type.v1",
+      "selector": {
+        "name": "HMIDIOUT",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "3ED9911EC053117A06D7AF870BB6083C30AC6DF3E46B53862E94EA0CBB4E1FA7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hmidistrm.native-type.v1",
+      "selector": {
+        "name": "HMIDISTRM",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "E8DBF024602457E63C4C335CC776672B39EF504DCF58149434965F7D4B1E0793"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hmixer.native-type.v1",
+      "selector": {
+        "name": "HMIXER",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "BBA8713982FC779E8E3D560E33A20C763E081CD7CB69D85B8F9F19FBEF4C26FC"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hwavein.native-type.v1",
+      "selector": {
+        "name": "HWAVEIN",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "2CD0EEF82D6025A263DEB6C5C8980EA4C92AA1EE375450619518DEBE0BDC6FC7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.audio.hwaveout.native-type.v1",
+      "selector": {
+        "name": "HWAVEOUT",
+        "namespace": "Windows.Win32.Media.Audio",
+        "sourceFingerprint": "62458DA1DC2DFC1F052A29CDA151E535100D402EFE23C210FDC33C00532878F6"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.media.multimedia.hic.native-type.v1",
+      "selector": {
+        "name": "HIC",
+        "namespace": "Windows.Win32.Media.Multimedia",
+        "sourceFingerprint": "C43CBBC2B2F15DB872256FF2BF39C564F5A0A26DBE684C4EAE7CD8A1A760BB49"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networking.httpserver.http_request_queue_handle.native-type.v1",
+      "selector": {
+        "name": "HTTP_REQUEST_QUEUE_HANDLE",
+        "namespace": "Windows.Win32.Networking.HttpServer",
+        "sourceFingerprint": "5984B12FE3645DF88F5E42B521FE8A07E867937221381F4CCF7E1553E1D27709"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networking.websocket.web_socket_handle.native-type.v1",
+      "selector": {
+        "name": "WEB_SOCKET_HANDLE",
+        "namespace": "Windows.Win32.Networking.WebSocket",
+        "sourceFingerprint": "606CCAACFDDE65878A6E9EBE232D4C1CE295B2CDCE2415B9B844ADEB5E0FD865"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networking.winsock.socket.native-type.v1",
+      "selector": {
+        "name": "SOCKET",
+        "namespace": "Windows.Win32.Networking.WinSock",
+        "sourceFingerprint": "35057FC3AF4B596814EE4325520B39C4DF40F06CFAEE5D6C9426B93156E659CB"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networking.winsock.wsaevent.native-type.v1",
+      "selector": {
+        "name": "WSAEVENT",
+        "namespace": "Windows.Win32.Networking.WinSock",
+        "sourceFingerprint": "B9C42B692F5E36012CEF4CE0E52CDBA69B3498854198E46F91E367D22409C387"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.iphelper.hiftimestampchange.native-type.v1",
+      "selector": {
+        "name": "HIFTIMESTAMPCHANGE",
+        "namespace": "Windows.Win32.NetworkManagement.IpHelper",
+        "sourceFingerprint": "553412D6091F3B1084CA1578C976E4A0C21326D4B78CAEF86A47538BAEFF2909"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_callout_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_CALLOUT_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "2B9EAA0E5E6A1DA65C36DA748C67D86505B0480F239B31E450C7E492838676FD"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_connection_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_CONNECTION_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "B45543CC2C26030040B34F61F637C678A5F3A89BBC5CD4114CADDB378DF83EC4"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_engine_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_ENGINE_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "7E826FF84225B3A41C8CC2797F24441FBE501F50EE5D1C1B02B235335E9CF36D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_filter_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_FILTER_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "1A3E67A79074601517EACF5075E8F0B49880D4D80293B0D258281D9691FD695D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_layer_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_LAYER_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "01A3BA598E97339FFA61C0D82A6F90BEBD7115F4ED314AFEB6BAA51D2326C307"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_net_event_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_NET_EVENT_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "F113F19235DEB018DA70DCA5FA68A93019BB8C6DC0B7C85CAD5AEB71B4125823"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_provider_context_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_PROVIDER_CONTEXT_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "B5024E943507C21FDD6CA4795A9AABFB50708B6314AF719659393AD99CA22E8A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_provider_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_PROVIDER_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "9A0C685D33BA0CB191890BD2D664C2CA014B619AE33845A37DF8F7150B8DFFB8"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_session_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_SESSION_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "10EFA5AB3BA78520E22B77813985EAEEA9DF2391645D7FAB9C2BA604BC607E03"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.fwpm_sublayer_enum_handle.native-type.v1",
+      "selector": {
+        "name": "FWPM_SUBLAYER_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "2E469621A032D1276C181C4332C81C2DBC9C6CF58E4C02803F2747060F4359FB"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.ikeext_sa_enum_handle.native-type.v1",
+      "selector": {
+        "name": "IKEEXT_SA_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "4495DB9342E428CEF88D5DF92604029F1A3BFE40DC3DD76A5A4517B0D49EA790"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.ipsec_dosp_state_enum_handle.native-type.v1",
+      "selector": {
+        "name": "IPSEC_DOSP_STATE_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "F8ACFA993432E781E0998A44920E8DD415DB79311251A6656DB8A0BC204F03F4"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.ipsec_sa_context_enum_handle.native-type.v1",
+      "selector": {
+        "name": "IPSEC_SA_CONTEXT_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "A91A358A71431B378913768DCCD8AF8D523970BF6ADCAC8E9BF2D4A7E52B0FEF"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.networkmanagement.windowsfilteringplatform.ipsec_sa_enum_handle.native-type.v1",
+      "selector": {
+        "name": "IPSEC_SA_ENUM_HANDLE",
+        "namespace": "Windows.Win32.NetworkManagement.WindowsFilteringPlatform",
+        "sourceFingerprint": "313B0842D4303C31CCAF900BA683344BF250801D28D5D61D4F3B94F008D9A2B3"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authentication.identity.lsa_handle.native-type.v1",
+      "selector": {
+        "name": "LSA_HANDLE",
+        "namespace": "Windows.Win32.Security.Authentication.Identity",
+        "sourceFingerprint": "38CDA5201C4AAD02B50814F92E6F20EBAB41204A4C7E023B2107B4F30EAE105A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/SecMgmt/lsa-handle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authorization.authz_access_check_results_handle.native-type.v1",
+      "selector": {
+        "name": "AUTHZ_ACCESS_CHECK_RESULTS_HANDLE",
+        "namespace": "Windows.Win32.Security.Authorization",
+        "sourceFingerprint": "CD042DB36BC51597C8BDF6BD886363D71466FEE730679B27431F9ED51A1F60F5"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authorization.authz_audit_event_handle.native-type.v1",
+      "selector": {
+        "name": "AUTHZ_AUDIT_EVENT_HANDLE",
+        "namespace": "Windows.Win32.Security.Authorization",
+        "sourceFingerprint": "CF551CC2B2728FF907F8A3CF25819F90673D0C284DB9D7B008B3300A42BF8C89"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authorization.authz_cap_change_subscription_handle.native-type.v1",
+      "selector": {
+        "name": "AUTHZ_CAP_CHANGE_SUBSCRIPTION_HANDLE",
+        "namespace": "Windows.Win32.Security.Authorization",
+        "sourceFingerprint": "3EB2CBC21C1CDE523B072D995A53203E66CF1DF6E0733C42FD606684D9608E76"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authorization.authz_client_context_handle.native-type.v1",
+      "selector": {
+        "name": "AUTHZ_CLIENT_CONTEXT_HANDLE",
+        "namespace": "Windows.Win32.Security.Authorization",
+        "sourceFingerprint": "8CAD9E62FF175A8F4F2F507B199DE355892F692A2A186FEF39BFB2DB00825F16"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.authorization.authz_resource_manager_handle.native-type.v1",
+      "selector": {
+        "name": "AUTHZ_RESOURCE_MANAGER_HANDLE",
+        "namespace": "Windows.Win32.Security.Authorization",
+        "sourceFingerprint": "D3AA934CE7CA0DD018970DB20A5A94D1FA76B43248DD0117C9FFAA5BCF911AC7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.bcrypt_alg_handle.native-type.v1",
+      "selector": {
+        "name": "BCRYPT_ALG_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "82DE7E905EC8202081874EDB72E7182083ECDFADB32B5DC140E1EED43730043A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.bcrypt_hash_handle.native-type.v1",
+      "selector": {
+        "name": "BCRYPT_HASH_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "13183BE9953C47F7A0E2932F014B329C9FD7BB9E314E7CBF1F32F0E02C57E89D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.bcrypt_key_handle.native-type.v1",
+      "selector": {
+        "name": "BCRYPT_KEY_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "A5CF43046441AA4CBB08488571BAE3E0F6AE964013661CD16A89FDB016995884"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.bcrypt_secret_handle.native-type.v1",
+      "selector": {
+        "name": "BCRYPT_SECRET_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "6F9A5CF220A860AA5793F0B0E8C88473855C13884889503F28B22479C6D6ECE0"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.hcertchainengine.native-type.v1",
+      "selector": {
+        "name": "HCERTCHAINENGINE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "C701132140F6D73AF8727C5F7A55F573CE2524954C4F4E903E0654478C3C7A9A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.hcryptasync.native-type.v1",
+      "selector": {
+        "name": "HCRYPTASYNC",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "BC2D50C270E632AF7CA1D82083494B50F6252C9AC9F77E57C2DCFB1EE544117D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.ncrypt_handle.native-type.v1",
+      "selector": {
+        "name": "NCRYPT_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "26BE273452E7F27A7C15E958B217048BF29EFD825D8E947A0C49EA62E9FAAF09"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.ncrypt_key_handle.native-type.v1",
+      "selector": {
+        "name": "NCRYPT_KEY_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "A6161BAC1B0FBC5B21728648BD16CCC616A6A124E74E2917600B2510805C1205"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.cryptography.ncrypt_prov_handle.native-type.v1",
+      "selector": {
+        "name": "NCRYPT_PROV_HANDLE",
+        "namespace": "Windows.Win32.Security.Cryptography",
+        "sourceFingerprint": "B8EAD99AC1F042FCABCB5082A8CE5534ACD82311B15BBBA0BC71FE7AB603A9B4"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_data_query_session.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_DATA_QUERY_SESSION",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "71B88F51AEABCFF611B9B7C2B9E138D2CDE93A470B05F69055AC7F9695A9CD79"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_event_category_description.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_EVENT_CATEGORY_DESCRIPTION",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "E8438A8DAEB76C53989A3A2B29843E604D6BA5816F595A4415421A2EEDC00E4F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_event_producer_description.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_EVENT_PRODUCER_DESCRIPTION",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "91C6DDB76CF89019B6B30EB92A7EBBEEA44E269D772B2F19A9072D237C1C8275"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_event_tag_description.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_EVENT_TAG_DESCRIPTION",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "0837A2A63538D5BD973822DE91E7CCEF47F9C7D8FFD3875BCACFD3FC5BCD2355"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_record.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_RECORD",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "F98BB612DE1A1996AE2BE7F660F9F76BC5C5DBAFF4A589BA9BAC95EFE7790D8F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.diagnosticdataquery.hdiagnostic_report.native-type.v1",
+      "selector": {
+        "name": "HDIAGNOSTIC_REPORT",
+        "namespace": "Windows.Win32.Security.DiagnosticDataQuery",
+        "sourceFingerprint": "24BF0A3AB2D5BA566EC27D16EECE8444618E64A638EC8DD91A8BE6721DC78C3B"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.psecurity_descriptor.native-type.v1",
+      "selector": {
+        "name": "PSECURITY_DESCRIPTOR",
+        "namespace": "Windows.Win32.Security",
+        "sourceFingerprint": "AD6991F1B7C0A1DF898C0EA65B6D4164EA4FFF02C2633B1CADA1BEFBE94D0C1D"
+      },
+      "meaning": {
+        "kind": "data-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.security.psid.native-type.v1",
+      "selector": {
+        "name": "PSID",
+        "namespace": "Windows.Win32.Security",
+        "sourceFingerprint": "9B1E6B1F77CF017E33F7A3AE470815BED786AD2820839F1F3671325A28C96721"
+      },
+      "meaning": {
+        "kind": "data-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.cloudfilters.cf_connection_key.native-type.v1",
+      "selector": {
+        "name": "CF_CONNECTION_KEY",
+        "namespace": "Windows.Win32.Storage.CloudFilters",
+        "sourceFingerprint": "C235D0EF7AEEE3AD7879DBA8FD712C4431C6B380E12EB078D4228EF137605C69"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.compression.compressor_handle.native-type.v1",
+      "selector": {
+        "name": "COMPRESSOR_HANDLE",
+        "namespace": "Windows.Win32.Storage.Compression",
+        "sourceFingerprint": "A6A6758457C5DED3BC290517E76D20800C6F3C58E4FED3A8B4541A98F8779259"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.compression.decompressor_handle.native-type.v1",
+      "selector": {
+        "name": "DECOMPRESSOR_HANDLE",
+        "namespace": "Windows.Win32.Storage.Compression",
+        "sourceFingerprint": "F1F6722414245DF3945E3D58C38CA8F03B177FA879EBA9BD4B8CA08DE3DE46F8"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filehistory.fh_service_pipe_handle.native-type.v1",
+      "selector": {
+        "name": "FH_SERVICE_PIPE_HANDLE",
+        "namespace": "Windows.Win32.Storage.FileHistory",
+        "sourceFingerprint": "977B51BA00429EFDA1309A60D6E7B44D480B9F647A02D7E5481EF3CD40FC7F3C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filesystem.hioring.native-type.v1",
+      "selector": {
+        "name": "HIORING",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "47E78CB69307900FA6F811797896FFCB3057FC607FBF8B9A60C2B881A209B672"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.installablefilesystems.hfilter.native-type.v1",
+      "selector": {
+        "name": "HFILTER",
+        "namespace": "Windows.Win32.Storage.InstallableFileSystems",
+        "sourceFingerprint": "96A69F8D621A15A477B900A1F18E6469A07E53F44B04FCE59F7F10534A2871B1"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.installablefilesystems.hfilter_instance.native-type.v1",
+      "selector": {
+        "name": "HFILTER_INSTANCE",
+        "namespace": "Windows.Win32.Storage.InstallableFileSystems",
+        "sourceFingerprint": "09177C9724B87453AF77C320C367CD124BE9FBD38CC6884855B18D738D9ECBCD"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.jet.jet_instance.native-type.v1",
+      "selector": {
+        "name": "JET_INSTANCE",
+        "namespace": "Windows.Win32.Storage.Jet",
+        "sourceFingerprint": "5B25D450BA42FBF0367B74EE0B19DE4FAA0D10D94FA60267543387818099BA3D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/extensible-storage-engine/jet-instance"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.jet.jet_sesid.native-type.v1",
+      "selector": {
+        "name": "JET_SESID",
+        "namespace": "Windows.Win32.Storage.Jet",
+        "sourceFingerprint": "BB2FCF2A93348481D8C3BE9D360959F2AF5474D9CA48B256F330F3972FA0E8B9"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/extensible-storage-engine/jet-sesid-structure"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.applicationinstallationandservicing.msihandle.native-type.v1",
+      "selector": {
+        "name": "MSIHANDLE",
+        "namespace": "Windows.Win32.System.ApplicationInstallationAndServicing",
+        "sourceFingerprint": "09FED42DDA01D8B9ED60F63E6CA8942093DF1725B739E319917517F0F43A080F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.com.co_device_catalog_cookie.native-type.v1",
+      "selector": {
+        "name": "CO_DEVICE_CATALOG_COOKIE",
+        "namespace": "Windows.Win32.System.Com",
+        "sourceFingerprint": "726A21DD713BA4397A6876F657483BC01C330EF2965CD54CA805B7F61FAF0C9D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.com.co_mta_usage_cookie.native-type.v1",
+      "selector": {
+        "name": "CO_MTA_USAGE_COOKIE",
+        "namespace": "Windows.Win32.System.Com",
+        "sourceFingerprint": "915C5C822AEEA17D41A6F2A91F36AA42D34D63C04882CE2B230275E3DAC42B93"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.console.hpcon.native-type.v1",
+      "selector": {
+        "name": "HPCON",
+        "namespace": "Windows.Win32.System.Console",
+        "sourceFingerprint": "D617D23DFB882E93DCA72BABB6C45FAD2A59421F75895DD6E874E590B046EA52"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.dataexchange.hconv.native-type.v1",
+      "selector": {
+        "name": "HCONV",
+        "namespace": "Windows.Win32.System.DataExchange",
+        "sourceFingerprint": "8F284B124C707F1A8B2DC53A6853966CDF4FA61D696BC5CEE666EF7FA0E7346F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.dataexchange.hconvlist.native-type.v1",
+      "selector": {
+        "name": "HCONVLIST",
+        "namespace": "Windows.Win32.System.DataExchange",
+        "sourceFingerprint": "A84BE1261782960194E1CBA9B91ECF834ABDA563457802C182F2181E215522AE"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.dataexchange.hddedata.native-type.v1",
+      "selector": {
+        "name": "HDDEDATA",
+        "namespace": "Windows.Win32.System.DataExchange",
+        "sourceFingerprint": "EF4244C669BDB123AC179EBF2ED79CFBDB5680E33B3BDB89C8DE7F6120D62BFA"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.diagnostics.etw.processtrace_handle.native-type.v1",
+      "selector": {
+        "name": "PROCESSTRACE_HANDLE",
+        "namespace": "Windows.Win32.System.Diagnostics.Etw",
+        "sourceFingerprint": "19A2976C762C1B007C37D9D898B0F532F6A8F59BD9BFD2756DA9573ED4B2976B"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.diagnostics.etw.reghandle.native-type.v1",
+      "selector": {
+        "name": "REGHANDLE",
+        "namespace": "Windows.Win32.System.Diagnostics.Etw",
+        "sourceFingerprint": "A9CED6E465C360FA99CE43A1B5524EDB1E08C21CE2BC9A8D6EB61BB76CF0AAB7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.diagnostics.etw.tdh_handle.native-type.v1",
+      "selector": {
+        "name": "TDH_HANDLE",
+        "namespace": "Windows.Win32.System.Diagnostics.Etw",
+        "sourceFingerprint": "46B5B642CD6585599CC61D49019B27321D5141967ECD57F60A3912FCBCB9B2E7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.diagnostics.processsnapshotting.hpsswalk.native-type.v1",
+      "selector": {
+        "name": "HPSSWALK",
+        "namespace": "Windows.Win32.System.Diagnostics.ProcessSnapshotting",
+        "sourceFingerprint": "6E7B0F82A4CCC222CB8EF8449B8FCB3277B1219C3F72D720CDF71EC21610E205"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.errorreporting.hreport.native-type.v1",
+      "selector": {
+        "name": "HREPORT",
+        "namespace": "Windows.Win32.System.ErrorReporting",
+        "sourceFingerprint": "ED0A3F06368CD8FAD257DBF985B5A5F30F8D0F8925A693A677854DCD6F97AEA2"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.errorreporting.hreportstore.native-type.v1",
+      "selector": {
+        "name": "HREPORTSTORE",
+        "namespace": "Windows.Win32.System.ErrorReporting",
+        "sourceFingerprint": "5266380C7214648C91232DCD797C13D5C9B1873EEE07155CA601A04D0A1A836E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.eventlog.evt_handle.native-type.v1",
+      "selector": {
+        "name": "EVT_HANDLE",
+        "namespace": "Windows.Win32.System.EventLog",
+        "sourceFingerprint": "7D826986BCADE944EBC6681A04F16035A759CD2F819BE59F8473EA30A2C4D0CD"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.hostcomputesystem.hcs_operation.native-type.v1",
+      "selector": {
+        "name": "HCS_OPERATION",
+        "namespace": "Windows.Win32.System.HostComputeSystem",
+        "sourceFingerprint": "B662E205D2503CD0F9749B229EA14BA0331B87B5D74F6FE05F195A5B9F5C34E1"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.hostcomputesystem.hcs_process.native-type.v1",
+      "selector": {
+        "name": "HCS_PROCESS",
+        "namespace": "Windows.Win32.System.HostComputeSystem",
+        "sourceFingerprint": "4A06BDAAF448CBBF0BAE9ACC7F0517A7E00246628F098F8D7370E6B8B7D8EFA7"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.hostcomputesystem.hcs_system.native-type.v1",
+      "selector": {
+        "name": "HCS_SYSTEM",
+        "namespace": "Windows.Win32.System.HostComputeSystem",
+        "sourceFingerprint": "DF17E77CDCB19B8B952BE6AC549964013E3DE6BE2F30F12E2CDDCC8C24CFAE3C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.hypervisor.whv_partition_handle.native-type.v1",
+      "selector": {
+        "name": "WHV_PARTITION_HANDLE",
+        "namespace": "Windows.Win32.System.Hypervisor",
+        "sourceFingerprint": "8DA0BA9DA032E608C81B761D17300BDC7B80AED3413B18B799D2DADD9059CAB6"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.memory.memory_mapped_view_address.native-type.v1",
+      "selector": {
+        "name": "MEMORY_MAPPED_VIEW_ADDRESS",
+        "namespace": "Windows.Win32.System.Memory",
+        "sourceFingerprint": "CF18DD34A4BA520FAF99D6B02D2694AEAA71795FCE3355CC1215084D39719396"
+      },
+      "meaning": {
+        "kind": "data-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.performance.pdh_hlog.native-type.v1",
+      "selector": {
+        "name": "PDH_HLOG",
+        "namespace": "Windows.Win32.System.Performance",
+        "sourceFingerprint": "DB9B3C22EECD0F1986FA5D26CE88D40EE80ABCC5C8FF645D381D3A7813A2ADB8"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.performance.pdh_hquery.native-type.v1",
+      "selector": {
+        "name": "PDH_HQUERY",
+        "namespace": "Windows.Win32.System.Performance",
+        "sourceFingerprint": "8B6C6D03E131CEFEA618C21E1DF762A51DBAFE7AD51E10657285A3A3FF7CA011"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.power.hpowernotify.native-type.v1",
+      "selector": {
+        "name": "HPOWERNOTIFY",
+        "namespace": "Windows.Win32.System.Power",
+        "sourceFingerprint": "C775F0E8A8B2E5B81382BA70D3467E7803C16DE1B74FD103BD4F92830DD18B2A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.hkey.native-type.v1",
+      "selector": {
+        "name": "HKEY",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "195DA06A0E1516996DC1FAE37E24A56138F1B55601B8E36E2292E51A9587DD77"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.remotedesktop.wts_cloud_auth_handle.native-type.v1",
+      "selector": {
+        "name": "WTS_CLOUD_AUTH_HANDLE",
+        "namespace": "Windows.Win32.System.RemoteDesktop",
+        "sourceFingerprint": "8AC486F7F6736B0B604A6FB6A5289F3CD6D989B660AF11F334375DA0F4597740"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.rpc.rpc_status.native-type.v1",
+      "selector": {
+        "name": "RPC_STATUS",
+        "namespace": "Windows.Win32.System.Rpc",
+        "sourceFingerprint": "339F675245880DC1BD7E17BA3DAB38866D17DCE0262371605F9B6CD7910A6213"
+      },
+      "meaning": null,
+      "status": "zero",
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/Rpc/rpc-status"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.sc_handle.native-type.v1",
+      "selector": {
+        "name": "SC_HANDLE",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "02A7BF6AF27778591961EBBFC56667731CE3FC0A180A3F4D02D617CFF2BBFE4F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.service_status_handle.native-type.v1",
+      "selector": {
+        "name": "SERVICE_STATUS_HANDLE",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "40BFE85872BCFB49FB9766AD794FD2F3FCAE44BC7C19263E2AA496AE551EAE5B"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.stationsanddesktops.hdesk.native-type.v1",
+      "selector": {
+        "name": "HDESK",
+        "namespace": "Windows.Win32.System.StationsAndDesktops",
+        "sourceFingerprint": "6DDEB25E95014AF845617764AB656C9CE994FE661B1B448101917788345F9E75"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.stationsanddesktops.hwinsta.native-type.v1",
+      "selector": {
+        "name": "HWINSTA",
+        "namespace": "Windows.Win32.System.StationsAndDesktops",
+        "sourceFingerprint": "8E0C4C69C816590C9104675A0EB934F63A5A386920196759D5EFB3A6B6415C6F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.avrt_task_handle.native-type.v1",
+      "selector": {
+        "name": "AVRT_TASK_HANDLE",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "CAE2F3BDB5FC22F9091566EDE5DAAEEE55965349BF8A20A1F72F42C748431CC1"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.avrt_thread_ordering_group_handle.native-type.v1",
+      "selector": {
+        "name": "AVRT_THREAD_ORDERING_GROUP_HANDLE",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "EA8BDCAE60AB3737BD4B46D984C9821A6A8AC367654F310A658E918A251B81E2"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.lpproc_thread_attribute_list.native-type.v1",
+      "selector": {
+        "name": "LPPROC_THREAD_ATTRIBUTE_LIST",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "1BDC3BC48B21B124278D4999579768E9A59BA7016EDC4CFF5856BB3E40A5ABFD"
+      },
+      "meaning": {
+        "kind": "data-pointer"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_cleanup_group.native-type.v1",
+      "selector": {
+        "name": "PTP_CLEANUP_GROUP",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "61FE4C41FA65009C7CF7BB312DC0EB3E158190A191C1231492354B9C4AB11E9F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_io.native-type.v1",
+      "selector": {
+        "name": "PTP_IO",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "FDD5B79B189FD619EAE3CE1239ABBBA2ED6D0E4380140FA9E1F82BACDCB792D3"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_pool.native-type.v1",
+      "selector": {
+        "name": "PTP_POOL",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "F55F45887D0870D2A4910784F7891BD88B20F91956AC235518CCC1BF4F35EE65"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_timer.native-type.v1",
+      "selector": {
+        "name": "PTP_TIMER",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "C5B2BBA127FDA8F4C728C6283EE8DFC5DDEA87B193FD673EB7157249955D6B6A"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_wait.native-type.v1",
+      "selector": {
+        "name": "PTP_WAIT",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "E08FDCFE07F809DBAFA846865E994DDFF6D76E6ED124A8979BE1661ECDD49F20"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.ptp_work.native-type.v1",
+      "selector": {
+        "name": "PTP_WORK",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "10E1C9D7873533C60E0BAA9671307B55A881A38FD78879515711BA6C7D81C4E8"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.windowsprogramming.feature_state_change_subscription.native-type.v1",
+      "selector": {
+        "name": "FEATURE_STATE_CHANGE_SUBSCRIPTION",
+        "namespace": "Windows.Win32.System.WindowsProgramming",
+        "sourceFingerprint": "94463D9C0E3ED3A7C998A6DC5B91054CDB82B15EBBE12C6903D61E57A720EF46"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.winrt.hstring.native-type.v1",
+      "selector": {
+        "name": "HSTRING",
+        "namespace": "Windows.Win32.System.WinRT",
+        "sourceFingerprint": "064569B0267AF1AB94CDFF7EF79303C64F8DCCA2E567B6AD8937449F9C8C9E8D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/WinRT/hstring"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.winrt.hstring_buffer.native-type.v1",
+      "selector": {
+        "name": "HSTRING_BUFFER",
+        "namespace": "Windows.Win32.System.WinRT",
+        "sourceFingerprint": "61934D89695722C5FADB684754385176F1194B0C82BC76B8E3B1C40CC13C5567"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/WinRT/hstring-buffer"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.winrt.metadata.roparamiidhandle.native-type.v1",
+      "selector": {
+        "name": "ROPARAMIIDHANDLE",
+        "namespace": "Windows.Win32.System.WinRT.Metadata",
+        "sourceFingerprint": "EBC5BA41CD20A7DC64ADED937430057D0CCDA4AD96669AE5D0C6DEE0EB8015D1"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.accessibility.huiaevent.native-type.v1",
+      "selector": {
+        "name": "HUIAEVENT",
+        "namespace": "Windows.Win32.UI.Accessibility",
+        "sourceFingerprint": "5FBEBEB67073232F7B083CEF311E4BE7D33F20A2CA6879D2E7C954DBDDD67C2C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.accessibility.huianode.native-type.v1",
+      "selector": {
+        "name": "HUIANODE",
+        "namespace": "Windows.Win32.UI.Accessibility",
+        "sourceFingerprint": "7867A891B72E07C68B6AE64A473C027F60CED91AC093C30600500EF27CB04276"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.accessibility.huiapatternobject.native-type.v1",
+      "selector": {
+        "name": "HUIAPATTERNOBJECT",
+        "namespace": "Windows.Win32.UI.Accessibility",
+        "sourceFingerprint": "7CD4BD94BBB3F86CA7A5B195B4D16CF2C00B4417FDECCAD88AA93D8BBD279C02"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.accessibility.huiatextrange.native-type.v1",
+      "selector": {
+        "name": "HUIATEXTRANGE",
+        "namespace": "Windows.Win32.UI.Accessibility",
+        "sourceFingerprint": "75A8FEC11962EDA274C13873D3F3481A350D7521C8435618AD0CD085F3761BD4"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.accessibility.hwineventhook.native-type.v1",
+      "selector": {
+        "name": "HWINEVENTHOOK",
+        "namespace": "Windows.Win32.UI.Accessibility",
+        "sourceFingerprint": "067000BE4C25FEF72F4069A9DB335FD60B45EA0E5B2EA6D32DAC251CEF190491"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/WinAuto/hwineventhook"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.colorsystem.hcolorspace.native-type.v1",
+      "selector": {
+        "name": "HCOLORSPACE",
+        "namespace": "Windows.Win32.UI.ColorSystem",
+        "sourceFingerprint": "4318B41A1700B3F5212EC8FD0DE2683A733C6AFB1D6A1B6BDC881839380ED629"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.controls.hdpa.native-type.v1",
+      "selector": {
+        "name": "HDPA",
+        "namespace": "Windows.Win32.UI.Controls",
+        "sourceFingerprint": "2A89D84F9DC7CBE8B3F15689CB70E6FFB153395E43EA8BFF0F5954A3B109488E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.controls.hdsa.native-type.v1",
+      "selector": {
+        "name": "HDSA",
+        "namespace": "Windows.Win32.UI.Controls",
+        "sourceFingerprint": "3E68A1B0A4ABBAC66B051A1D777CBE4A3E59E11CE06B7EC86D64DFC4248D5697"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.controls.himagelist.native-type.v1",
+      "selector": {
+        "name": "HIMAGELIST",
+        "namespace": "Windows.Win32.UI.Controls",
+        "sourceFingerprint": "5956EBB5C30F8883210E754F3F7797FCC664B75BFFF3BF55C1874A1CB3D39832"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.controls.hpropsheetpage.native-type.v1",
+      "selector": {
+        "name": "HPROPSHEETPAGE",
+        "namespace": "Windows.Win32.UI.Controls",
+        "sourceFingerprint": "70FD3F674A5D65B1A1DD845501AE6E007CF58724B30BA7D9EEF896DB1EEFFFBB"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.controls.htheme.native-type.v1",
+      "selector": {
+        "name": "HTHEME",
+        "namespace": "Windows.Win32.UI.Controls",
+        "sourceFingerprint": "F565DC59FDC00B74497AAC09263B5B869AEA689C86D82C84C0BE18AFC0E6E447"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.hidpi.dpi_awareness_context.native-type.v1",
+      "selector": {
+        "name": "DPI_AWARENESS_CONTEXT",
+        "namespace": "Windows.Win32.UI.HiDpi",
+        "sourceFingerprint": "FFDAE9E079636A2D7346781F3B0B344DA22E857D3C14FB7FF32ECB4E8925AC3E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.hrawinput.native-type.v1",
+      "selector": {
+        "name": "HRAWINPUT",
+        "namespace": "Windows.Win32.UI.Input",
+        "sourceFingerprint": "59F287AE5159D42E231ACFF4BF3EB6C325798E4CF2662F5953A5ACDD751DC865"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.ime.himc.native-type.v1",
+      "selector": {
+        "name": "HIMC",
+        "namespace": "Windows.Win32.UI.Input.Ime",
+        "sourceFingerprint": "EDBA912FCE19DCBD2776EC08F538F6233567A123FBDD36E7BB90CB21EF84A522"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.keyboardandmouse.hkl.native-type.v1",
+      "selector": {
+        "name": "HKL",
+        "namespace": "Windows.Win32.UI.Input.KeyboardAndMouse",
+        "sourceFingerprint": "D8DD31678E14BF635A14B2DBF9A2FC953B55B1FF0EE1DDF94D9C1EB0C18EE168"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.pointer.hsyntheticpointerdevice.native-type.v1",
+      "selector": {
+        "name": "HSYNTHETICPOINTERDEVICE",
+        "namespace": "Windows.Win32.UI.Input.Pointer",
+        "sourceFingerprint": "0FE98F98A29B55933124440944B5EE4DA6390BDD6A8124BD048F60355D7375A3"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.touch.hgestureinfo.native-type.v1",
+      "selector": {
+        "name": "HGESTUREINFO",
+        "namespace": "Windows.Win32.UI.Input.Touch",
+        "sourceFingerprint": "5FD977C608F570ECE52A5A49BEF2B9223CF957C1357348C9E5A2010566F7C01C"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.touch.htouchinput.native-type.v1",
+      "selector": {
+        "name": "HTOUCHINPUT",
+        "namespace": "Windows.Win32.UI.Input.Touch",
+        "sourceFingerprint": "A0F252EF7431ED0AF151BCBCD4251E90D6A52644292A1DD9ED26F467F6746E48"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.interactioncontext.hinteractioncontext.native-type.v1",
+      "selector": {
+        "name": "HINTERACTIONCONTEXT",
+        "namespace": "Windows.Win32.UI.InteractionContext",
+        "sourceFingerprint": "4E161A62EB519BD0B38796F8F69060DB52934A9475FB2B153F961FF58AA36BA4"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.shell.hpsxa.native-type.v1",
+      "selector": {
+        "name": "HPSXA",
+        "namespace": "Windows.Win32.UI.Shell",
+        "sourceFingerprint": "2E7451EAC9AA5308D6602D8E31595236C0AB059206554149DFEE92E89C7E136D"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.tabletpc.hrecoalt.native-type.v1",
+      "selector": {
+        "name": "HRECOALT",
+        "namespace": "Windows.Win32.UI.TabletPC",
+        "sourceFingerprint": "A35FD503FCDC225045C17E0B3925EDBDBEA230598394769D12E43C3E58944972"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/tablet/hrecoalt-handle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.tabletpc.hrecocontext.native-type.v1",
+      "selector": {
+        "name": "HRECOCONTEXT",
+        "namespace": "Windows.Win32.UI.TabletPC",
+        "sourceFingerprint": "30276F09DBD43B83CB48AD1706D6B9CD960D550294DE04A8FA595DE487403A15"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/tablet/hrecocontext-handle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.tabletpc.hrecognizer.native-type.v1",
+      "selector": {
+        "name": "HRECOGNIZER",
+        "namespace": "Windows.Win32.UI.TabletPC",
+        "sourceFingerprint": "611242B0FCBE9447A5B413269ACC14C32DE64BDAECE45550408AA333BF6B0CFC"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/tablet/hrecognizer-handle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.tabletpc.hrecowordlist.native-type.v1",
+      "selector": {
+        "name": "HRECOWORDLIST",
+        "namespace": "Windows.Win32.UI.TabletPC",
+        "sourceFingerprint": "AFB04399F969BAEAC5CC096F6CA7BDAA9087E0E61E9BCFBFCEFC9F1AF74F8441"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/tablet/hrecowordlist-handle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.haccel.native-type.v1",
+      "selector": {
+        "name": "HACCEL",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "8D330D92D8FC7DF77E9409A8F2D44DC620D1E7BBE9493FE42498AD5B0A7B5104"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hcursor.native-type.v1",
+      "selector": {
+        "name": "HCURSOR",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "4D0EB2BE3970E8DDE11EF583E5D32DFDC8C1008D59155038A303CC41BA40307F"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hdevnotify.native-type.v1",
+      "selector": {
+        "name": "HDEVNOTIFY",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "CD753F4193FD3965C1CA324BC0330F841A2ABEF60CC07BA423763E45BC5CB9B3"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hdwp.native-type.v1",
+      "selector": {
+        "name": "HDWP",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "A924213A0C146A09A59AEA7F19C4590B1C5A8819CF7C4029031E139676874515"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hhook.native-type.v1",
+      "selector": {
+        "name": "HHOOK",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "04DB023159673BBB56525FCD22BC440D9184646BE628DD33FA5D5804EE864267"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hicon.native-type.v1",
+      "selector": {
+        "name": "HICON",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "FFB8B9A5A94F62E359113428CE19941DD3EC876014E9E20B33D901E047BA380E"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.windowsandmessaging.hmenu.native-type.v1",
+      "selector": {
+        "name": "HMENU",
+        "namespace": "Windows.Win32.UI.WindowsAndMessaging",
+        "sourceFingerprint": "03A2B0FDA0138A8A19633F85E23EB3B9CD2202E91AD0263F337D02AB04AEA482"
+      },
+      "meaning": {
+        "kind": "handle"
+      },
+      "status": null,
+      "aggregate": null,
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    }
+  ]
+}
