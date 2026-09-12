@@ -33,7 +33,16 @@ const runtime={DynWin32:{
   assert.equal(spec.returnCleanup,'none')
   assert.equal(spec.successRule,'nonzero')
   assert.equal(spec.captureLastError,true)
-  assert.equal(spec.callContractDescriptor,undefined)
+  assert.deepEqual(JSON.parse(spec.callContractDescriptor),{
+    version:2,
+    results:[{
+      target:{kind:'return'},
+      onSuccess:{kind:'defined',ownership:{kind:'value'},delivery:'deliver'},
+      onFailure:{kind:'defined',ownership:{kind:'value'},delivery:'deliver'},
+      overrides:[]
+    }],
+    resourceEffects:[]
+  })
   assert.equal(spec.parameters[0].type,'handle')
   assert.equal(spec.parameters[0].direction,'in')
   assert.equal(spec.parameters[0].consumesResource,true)
@@ -115,6 +124,7 @@ const managed = new WeakMap()
 const calls = []
 const bindings = new Map()
 const unavailable = Symbol('native unavailable output')
+const discarded = Symbol('native discarded output')
 let status = 0
 let returned = null
 let reportedCount = 0
@@ -125,7 +135,7 @@ const helpers = {
     if (typeof value === 'bigint' || (typeof value === 'number' && Number.isSafeInteger(value)) || managed.has(value)) return { input: value }
     throw new TypeError('not a native handle')
   },
-  isUnavailable: value => value === unavailable,
+  isUnavailable: value => value === unavailable || value === discarded,
   toNumber(value) {
     assert.notEqual(value, unavailable, 'undefined native output must not be converted')
     return Number(value)
@@ -157,12 +167,28 @@ const runtime = {
         ? [{kind:'bits-in',parameter:0,mask:0xffffffff,values:[0x80000004]}]
         : [...(extended ? [{kind:'handle-in',parameter:0,values:predefined}] : []),
            {kind:'null-or-empty',parameter:1,elementWidth:width}]
+      const valuePolicy = {kind:'defined',ownership:{kind:'value'},delivery:'deliver'}
+      const valueResult = target => ({target,onSuccess:valuePolicy,onFailure:valuePolicy,overrides:[]})
+      const owned = {kind:'owned',cleanup:'reg-close-key'}
+      const result = query ? valueResult({kind:'parameter',index:target}) : {
+        target:{kind:'parameter',index:target},
+        onSuccess:{kind:'defined',ownership:owned,delivery:'deliver'},
+        onFailure:{kind:'undefined'},
+        overrides:[]
+      }
+      result.overrides = query
+        ? [{when:{inputs,returnValue:234,succeeded:null},policy:{kind:'undefined'}}]
+        : [
+            {when:{inputs,returnValue:null,succeeded:true},policy:{kind:'defined',ownership:{kind:'alias-input',parameter:0},delivery:'deliver'}},
+            {when:{inputs,returnValue:null,succeeded:false},policy:{kind:'undefined'}}
+          ]
       assert.deepEqual(contract, {
-        outputs: [{
-          parameter:target,
-          when:{inputs,returnValue:query ? 234 : null},
-          action:query ? {kind:'unavailable'} : {kind:'alias-input',parameter:0}
-        }],
+        version:2,
+        results: [
+          valueResult({kind:'return'}),
+          ...(query ? [valueResult({kind:'parameter',index:get ? 4 : 3})] : []),
+          result
+        ],
         resourceEffects:[]
       })
       assert.equal(spec.parameters[target].cleanup, query ? 'none' : 'regCloseKey')
@@ -266,9 +292,11 @@ for (const [name, empty] of [
   returned = extended ? owned : zeroExtendedInput
   assert.equal(invoke(zeroExtendedInput, null).key, returned)
   status = 5
-  returned = null
-  assert.equal(invoke(0x80000002n, null).key, null)
-  assert.equal(invoke(input, '').key, null)
+  for (const nonDelivered of [null, unavailable, discarded]) {
+    returned = nonDelivered
+    assert.equal(invoke(0x80000002n, null).key, null)
+    assert.equal(invoke(input, '').key, null)
+  }
   status = 0
 }
 assert.equal(bindings.size, 8)

@@ -11,10 +11,11 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 #[cfg(not(all(windows, target_pointer_width = "32")))]
 use std::ffi::CString;
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-use std::sync::OnceLock;
+use std::sync::Arc;
+#[cfg(all(test, not(all(windows, target_pointer_width = "32"))))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+#[cfg(not(all(windows, target_pointer_width = "32")))]
+use std::sync::{Mutex, OnceLock};
 
 use libffi::middle::Type as FfiType;
 use libffi::middle::{Arg, Cif, Ret, arg};
@@ -40,8 +41,18 @@ use crate::result::{Error, Result};
 #[path = "win32_contract.rs"]
 mod contract;
 pub use contract::{
-    CallContract, Condition, InputPredicate, OutputAction, OutputRule, ResourceEffect,
+    CallContract, Condition, Delivery, InputPredicate, OutputAction, OutputRule, ResourceEffect,
+    ResultContract, ResultOverride, ResultOwnership, ResultPolicy, ResultTarget,
 };
+
+#[path = "win32_resource.rs"]
+mod resource;
+pub use resource::{
+    FileCapability, OwnedResource, OwnedResourceAsyncLease, OwnedResourceLease, ResourceAccess,
+};
+
+#[path = "win32_io.rs"]
+pub mod io;
 
 const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
 #[cfg(all(windows, target_pointer_width = "32"))]
@@ -308,214 +319,6 @@ fn hresult_from_win32(code: u32) -> HRESULT {
     }
 }
 
-#[derive(Debug)]
-pub struct OwnedResource {
-    value: Mutex<usize>,
-    cleanup: Cleanup,
-    async_leases: AtomicUsize,
-    active_async_io: AtomicUsize,
-    file_completion_modes: Mutex<Option<u32>>,
-}
-
-pub struct OwnedResourceLease<'a> {
-    value: std::sync::MutexGuard<'a, usize>,
-}
-
-pub struct OwnedResourceAsyncLease {
-    resource: Arc<OwnedResource>,
-    value: usize,
-    active: bool,
-}
-
-impl OwnedResourceAsyncLease {
-    pub fn raw(&self) -> usize {
-        self.value
-    }
-
-    pub fn completion_modes(&self) -> Result<u32> {
-        use windows::Wdk::Storage::FileSystem::{
-            FileIoCompletionNotificationInformation, NtQueryInformationFile,
-        };
-        use windows::Wdk::System::SystemServices::FILE_IO_COMPLETION_NOTIFICATION_INFORMATION;
-        use windows::Win32::System::IO::IO_STATUS_BLOCK;
-
-        let mut status_block = IO_STATUS_BLOCK::default();
-        let mut information = FILE_IO_COMPLETION_NOTIFICATION_INFORMATION::default();
-        let status = unsafe {
-            NtQueryInformationFile(
-                HANDLE(self.value as *mut c_void),
-                &mut status_block,
-                (&mut information as *mut FILE_IO_COMPLETION_NOTIFICATION_INFORMATION).cast(),
-                size_of::<FILE_IO_COMPLETION_NOTIFICATION_INFORMATION>() as u32,
-                FileIoCompletionNotificationInformation,
-            )
-        };
-        if status.0 != 0 {
-            return Err(Error::WindowsError(windows_core::Error::new(
-                HRESULT(status.0 | 0x1000_0000),
-                format!(
-                    "Cannot query file completion notification modes: NTSTATUS 0x{:08x}",
-                    status.0 as u32
-                ),
-            )));
-        }
-        *self
-            .resource
-            .file_completion_modes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(information.Flags);
-        Ok(information.Flags)
-    }
-
-    pub fn mark_active(&mut self) {
-        if !self.active {
-            self.resource.active_async_io.fetch_add(1, Ordering::AcqRel);
-            self.active = true;
-        }
-    }
-
-    pub fn mark_inactive(&mut self) {
-        if self.active {
-            self.resource.active_async_io.fetch_sub(1, Ordering::AcqRel);
-            self.active = false;
-        }
-    }
-}
-
-impl Drop for OwnedResourceAsyncLease {
-    fn drop(&mut self) {
-        self.mark_inactive();
-        self.resource.async_leases.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-impl OwnedResourceLease<'_> {
-    pub fn raw(&self) -> usize {
-        *self.value
-    }
-}
-
-impl OwnedResource {
-    fn new(value: usize, cleanup: Cleanup) -> Self {
-        debug_assert!(value != 0);
-        debug_assert!(cleanup.owns_resource());
-        Self {
-            value: Mutex::new(value),
-            cleanup,
-            async_leases: AtomicUsize::new(0),
-            active_async_io: AtomicUsize::new(0),
-            file_completion_modes: Mutex::new(None),
-        }
-    }
-
-    /// Adopts a native resource whose exact ownership and cleanup were
-    /// validated by the flat Win32 semantic projection.
-    pub unsafe fn adopt(value: usize, cleanup: Cleanup) -> Result<Arc<Self>> {
-        if value == 0 || !cleanup.owns_resource() {
-            return Err(invalid_argument(
-                "owned Win32 resource requires a nonzero value and cleanup",
-            ));
-        }
-        Ok(Arc::new(Self::new(value, cleanup)))
-    }
-
-    pub fn raw(&self) -> usize {
-        *self.value.lock().unwrap_or_else(|error| error.into_inner())
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.raw() == 0
-    }
-
-    pub fn cleanup(&self) -> Cleanup {
-        self.cleanup
-    }
-
-    pub fn has_async_leases(&self) -> bool {
-        self.async_leases.load(Ordering::Acquire) != 0
-    }
-
-    pub fn has_active_async_io(&self) -> bool {
-        self.active_async_io.load(Ordering::Acquire) != 0
-    }
-
-    pub fn lease(&self, expected_cleanup: Cleanup) -> Result<OwnedResourceLease<'_>> {
-        if self.cleanup != expected_cleanup {
-            return Err(invalid_argument(
-                "managed Win32 resource cleanup kind does not match",
-            ));
-        }
-        let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
-        if *value == 0 {
-            return Err(invalid_argument("cannot lease a closed Win32 resource"));
-        }
-        Ok(OwnedResourceLease { value })
-    }
-
-    fn lock_for_call(
-        &self,
-        consumes_resource: bool,
-        changes_completion_modes: bool,
-    ) -> Result<std::sync::MutexGuard<'_, usize>> {
-        let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
-        if consumes_resource && self.has_async_leases() {
-            return Err(invalid_argument(
-                "cannot consume a Win32 resource while asynchronous I/O is pending",
-            ));
-        }
-        if changes_completion_modes && self.has_async_leases() {
-            return Err(invalid_argument(
-                "cannot change file completion modes while asynchronous I/O is pending",
-            ));
-        }
-        Ok(value)
-    }
-
-    pub fn async_lease(
-        self: &Arc<Self>,
-        expected_cleanup: Cleanup,
-    ) -> Result<OwnedResourceAsyncLease> {
-        if self.cleanup != expected_cleanup {
-            return Err(invalid_argument(
-                "managed Win32 resource cleanup kind does not match",
-            ));
-        }
-        let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
-        if *value == 0 {
-            return Err(invalid_argument("cannot lease a closed Win32 resource"));
-        }
-        self.async_leases.fetch_add(1, Ordering::AcqRel);
-        Ok(OwnedResourceAsyncLease {
-            resource: Arc::clone(self),
-            value: *value,
-            active: false,
-        })
-    }
-
-    pub fn close(&self) -> windows_core::Result<()> {
-        let mut value = self.value.lock().unwrap_or_else(|error| error.into_inner());
-        if self.has_async_leases() {
-            return Err(windows_core::Error::new(
-                HRESULT(0x800700AAu32 as i32),
-                "cannot close a Win32 resource while asynchronous I/O is pending",
-            ));
-        }
-        unsafe { self.cleanup.run(*value) }?;
-        *value = 0;
-        Ok(())
-    }
-}
-
-impl Drop for OwnedResource {
-    fn drop(&mut self) {
-        let value = *self
-            .value
-            .get_mut()
-            .unwrap_or_else(|error| error.into_inner());
-        let _ = unsafe { self.cleanup.run(value) };
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Value {
     Bool(bool),
@@ -543,6 +346,7 @@ pub enum Value {
     },
     Null,
     Unavailable,
+    Discarded,
 }
 
 // Values contain immutable layouts and opaque pointer bits. Calling through a
@@ -652,13 +456,13 @@ pub struct CallPlan {
     input_count: usize,
     output_count: usize,
     return_type: Option<Type>,
-    return_cleanup: Cleanup,
     success_rule: SuccessRule,
     capture_last_error: bool,
     calling_convention: CallingConvention,
     parameter_aggregates: Vec<Option<Arc<NativeAggregateLayout>>>,
     return_aggregate: Option<Arc<NativeAggregateLayout>>,
     contract: CallContract,
+    legacy_surface: contract::LegacySurface,
     cif: Cif,
 }
 
@@ -682,6 +486,23 @@ struct NativeOutputs<'a> {
     cleanup: Vec<Cleanup>,
 }
 
+struct NativeReturn {
+    value: Option<AbiValue>,
+    cleanup: Cleanup,
+}
+
+impl Drop for NativeReturn {
+    fn drop(&mut self) {
+        if self.cleanup.owns_resource()
+            && let Some(AbiValue::Pointer(pointer)) = self.value.take()
+        {
+            if let Err(error) = unsafe { self.cleanup.run(pointer as usize) } {
+                eprintln!("[dynwinrt] native return cleanup failed: {error}");
+            }
+        }
+    }
+}
+
 impl Drop for NativeOutputs<'_> {
     fn drop(&mut self) {
         if !self.initialized {
@@ -693,7 +514,9 @@ impl Drop for NativeOutputs<'_> {
                 && let AbiValue::Pointer(pointer) = &mut self.values[index]
             {
                 let value = std::mem::replace(pointer, std::ptr::null_mut());
-                let _ = unsafe { self.cleanup[index].run(value as usize) };
+                if let Err(error) = unsafe { self.cleanup[index].run(value as usize) } {
+                    eprintln!("[dynwinrt] native output cleanup failed: {error}");
+                }
             }
         }
     }
@@ -705,6 +528,21 @@ impl CallPlan {
     /// The specification must exactly match the target export's native ABI.
     pub unsafe fn new(spec: CallPlanSpec) -> Result<Arc<Self>> {
         unsafe { Self::new_with_contract(spec, CallContract::default()) }
+    }
+
+    /// # Safety
+    ///
+    /// The ABI and versioned semantic descriptor must describe the native export exactly.
+    pub unsafe fn new_with_descriptor(
+        spec: CallPlanSpec,
+        descriptor: Option<&str>,
+    ) -> Result<Arc<Self>> {
+        let contract = descriptor
+            .map(CallContract::decode)
+            .transpose()
+            .map_err(|error| invalid_argument(&error.to_string()))?
+            .unwrap_or_default();
+        unsafe { Self::new_with_contract(spec, contract) }
     }
 
     /// # Safety
@@ -725,7 +563,8 @@ impl CallPlan {
         #[cfg(not(all(windows, target_pointer_width = "32")))]
         {
             validate_spec(&spec)?;
-            contract.validate(&spec)?;
+            let legacy_surface = contract::LegacySurface::new(&spec, &contract);
+            let contract = contract::resolve(&spec, &contract)?;
             let module = get_cached_module(&spec.dll)?;
             let function = proc_address(module, &spec.dll, &spec.entry_point)? as usize;
 
@@ -791,13 +630,13 @@ impl CallPlan {
                 input_count,
                 output_count,
                 return_type: spec.return_type,
-                return_cleanup: spec.return_cleanup,
                 success_rule: spec.success_rule,
                 capture_last_error: spec.capture_last_error,
                 calling_convention: spec.calling_convention,
                 parameter_aggregates: spec.parameter_aggregates,
                 return_aggregate: spec.return_aggregate,
                 contract,
+                legacy_surface,
                 cif,
             }))
         }
@@ -887,7 +726,14 @@ impl CallPlan {
                         parameter.input_index == Some(arg_index)
                             && self.contract.changes_resource(index)
                     });
-            let guard = resource.lock_for_call(consumes_resource, changes_completion_modes)?;
+            let access = if consumes_resource {
+                ResourceAccess::Consume
+            } else if changes_completion_modes {
+                ResourceAccess::MutateState("file completion modes")
+            } else {
+                ResourceAccess::Borrow
+            };
+            let guard = resource.lock_for_call(access)?;
             #[cfg(test)]
             outcome_tests::record_call_lock(Arc::as_ptr(resource) as usize);
             let guard_index = resource_guards.len();
@@ -920,11 +766,20 @@ impl CallPlan {
             .collect::<Result<Vec<_>>>()?;
         let conditions = self
             .contract
-            .outputs
+            .results
             .iter()
-            .map(|rule| unsafe { rule.when.matches_inputs(&input_storage) })
-            .collect::<Vec<_>>();
-        let mut output_actions = vec![None; self.output_count];
+            .map(|result| {
+                result
+                    .overrides
+                    .iter()
+                    .map(|rule| unsafe { contract::matches_inputs(&rule.when, &input_storage) })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut output_policies = vec![ResultPolicy::Undefined {}; self.output_count];
+        let mut legacy_null_outputs = vec![false; self.output_count];
+        let mut legacy_null_return = false;
+        let mut return_policy = None;
         let output_values = self
             .parameters
             .iter()
@@ -950,12 +805,7 @@ impl CallPlan {
             values: output_values,
             parameters: &self.parameters,
             initialized: false,
-            cleanup: self
-                .parameters
-                .iter()
-                .filter(|parameter| parameter.output_index.is_some())
-                .map(|parameter| parameter.spec.cleanup)
-                .collect(),
+            cleanup: vec![Cleanup::None; self.output_count],
         };
         debug_assert_eq!(output_storage.values.len(), self.output_count);
         let output_pointers = output_storage
@@ -1021,17 +871,61 @@ impl CallPlan {
         };
         let last_error = self.capture_last_error.then(|| unsafe { GetLastError().0 });
         let succeeded = success_matches(self.success_rule, raw_return.as_ref())?;
-        for (rule, matches_inputs) in self.contract.outputs.iter().zip(conditions) {
-            if matches_inputs
-                && rule.when.return_value.is_none_or(|expected| {
-                    raw_return.as_ref().and_then(contract::abi_bits) == Some(expected)
-                })
-            {
-                let index = self.parameters[rule.parameter]
-                    .output_index
-                    .expect("validated output rule");
-                output_actions[index] = Some(rule.action);
-                output_storage.cleanup[index] = Cleanup::None;
+        let return_bits = if self.contract.results.iter().any(|result| {
+            result
+                .overrides
+                .iter()
+                .any(|rule| rule.when.return_value.is_some())
+        }) {
+            raw_return.as_ref().and_then(contract::abi_bits)
+        } else {
+            None
+        };
+        let mut return_storage = NativeReturn {
+            value: raw_return,
+            cleanup: Cleanup::None,
+        };
+        for (result, inputs_match) in self.contract.results.iter().zip(conditions) {
+            let mut policy = if succeeded {
+                result.on_success
+            } else {
+                result.on_failure
+            };
+            let mut overridden = false;
+            for (rule, inputs_match) in result.overrides.iter().zip(inputs_match) {
+                if inputs_match
+                    && rule
+                        .when
+                        .succeeded
+                        .is_none_or(|expected| expected == succeeded)
+                    && rule
+                        .when
+                        .return_value
+                        .is_none_or(|expected| return_bits == Some(expected))
+                {
+                    policy = rule.policy;
+                    overridden = true;
+                    break;
+                }
+            }
+            match result.target {
+                ResultTarget::Return {} => {
+                    legacy_null_return =
+                        self.legacy_surface
+                            .null_on_failure(result.target, succeeded, overridden);
+                    return_policy = Some(policy);
+                    return_storage.cleanup = result_cleanup(policy);
+                }
+                ResultTarget::Parameter { index } => {
+                    let output = self.parameters[index]
+                        .output_index
+                        .expect("validated result target");
+                    output_policies[output] = policy;
+                    legacy_null_outputs[output] =
+                        self.legacy_surface
+                            .null_on_failure(result.target, succeeded, overridden);
+                    output_storage.cleanup[output] = result_cleanup(policy);
+                }
             }
         }
         output_storage.initialized = true;
@@ -1048,14 +942,9 @@ impl CallPlan {
                     let Some(AbiValue::U8(flags)) = &input_storage[flags_parameter] else {
                         unreachable!("validated file completion mode flags");
                     };
-                    if let Some(modes) = resource
-                        .file_completion_modes
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .as_mut()
-                    {
-                        *modes |= u32::from(*flags);
-                    }
+                    resource
+                        .file_capability()
+                        .record_completion_modes(u32::from(*flags));
                 }
             }
             for parameter in &self.parameters {
@@ -1071,92 +960,98 @@ impl CallPlan {
             }
         }
 
-        let return_value = if let (Some(layout), Some(words)) =
-            (&self.return_aggregate, aggregate_return_words)
-        {
-            let source =
-                unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), layout.size()) };
-            let mut bytes = Vec::new();
-            #[cfg(test)]
-            outcome_tests::check_aggregate_return_allocation()?;
-            bytes
-                .try_reserve_exact(source.len())
-                .map_err(|_| out_of_memory("native aggregate return"))?;
-            bytes.extend_from_slice(source);
-            Some(Value::OwnedAggregate {
-                layout: Arc::clone(layout),
-                bytes,
-            })
-        } else {
-            match (self.return_type, raw_return) {
-                (Some(typ), Some(value)) => Some(finalize_value(
-                    typ,
-                    value,
-                    self.return_cleanup,
-                    succeeded,
-                    false,
-                )?),
-                (None, None) => None,
-                _ => {
-                    return Err(invalid_argument(
-                        "flat Win32 call plan produced an inconsistent return value",
-                    ));
+        let mut return_value =
+            if let (Some(layout), Some(words)) = (&self.return_aggregate, aggregate_return_words) {
+                match return_policy.expect("validated aggregate return policy") {
+                    ResultPolicy::Undefined {} => Some(Value::Unavailable),
+                    ResultPolicy::Defined {
+                        delivery: Delivery::Discard,
+                        ..
+                    } => Some(Value::Discarded),
+                    ResultPolicy::Defined {
+                        ownership: ResultOwnership::Value {},
+                        delivery: Delivery::Deliver,
+                    } => {
+                        let source = unsafe {
+                            std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), layout.size())
+                        };
+                        let mut bytes = Vec::new();
+                        #[cfg(test)]
+                        outcome_tests::check_aggregate_return_allocation()?;
+                        bytes
+                            .try_reserve_exact(source.len())
+                            .map_err(|_| out_of_memory("native aggregate return"))?;
+                        bytes.extend_from_slice(source);
+                        Some(Value::OwnedAggregate {
+                            layout: Arc::clone(layout),
+                            bytes,
+                        })
+                    }
+                    _ => {
+                        return Err(invalid_argument(
+                            "Aggregate return has unsupported ownership",
+                        ));
+                    }
                 }
-            }
-        };
+            } else {
+                match (self.return_type, return_policy) {
+                    (Some(_), Some(ResultPolicy::Undefined {})) => Some(Value::Unavailable),
+                    (Some(typ), Some(policy)) => {
+                        #[cfg(test)]
+                        outcome_tests::check_result_decode(ResultTarget::Return {})?;
+                        let value = return_storage
+                            .value
+                            .take()
+                            .ok_or_else(|| invalid_argument("Missing native return storage"))?;
+                        Some(self.decode_result(typ, value, policy, args, &input_storage)?)
+                    }
+                    (None, None) => None,
+                    _ => {
+                        return Err(invalid_argument(
+                            "flat Win32 call plan produced an inconsistent return value",
+                        ));
+                    }
+                }
+            };
+        if legacy_null_return {
+            return_value = Some(Value::Handle(0));
+        }
 
         let mut outputs = Vec::with_capacity(self.output_count);
-        for parameter in &self.parameters {
+        for (_parameter_index, parameter) in self.parameters.iter().enumerate() {
             let Some(output_index) = parameter.output_index else {
                 continue;
             };
-            match output_actions[output_index] {
-                Some(OutputAction::Unavailable {}) => {
-                    outputs.push(Value::Unavailable);
-                    continue;
-                }
-                Some(OutputAction::AliasInput {
-                    parameter: input_parameter,
-                }) => {
-                    if !succeeded {
-                        outputs.push(Value::Handle(0));
-                        continue;
-                    }
-                    #[cfg(test)]
-                    outcome_tests::record_output_decode(output_index);
-                    let expected = input_storage[input_parameter]
-                        .as_ref()
-                        .and_then(contract::abi_bits)
-                        .expect("validated handle input");
-                    if contract::abi_bits(&output_storage.values[output_index]) != Some(expected) {
-                        return Err(invalid_argument(
-                            "Win32 alias output does not equal its contracted input handle",
-                        ));
-                    }
-                    let input = self.parameters[input_parameter]
-                        .input_index
-                        .expect("validated alias input");
-                    outputs.push(match &args[input] {
-                        Value::Resource(resource) => Value::Resource(Arc::clone(resource)),
-                        _ => Value::Handle(expected as usize),
-                    });
-                    continue;
-                }
-                None => {}
+            if matches!(output_policies[output_index], ResultPolicy::Undefined {}) {
+                outputs.push(if legacy_null_outputs[output_index] {
+                    Value::Handle(0)
+                } else {
+                    Value::Unavailable
+                });
+                continue;
             }
+            #[cfg(test)]
+            outcome_tests::check_result_decode(ResultTarget::Parameter {
+                index: _parameter_index,
+            })?;
             #[cfg(test)]
             outcome_tests::record_output_decode(output_index);
             let raw = std::mem::replace(
                 &mut output_storage.values[output_index],
                 parameter.spec.typ.default_abi_value(),
             );
-            outputs.push(finalize_value(
+            let decoded = self.decode_result(
                 parameter.spec.typ,
                 raw,
-                output_storage.cleanup[output_index],
-                succeeded,
-                true,
-            )?);
+                output_policies[output_index],
+                args,
+                &input_storage,
+            )?;
+            outputs.push(if legacy_null_outputs[output_index] {
+                Value::Handle(0)
+            } else {
+                decoded
+            });
         }
 
         Ok(CallResult {
@@ -1165,6 +1060,83 @@ impl CallPlan {
             last_error,
             succeeded,
         })
+    }
+
+    fn decode_result(
+        &self,
+        typ: Type,
+        value: AbiValue,
+        policy: ResultPolicy,
+        args: &[Value],
+        input_storage: &[Option<AbiValue>],
+    ) -> Result<Value> {
+        let ResultPolicy::Defined {
+            ownership,
+            delivery,
+        } = policy
+        else {
+            return Err(invalid_argument(
+                "Undefined native output cannot be decoded",
+            ));
+        };
+        let result = match ownership {
+            ResultOwnership::Owned { cleanup } => {
+                let AbiValue::Pointer(pointer) = value else {
+                    return Err(invalid_argument(
+                        "Owned native result is not pointer-shaped",
+                    ));
+                };
+                let bits = pointer as usize;
+                let cleanup = Cleanup::from(cleanup);
+                if delivery == Delivery::Discard {
+                    unsafe { cleanup.run(bits) }.map_err(Error::WindowsError)?;
+                    return Ok(Value::Discarded);
+                }
+                if bits == 0 {
+                    Value::Handle(0)
+                } else {
+                    Value::Resource(unsafe { OwnedResource::adopt(bits, cleanup) }?)
+                }
+            }
+            ResultOwnership::AliasInput { parameter } => {
+                let expected = input_storage[parameter]
+                    .as_ref()
+                    .and_then(contract::abi_bits)
+                    .expect("validated alias input storage");
+                if contract::abi_bits(&value) != Some(expected) {
+                    return Err(invalid_argument(
+                        "Win32 alias output does not equal its contracted input handle",
+                    ));
+                }
+                if delivery == Delivery::Discard {
+                    return Ok(Value::Discarded);
+                }
+                match &args[self.parameters[parameter]
+                    .input_index
+                    .expect("validated alias input")]
+                {
+                    Value::Resource(resource) => Value::Resource(Arc::clone(resource)),
+                    _ => Value::Handle(expected as usize),
+                }
+            }
+            ResultOwnership::Value {} | ResultOwnership::Borrowed {} => {
+                if delivery == Delivery::Discard {
+                    return Ok(Value::Discarded);
+                }
+                decode_plain_value(typ, value)?
+            }
+        };
+        Ok(result)
+    }
+}
+
+fn result_cleanup(policy: ResultPolicy) -> Cleanup {
+    match policy {
+        ResultPolicy::Defined {
+            ownership: ResultOwnership::Owned { cleanup },
+            ..
+        } => cleanup.into(),
+        _ => Cleanup::None,
     }
 }
 
@@ -1353,35 +1325,7 @@ fn abi_arg(value: &AbiValue) -> Arg<'_> {
     }
 }
 
-fn finalize_value(
-    typ: Type,
-    value: AbiValue,
-    cleanup: Cleanup,
-    succeeded: bool,
-    cleanup_on_failure: bool,
-) -> Result<Value> {
-    if cleanup.owns_resource() {
-        let bits = match value {
-            AbiValue::Pointer(value) => value as usize,
-            _ => {
-                return Err(invalid_argument(
-                    "owned flat Win32 output was not pointer-shaped",
-                ));
-            }
-        };
-        if !succeeded {
-            if cleanup_on_failure {
-                unsafe { cleanup.run(bits) }.map_err(Error::WindowsError)?;
-            }
-            return Ok(Value::Handle(0));
-        }
-        return if bits == 0 {
-            Ok(Value::Handle(0))
-        } else {
-            Ok(Value::Resource(Arc::new(OwnedResource::new(bits, cleanup))))
-        };
-    }
-
+fn decode_plain_value(typ: Type, value: AbiValue) -> Result<Value> {
     Ok(match (typ, value) {
         (Type::Bool32, AbiValue::I32(value)) => Value::Bool(value != 0),
         (Type::I8, AbiValue::I8(value)) => Value::I8(value),
@@ -1540,6 +1484,9 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "win32_outcome_tests.rs"]
 mod outcome_tests;
+#[cfg(all(test, target_pointer_width = "64"))]
+#[path = "win32_result_tests.rs"]
+mod result_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1889,15 +1836,13 @@ mod tests {
 
     #[test]
     fn failed_direct_handle_sentinel_is_never_cleaned() {
-        let value = finalize_value(
-            Type::Handle,
-            AbiValue::Pointer(usize::MAX as *mut c_void),
-            Cleanup::CloseHandle,
-            false,
-            false,
-        )
-        .unwrap();
-        assert!(matches!(value, Value::Handle(0)));
+        outcome_tests::reset();
+        let result = NativeReturn {
+            value: Some(AbiValue::Pointer(usize::MAX as *mut c_void)),
+            cleanup: result_cleanup(ResultPolicy::Undefined {}),
+        };
+        drop(result);
+        assert_eq!(outcome_tests::cleanup_count_for(usize::MAX), 0);
     }
 
     #[test]
@@ -2045,11 +1990,11 @@ mod tests {
         let resource =
             unsafe { OwnedResource::adopt(allocation.0 as usize, Cleanup::GlobalFree) }.unwrap();
         let lease = resource.async_lease(Cleanup::GlobalFree).unwrap();
-        let error = resource.lock_for_call(true, false).unwrap_err();
+        let error = resource.lock_for_call(ResourceAccess::Consume).unwrap_err();
         assert!(error.message().contains("asynchronous I/O is pending"));
         drop(lease);
 
-        let guard = resource.lock_for_call(true, false).unwrap();
+        let guard = resource.lock_for_call(ResourceAccess::Consume).unwrap();
         assert_eq!(*guard, allocation.0 as usize);
         drop(guard);
         resource.close().unwrap();
@@ -2061,7 +2006,7 @@ mod tests {
         let allocation = unsafe { GlobalAlloc(GMEM_FIXED, 16) }.unwrap();
         let resource =
             unsafe { OwnedResource::adopt(allocation.0 as usize, Cleanup::GlobalFree) }.unwrap();
-        let mut consuming = resource.lock_for_call(true, false).unwrap();
+        let mut consuming = resource.lock_for_call(ResourceAccess::Consume).unwrap();
         let other = Arc::clone(&resource);
         let (started, ready) = std::sync::mpsc::channel();
         let acquiring = std::thread::spawn(move || {

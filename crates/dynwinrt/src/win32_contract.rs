@@ -1,266 +1,208 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use dynwinrt_win32_contracts as protocol;
+pub use dynwinrt_win32_contracts::{
+    CallContract, Condition, Delivery, InputPredicate, OutputAction, OutputRule, ResourceEffect,
+    ResultContract, ResultOverride, ResultOwnership, ResultPolicy, ResultTarget,
+};
 
-use super::{CallPlanSpec, Cleanup, Direction, Type, invalid_argument};
+use super::{CallPlanSpec, Cleanup, Direction, SuccessRule, Type, invalid_argument};
 use crate::{abi::AbiValue, result::Result};
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CallContract {
-    #[serde(default)]
-    pub outputs: Vec<OutputRule>,
-    #[serde(default)]
-    pub resource_effects: Vec<ResourceEffect>,
+#[derive(Debug)]
+pub(super) struct LegacySurface {
+    owned: Vec<ResultTarget>,
+    explicit_undefined: Vec<ResultTarget>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OutputRule {
-    pub parameter: usize,
-    pub when: Condition,
-    pub action: OutputAction,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Condition {
-    #[serde(default)]
-    pub inputs: Vec<InputPredicate>,
-    #[serde(default)]
-    pub return_value: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum InputPredicate {
-    BitsIn {
-        parameter: usize,
-        mask: u64,
-        values: Vec<u64>,
-    },
-    HandleIn {
-        parameter: usize,
-        values: Vec<i64>,
-    },
-    NullOrEmpty {
-        parameter: usize,
-        element_width: u8,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum OutputAction {
-    Unavailable {},
-    AliasInput { parameter: usize },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum ResourceEffect {
-    AddFileCompletionModes {
-        handle_parameter: usize,
-        flags_parameter: usize,
-    },
-}
-
-impl CallContract {
-    pub(super) fn validate(&self, spec: &CallPlanSpec) -> Result<()> {
-        if self.outputs.len() > spec.parameters.len()
-            || self.resource_effects.len() > spec.parameters.len()
-        {
-            return Err(invalid_argument("Win32 call contract has too many rules"));
+impl LegacySurface {
+    pub(super) fn new(spec: &CallPlanSpec, contract: &CallContract) -> Self {
+        if contract.version != protocol::LEGACY_VERSION {
+            return Self {
+                owned: Vec::new(),
+                explicit_undefined: Vec::new(),
+            };
         }
-        let mut targets = BTreeSet::new();
-        for rule in &self.outputs {
-            let output = spec.parameters.get(rule.parameter).ok_or_else(|| {
-                invalid_argument("Win32 output rule refers to an unknown native parameter")
-            })?;
-            if !output.direction.is_output() || !targets.insert(rule.parameter) {
-                return Err(invalid_argument(
-                    "Win32 output rules require unique native output parameters",
-                ));
-            }
-            if rule.when.inputs.len() > 16 {
-                return Err(invalid_argument(
-                    "Win32 output condition has too many predicates",
-                ));
-            }
-            if let Some(value) = rule.when.return_value {
-                let mask = spec.return_type.and_then(integer_mask).ok_or_else(|| {
-                    invalid_argument("Win32 return conditions require an integer native return")
-                })?;
-                if value & !mask != 0 {
-                    return Err(invalid_argument(
-                        "Win32 return condition exceeds its native width",
-                    ));
-                }
-            }
-            for predicate in &rule.when.inputs {
-                let parameter = match predicate {
-                    InputPredicate::BitsIn { parameter, .. }
-                    | InputPredicate::HandleIn { parameter, .. }
-                    | InputPredicate::NullOrEmpty { parameter, .. } => *parameter,
-                };
-                let input = spec.parameters.get(parameter).ok_or_else(|| {
-                    invalid_argument("Win32 input condition refers to an unknown native parameter")
-                })?;
-                if input.direction == Direction::Out
-                    || spec.parameter_aggregates[parameter].is_some()
-                {
-                    return Err(invalid_argument(
-                        "Win32 input condition requires a scalar input",
-                    ));
-                }
-                match predicate {
-                    InputPredicate::BitsIn { mask, values, .. } => {
-                        let width = integer_mask(input.typ).ok_or_else(|| {
-                            invalid_argument("Win32 bits condition requires an integer or handle")
-                        })?;
-                        if *mask == 0
-                            || mask & !width != 0
-                            || values.is_empty()
-                            || values.len() > 64
-                            || values.iter().any(|value| value & !mask != 0)
-                            || values.iter().copied().collect::<BTreeSet<_>>().len() != values.len()
-                        {
-                            return Err(invalid_argument("Invalid Win32 native bits condition"));
-                        }
+        Self {
+            owned: shape(spec)
+                .result_targets()
+                .filter(|target| match target {
+                    ResultTarget::Return {} => spec.return_cleanup.owns_resource(),
+                    ResultTarget::Parameter { index } => {
+                        spec.parameters[*index].cleanup.owns_resource()
                     }
-                    InputPredicate::HandleIn { values, .. } => {
-                        if input.typ != Type::Handle
-                            || values.is_empty()
-                            || values.len() > 64
-                            || values.iter().any(|value| isize::try_from(*value).is_err())
-                            || values.iter().copied().collect::<BTreeSet<_>>().len() != values.len()
-                        {
-                            return Err(invalid_argument(
-                                "Native handle conditions require unique pointer-width signed handle values",
-                            ));
-                        }
-                    }
-                    InputPredicate::NullOrEmpty { element_width, .. } => {
-                        if input.typ != Type::Pointer || !matches!(element_width, 1 | 2) {
-                            return Err(invalid_argument(
-                                "Win32 empty-string condition requires a pointer and byte/UTF-16 width",
-                            ));
-                        }
-                    }
-                }
-            }
-            if let OutputAction::AliasInput { parameter } = rule.action {
-                let input = spec.parameters.get(parameter).ok_or_else(|| {
-                    invalid_argument("Win32 alias refers to an unknown native input")
-                })?;
-                if output.typ != Type::Handle
-                    || output.direction != Direction::Out
-                    || !output.cleanup.owns_resource()
-                    || input.typ != Type::Handle
-                    || input.direction != Direction::In
-                    || input.consumes_resource
-                    || input.resource_cleanup != output.cleanup
-                {
-                    return Err(invalid_argument(
-                        "Win32 alias requires an owned handle output and a matching non-consuming input",
-                    ));
-                }
-            }
+                })
+                .collect(),
+            explicit_undefined: contract
+                .outputs
+                .iter()
+                .filter_map(|rule| {
+                    matches!(rule.action, OutputAction::Unavailable {}).then_some(
+                        ResultTarget::Parameter {
+                            index: rule.parameter,
+                        },
+                    )
+                })
+                .collect(),
         }
-        let mut resources = BTreeSet::new();
-        for effect in &self.resource_effects {
-            let ResourceEffect::AddFileCompletionModes {
-                handle_parameter,
-                flags_parameter,
-            } = *effect;
-            let handle = spec.parameters.get(handle_parameter);
-            let flags = spec.parameters.get(flags_parameter);
-            if !matches!(handle, Some(parameter) if parameter.typ == Type::Handle
-                && parameter.direction == Direction::In && !parameter.consumes_resource
-                && parameter.resource_cleanup == Cleanup::CloseHandle)
-                || !matches!(flags, Some(parameter) if parameter.typ == Type::U8
-                    && parameter.direction == Direction::In)
-                || !resources.insert(handle_parameter)
-            {
-                return Err(invalid_argument(
-                    "File completion mode effects require a unique CloseHandle input and native U8 flags",
-                ));
-            }
-        }
-        Ok(())
     }
 
-    pub(super) fn changes_resource(&self, parameter: usize) -> bool {
-        self.resource_effects.iter().any(|effect| {
-            matches!(effect, ResourceEffect::AddFileCompletionModes { handle_parameter, .. }
-                if *handle_parameter == parameter)
-        })
+    pub(super) fn null_on_failure(
+        &self,
+        target: ResultTarget,
+        succeeded: bool,
+        overridden: bool,
+    ) -> bool {
+        !succeeded
+            && self.owned.contains(&target)
+            && !(overridden && self.explicit_undefined.contains(&target))
     }
 }
 
-impl Condition {
-    pub(super) unsafe fn matches_inputs(&self, inputs: &[Option<AbiValue>]) -> bool {
-        self.inputs.iter().all(|predicate| match predicate {
-            InputPredicate::BitsIn {
-                parameter,
-                mask,
-                values,
-            } => inputs[*parameter]
-                .as_ref()
-                .and_then(abi_bits)
-                .is_some_and(|bits| values.contains(&(bits & mask))),
-            InputPredicate::HandleIn { parameter, values } => {
-                let Some(AbiValue::Pointer(pointer)) = &inputs[*parameter] else {
-                    return false;
+pub(super) fn shape(spec: &CallPlanSpec) -> protocol::SignatureShape {
+    protocol::SignatureShape {
+        pointer_width: usize::BITS as u8,
+        parameters: spec
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| protocol::ParameterShape {
+                typ: if spec.parameter_aggregates[index].is_some() {
+                    protocol::NativeType::Aggregate
+                } else {
+                    native_type(parameter.typ)
+                },
+                direction: match parameter.direction {
+                    Direction::In => protocol::Direction::In,
+                    Direction::Out => protocol::Direction::Out,
+                    Direction::InOut => protocol::Direction::InOut,
+                },
+                cleanup: parameter.cleanup.into(),
+                resource_cleanup: parameter.resource_cleanup.into(),
+                consumes_resource: parameter.consumes_resource,
+            })
+            .collect(),
+        return_type: if spec.return_aggregate.is_some() {
+            Some(protocol::NativeType::Aggregate)
+        } else {
+            spec.return_type.map(native_type)
+        },
+        return_cleanup: spec.return_cleanup.into(),
+        success_rule: match spec.success_rule {
+            SuccessRule::Always => protocol::SuccessRule::Always,
+            SuccessRule::ReturnZero => protocol::SuccessRule::ReturnZero,
+            SuccessRule::ReturnNonZero => protocol::SuccessRule::ReturnNonZero,
+            SuccessRule::ReturnNonNull => protocol::SuccessRule::ReturnNonNull,
+            SuccessRule::HResultSucceeded => protocol::SuccessRule::HResultSucceeded,
+            SuccessRule::SignedNonNegative => protocol::SuccessRule::SignedNonNegative,
+            SuccessRule::ReturnValidHandle => protocol::SuccessRule::ReturnValidHandle,
+        },
+    }
+}
+
+pub(super) fn resolve(spec: &CallPlanSpec, contract: &CallContract) -> Result<CallContract> {
+    contract
+        .upgrade(&shape(spec))
+        .map_err(|error| invalid_argument(&error.to_string()))
+}
+
+fn native_type(typ: Type) -> protocol::NativeType {
+    match typ {
+        Type::Bool32 => protocol::NativeType::Bool32,
+        Type::I8 => protocol::NativeType::I8,
+        Type::U8 => protocol::NativeType::U8,
+        Type::I16 => protocol::NativeType::I16,
+        Type::U16 => protocol::NativeType::U16,
+        Type::I32 => protocol::NativeType::I32,
+        Type::U32 => protocol::NativeType::U32,
+        Type::I64 => protocol::NativeType::I64,
+        Type::U64 => protocol::NativeType::U64,
+        Type::F32 => protocol::NativeType::F32,
+        Type::F64 => protocol::NativeType::F64,
+        Type::Pointer => protocol::NativeType::Pointer,
+        Type::FunctionPointer => protocol::NativeType::FunctionPointer,
+        Type::Handle => protocol::NativeType::Handle,
+    }
+}
+
+impl From<Cleanup> for protocol::Cleanup {
+    fn from(value: Cleanup) -> Self {
+        match value {
+            Cleanup::None => Self::None,
+            Cleanup::CloseHandle => Self::CloseHandle,
+            Cleanup::RegCloseKey => Self::RegCloseKey,
+            Cleanup::LocalFree => Self::LocalFree,
+            Cleanup::GlobalFree => Self::GlobalFree,
+            Cleanup::FreeLibrary => Self::FreeLibrary,
+            Cleanup::CloseServiceHandle => Self::CloseServiceHandle,
+            Cleanup::CoTaskMemFree => Self::CoTaskMemFree,
+            Cleanup::CredFree => Self::CredFree,
+        }
+    }
+}
+
+impl From<protocol::Cleanup> for Cleanup {
+    fn from(value: protocol::Cleanup) -> Self {
+        match value {
+            protocol::Cleanup::None => Self::None,
+            protocol::Cleanup::CloseHandle => Self::CloseHandle,
+            protocol::Cleanup::RegCloseKey => Self::RegCloseKey,
+            protocol::Cleanup::LocalFree => Self::LocalFree,
+            protocol::Cleanup::GlobalFree => Self::GlobalFree,
+            protocol::Cleanup::FreeLibrary => Self::FreeLibrary,
+            protocol::Cleanup::CloseServiceHandle => Self::CloseServiceHandle,
+            protocol::Cleanup::CoTaskMemFree => Self::CoTaskMemFree,
+            protocol::Cleanup::CredFree => Self::CredFree,
+        }
+    }
+}
+
+pub(super) unsafe fn matches_inputs(
+    condition: &Condition,
+    inputs: &[Option<AbiValue>],
+) -> Result<bool> {
+    for predicate in &condition.inputs {
+        let value = inputs
+            .get(predicate.parameter())
+            .and_then(Option::as_ref)
+            .ok_or_else(|| invalid_argument("Call condition is missing native input storage"))?;
+        let matched = match predicate {
+            InputPredicate::BitsIn { mask, values, .. } => {
+                let bits = abi_bits(value).ok_or_else(|| {
+                    invalid_argument("Call condition has non-integer input storage")
+                })?;
+                values.contains(&(bits & mask))
+            }
+            InputPredicate::HandleIn { values, .. } => {
+                let AbiValue::Pointer(pointer) = value else {
+                    return Err(invalid_argument(
+                        "Handle condition has non-handle input storage",
+                    ));
                 };
                 values.contains(&(*pointer as isize as i64))
             }
-            InputPredicate::NullOrEmpty {
-                parameter,
-                element_width,
-            } => {
-                let Some(AbiValue::Pointer(pointer)) = &inputs[*parameter] else {
-                    return false;
+            InputPredicate::NullOrEmpty { element_width, .. } => {
+                let AbiValue::Pointer(pointer) = value else {
+                    return Err(invalid_argument(
+                        "String condition has non-pointer input storage",
+                    ));
                 };
                 pointer.is_null()
                     || unsafe {
                         match element_width {
                             1 => *pointer.cast::<u8>() == 0,
                             2 => pointer.cast::<u16>().read_unaligned() == 0,
-                            _ => unreachable!("validated native character width"),
+                            _ => return Err(invalid_argument("Unsupported native string width")),
                         }
                     }
             }
-        })
+        };
+        if !matched {
+            return Ok(false);
+        }
     }
-}
-
-fn integer_mask(typ: Type) -> Option<u64> {
-    Some(match typ {
-        Type::I8 | Type::U8 => u8::MAX as u64,
-        Type::I16 | Type::U16 => u16::MAX as u64,
-        Type::Bool32 | Type::I32 | Type::U32 => u32::MAX as u64,
-        Type::I64 | Type::U64 => u64::MAX,
-        Type::Handle => usize::MAX as u64,
-        _ => return None,
-    })
+    Ok(true)
 }
 
 pub(super) fn abi_bits(value: &AbiValue) -> Option<u64> {

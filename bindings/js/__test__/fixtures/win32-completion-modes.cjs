@@ -50,6 +50,14 @@ const setModes = (file, flags, external = false) => {
   const result = (external ? externalModes : trackedModes).invoke([resource(file), DynWin32.u8(flags)])
   assert.equal(result.succeeded, true, `SetFileCompletionNotificationModes: ${result.lastError}`)
 }
+const waitForNativeCompletion = (file) => {
+  const wait = new Int32Array(new SharedArrayBuffer(4))
+  const deadline = Date.now() + 5000
+  while (file.active) {
+    assert.ok(Date.now() < deadline, 'native completion timed out while JS delivery was blocked')
+    Atomics.wait(wait, 0, 0, 1)
+  }
+}
 
 async function scenario(flags, external) {
   console.log(`completion modes ${flags}, external=${external}`)
@@ -91,7 +99,23 @@ async function scenario(flags, external) {
     const bytes = Buffer.alloc(5)
     const immediate = DynWin32.beginReadFile(file, bytes)
     assert.throws(() => setModes(file, 1), /completion modes.*asynchronous I\/O/)
-    assert.equal(await start(immediate), 5)
+    let deliveries = 0
+    const immediateResult = new Promise((resolve, reject) =>
+      immediate.start((error, transferred) => {
+        deliveries++
+        if (error) reject(error)
+        else resolve(transferred)
+      }),
+    )
+    waitForNativeCompletion(file)
+    assert.equal(deliveries, 0)
+    assert.equal(file.busy, true)
+    assert.deepEqual(bytes, Buffer.alloc(5))
+    assert.throws(() => file.close(), /asynchronous I\/O/)
+    assert.throws(() => setModes(file, 1), /completion modes.*asynchronous I\/O/)
+    immediate.cancel()
+    assert.equal(await immediateResult, 5)
+    assert.equal(deliveries, 1)
     assert.equal(bytes.toString(), 'ready')
     assert.equal(file.busy, false)
     assert.equal(file.active, false)
@@ -114,8 +138,35 @@ async function scenario(flags, external) {
     assert.equal(recovered.toString(), 'next')
     assert.equal(file.busy, false)
 
+    await new Promise((resolve, reject) => peer.write('late', (error) => (error ? reject(error) : resolve())))
+    const backing = new ArrayBuffer(4)
+    const detachedResult = start(DynWin32.beginReadFile(file, Buffer.from(backing)))
+    waitForNativeCompletion(file)
+    structuredClone(backing, { transfer: [backing] })
+    assert.equal(file.busy, true)
+    await assert.rejects(detachedResult, /detached|changed/)
+    assert.equal(file.busy, false)
+
+    if (!external && (flags === 0 || flags === 3)) {
+      await new Promise((resolve, reject) =>
+        peer.write(Buffer.alloc(1024, 0x51), (error) => (error ? reject(error) : resolve())),
+      )
+      const buffers = Array.from({ length: 1024 }, () => Buffer.alloc(1))
+      const results = buffers.map((buffer) => start(DynWin32.beginReadFile(file, buffer)))
+      waitForNativeCompletion(file)
+      assert.equal(file.busy, true)
+      assert.ok(buffers.every((buffer) => buffer[0] === 0))
+      assert.throws(() => DynWin32.beginReadFile(file, Buffer.alloc(0)), /operation limit/)
+      assert.deepEqual(await Promise.all(results), Array(1024).fill(1))
+      assert.ok(buffers.every((buffer) => buffer[0] === 0x51))
+      assert.equal(file.busy, false)
+    }
+
     const received = once(peer, 'data')
-    assert.equal(await start(DynWin32.beginWriteFile(file, Buffer.from('back'))), 4)
+    const original = Buffer.from('back')
+    const write = DynWin32.beginWriteFile(file, original)
+    original.fill(0)
+    assert.equal(await start(write), 4)
     assert.equal((await received)[0].toString(), 'back')
     assert.equal(file.busy, false)
     file.close()

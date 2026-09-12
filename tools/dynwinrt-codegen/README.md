@@ -184,6 +184,44 @@ cargo test -p dynwinrt-codegen
 Official npm and PyPI packages are built and published by the repository release
 pipelines.
 
+### Win32 result contracts
+
+Flat Win32 generation uses `dynwinrt-win32-contracts` as its single wire-protocol
+authority. Native metadata still determines pointer depth, constness, encoding,
+type identity, and ownership provenance. After caller-owned buffers become
+physical input pointers, projection resolves a version 2 descriptor covering
+every direct return and native output cell.
+
+`contracts\win32\function-contracts.json` accepts `result-contract` effects
+containing the shared `ResultContract` type. These replace the default or
+upgraded policy for that native target; legacy `call-contract` evidence remains
+readable. New generation uses `upgrade_metadata()`: legacy ownership evidence
+alone does not establish defined output storage on failure, so owned failure
+results default to undefined. An explicit result policy may instead guarantee a
+defined failure result, including a discarded owned value requiring cleanup.
+Historical version 1 cleanup behavior is confined to compatibility decoding;
+scalar/status/count defaults remain unchanged.
+Success, failure, and disjoint conditional overrides distinguish
+undefined storage from defined values, ownership/cleanup, and delivery/discard.
+Projection derives nullable results and resource conversions from those
+policies; renderers neither infer ownership nor bind native functions on import.
+
+The production registry schema references generated
+`contracts\win32\call-contract.schema.json`, not a second handwritten protocol.
+After changing the shared protocol or reviewed registry data, update its schema
+and LF-normalized production manifest hashes using the existing test runner:
+
+```powershell
+$env:DYNWINRT_UPDATE_WIN32_SCHEMA = '1'
+cargo test -p dynwinrt-codegen --test win32_contract_schema_test
+Remove-Item Env:DYNWINRT_UPDATE_WIN32_SCHEMA
+```
+
+Without the update variable, the same test checks schema and manifest
+consistency. Synthetic result matrices cover failure-only cleanup/delivery
+combinations; metadata regressions and complete CommonJS/ESM/TypeScript module
+tests preserve the pinned 8,936/18,321 export census.
+
 ## License
 
 [MIT](https://github.com/microsoft/dynwinrt/blob/main/LICENSE)

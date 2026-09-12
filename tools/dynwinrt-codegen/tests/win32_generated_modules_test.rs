@@ -55,6 +55,7 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
     fs::create_dir(&directory).unwrap();
     let scratch = Scratch(directory);
     let functions = win32_metadata::parse_all_functions(&metadata).expect("parse native exports");
+    let eligible_functions = functions.len();
     let mut containers = BTreeMap::new();
     for function in functions {
         containers
@@ -64,6 +65,7 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
     }
     let mut modules = Vec::new();
     let mut namespace_count = 0;
+    let mut complete_functions = 0;
     for ((namespace, class_name), functions) in containers {
         let raw = win32_metadata::RawApis {
             namespace,
@@ -71,6 +73,7 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
             functions,
         };
         let projection = win32::project_apis(&raw);
+        complete_functions += projection.complete_count();
         if projection.complete_count() == 0 {
             continue;
         }
@@ -123,6 +126,14 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
     assert!(
         namespace_count > 0,
         "metadata must exercise actual generated modules"
+    );
+    assert_eq!(
+        (complete_functions, eligible_functions),
+        (8_936, 18_321),
+        "the pinned Win32Metadata complete-export census must not regress"
+    );
+    eprintln!(
+        "Validated {complete_functions}/{eligible_functions} exports across {namespace_count} namespaces"
     );
     let runtime = scratch.0.join(r"node_modules\@microsoft\dynwinrt");
     fs::create_dir_all(&runtime).unwrap();

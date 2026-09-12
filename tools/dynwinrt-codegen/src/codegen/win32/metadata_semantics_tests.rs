@@ -33,7 +33,10 @@ fn metadata_complete_exports_do_not_require_method_allowlisting() {
         assert_eq!(projected.runtime.return_abi, Some(abi));
         assert_eq!(projected.runtime.success_rule, SuccessRule::Always);
         assert_eq!(projected.runtime.return_cleanup, Cleanup::None);
-        assert!(projected.runtime.call_contract.is_empty());
+        assert_eq!(
+            projected.runtime.call_contract,
+            CallContract::defaults(&projected.runtime.signature_shape(64))
+        );
         assert!(matches!(&projected.return_shape,ReturnShape::Direct { typ,.. } if typ == &shape));
     }
     let function = metadata_function(
@@ -129,6 +132,7 @@ fn subsystem_contexts_exemptions_and_managed_startup_follow_native_evidence() {
         projected.return_shape,
         ReturnShape::Object {
             status: false,
+            return_may_be_unavailable: false,
             return_value: Some((SurfaceType::Enum("WSA_ERROR".into()), Conversion::Number)),
             outputs: vec![],
             last_error: true,
@@ -507,7 +511,7 @@ fn borrowed_module_returns_keep_numeric_handles_and_do_not_acquire_cleanup() {
         assert_eq!(projected.runtime.return_abi, Some(AbiType::Handle));
         assert_eq!(projected.runtime.success_rule, SuccessRule::Always);
         assert!(matches!(&projected.return_shape,ReturnShape::Object {
-            status:false,return_value:Some((SurfaceType::Handle(name),Conversion::BigInt)),outputs,last_error:true,
+            status:false,return_value:Some((SurfaceType::Handle(name),Conversion::BigInt)),outputs,last_error:true,return_may_be_unavailable:false,
         } if name == "HMODULE" && outputs.is_empty()));
     }
 }

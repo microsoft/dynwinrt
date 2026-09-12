@@ -18,6 +18,8 @@ mod project;
 mod projection_semantics_tests;
 mod render;
 #[cfg(test)]
+mod result_policy_tests;
+#[cfg(test)]
 mod shape_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -720,7 +722,7 @@ mod tests {
             assert_eq!(function.runtime.return_abi, Some(*abi));
             assert!(matches!(
                 &function.return_shape,
-                ReturnShape::Direct { typ, conversion } if typ == surface
+                ReturnShape::Direct { typ, conversion, may_be_unavailable: false } if typ == surface
                     && *conversion == if *surface == SurfaceType::BigInt { Conversion::BigInt } else { Conversion::Number }
             ));
         }
@@ -942,7 +944,9 @@ mod tests {
         );
         assert!(!output.js.contains("unownedPointer"));
         assert!(output.js.contains("returnCleanup: \"localFree\""));
-        assert!(output.js.contains("return DynWin32.toResource(_return)"));
+        assert!(output.js.contains(
+            "return DynWin32.isUnavailable(_return) ? null : (DynWin32.toResource(_return))"
+        ));
         assert!(
             output
                 .dts

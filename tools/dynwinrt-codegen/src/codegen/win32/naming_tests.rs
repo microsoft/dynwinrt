@@ -117,7 +117,10 @@ fn retired_policy_helpers_no_longer_reserve_native_parameter_names() {
             .collect::<Vec<_>>(),
         raw_names
     );
-    assert!(projected.runtime.call_contract.is_empty());
+    assert_eq!(
+        projected.runtime.call_contract,
+        CallContract::defaults(&projected.runtime.signature_shape(64))
+    );
 }
 
 #[test]

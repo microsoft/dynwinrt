@@ -3,9 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::win32_contracts::{
-    AggregateContract, FieldContract, FunctionPolicy, Registry, validate_call_contract_structure,
-};
+use crate::win32_contracts::{AggregateContract, FieldContract, FunctionPolicy, Registry};
 use crate::win32_metadata::{
     RawApis, RawArchitectures, RawBaseType, RawBufferSize, RawCallingConvention, RawDirection,
     RawFunction, RawLayoutKind, RawNamedKind, RawNativeLayout, RawNativeLayoutSet, RawPacking,
@@ -13,11 +11,11 @@ use crate::win32_metadata::{
 };
 
 use super::ir::{
-    AbiType, BufferContract, CallingConvention, Cleanup, Constness, Direction, EnumDefinition,
-    EnumMember, EnumUnderlying, FunctionContract, InputPredicate, NativeAggregateKind,
-    NativeArchitectureLayout, NativeField, NativeFieldType, NativeLayout, NativeScalar,
-    OutputAction, ParameterContract, ResourceEffect, Scalar, StringEncoding, SuccessRule,
-    ValueType,
+    AbiType, BufferContract, CallContract, CallingConvention, Cleanup, Condition, Constness,
+    Direction, EnumDefinition, EnumMember, EnumUnderlying, FunctionContract, InputPredicate,
+    NativeAggregateKind, NativeArchitectureLayout, NativeField, NativeFieldType, NativeLayout,
+    NativeScalar, OutputAction, ParameterContract, ResourceEffect, ResultOwnership, ResultPolicy,
+    ResultTarget, Scalar, StringEncoding, SuccessRule, ValueType,
 };
 
 pub(super) fn validate_apis(raw: &RawApis) -> (Vec<FunctionContract>, Vec<(String, String)>) {
@@ -91,6 +89,13 @@ pub(super) fn validate_apis(raw: &RawApis) -> (Vec<FunctionContract>, Vec<(Strin
 
 pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, String> {
     let policy = Registry::builtin()?.function_policy(raw)?;
+    validate_function_with_policy(raw, &policy)
+}
+
+pub(super) fn validate_function_with_policy(
+    raw: &RawFunction,
+    policy: &FunctionPolicy<'_>,
+) -> Result<FunctionContract, String> {
     let expanded = policy.apply_buffers(raw)?;
     let raw = &expanded;
     let calling_convention = match raw.calling_convention {
@@ -356,6 +361,7 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
         subsystem,
         enums,
         call_contract: policy.call_contract(),
+        result_contracts: policy.result_contracts().cloned().collect(),
     };
     validate_call_contract(&contract)?;
     Ok(contract)
@@ -363,116 +369,41 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
 
 pub(super) fn validate_call_contract(function: &FunctionContract) -> Result<(), String> {
     let contract = &function.call_contract;
-    validate_call_contract_structure(contract)?;
-    let parameter = |index: usize| {
-        function.parameters.get(index).ok_or_else(|| {
-            format!("win32.contract-shape-conflict: missing native parameter {index}")
-        })
-    };
+    contract
+        .validate_structure()
+        .map_err(|error| error.to_string())?;
+    CallContract::current(function.result_contracts.clone(), Vec::new())
+        .validate_structure()
+        .map_err(|error| error.to_string())?;
     for rule in &contract.outputs {
-        let output = parameter(rule.parameter)?;
-        if output.direction == Direction::In
-            || output.pointer_depth == 0
-            || output.buffer.is_some()
-            || !matches!(
-                output.typ,
-                ValueType::Scalar(_)
-                    | ValueType::Enum { .. }
-                    | ValueType::Handle { .. }
-                    | ValueType::DataPointer
-            )
-        {
-            return Err("win32.contract-shape-conflict: rule requires a native output slot".into());
-        }
-        if let Some(value) = rule.when.return_value {
-            let mask = function.return_abi.and_then(integer_mask).ok_or(
-                "win32.contract-shape-conflict: return condition requires native integer bits",
-            )?;
-            if value & !mask != 0 {
+        let target = ResultTarget::Parameter {
+            index: rule.parameter,
+        };
+        validate_result_target(function, target)?;
+        validate_condition_metadata(function, &rule.when)?;
+        if let OutputAction::AliasInput { parameter: index } = rule.action {
+            if native_parameter(function, rule.parameter)?.cleanup == Cleanup::None {
                 return Err(
-                    "win32.contract-shape-conflict: return condition exceeds native width".into(),
+                    "win32.contract-shape-conflict: legacy alias requires an owned handle output"
+                        .into(),
                 );
             }
+            validate_result_ownership(
+                function,
+                target,
+                ResultOwnership::AliasInput { parameter: index },
+            )?;
         }
-        for predicate in &rule.when.inputs {
-            match predicate {
-                InputPredicate::BitsIn {
-                    parameter: index,
-                    mask,
-                    ..
-                } => {
-                    let input = parameter(*index)?;
-                    if input.direction == Direction::Out
-                        || input.buffer.is_some()
-                        || !matches!(
-                            (input.direction, input.pointer_depth),
-                            (Direction::In, 0) | (Direction::InOut, 1)
-                        )
-                        || !matches!(
-                            input.typ,
-                            ValueType::Scalar(_)
-                                | ValueType::Enum { .. }
-                                | ValueType::Handle { .. }
-                        )
-                        || !integer_mask(input.abi).is_some_and(|width| mask & !width == 0)
-                    {
-                        return Err("win32.contract-shape-conflict: bits predicate requires a width-compatible native integer input".into());
-                    }
-                }
-                InputPredicate::HandleIn {
-                    parameter: index, ..
-                } => {
-                    let input = parameter(*index)?;
-                    if input.abi != AbiType::Handle
-                        || !matches!(input.typ, ValueType::Handle { .. })
-                        || input.buffer.is_some()
-                        || !matches!(
-                            (input.direction, input.pointer_depth),
-                            (Direction::In, 0) | (Direction::InOut, 1)
-                        )
-                    {
-                        return Err("win32.contract-shape-conflict: handle-in requires a native handle input".into());
-                    }
-                }
-                InputPredicate::NullOrEmpty {
-                    parameter: index,
-                    element_width,
-                } => {
-                    let input = parameter(*index)?;
-                    let encoding_matches = matches!(
-                        (&input.typ, element_width),
-                        (ValueType::StringPointer(StringEncoding::Ansi), 1)
-                            | (ValueType::StringPointer(StringEncoding::Wide), 2)
-                    );
-                    if input.direction != Direction::In
-                        || input.pointer_depth != 0
-                        || input.buffer.is_some()
-                        || input.abi != AbiType::Pointer
-                        || !encoding_matches
-                    {
-                        return Err("win32.contract-shape-conflict: null-or-empty requires a verified native string input and matching encoding width".into());
-                    }
-                }
+    }
+    for result in contract.results.iter().chain(&function.result_contracts) {
+        validate_result_target(function, result.target)?;
+        for policy in result.policies() {
+            if let ResultPolicy::Defined { ownership, .. } = policy {
+                validate_result_ownership(function, result.target, *ownership)?;
             }
         }
-        if let OutputAction::AliasInput { parameter: index } = rule.action {
-            let input = parameter(index)?;
-            if !matches!(output.typ, ValueType::Handle { .. })
-                || output.abi != AbiType::Handle
-                || output.direction != Direction::Out
-                || output.pointer_depth != 1
-                || output.cleanup == Cleanup::None
-                || !matches!(input.typ, ValueType::Handle { .. })
-                || input.abi != AbiType::Handle
-                || input.direction != Direction::In
-                || input.pointer_depth != 0
-                || input.buffer.is_some()
-                || input.cleanup != Cleanup::None
-                || input.consumes_resource
-                || input.resource_cleanup != output.cleanup
-            {
-                return Err("win32.contract-shape-conflict: alias requires an owned handle output and matching borrowed input resource".into());
-            }
+        for case in &result.overrides {
+            validate_condition_metadata(function, &case.when)?;
         }
     }
     for effect in &contract.resource_effects {
@@ -480,8 +411,8 @@ pub(super) fn validate_call_contract(function: &FunctionContract) -> Result<(), 
             handle_parameter,
             flags_parameter,
         } = *effect;
-        let handle = parameter(handle_parameter)?;
-        let flags = parameter(flags_parameter)?;
+        let handle = native_parameter(function, handle_parameter)?;
+        let flags = native_parameter(function, flags_parameter)?;
         if !matches!(handle.typ, ValueType::Handle { .. })
             || handle.abi != AbiType::Handle
             || handle.direction != Direction::In
@@ -509,14 +440,169 @@ pub(super) fn validate_call_contract(function: &FunctionContract) -> Result<(), 
     Ok(())
 }
 
-fn integer_mask(abi: AbiType) -> Option<u64> {
-    match abi {
-        AbiType::I8 | AbiType::U8 => Some(u8::MAX.into()),
-        AbiType::I16 | AbiType::U16 => Some(u16::MAX.into()),
-        AbiType::Bool32 | AbiType::I32 | AbiType::U32 => Some(u32::MAX.into()),
-        AbiType::I64 | AbiType::U64 | AbiType::Handle => Some(u64::MAX),
-        AbiType::F32 | AbiType::F64 | AbiType::Pointer | AbiType::FunctionPointer => None,
+fn native_parameter(
+    function: &FunctionContract,
+    index: usize,
+) -> Result<&ParameterContract, String> {
+    function
+        .parameters
+        .get(index)
+        .ok_or_else(|| format!("win32.contract-shape-conflict: missing native parameter {index}"))
+}
+
+fn validate_result_target(function: &FunctionContract, target: ResultTarget) -> Result<(), String> {
+    match target {
+        ResultTarget::Return {} if function.return_type.is_none() => {
+            Err("win32.contract-shape-conflict: void return has no native result".into())
+        }
+        ResultTarget::Return {} => Ok(()),
+        ResultTarget::Parameter { index } => {
+            let output = native_parameter(function, index)?;
+            if output.direction == Direction::In
+                || output.pointer_depth == 0
+                || output.buffer.is_some()
+                || !matches!(
+                    output.typ,
+                    ValueType::Scalar(_)
+                        | ValueType::Enum { .. }
+                        | ValueType::Handle { .. }
+                        | ValueType::DataPointer
+                )
+            {
+                return Err(
+                    "win32.contract-shape-conflict: rule requires a native output slot".into(),
+                );
+            }
+            Ok(())
+        }
     }
+}
+
+fn validate_condition_metadata(
+    function: &FunctionContract,
+    condition: &Condition,
+) -> Result<(), String> {
+    if let Some(value) = condition.return_value {
+        let mask = function
+            .return_abi
+            .and_then(|abi| abi.native_type().integer_mask(64))
+            .ok_or(
+                "win32.contract-shape-conflict: return condition requires native integer bits",
+            )?;
+        if value & !mask != 0 {
+            return Err(
+                "win32.contract-shape-conflict: return condition exceeds native width".into(),
+            );
+        }
+    }
+    for predicate in &condition.inputs {
+        let input = native_parameter(function, predicate.parameter())?;
+        let integer_input = input.buffer.is_none()
+            && matches!(
+                (input.direction, input.pointer_depth),
+                (Direction::In, 0) | (Direction::InOut, 1)
+            );
+        match predicate {
+            InputPredicate::BitsIn { mask, .. } => {
+                if !integer_input
+                    || !matches!(
+                        input.typ,
+                        ValueType::Scalar(_) | ValueType::Enum { .. } | ValueType::Handle { .. }
+                    )
+                    || !input
+                        .abi
+                        .native_type()
+                        .integer_mask(64)
+                        .is_some_and(|width| mask & !width == 0)
+                {
+                    return Err("win32.contract-shape-conflict: bits predicate requires a width-compatible native integer input".into());
+                }
+            }
+            InputPredicate::HandleIn { .. } => {
+                if !integer_input
+                    || input.abi != AbiType::Handle
+                    || !matches!(input.typ, ValueType::Handle { .. })
+                {
+                    return Err(
+                        "win32.contract-shape-conflict: handle-in requires a native handle input"
+                            .into(),
+                    );
+                }
+            }
+            InputPredicate::NullOrEmpty { element_width, .. } => {
+                let encoding_matches = matches!(
+                    (&input.typ, element_width),
+                    (ValueType::StringPointer(StringEncoding::Ansi), 1)
+                        | (ValueType::StringPointer(StringEncoding::Wide), 2)
+                );
+                if input.direction != Direction::In
+                    || input.pointer_depth != 0
+                    || input.buffer.is_some()
+                    || input.abi != AbiType::Pointer
+                    || !encoding_matches
+                {
+                    return Err("win32.contract-shape-conflict: null-or-empty requires a verified native string input and matching encoding width".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_result_ownership(
+    function: &FunctionContract,
+    target: ResultTarget,
+    ownership: ResultOwnership,
+) -> Result<(), String> {
+    let (typ, native_name, cleanup) = match target {
+        ResultTarget::Return {} => (
+            function.return_type.as_ref().ok_or("void result")?,
+            &function.return_native_name,
+            function.return_cleanup,
+        ),
+        ResultTarget::Parameter { index } => {
+            let output = native_parameter(function, index)?;
+            (&output.typ, &output.native_name, output.cleanup)
+        }
+    };
+    match ownership {
+        ResultOwnership::Owned { cleanup: expected } => {
+            if cleanup != expected {
+                return Err("win32.contract-shape-conflict: result ownership lacks matching native cleanup provenance".into());
+            }
+        }
+        ResultOwnership::AliasInput { parameter } => {
+            let input = native_parameter(function, parameter)?;
+            let target_is_handle = match target {
+                ResultTarget::Return {} => {
+                    function.return_pointer_depth == 0
+                        && function.return_abi == Some(AbiType::Handle)
+                }
+                ResultTarget::Parameter { index } => {
+                    let output = native_parameter(function, index)?;
+                    output.direction == Direction::Out
+                        && output.pointer_depth == 1
+                        && output.abi == AbiType::Handle
+                }
+            };
+            if !target_is_handle
+                || !matches!(typ, ValueType::Handle { .. })
+                || !matches!(input.typ, ValueType::Handle { .. })
+                || input.native_name != *native_name
+                || input.abi != AbiType::Handle
+                || input.direction != Direction::In
+                || input.pointer_depth != 0
+                || input.buffer.is_some()
+                || input.cleanup != Cleanup::None
+                || input.consumes_resource
+                || (cleanup != Cleanup::None && input.resource_cleanup != cleanup)
+            {
+                return Err("win32.contract-shape-conflict: alias requires matching native handle identity and borrowed input resource".into());
+            }
+        }
+        ResultOwnership::Value {} | ResultOwnership::Borrowed {} => {}
+    }
+    Ok(())
 }
 
 fn map_return(

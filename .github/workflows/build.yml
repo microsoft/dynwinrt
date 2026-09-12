@@ -72,9 +72,9 @@ jobs:
           "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
           "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
-        run: cargo test -p dynwinrt-com-contracts -p dynwinrt
-      - name: Test borrowed-copy contracts on i686
-        run: cargo test -p dynwinrt-com-contracts --target i686-pc-windows-msvc
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts -p dynwinrt
+      - name: Test native-independent contracts on i686
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts --target i686-pc-windows-msvc
       - name: Test borrowed-copy ABI on live i686
         run: cargo test -p dynwinrt --target i686-pc-windows-msvc --lib borrowed_copy
       - name: Test dynwinrt-codegen

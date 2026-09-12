@@ -619,6 +619,7 @@ try {
         Invoke-Step "Rust workspace tests" {
             & cargo test `
                 -p dynwinrt-com-contracts `
+                -p dynwinrt-win32-contracts `
                 -p dynwinrt `
                 -p dynwinrt-codegen `
                 -p dynwinrt-py `

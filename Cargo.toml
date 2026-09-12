@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dynwinrt-com-contracts",
+    "crates/dynwinrt-win32-contracts",
     "crates/dynwinrt",
     "bindings/js",
     "benchmarks/js/static-rust",

@@ -58,6 +58,43 @@ coverage. If a behavior needs a correctness fix, implement and
 document that fix and exercise its nearest failure case rather than silently
 dropping the API or relabeling it as supported.
 
+### Shared protocol and result model
+
+`crates/dynwinrt-win32-contracts` is the single source of the Win32 wire types,
+version handling and structural validation. It depends on neither Windows,
+libffi nor a language binding. Metadata validation still proves pointer depth,
+encoding, type identity and provenance against the selected WinMD; core still
+checks the executing ABI and its supported capabilities. Sharing the protocol
+does not merge these responsibilities or the WinRT/COM models.
+
+Version 2 describes every direct return and native output slot with a
+`ResultContract`: a target, explicit success/failure policies and bounded,
+non-overlapping conditional overrides. The schema is derived from these Rust
+types rather than separately maintained protocol definitions. Unknown fields,
+unsupported versions, contradictory cases and incomplete slot coverage fail
+before native dispatch.
+
+| Resolved result policy | Native behavior |
+| --- | --- |
+| Undefined | Do not decode the payload, adopt a resource or call a cleanup function on it. |
+| Defined value or borrowed result | Deliver the value, or discard it without inventing an independent native owner. |
+| Defined owned result | Transfer an owned value when delivered; otherwise run the exact declared cleanup even when the overall operation failed. |
+| Defined input alias | Validate the declared input relationship and share its owner; never create a second owner by matching arbitrary handle numbers. |
+
+Delivery is independent from native validity and ownership. A valid discarded
+resource uses `Value::Discarded`, not the undefined-output state. Direct returns
+and out parameters have cleanup guards before any fallible conversion, so an
+allocation or conversion failure also retires valid, untransferred resources.
+Language projection chooses nullability and exception/result shape; it cannot
+erase cleanup obligations.
+
+Descriptors without a version are read as version 1. Their historical null
+resource results and cleanup behavior are isolated in an explicit compatibility
+adapter and lowered to the common execution plan. New generated code emits
+version 2. Metadata ownership evidence alone does not prove a pointer is defined
+on failure: new generation leaves that failure result undefined unless reviewed
+result evidence establishes validity and the required cleanup/delivery policy.
+
 ## Runtime and package boundary
 
 Win32 stays outside the public WinRT model and the `@microsoft/dynwinrt` root.
@@ -115,9 +152,31 @@ provider, change mail-client registration, or substitute a successful no-op.
 
 The IOCP engine retains native state through terminal completion, including
 cancellation. The limits are 1,024 pending operations, 64 MiB per
-operation and 256 MiB of pending private buffers. A shared worker set is used,
+operation and 256 MiB of pending private buffers. These limits include completed
+results waiting to be consumed or discarded, not only active OS requests.
+A shared worker set is used,
 not one blocked OS/libuv worker per operation. Subsystem close cannot race
 dependent calls or retained operations.
+
+The native Win32 I/O module owns the operation registry, stable `OVERLAPPED`,
+private buffers, cancellation and terminal completion. It can run from Rust
+without loading Node. Native completion records keep their storage, resource
+occupancy and quota ownership until consumption or discard; failed notification
+or a dropped consumer cannot strand them.
+
+The private Node bridge keeps JS references and original backing information on
+the owner thread. That thread revalidates the backing, performs read copy-back
+and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
+type enters core I/O. Environment teardown cancels native work without freeing
+OS-owned storage early, while JS references are released on their owner thread.
+This extraction does not reorganize existing COM/WinRT carriers or shared
+backing storage; that remains a separate binding-internals change.
+
+Generic resource coordination governs borrowing, consuming, state mutation and
+asynchronous occupancy. File-specific modes and association state belong to a
+typed file capability, not a growing collection of API-specific fields on the
+generic owner. Neither a string-keyed state bag nor a global handle-value owner
+registry is used.
 
 File completion notification changes have a typed resource state effect.
 Native mode changes are serialized with managed calls and rejected while an
@@ -159,8 +218,10 @@ PR's implementation or hashes of Rust `Debug` output:
 
 | Tests | Assertions |
 | --- | --- |
+| Shared Win32 contract tests | Strict version decoding, legacy migration, complete result coverage, ownership/delivery combinations, disjoint conditions and Rust-derived schema consistency. |
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
+| Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |
 | Generated-module tests | Load every currently admitted JS/enum module as CJS and ESM without native dispatch, and compile its declarations with TypeScript. Expected behavior comes from actual exports and type rules, not stored implementation hashes. |

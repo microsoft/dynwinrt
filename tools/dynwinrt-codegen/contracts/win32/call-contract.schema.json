@@ -1,0 +1,446 @@
+{
+  "$defs": {
+    "Cleanup": {
+      "enum": [
+        "none",
+        "close-handle",
+        "reg-close-key",
+        "local-free",
+        "global-free",
+        "free-library",
+        "close-service-handle",
+        "co-task-mem-free",
+        "cred-free"
+      ],
+      "type": "string"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InputPredicate"
+          },
+          "type": "array"
+        },
+        "returnValue": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "succeeded": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Delivery": {
+      "enum": [
+        "deliver",
+        "discard"
+      ],
+      "type": "string"
+    },
+    "InputPredicate": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "bits-in",
+              "type": "string"
+            },
+            "mask": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "parameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "parameter",
+            "mask",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "handle-in",
+              "type": "string"
+            },
+            "parameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "items": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "parameter",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "elementWidth": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "null-or-empty",
+              "type": "string"
+            },
+            "parameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "parameter",
+            "elementWidth"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OutputAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "alias-input",
+              "type": "string"
+            },
+            "parameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "parameter"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OutputRule": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/OutputAction"
+        },
+        "parameter": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "when": {
+          "$ref": "#/$defs/Condition"
+        }
+      },
+      "required": [
+        "parameter",
+        "when",
+        "action"
+      ],
+      "type": "object"
+    },
+    "ResourceEffect": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "flagsParameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "handleParameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "add-file-completion-modes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "handleParameter",
+            "flagsParameter"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResultContract": {
+      "additionalProperties": false,
+      "properties": {
+        "onFailure": {
+          "$ref": "#/$defs/ResultPolicy"
+        },
+        "onSuccess": {
+          "$ref": "#/$defs/ResultPolicy"
+        },
+        "overrides": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ResultOverride"
+          },
+          "type": "array"
+        },
+        "target": {
+          "$ref": "#/$defs/ResultTarget"
+        }
+      },
+      "required": [
+        "target",
+        "onSuccess",
+        "onFailure"
+      ],
+      "type": "object"
+    },
+    "ResultOverride": {
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/ResultPolicy"
+        },
+        "when": {
+          "$ref": "#/$defs/Condition"
+        }
+      },
+      "required": [
+        "when",
+        "policy"
+      ],
+      "type": "object"
+    },
+    "ResultOwnership": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "borrowed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "cleanup": {
+              "$ref": "#/$defs/Cleanup"
+            },
+            "kind": {
+              "const": "owned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "cleanup"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "alias-input",
+              "type": "string"
+            },
+            "parameter": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "parameter"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResultPolicy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "undefined",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "kind": {
+              "const": "defined",
+              "type": "string"
+            },
+            "ownership": {
+              "$ref": "#/$defs/ResultOwnership"
+            }
+          },
+          "required": [
+            "kind",
+            "ownership",
+            "delivery"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResultTarget": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "return",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "parameter",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "index"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "outputs": {
+      "items": {
+        "$ref": "#/$defs/OutputRule"
+      },
+      "type": "array"
+    },
+    "resourceEffects": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ResourceEffect"
+      },
+      "type": "array"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/ResultContract"
+      },
+      "type": "array"
+    },
+    "version": {
+      "default": 1,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "title": "CallContract",
+  "type": "object"
+}

@@ -185,7 +185,8 @@ fn union_members_overlap_but_union_values_cannot_be_passed_by_value() {
             projected.return_shape,
             ReturnShape::Direct {
                 typ: SurfaceType::Number,
-                conversion: Conversion::Number
+                conversion: Conversion::Number,
+                may_be_unavailable: false,
             }
         );
     }

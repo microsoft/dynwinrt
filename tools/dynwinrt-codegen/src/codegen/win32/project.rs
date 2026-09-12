@@ -10,12 +10,13 @@ use crate::win32_metadata::{
 };
 
 use super::ir::{
-    AbiType, AsyncIoKind, Cleanup, Conversion, Direction, EnumDefinition, EnumUnderlying,
+    AbiType, AsyncIoKind, Cleanup, Conversion, Delivery, Direction, EnumDefinition, EnumUnderlying,
     FunctionContract, InputExpression, NativeBuilderFieldKind, NativeLayout, NativeOutputFieldKind,
-    OmittedFunction, OutputAction, ProjectedApis, ProjectedAsyncFunction, ProjectedFunction,
+    OmittedFunction, ProjectedApis, ProjectedAsyncFunction, ProjectedFunction,
     ProjectedNativeBuilder, ProjectedNativeBuilderField, ProjectedNativeOutputField,
-    ProjectedOutput, ProjectionResult, ReturnShape, RuntimeParameter, RuntimePlan, Scalar,
-    StringEncoding, SurfaceParameter, SurfaceType, ValueType,
+    ProjectedOutput, ProjectionResult, ResultContract, ResultOwnership, ResultPolicy, ResultTarget,
+    ReturnShape, RuntimeParameter, RuntimePlan, Scalar, StringEncoding, SurfaceParameter,
+    SurfaceType, ValueType,
 };
 use super::model;
 
@@ -270,8 +271,6 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
     let mut native_surface = vec![None; contract.parameters.len()];
     let mut inputs = Vec::<InputExpression>::new();
     let mut runtime_parameters = Vec::<RuntimeParameter>::new();
-    let mut output_index = 0;
-    let mut outputs = Vec::new();
 
     for (index, parameter) in contract.parameters.iter().enumerate() {
         let is_buffer_count = count_buffers.contains_key(&index);
@@ -536,63 +535,10 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
             inputs.push(expression);
         }
 
-        if matches!(runtime.direction, Direction::Out | Direction::InOut) {
-            let action = contract
-                .call_contract
-                .outputs
-                .iter()
-                .find(|rule| rule.parameter == index)
-                .map(|rule| rule.action);
-            let aliases_input = matches!(action, Some(OutputAction::AliasInput { .. }));
-            outputs.push(ProjectedOutput {
-                name: unique_name(output_name(parameter), &mut output_names),
-                output_index,
-                typ: if aliases_input {
-                    SurfaceType::ResourceOrHandle
-                } else {
-                    output_surface_type(parameter)
-                },
-                conversion: if aliases_input {
-                    Conversion::ResourceOrHandle
-                } else {
-                    output_conversion(parameter)
-                },
-                may_be_unavailable: matches!(action, Some(OutputAction::Unavailable {})),
-            });
-            output_index += 1;
-        }
         runtime_parameters.push(runtime);
     }
 
-    let return_shape = if contract.return_is_status {
-        ReturnShape::Object {
-            status: true,
-            return_value: None,
-            outputs,
-            last_error: contract.capture_last_error,
-        }
-    } else if !outputs.is_empty() || contract.capture_last_error {
-        ReturnShape::Object {
-            status: false,
-            return_value: contract.return_type.as_ref().map(|typ| {
-                (
-                    return_surface_type(typ, contract.return_cleanup),
-                    return_conversion(typ, contract.return_cleanup),
-                )
-            }),
-            outputs,
-            last_error: contract.capture_last_error,
-        }
-    } else if let Some(typ) = &contract.return_type {
-        ReturnShape::Direct {
-            typ: return_surface_type(typ, contract.return_cleanup),
-            conversion: return_conversion(typ, contract.return_cleanup),
-        }
-    } else {
-        ReturnShape::Void
-    };
-
-    let runtime = RuntimePlan {
+    let mut runtime = RuntimePlan {
         dll: contract.dll.clone(),
         entry_point: contract.entry_point.clone(),
         parameters: runtime_parameters,
@@ -604,6 +550,82 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
         calling_convention: contract.calling_convention,
         call_contract: contract.call_contract.clone(),
     };
+    // Caller-owned buffers and aggregates have already become physical inputs.
+    // The supported x64/ARM64 plans must not invent native output cells for them.
+    let shape = runtime.signature_shape(64);
+    runtime.call_contract = contract
+        .call_contract
+        .upgrade_metadata(&shape)
+        .map_err(|error| error.to_string())?;
+    for evidence in &contract.result_contracts {
+        let result = runtime.call_contract.results.iter_mut()
+            .find(|result| result.target == evidence.target)
+            .ok_or("win32.contract-shape-conflict: result evidence does not target a physical native result")?;
+        *result = evidence.clone();
+    }
+    runtime
+        .call_contract
+        .validate_signature(&shape)
+        .map_err(|error| error.to_string())?;
+
+    let outputs = contract
+        .parameters
+        .iter()
+        .zip(&runtime.parameters)
+        .enumerate()
+        .filter(|(_, (_, parameter))| parameter.direction != Direction::In)
+        .enumerate()
+        .map(|(output_index, (index, (parameter, _)))| {
+            let result = runtime
+                .call_contract
+                .result(ResultTarget::Parameter { index })
+                .expect("validated native output policy");
+            let (typ, conversion) =
+                project_result(&parameter.typ, output_surface_type(parameter), result);
+            ProjectedOutput {
+                name: unique_name(output_name(parameter), &mut output_names),
+                output_index,
+                typ,
+                conversion,
+                may_be_unavailable: result.may_be_unavailable(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let return_policy = runtime.call_contract.result(ResultTarget::Return {});
+    let return_may_be_unavailable = return_policy.is_some_and(ResultContract::may_be_unavailable);
+    let projected_return = contract.return_type.as_ref().map(|typ| {
+        project_result(
+            typ,
+            input_surface_type(typ),
+            return_policy.expect("validated native return policy"),
+        )
+    });
+    let return_shape = if contract.return_is_status {
+        ReturnShape::Object {
+            status: true,
+            return_value: None,
+            return_may_be_unavailable,
+            outputs,
+            last_error: contract.capture_last_error,
+        }
+    } else if !outputs.is_empty() || contract.capture_last_error {
+        ReturnShape::Object {
+            status: false,
+            return_value: projected_return,
+            return_may_be_unavailable,
+            outputs,
+            last_error: contract.capture_last_error,
+        }
+    } else if let Some((typ, conversion)) = projected_return {
+        ReturnShape::Direct {
+            typ,
+            conversion,
+            may_be_unavailable: return_may_be_unavailable,
+        }
+    } else {
+        ReturnShape::Void
+    };
+
     Ok(ProjectedFunction {
         metadata_name: contract.name.clone(),
         js_name: camel_case(&contract.name),
@@ -694,40 +716,51 @@ fn scalar_surface_type(scalar: Scalar) -> SurfaceType {
 }
 
 fn output_surface_type(parameter: &super::ir::ParameterContract) -> SurfaceType {
-    if parameter.cleanup != Cleanup::None {
-        SurfaceType::Resource
-    } else {
-        match &parameter.typ {
-            ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => SurfaceType::Boolean,
-            ValueType::Scalar(
-                Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize,
-            ) => SurfaceType::BigInt,
-            ValueType::Scalar(_) => SurfaceType::Number,
-            ValueType::Enum { name, .. } => SurfaceType::Enum(name.clone()),
-            ValueType::Handle { name, .. } => SurfaceType::Handle(name.clone()),
-            ValueType::DataPointer | ValueType::FunctionPointer => SurfaceType::BigInt,
-            ValueType::StringPointer(_) => SurfaceType::BigInt,
-            ValueType::NativeStructPointer { layout } => {
-                SurfaceType::NativeStruct(layout.name.clone())
-            }
-            ValueType::NativeUnionPointer { layout } => {
-                SurfaceType::NativeUnion(layout.name.clone())
-            }
-            ValueType::NativeStruct { layout } => SurfaceType::NativeStruct(layout.name.clone()),
-            ValueType::ScalarPointer { scalar } => scalar_surface_type(*scalar),
-            ValueType::GuidPointer => SurfaceType::Buffer,
-            ValueType::NullPointer => unreachable!("null-only pointer has no output"),
-            ValueType::ComInterface { name, .. } => SurfaceType::ComInterface(name.clone()),
-            ValueType::StringPointerPointer(encoding) => SurfaceType::String(*encoding),
-        }
+    match &parameter.typ {
+        ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => SurfaceType::Boolean,
+        ValueType::Scalar(
+            Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize,
+        ) => SurfaceType::BigInt,
+        ValueType::Scalar(_) => SurfaceType::Number,
+        ValueType::Enum { name, .. } => SurfaceType::Enum(name.clone()),
+        ValueType::Handle { name, .. } => SurfaceType::Handle(name.clone()),
+        ValueType::DataPointer | ValueType::FunctionPointer => SurfaceType::BigInt,
+        ValueType::StringPointer(_) => SurfaceType::BigInt,
+        ValueType::NativeStructPointer { layout } => SurfaceType::NativeStruct(layout.name.clone()),
+        ValueType::NativeUnionPointer { layout } => SurfaceType::NativeUnion(layout.name.clone()),
+        ValueType::NativeStruct { layout } => SurfaceType::NativeStruct(layout.name.clone()),
+        ValueType::ScalarPointer { scalar } => scalar_surface_type(*scalar),
+        ValueType::GuidPointer => SurfaceType::Buffer,
+        ValueType::NullPointer => unreachable!("null-only pointer has no output"),
+        ValueType::ComInterface { name, .. } => SurfaceType::ComInterface(name.clone()),
+        ValueType::StringPointerPointer(encoding) => SurfaceType::String(*encoding),
     }
 }
 
-fn return_surface_type(typ: &ValueType, cleanup: Cleanup) -> SurfaceType {
-    if cleanup != Cleanup::None {
-        SurfaceType::Resource
+fn project_result(
+    typ: &ValueType,
+    value_surface: SurfaceType,
+    result: &ResultContract,
+) -> (SurfaceType, Conversion) {
+    let delivered = || {
+        result.policies().filter_map(|policy| match policy {
+            ResultPolicy::Defined {
+                ownership,
+                delivery: Delivery::Deliver,
+            } => Some(ownership),
+            _ => None,
+        })
+    };
+    let owns = delivered().any(|ownership| matches!(ownership, ResultOwnership::Owned { .. }));
+    let borrows = delivered().any(|ownership| matches!(ownership, ResultOwnership::Borrowed {}));
+    let aliases =
+        delivered().any(|ownership| matches!(ownership, ResultOwnership::AliasInput { .. }));
+    if aliases || (owns && borrows) {
+        (SurfaceType::ResourceOrHandle, Conversion::ResourceOrHandle)
+    } else if owns {
+        (SurfaceType::Resource, Conversion::Resource)
     } else {
-        input_surface_type(typ)
+        (value_surface, return_conversion(typ))
     }
 }
 
@@ -804,18 +837,7 @@ fn input_conversion(
     }
 }
 
-fn output_conversion(parameter: &super::ir::ParameterContract) -> Conversion {
-    if parameter.cleanup != Cleanup::None {
-        Conversion::Resource
-    } else {
-        return_conversion(&parameter.typ, Cleanup::None)
-    }
-}
-
-fn return_conversion(typ: &ValueType, cleanup: Cleanup) -> Conversion {
-    if cleanup != Cleanup::None {
-        return Conversion::Resource;
-    }
+fn return_conversion(typ: &ValueType) -> Conversion {
     match typ {
         ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => Conversion::Boolean,
         ValueType::Scalar(
@@ -1015,6 +1037,7 @@ mod tests {
             },
             return_shape: ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 outputs: vec![],
                 last_error: false,

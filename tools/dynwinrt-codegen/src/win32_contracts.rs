@@ -13,7 +13,8 @@ use std::{
 use windows_metadata::{AsRow, HasAttributes, reader};
 
 use crate::codegen::win32::ir::{
-    AsyncIoKind, CallContract, Cleanup, InputPredicate, OutputAction, ResourceEffect, Subsystem,
+    AsyncIoKind, CallContract, Cleanup, ResultContract, ResultOwnership, ResultPolicy,
+    ResultTarget, Subsystem,
 };
 use crate::win32_metadata::{RawFunction, RawScalar};
 
@@ -200,6 +201,9 @@ pub(crate) enum FunctionEffect {
     CallContract {
         contract: CallContract,
     },
+    ResultContract {
+        contract: ResultContract,
+    },
     OverlappedIo {
         #[serde(deserialize_with = "string_enum")]
         operation: AsyncIoKind,
@@ -232,6 +236,10 @@ impl FunctionEffect {
             }
             Self::MutableString { parameter } => format!("mutable-string:{parameter}"),
             Self::CallContract { .. } => "call-contract".into(),
+            Self::ResultContract { contract } => match contract.target {
+                ResultTarget::Return {} => "result:return".into(),
+                ResultTarget::Parameter { index } => format!("result:parameter:{index}"),
+            },
             Self::OverlappedIo { .. } => "async".into(),
             Self::Subsystem { .. } | Self::SubsystemExempt {} | Self::ManagedLifecycle { .. } => {
                 "subsystem".into()
@@ -435,7 +443,9 @@ struct Manifest {
 
 const MANIFEST: &str = include_str!("../contracts/win32/manifest.json");
 const SCHEMA: &str = include_str!("../contracts/win32/schema.json");
+const CALL_CONTRACT_SCHEMA: &str = include_str!("../contracts/win32/call-contract.schema.json");
 const FILES: &[(&str, &str)] = &[
+    ("call-contract.schema.json", CALL_CONTRACT_SCHEMA),
     (
         "function-contracts.json",
         include_str!("../contracts/win32/function-contracts.json"),
@@ -477,24 +487,42 @@ impl FunctionPolicy<'_> {
     }
 
     pub fn owned_return(&self) -> Option<Cleanup> {
-        self.effects().find_map(|effect| match effect {
-            FunctionEffect::OwnedReturn { cleanup } => Some(*cleanup),
-            _ => None,
-        })
+        self.effects()
+            .find_map(|effect| match effect {
+                FunctionEffect::OwnedReturn { cleanup } => Some(*cleanup),
+                _ => None,
+            })
+            .or_else(|| self.result_cleanup(ResultTarget::Return {}))
     }
 
     pub fn borrowed_return(&self) -> bool {
         self.effects()
             .any(|effect| matches!(effect, FunctionEffect::BorrowedReturn {}))
+            || self
+                .result_contract(ResultTarget::Return {})
+                .is_some_and(|result| {
+                    result.policies().any(|policy| {
+                        matches!(
+                            policy,
+                            ResultPolicy::Defined {
+                                ownership: ResultOwnership::Borrowed {}
+                                    | ResultOwnership::AliasInput { .. },
+                                ..
+                            }
+                        )
+                    }) && self.result_cleanup(ResultTarget::Return {}).is_none()
+                })
     }
 
     pub fn output_cleanup(&self, index: usize) -> Option<Cleanup> {
-        self.effects().find_map(|effect| match effect {
-            FunctionEffect::OwnedOutput { parameter, cleanup } if *parameter == index => {
-                Some(*cleanup)
-            }
-            _ => None,
-        })
+        self.effects()
+            .find_map(|effect| match effect {
+                FunctionEffect::OwnedOutput { parameter, cleanup } if *parameter == index => {
+                    Some(*cleanup)
+                }
+                _ => None,
+            })
+            .or_else(|| self.result_cleanup(ResultTarget::Parameter { index }))
     }
 
     pub fn consumed_input(&self, index: usize) -> Option<Cleanup> {
@@ -517,6 +545,36 @@ impl FunctionPolicy<'_> {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    pub fn result_contracts(&self) -> impl Iterator<Item = &ResultContract> {
+        self.effects().filter_map(|effect| match effect {
+            FunctionEffect::ResultContract { contract } => Some(contract),
+            _ => None,
+        })
+    }
+
+    fn result_contract(&self, target: ResultTarget) -> Option<&ResultContract> {
+        self.result_contracts()
+            .find(|contract| contract.target == target)
+            .or_else(|| {
+                self.effects().find_map(|effect| match effect {
+                    FunctionEffect::CallContract { contract } => contract.result(target),
+                    _ => None,
+                })
+            })
+    }
+
+    fn result_cleanup(&self, target: ResultTarget) -> Option<Cleanup> {
+        self.result_contract(target)?
+            .policies()
+            .find_map(|policy| match policy {
+                ResultPolicy::Defined {
+                    ownership: ResultOwnership::Owned { cleanup },
+                    ..
+                } => Some(*cleanup),
+                _ => None,
+            })
     }
 
     pub fn apply_buffers(&self, raw: &RawFunction) -> Result<RawFunction, String> {
@@ -566,6 +624,7 @@ impl FunctionPolicy<'_> {
                 | FunctionEffect::ConsumedInput { .. }
                 | FunctionEffect::MutableString { .. }
                 | FunctionEffect::CallContract { .. }
+                | FunctionEffect::ResultContract { .. }
                 | FunctionEffect::OverlappedIo { .. }
                 | FunctionEffect::Subsystem { .. }
                 | FunctionEffect::SubsystemExempt {}
@@ -620,65 +679,18 @@ fn dll_name(dll: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
 }
 
-pub(crate) fn validate_call_contract_structure(contract: &CallContract) -> Result<(), String> {
-    if contract.outputs.len() > 1024 || contract.resource_effects.len() > 1024 {
-        return Err("win32.contract-conflict: too many native call rules".into());
+fn raw_result_target(raw: &RawFunction, target: ResultTarget) -> bool {
+    use crate::win32_metadata::{RawBaseType, RawDirection};
+    match target {
+        ResultTarget::Return {} => {
+            raw.return_type.pointer_depth != 0 || !matches!(raw.return_type.base, RawBaseType::Void)
+        }
+        ResultTarget::Parameter { index } => raw.parameters.get(index).is_some_and(|parameter| {
+            parameter.direction != RawDirection::In
+                && parameter.typ.pointer_depth > 0
+                && parameter.buffer.is_none()
+        }),
     }
-    let mut outputs = BTreeSet::new();
-    for rule in &contract.outputs {
-        if rule.parameter > 1023 || !outputs.insert(rule.parameter) || rule.when.inputs.len() > 16 {
-            return Err("win32.contract-conflict: output rule parameter or predicates".into());
-        }
-        for predicate in &rule.when.inputs {
-            let valid = match predicate {
-                InputPredicate::BitsIn {
-                    parameter,
-                    mask,
-                    values,
-                } => {
-                    *parameter <= 1023
-                        && *mask != 0
-                        && !values.is_empty()
-                        && values.len() <= 64
-                        && values.iter().all(|value| value & !mask == 0)
-                        && values.iter().copied().collect::<BTreeSet<_>>().len() == values.len()
-                }
-                InputPredicate::HandleIn { parameter, values } => {
-                    *parameter <= 1023
-                        && !values.is_empty()
-                        && values.len() <= 64
-                        && values.iter().copied().collect::<BTreeSet<_>>().len() == values.len()
-                }
-                InputPredicate::NullOrEmpty {
-                    parameter,
-                    element_width,
-                } => *parameter <= 1023 && matches!(element_width, 1 | 2),
-            };
-            if !valid {
-                return Err("win32.contract-conflict: invalid native input predicate".into());
-            }
-        }
-        if let OutputAction::AliasInput { parameter } = rule.action
-            && (parameter > 1023 || parameter == rule.parameter)
-        {
-            return Err("win32.contract-conflict: invalid native alias input".into());
-        }
-    }
-    let mut resources = BTreeSet::new();
-    for effect in &contract.resource_effects {
-        let ResourceEffect::AddFileCompletionModes {
-            handle_parameter,
-            flags_parameter,
-        } = *effect;
-        if handle_parameter > 1023
-            || flags_parameter > 1023
-            || handle_parameter == flags_parameter
-            || !resources.insert(handle_parameter)
-        {
-            return Err("win32.contract-conflict: resource state effect parameters".into());
-        }
-    }
-    Ok(())
 }
 
 fn validate_recipe(recipe: &LayoutRecipe, depth: usize) -> Result<(), String> {
@@ -807,7 +819,19 @@ impl Registry {
                     return Err(format!("win32.contract-conflict: {}", entry.id));
                 }
                 if let FunctionEffect::CallContract { contract } = effect {
-                    validate_call_contract_structure(contract)?;
+                    contract
+                        .validate_structure()
+                        .map_err(|error| error.to_string())?;
+                }
+                if let FunctionEffect::ResultContract { contract } = effect {
+                    CallContract::current(vec![contract.clone()], Vec::new())
+                        .validate_structure()
+                        .map_err(|error| error.to_string())?;
+                }
+                if matches!(
+                    effect,
+                    FunctionEffect::CallContract { .. } | FunctionEffect::ResultContract { .. }
+                ) {
                     if entry
                         .contracts
                         .iter()
@@ -1060,14 +1084,22 @@ impl Registry {
                         *parameter < raw.parameters.len()
                     }
                     FunctionEffect::CallContract { contract } => {
-                        validate_call_contract_structure(contract)?;
+                        contract
+                            .validate_structure()
+                            .map_err(|error| error.to_string())?;
                         contract.outputs.iter().all(|rule| {
                             raw.parameters.get(rule.parameter).is_some_and(|parameter| {
                                 parameter.direction != RawDirection::In
                                     && parameter.typ.pointer_depth > 0
                                     && parameter.buffer.is_none()
                             })
-                        })
+                        }) && contract
+                            .results
+                            .iter()
+                            .all(|result| raw_result_target(raw, result.target))
+                    }
+                    FunctionEffect::ResultContract { contract } => {
+                        raw_result_target(raw, contract.target)
                     }
                     FunctionEffect::OverlappedIo {
                         file_parameter,

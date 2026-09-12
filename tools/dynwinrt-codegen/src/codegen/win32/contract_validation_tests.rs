@@ -118,6 +118,14 @@ fn every_closed_function_effect_has_typed_json_and_rejects_extra_or_missing_fiel
             |e| matches!(e, FunctionEffect::CallContract { contract } if contract.is_empty()),
         ),
         (
+            json!({"kind":"result-contract","contract":{
+                "target":{"kind":"return"},
+                "onSuccess":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"deliver"},
+                "onFailure":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"discard"}
+            }}),
+            |e| matches!(e, FunctionEffect::ResultContract { contract } if contract.target == ResultTarget::Return {} && contract.may_be_unavailable()),
+        ),
+        (
             json!({"kind":"overlapped-io","operation":"read","fileParameter":0,"bufferParameter":1,"countParameter":2,"transferredParameter":3,"overlappedParameter":4}),
             |e| {
                 matches!(
@@ -352,6 +360,9 @@ fn manifest_and_group_validation_rejects_each_integrity_and_schema_boundary() {
         );
     }
     for (name, _) in FILES {
+        if *name == "call-contract.schema.json" {
+            continue;
+        }
         assert!(
             load_modified_group(name, |group| group["schemaVersion"] = 0.into()).is_err(),
             "{name}"
@@ -432,6 +443,7 @@ fn contract_conflicts_and_invalid_roles_are_rejected_not_prioritized() {
                     action: OutputAction::AliasInput { parameter: 0 },
                 }],
                 resource_effects: Vec::new(),
+                ..CallContract::default()
             },
         }],
         vec![FunctionEffect::OverlappedIo {
@@ -497,6 +509,143 @@ fn contract_conflicts_and_invalid_roles_are_rejected_not_prioritized() {
     ] {
         assert!(Registry::validate(Vec::new(), Vec::new(), domains).is_err());
     }
+}
+
+#[test]
+fn ordinary_registry_data_can_override_direct_and_output_result_policies() {
+    use crate::codegen::win32::test_support::{
+        parameter, pointer, project_with_policy, scalar, synthetic_function,
+    };
+    use crate::win32_metadata::{RawFunctionEvidence, RawType, function_shape_fingerprint};
+    use std::sync::Arc;
+
+    let handle = RawType {
+        base: RawBaseType::Named {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "HANDLE".into(),
+            kind: RawNamedKind::Handle {
+                cleanup: Some("CloseHandle".into()),
+            },
+        },
+        pointer_depth: 0,
+        constness: RawConstness::Unspecified,
+    };
+    let mut raw = synthetic_function("ResultEvidenceFixture");
+    raw.namespace = "Windows.Win32.Tests".into();
+    raw.return_type = handle.clone();
+    raw.parameters = vec![
+        parameter("source", handle.clone(), RawDirection::In),
+        parameter(
+            "count",
+            pointer(scalar(RawScalar::U32), 1, RawConstness::Mutable),
+            RawDirection::InOut,
+        ),
+        parameter(
+            "result",
+            pointer(handle, 1, RawConstness::Mutable),
+            RawDirection::Out,
+        ),
+    ];
+    let mut entry = function_entry();
+    entry.id = "tests.result-evidence.v2".into();
+    entry.selector.namespace = raw.namespace.clone();
+    entry.selector.name = raw.name.clone();
+    entry.selector.entry_point = raw.entry_point.clone();
+    entry.selector.dll = raw.dll.clone();
+    entry.selector.source_fingerprint = "A".repeat(64);
+    raw.evidence = Some(Arc::new(RawFunctionEvidence {
+        selector: entry.selector.clone(),
+        metadata_sha256: METADATA_SHA256.into(),
+        shape_fingerprint: function_shape_fingerprint(&raw),
+    }));
+    let effects = json!([
+        {"kind":"call-contract","contract":{"outputs":[{
+            "parameter":1,
+            "when":{"returnValue":0},
+            "action":{"kind":"unavailable"}
+        }]}},
+        {"kind":"result-contract","contract":{
+            "target":{"kind":"return"},
+            "onSuccess":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"deliver"},
+            "onFailure":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"discard"}
+        }},
+        {"kind":"result-contract","contract":{
+            "target":{"kind":"parameter","index":2},
+            "onSuccess":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"discard"},
+            "onFailure":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"deliver"},
+            "overrides":[{
+                "when":{"succeeded":true,"inputs":[{"kind":"handle-in","parameter":0,"values":[-2147483646]}]},
+                "policy":{"kind":"defined","ownership":{"kind":"alias-input","parameter":0},"delivery":"deliver"}
+            }]
+        }}
+    ]);
+    entry.contracts = serde_json::from_value(effects).unwrap();
+    let registry = Registry::validate(vec![entry.clone()], Vec::new(), Vec::new()).unwrap();
+    let policy = registry.function_policy(&raw).unwrap();
+    assert_eq!(policy.owned_return(), Some(Cleanup::CloseHandle));
+    assert_eq!(policy.output_cleanup(2), Some(Cleanup::CloseHandle));
+    let projected = project_with_policy(&raw, &policy).unwrap();
+    let contract = &projected.runtime.call_contract;
+    assert_eq!(contract.version, 2);
+    assert!(contract.outputs.is_empty());
+    assert_eq!(contract.results.len(), 3);
+    assert_eq!(
+        contract.result(ResultTarget::Return {}).unwrap().on_failure,
+        ResultPolicy::discarded(ResultOwnership::Owned {
+            cleanup: Cleanup::CloseHandle
+        })
+    );
+    assert_eq!(
+        contract
+            .result(ResultTarget::Parameter { index: 1 })
+            .unwrap()
+            .overrides[0]
+            .policy,
+        ResultPolicy::Undefined {}
+    );
+    let output = contract
+        .result(ResultTarget::Parameter { index: 2 })
+        .unwrap();
+    assert_eq!(
+        output.on_success,
+        ResultPolicy::discarded(ResultOwnership::Owned {
+            cleanup: Cleanup::CloseHandle
+        })
+    );
+    assert_eq!(
+        output.on_failure,
+        ResultPolicy::delivered(ResultOwnership::Owned {
+            cleanup: Cleanup::CloseHandle
+        })
+    );
+    assert!(output.may_alias());
+    assert!(matches!(&projected.return_shape, ReturnShape::Object {
+        return_value: Some((SurfaceType::Resource, Conversion::Resource)),
+        return_may_be_unavailable: true, outputs, ..
+    } if outputs[1].conversion == Conversion::ResourceOrHandle && outputs[1].may_be_unavailable));
+
+    let mut duplicate = entry.clone();
+    duplicate.contracts.push(duplicate.contracts[1].clone());
+    assert!(Registry::validate(vec![duplicate], Vec::new(), Vec::new()).is_err());
+    let mut conflicting = entry.clone();
+    let FunctionEffect::ResultContract { contract } = &mut conflicting.contracts[1] else {
+        unreachable!()
+    };
+    contract.on_success = ResultPolicy::delivered(ResultOwnership::Owned {
+        cleanup: Cleanup::RegCloseKey,
+    });
+    let conflicting = Registry::validate(vec![conflicting], Vec::new(), Vec::new()).unwrap();
+    assert!(project_with_policy(&raw, &conflicting.function_policy(&raw).unwrap()).is_err());
+    let mut asynchronous = entry;
+    asynchronous.contracts.push(FunctionEffect::OverlappedIo {
+        operation: AsyncIoKind::Read,
+        file_parameter: 0,
+        buffer_parameter: 1,
+        count_parameter: 2,
+        transferred_parameter: 3,
+        overlapped_parameter: 4,
+    });
+    assert!(Registry::validate(vec![asynchronous], Vec::new(), Vec::new()).is_err());
 }
 
 #[test]

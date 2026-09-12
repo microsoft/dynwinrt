@@ -12,6 +12,7 @@ test-hooks = ["windows/Win32_Media_MediaFoundation"]
 
 [dependencies]
 dynwinrt-com-contracts = { path = "../dynwinrt-com-contracts", version = "0.1.0" }
+dynwinrt-win32-contracts = { path = "../dynwinrt-win32-contracts", version = "0.1.0" }
 libffi = "5.1.0"
 libffi-sys = "4.1.0"
 paste = "1"
@@ -40,6 +41,8 @@ features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_Services",
@@ -64,7 +67,7 @@ tokio = { version = "1.49.0", features = ["macros", "rt"] }
 
 [dev-dependencies.windows]
 version = ">=0.59, <=0.62"
-features = ["Win32_Graphics_Imaging", "Win32_Media_MediaFoundation", "ApplicationModel_Background"]
+features = ["Win32_Graphics_Imaging", "Win32_Media_MediaFoundation", "ApplicationModel_Background", "Win32_System_Pipes"]
 
 [[bench]]
 name = "bench"

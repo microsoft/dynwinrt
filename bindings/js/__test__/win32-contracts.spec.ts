@@ -1053,6 +1053,81 @@ test.serial('Win32 IOCP retires pending native work when its Node environment cl
   }
 })
 
+test.serial('Win32 IOCP retires prepared and queued deliveries on the Node owner thread', async (t) => {
+  t.timeout(30000)
+  for (const phase of ['prepared', 'queued']) {
+    const pipe = `\\\\.\\pipe\\dynwinrt-iocp-${phase}-${randomUUID()}`
+    let peer: Socket | undefined
+    const server = createServer((socket) => {
+      peer = socket
+    })
+    server.listen(pipe)
+    await once(server, 'listening')
+    const connected = once(server, 'connection')
+    const worker = new Worker(
+      `
+      const { parentPort, workerData } = require('node:worker_threads');
+      const { DynWin32, DynWin32Function } = require(workerData.runtime);
+      const result = DynWin32Function.bind(workerData.spec).invoke([
+        DynWin32.wideString(workerData.pipe), DynWin32.u32(0xc0000000), DynWin32.u32(7),
+        DynWin32.nullPointer(), DynWin32.u32(3), DynWin32.u32(0x40000000), DynWin32.handle(0n, true)
+      ]);
+      if (!result.succeeded) throw new Error('CreateFileW failed: ' + result.lastError);
+      const file = DynWin32.toResource(result.returnValue);
+      parentPort.postMessage('opened');
+      parentPort.once('message', () => {
+        const buffer = Buffer.alloc(4);
+        const operation = DynWin32.beginReadFile(file, buffer);
+        let delivered = false;
+        if (workerData.phase === 'queued') operation.start(() => { delivered = true; });
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        const deadline = Date.now() + 5000;
+        while (file.active) {
+          if (Date.now() > deadline) throw new Error('native completion did not become terminal');
+          Atomics.wait(wait, 0, 0, 1);
+        }
+        parentPort.postMessage({
+          busy: file.busy, active: file.active, delivered, unchanged: buffer.every(byte => byte === 0)
+        });
+        Atomics.wait(wait, 0, 0);
+      });
+    `,
+      {
+        eval: true,
+        workerData: { runtime: join(process.cwd(), 'dist', 'win32-unsafe.js'), spec: fileSpec, pipe, phase },
+      },
+    )
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      t.deepEqual(await once(worker, 'message'), ['opened'])
+      await connected
+      if (phase === 'queued') {
+        await new Promise<void>((resolve, reject) =>
+          peer!.write('hold', (error) => (error ? reject(error) : resolve())),
+        )
+      }
+      const settled = once(worker, 'message')
+      worker.postMessage('start')
+      const [state] = await settled
+      t.deepEqual(state, { busy: true, active: false, delivered: false, unchanged: true })
+      const closed = once(peer!, 'close')
+      await worker.terminate()
+      await Promise.race([
+        closed,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`${phase} IOCP teardown retained the native pipe`)), 10000)
+        }),
+      ])
+      t.pass()
+    } finally {
+      clearTimeout(timeout)
+      await worker.terminate()
+      peer?.destroy()
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+    }
+  }
+})
+
 test.serial('Win32 IOCP owns buffers through completion, cancellation, EOF and capacity checks', async (t) => {
   t.timeout(20000)
   const path = join(process.cwd(), '__test__', `win32-iocp-${randomUUID()}.bin`)

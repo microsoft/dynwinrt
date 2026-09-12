@@ -285,6 +285,19 @@
         {
           "kind": "owned-return",
           "cleanup": "close-handle"
+        },
+        {
+          "kind": "result-contract",
+          "contract": {
+            "target": { "kind": "return" },
+            "onSuccess": {
+              "kind": "defined",
+              "ownership": { "kind": "owned", "cleanup": "close-handle" },
+              "delivery": "deliver"
+            },
+            "onFailure": { "kind": "undefined" },
+            "overrides": []
+          }
         }
       ],
       "evidence": [
@@ -310,6 +323,19 @@
         {
           "kind": "owned-return",
           "cleanup": "close-handle"
+        },
+        {
+          "kind": "result-contract",
+          "contract": {
+            "target": { "kind": "return" },
+            "onSuccess": {
+              "kind": "defined",
+              "ownership": { "kind": "owned", "cleanup": "close-handle" },
+              "delivery": "deliver"
+            },
+            "onFailure": { "kind": "undefined" },
+            "overrides": []
+          }
         }
       ],
       "evidence": [

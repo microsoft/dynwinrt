@@ -77,6 +77,7 @@ fn conditional_function() -> FunctionContract {
                         element_width: 2,
                     }],
                     return_value: None,
+                    ..Condition::default()
                 },
                 action: OutputAction::AliasInput { parameter: 1 },
             },
@@ -89,6 +90,7 @@ fn conditional_function() -> FunctionContract {
                         values: vec![7],
                     }],
                     return_value: Some(234),
+                    ..Condition::default()
                 },
                 action: OutputAction::Unavailable {},
             },
@@ -97,6 +99,7 @@ fn conditional_function() -> FunctionContract {
             handle_parameter: 1,
             flags_parameter: 5,
         }],
+        ..CallContract::default()
     };
     function
 }
@@ -105,7 +108,11 @@ fn conditional_function() -> FunctionContract {
 fn native_call_rules_keep_native_indices_through_hidden_inputs_and_output_slots() {
     let function = conditional_function();
     let projected = project::project_function(&function).unwrap();
-    assert_eq!(projected.runtime.call_contract, function.call_contract);
+    let resolved = function
+        .call_contract
+        .upgrade_metadata(&projected.runtime.signature_shape(64))
+        .unwrap();
+    assert_eq!(projected.runtime.call_contract, resolved);
     assert_eq!(
         projected
             .parameters
@@ -145,7 +152,7 @@ fn native_call_rules_keep_native_indices_through_hidden_inputs_and_output_slots(
                 output_index: 1,
                 typ: SurfaceType::ResourceOrHandle,
                 conversion: Conversion::ResourceOrHandle,
-                may_be_unavailable: false,
+                may_be_unavailable: true,
             },
             ProjectedOutput {
                 name: "count".into(),
@@ -165,7 +172,7 @@ fn native_call_rules_keep_native_indices_through_hidden_inputs_and_output_slots(
             .unwrap()
             .runtime
             .call_contract,
-        function.call_contract
+        resolved
     );
     let generated = render::render(
         &ProjectedApis {
@@ -217,7 +224,7 @@ const runtime={{DynWin32:{{
   }}}}
 }}}}}}
 "#,
-            serde_json::to_string(&function.call_contract).unwrap()
+            serde_json::to_string(&resolved).unwrap()
         ),
         r#"
 for(const nativeAlias of [owner,77n,null]) {
@@ -250,14 +257,33 @@ fn native_handle_predicates_preserve_signed_constants_and_require_handle_inputs(
         .inputs
         .push(predicate.clone());
     let projected = project::project_function(&function).unwrap();
-    assert_eq!(projected.runtime.call_contract, function.call_contract);
     assert_eq!(
-        projected.runtime.call_contract.outputs[0].when.inputs[1],
+        projected.runtime.call_contract,
+        function
+            .call_contract
+            .upgrade_metadata(&projected.runtime.signature_shape(64))
+            .unwrap()
+    );
+    assert_eq!(
+        projected
+            .runtime
+            .call_contract
+            .result(ResultTarget::Parameter { index: 3 })
+            .unwrap()
+            .overrides[0]
+            .when
+            .inputs[1],
         predicate
     );
     assert_eq!(
-        projected.runtime.call_contract.outputs[0].action,
-        OutputAction::AliasInput { parameter: 1 }
+        projected
+            .runtime
+            .call_contract
+            .result(ResultTarget::Parameter { index: 3 })
+            .unwrap()
+            .overrides[0]
+            .policy,
+        ResultPolicy::delivered(ResultOwnership::AliasInput { parameter: 1 })
     );
     for index in [0, 2, 3, 4, 5, 6, 99] {
         let mut invalid = function.clone();

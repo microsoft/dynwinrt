@@ -17,6 +17,7 @@ struct Observations {
     locks: Vec<usize>,
     fail_return_allocation: bool,
     decoded_outputs: Vec<usize>,
+    fail_decode: Option<ResultTarget>,
 }
 
 thread_local! {
@@ -41,6 +42,27 @@ pub(super) fn record_call_lock(value: usize) {
 
 pub(super) fn record_output_decode(index: usize) {
     OBSERVED.with(|observed| observed.borrow_mut().decoded_outputs.push(index));
+}
+
+pub(super) fn check_result_decode(target: ResultTarget) -> Result<()> {
+    if OBSERVED.with(|observed| {
+        let mut observed = observed.borrow_mut();
+        if observed.fail_decode == Some(target) {
+            observed.fail_decode = None;
+            true
+        } else {
+            false
+        }
+    }) {
+        return Err(invalid_argument(
+            "Injected native result conversion failure",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn fail_decode(target: ResultTarget) {
+    OBSERVED.with(|observed| observed.borrow_mut().fail_decode = Some(target));
 }
 
 pub(super) fn decoded_outputs() -> Vec<usize> {
@@ -82,7 +104,24 @@ fn cleanups() -> Vec<CleanupCall> {
 fn policy(plan: Arc<CallPlan>, rule: SuccessRule, cleanup: Cleanup) -> Arc<CallPlan> {
     let mut plan = Arc::try_unwrap(plan).unwrap();
     plan.success_rule = rule;
-    plan.return_cleanup = cleanup;
+    let spec = CallPlanSpec {
+        dll: plan.dll.clone(),
+        entry_point: plan.entry_point.clone(),
+        parameters: plan
+            .parameters
+            .iter()
+            .map(|parameter| parameter.spec)
+            .collect(),
+        return_type: plan.return_type,
+        return_cleanup: cleanup,
+        success_rule: rule,
+        capture_last_error: plan.capture_last_error,
+        calling_convention: plan.calling_convention,
+        parameter_aggregates: plan.parameter_aggregates.clone(),
+        return_aggregate: plan.return_aggregate.clone(),
+    };
+    plan.contract = contract::resolve(&spec, &CallContract::default()).unwrap();
+    plan.legacy_surface = contract::LegacySurface::new(&spec, &CallContract::default());
     Arc::new(plan)
 }
 
@@ -705,14 +744,14 @@ fn async_leases_keep_resources_open_and_active_counts_balance_once() {
     first.mark_active();
     first.mark_active();
     second.mark_active();
-    assert_eq!(resource.active_async_io.load(Ordering::Acquire), 2);
-    assert_eq!(resource.async_leases.load(Ordering::Acquire), 2);
+    assert_eq!(resource.active_async_io_count(), 2);
+    assert_eq!(resource.async_lease_count(), 2);
     assert!(resource.close().is_err());
     first.mark_inactive();
     first.mark_inactive();
-    assert_eq!(resource.active_async_io.load(Ordering::Acquire), 1);
+    assert_eq!(resource.active_async_io_count(), 1);
     drop(first);
-    assert_eq!(resource.async_leases.load(Ordering::Acquire), 1);
+    assert_eq!(resource.async_lease_count(), 1);
     let raw = resource.raw();
     drop(resource);
     assert!(weak.upgrade().is_some());

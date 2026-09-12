@@ -1,18 +1,12 @@
 {
-  "schemaVersion": 2,
-  "metadata": {
-    "package": "Microsoft.Windows.SDK.Win32Metadata",
-    "version": "71.0.14-preview",
-    "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
-  },
-  "schema": {
-    "file": "schema.json",
-    "sha256": "AAD834B81EE265901A61EEB623639CBD62A190FED26EB77E3FBBAF46B9616D5E"
-  },
   "files": [
     {
+      "file": "call-contract.schema.json",
+      "sha256": "353F19BD2CDA5BFDDB0F8B167A96C57A0448109DE75BA766A7F5D9C4466311D8"
+    },
+    {
       "file": "function-contracts.json",
-      "sha256": "E7B09D3FA68BB088B6F2A4E915F917D158D97C46529FB2097E23EBB52721AF0D"
+      "sha256": "F23832CBAD1C83819C1ED7117778247DE1DEEFA30C3D424E1417E6E90FC701B8"
     },
     {
       "file": "subsystem-policies.json",
@@ -30,5 +24,15 @@
       "file": "policy-domains.json",
       "sha256": "A50067F25F729F29E1F02DB366F9D1EADE642407C7820628480F97347938EE57"
     }
-  ]
+  ],
+  "metadata": {
+    "package": "Microsoft.Windows.SDK.Win32Metadata",
+    "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+    "version": "71.0.14-preview"
+  },
+  "schema": {
+    "file": "schema.json",
+    "sha256": "8C371DBEC78D0B913391168C1F407B507DD92FFD5A892EFC6445F9369C1F6E55"
+  },
+  "schemaVersion": 2
 }

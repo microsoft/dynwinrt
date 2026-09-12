@@ -44,6 +44,7 @@ fn alias_contract(width: u8) -> CallContract {
                     element_width: width,
                 }],
                 return_value: None,
+                ..Condition::default()
             },
             action: OutputAction::AliasInput { parameter: 0 },
         }],
@@ -148,13 +149,26 @@ fn native_handle_conditions_preserve_the_complete_pointer_width() {
             values: vec![-2147483646],
         }],
         return_value: None,
+        ..Condition::default()
     };
-    assert!(unsafe {
-        condition.matches_inputs(&[Some(AbiValue::Pointer((-2147483646isize) as *mut c_void))])
-    });
-    assert!(!unsafe {
-        condition.matches_inputs(&[Some(AbiValue::Pointer(0x8000_0002usize as *mut c_void))])
-    });
+    assert!(
+        unsafe {
+            contract::matches_inputs(
+                &condition,
+                &[Some(AbiValue::Pointer((-2147483646isize) as *mut c_void))],
+            )
+        }
+        .unwrap()
+    );
+    assert!(
+        !unsafe {
+            contract::matches_inputs(
+                &condition,
+                &[Some(AbiValue::Pointer(0x8000_0002usize as *mut c_void))],
+            )
+        }
+        .unwrap()
+    );
 }
 
 #[test]
@@ -257,6 +271,7 @@ fn unavailable_outputs_are_not_decoded_for_the_contracted_input_and_status() {
                         values: vec![0x8000_0004],
                     }],
                     return_value: Some(234),
+                    ..Condition::default()
                 },
                 action: OutputAction::Unavailable {},
             }],
@@ -381,7 +396,7 @@ fn resource_mode_effects_are_monotonic_success_only_and_exclude_async_leases() {
         unsafe { windows::Win32::System::Threading::CreateEventW(None, true, false, None) }
             .unwrap();
     let owner = unsafe { OwnedResource::adopt(handle.0 as usize, Cleanup::CloseHandle) }.unwrap();
-    *owner.file_completion_modes.lock().unwrap() = Some(1);
+    owner.file_capability().set_known_completion_modes(1);
     let mut call = Arc::try_unwrap(plan(
         set_modes as *const () as usize,
         vec![
@@ -414,7 +429,7 @@ fn resource_mode_effects_are_monotonic_success_only_and_exclude_async_leases() {
             unsafe { call.invoke(&[Value::Resource(Arc::clone(&owner)), Value::U8(flags)]) }
                 .unwrap();
         assert_eq!(result.succeeded, succeeded);
-        assert_eq!(*owner.file_completion_modes.lock().unwrap(), Some(3));
+        assert_eq!(owner.file_capability().cached_completion_modes(), Some(3));
     }
     assert_eq!(CALLS.get(), 3);
     owner.close().unwrap();

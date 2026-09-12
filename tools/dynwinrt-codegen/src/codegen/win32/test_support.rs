@@ -118,6 +118,14 @@ pub(crate) fn semantic(function: &RawFunction) -> super::ir::FunctionContract {
         .unwrap_or_else(|reason| panic!("{}: {reason}", function.name))
 }
 
+pub(crate) fn project_with_policy(
+    function: &RawFunction,
+    policy: &crate::win32_contracts::FunctionPolicy<'_>,
+) -> Result<ProjectedFunction, String> {
+    let native = super::model::validate_function_with_policy(function, policy)?;
+    super::project::project_function(&native)
+}
+
 pub(crate) fn run_js(generated: &GeneratedOutput, setup: &str, checks: &str) {
     let script = format!(
         "{setup}\nconst projected = {{}}\nrequire('node:vm').runInNewContext({}, \

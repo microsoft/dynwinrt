@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 fn descriptor() -> Value {
     json!({
+        "version": 1,
         "outputs": [
             {
                 "parameter": 2,
@@ -13,7 +14,8 @@ fn descriptor() -> Value {
                     "inputs": [{
                         "kind": "bits-in", "parameter": 0, "mask": 255, "values": [7, 9]
                     }],
-                    "returnValue": 234
+                    "returnValue": 234,
+                    "succeeded": null
                 },
                 "action": {"kind": "unavailable"}
             },
@@ -24,7 +26,8 @@ fn descriptor() -> Value {
                         {"kind": "null-or-empty", "parameter": 1, "elementWidth": 2},
                         {"kind": "handle-in", "parameter": 0, "values": [-2147483646]}
                     ],
-                    "returnValue": null
+                    "returnValue": null,
+                    "succeeded": null
                 },
                 "action": {"kind": "alias-input", "parameter": 0}
             }
@@ -39,7 +42,7 @@ fn descriptor() -> Value {
 fn native_call_contract_wire_roundtrips_closed_data_and_defaults() {
     let value = descriptor();
     let contract: CallContract = serde_json::from_value(value.clone()).unwrap();
-    validate_call_contract_structure(&contract).unwrap();
+    contract.validate_structure().unwrap();
     assert_eq!(serde_json::to_value(contract).unwrap(), value);
     assert!(
         serde_json::from_str::<CallContract>("{}")
@@ -207,21 +210,34 @@ fn native_call_contract_bounds_and_ambiguous_rules_fail_closed() {
         let mut value = descriptor();
         mutate(&mut value);
         let accepted = serde_json::from_value::<CallContract>(value)
-            .is_ok_and(|contract| validate_call_contract_structure(&contract).is_ok());
+            .is_ok_and(|contract| contract.validate_structure().is_ok());
         assert!(!accepted, "mutation {index}");
     }
 }
 
 #[test]
 fn native_call_contract_schema_is_closed_at_every_wire_level() {
-    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
-    for name in ["callContract", "outputRule", "condition"] {
+    let schema: Value = serde_json::from_str(CALL_CONTRACT_SCHEMA).unwrap();
+    assert_eq!(schema["additionalProperties"], false);
+    for name in [
+        "OutputRule",
+        "Condition",
+        "ResultContract",
+        "ResultOverride",
+    ] {
         assert_eq!(
             schema["$defs"][name]["additionalProperties"], false,
             "{name}"
         );
     }
-    for name in ["inputPredicate", "outputAction", "resourceEffect"] {
+    for name in [
+        "InputPredicate",
+        "OutputAction",
+        "ResourceEffect",
+        "ResultTarget",
+        "ResultPolicy",
+        "ResultOwnership",
+    ] {
         for variant in schema["$defs"][name]["oneOf"].as_array().unwrap() {
             assert_eq!(variant["additionalProperties"], false, "{name}");
             assert_eq!(
@@ -241,20 +257,139 @@ fn native_call_contract_schema_is_closed_at_every_wire_level() {
             );
         }
     }
+    assert_eq!(schema["properties"]["version"]["default"], json!(1));
     assert_eq!(
-        schema["$defs"]["callContract"]["properties"]["outputs"]["default"],
+        schema["$defs"]["Condition"]["properties"]["inputs"]["default"],
         json!([])
     );
     assert_eq!(
-        schema["$defs"]["condition"]["properties"]["inputs"]["default"],
-        json!([])
-    );
-    assert_eq!(
-        schema["$defs"]["condition"]["properties"]["returnValue"]["default"],
+        schema["$defs"]["Condition"]["properties"]["returnValue"]["default"],
         Value::Null
     );
     assert_eq!(
-        schema["$defs"]["inputPredicate"]["oneOf"][0]["properties"]["values"]["uniqueItems"],
-        true
+        schema["$defs"]["Condition"]["properties"]["succeeded"]["default"],
+        Value::Null
     );
+}
+
+fn result_descriptor() -> Value {
+    json!({
+        "version": 2,
+        "results": [{
+            "target": {"kind":"return"},
+            "onSuccess": {"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"deliver"},
+            "onFailure": {"kind":"undefined"},
+            "overrides": [{
+                "when":{"succeeded":false,"inputs":[],"returnValue":null},
+                "policy":{"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"discard"}
+            }]
+        }],
+        "resourceEffects":[]
+    })
+}
+
+#[test]
+fn shared_version_decoder_preserves_legacy_and_current_evidence_without_mixing_protocols() {
+    let legacy = descriptor();
+    let mut unversioned = legacy.clone();
+    unversioned.as_object_mut().unwrap().remove("version");
+    assert_eq!(
+        CallContract::decode(&legacy.to_string()).unwrap(),
+        CallContract::decode(&unversioned.to_string()).unwrap()
+    );
+    let current = result_descriptor();
+    assert_eq!(
+        serde_json::to_value(CallContract::decode(&current.to_string()).unwrap()).unwrap(),
+        current
+    );
+    for value in [
+        json!({"version":0}),
+        json!({"version":3}),
+        json!({"version":"2"}),
+        json!({"version":2,"outputs":legacy["outputs"]}),
+        json!({"results":current["results"]}),
+        json!({"version":1,"results":current["results"]}),
+        json!({"version":2,"results":null}),
+    ] {
+        assert!(CallContract::decode(&value.to_string()).is_err(), "{value}");
+    }
+    assert!(
+        CallContract::decode(&" ".repeat(dynwinrt_win32_contracts::MAX_CONTRACT_BYTES + 1))
+            .is_err()
+    );
+}
+
+#[test]
+fn shared_result_evidence_is_closed_and_keeps_validity_ownership_and_delivery_separate() {
+    for path in [
+        "",
+        "/results/0",
+        "/results/0/target",
+        "/results/0/onSuccess",
+        "/results/0/onSuccess/ownership",
+        "/results/0/onFailure",
+        "/results/0/overrides/0",
+        "/results/0/overrides/0/when",
+        "/results/0/overrides/0/policy",
+        "/results/0/overrides/0/policy/ownership",
+    ] {
+        let mut value = result_descriptor();
+        value.pointer_mut(path).unwrap()["code"] = "unchecked()".into();
+        assert!(CallContract::decode(&value.to_string()).is_err(), "{path}");
+    }
+    let mutations: &[fn(&mut Value)] = &[
+        |v| {
+            v["results"][0]["onFailure"]["ownership"] =
+                json!({"kind":"owned","cleanup":"close-handle"});
+        },
+        |v| {
+            v["results"][0]["onSuccess"]["ownership"]["cleanup"] = "none".into();
+        },
+        |v| {
+            v["results"][0]["onSuccess"]["ownership"]["cleanup"] = "unknown".into();
+        },
+        |v| {
+            v["results"][0]["onSuccess"]["ownership"]["cleanup"] = json!({"close-handle":null});
+        },
+        |v| {
+            v["results"][0]["onSuccess"]["delivery"] = json!({"deliver":null});
+        },
+        |v| {
+            v["results"][0]["onSuccess"]["delivery"] = "undefined".into();
+        },
+        |v| {
+            v["results"][0]["onSuccess"]
+                .as_object_mut()
+                .unwrap()
+                .remove("ownership");
+        },
+        |v| {
+            v["results"][0]["onSuccess"]
+                .as_object_mut()
+                .unwrap()
+                .remove("delivery");
+        },
+        |v| {
+            v["results"][0].as_object_mut().unwrap().remove("onFailure");
+        },
+        |v| {
+            v["results"][0]["target"] = json!({"kind":"parameter","index":-1});
+        },
+        |v| {
+            let duplicate = v["results"][0].clone();
+            v["results"].as_array_mut().unwrap().push(duplicate);
+        },
+        |v| {
+            let case = v["results"][0]["overrides"][0].clone();
+            v["results"][0]["overrides"] = json!(vec![case; 33]);
+        },
+    ];
+    for (index, mutate) in mutations.iter().enumerate() {
+        let mut value = result_descriptor();
+        mutate(&mut value);
+        assert!(
+            CallContract::decode(&value.to_string()).is_err(),
+            "mutation {index}"
+        );
+    }
 }

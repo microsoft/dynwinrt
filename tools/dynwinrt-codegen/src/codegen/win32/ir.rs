@@ -1,6 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub use dynwinrt_win32_contracts::{
+    CallContract, Cleanup, Condition, Delivery, Direction, InputPredicate, OutputAction,
+    OutputRule, ResourceEffect, ResultContract, ResultOverride, ResultOwnership, ResultPolicy,
+    ResultTarget, SuccessRule,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,43 +27,11 @@ pub enum AbiType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    In,
-    Out,
-    InOut,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Constness {
     Const,
     Mutable,
     Unspecified,
     Mixed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Cleanup {
-    None,
-    CloseHandle,
-    RegCloseKey,
-    LocalFree,
-    GlobalFree,
-    FreeLibrary,
-    CloseServiceHandle,
-    CoTaskMemFree,
-    CredFree,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SuccessRule {
-    Always,
-    ReturnZero,
-    ReturnNonZero,
-    ReturnNonNull,
-    HResultSucceeded,
-    SignedNonNegative,
-    ReturnValidHandle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,88 +250,7 @@ pub struct FunctionContract {
     pub subsystem: Option<Subsystem>,
     pub enums: Vec<EnumDefinition>,
     pub call_contract: CallContract,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CallContract {
-    #[serde(default)]
-    pub outputs: Vec<OutputRule>,
-    #[serde(default)]
-    pub resource_effects: Vec<ResourceEffect>,
-}
-
-impl CallContract {
-    pub fn is_empty(&self) -> bool {
-        self.outputs.is_empty() && self.resource_effects.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OutputRule {
-    pub parameter: usize,
-    pub when: Condition,
-    pub action: OutputAction,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Condition {
-    #[serde(default)]
-    pub inputs: Vec<InputPredicate>,
-    #[serde(default)]
-    pub return_value: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum InputPredicate {
-    BitsIn {
-        parameter: usize,
-        mask: u64,
-        values: Vec<u64>,
-    },
-    /// Native pointer-sized signed handle values, widened to i64.
-    HandleIn {
-        parameter: usize,
-        values: Vec<i64>,
-    },
-    NullOrEmpty {
-        parameter: usize,
-        element_width: u8,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum OutputAction {
-    Unavailable {},
-    AliasInput { parameter: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum ResourceEffect {
-    AddFileCompletionModes {
-        handle_parameter: usize,
-        flags_parameter: usize,
-    },
+    pub result_contracts: Vec<ResultContract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,16 +378,70 @@ pub struct RuntimePlan {
     pub call_contract: CallContract,
 }
 
+impl RuntimePlan {
+    pub fn signature_shape(&self, pointer_width: u8) -> dynwinrt_win32_contracts::SignatureShape {
+        use dynwinrt_win32_contracts::{NativeType, ParameterShape, SignatureShape};
+        SignatureShape {
+            pointer_width,
+            parameters: self
+                .parameters
+                .iter()
+                .map(|parameter| ParameterShape {
+                    typ: parameter
+                        .aggregate
+                        .as_ref()
+                        .map_or_else(|| parameter.abi.native_type(), |_| NativeType::Aggregate),
+                    direction: parameter.direction,
+                    cleanup: parameter.cleanup,
+                    resource_cleanup: parameter.resource_cleanup,
+                    consumes_resource: parameter.consumes_resource,
+                })
+                .collect(),
+            return_type: if self.return_aggregate.is_some() {
+                Some(NativeType::Aggregate)
+            } else {
+                self.return_abi.map(AbiType::native_type)
+            },
+            return_cleanup: self.return_cleanup,
+            success_rule: self.success_rule,
+        }
+    }
+}
+
+impl AbiType {
+    pub fn native_type(self) -> dynwinrt_win32_contracts::NativeType {
+        use dynwinrt_win32_contracts::NativeType;
+        match self {
+            Self::Bool32 => NativeType::Bool32,
+            Self::I8 => NativeType::I8,
+            Self::U8 => NativeType::U8,
+            Self::I16 => NativeType::I16,
+            Self::U16 => NativeType::U16,
+            Self::I32 => NativeType::I32,
+            Self::U32 => NativeType::U32,
+            Self::I64 => NativeType::I64,
+            Self::U64 => NativeType::U64,
+            Self::F32 => NativeType::F32,
+            Self::F64 => NativeType::F64,
+            Self::Pointer => NativeType::Pointer,
+            Self::FunctionPointer => NativeType::FunctionPointer,
+            Self::Handle => NativeType::Handle,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnShape {
     Void,
     Direct {
         typ: SurfaceType,
         conversion: Conversion,
+        may_be_unavailable: bool,
     },
     Object {
         status: bool,
         return_value: Option<(SurfaceType, Conversion)>,
+        return_may_be_unavailable: bool,
         outputs: Vec<ProjectedOutput>,
         last_error: bool,
     },

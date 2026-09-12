@@ -335,14 +335,12 @@ fn render_runtime_plan(
             .map(native_layout_descriptor_js)
             .unwrap_or_else(|| "undefined".into()),
     ));
-    if !runtime.call_contract.is_empty() {
-        let descriptor =
-            serde_json::to_string(&runtime.call_contract).expect("validated native call contract");
-        output.push_str(&format!(
-            "    callContractDescriptor: {},\n",
-            serde_json::to_string(&descriptor).expect("native call descriptor string")
-        ));
-    }
+    let descriptor =
+        serde_json::to_string(&runtime.call_contract).expect("validated native call contract");
+    output.push_str(&format!(
+        "    callContractDescriptor: {},\n",
+        serde_json::to_string(&descriptor).expect("native call descriptor string")
+    ));
     output.push_str("  })\n}\n");
 }
 
@@ -427,45 +425,52 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
     }
     match &function.return_shape {
         ReturnShape::Void => output.push_str("  return undefined\n"),
-        ReturnShape::Direct { typ, conversion } => {
-            if let SurfaceType::NativeStruct(name) = typ {
-                output.push_str(&format!(
-                    "  return _nativeAggregate.toNativeStruct(_return, _nativeLayout_{name})\n"
-                ));
-            } else {
-                output.push_str(&format!(
-                    "  return {}\n",
-                    render_output_conversion(*conversion, "_return")
-                ));
-            }
+        ReturnShape::Direct {
+            typ,
+            conversion,
+            may_be_unavailable,
+        } => {
+            output.push_str(&format!(
+                "  return {}\n",
+                render_result_conversion(typ, *conversion, "_return", *may_be_unavailable)
+            ));
         }
         ReturnShape::Object {
             status,
             return_value,
+            return_may_be_unavailable,
             outputs,
             last_error,
         } => {
             output.push_str("  return {\n");
             if *status {
-                output.push_str("    status: DynWin32.toNumber(_return),\n");
+                output.push_str(&format!(
+                    "    status: {},\n",
+                    render_optional_conversion(
+                        "_return",
+                        "DynWin32.toNumber(_return)".into(),
+                        *return_may_be_unavailable
+                    )
+                ));
             } else if let Some((typ, conversion)) = return_value {
-                if let SurfaceType::NativeStruct(name) = typ {
-                    output.push_str(&format!(
-                        "    result: _nativeAggregate.toNativeStruct(_return, _nativeLayout_{name}),\n"
-                    ));
-                } else {
-                    output.push_str(&format!(
-                        "    result: {},\n",
-                        render_output_conversion(*conversion, "_return")
-                    ));
-                }
+                output.push_str(&format!(
+                    "    result: {},\n",
+                    render_result_conversion(
+                        typ,
+                        *conversion,
+                        "_return",
+                        *return_may_be_unavailable
+                    )
+                ));
             }
             for result in outputs {
                 let value = format!("_outputs[{}]", result.output_index);
-                let mut converted = render_output_conversion(result.conversion, &value);
-                if result.may_be_unavailable {
-                    converted = format!("DynWin32.isUnavailable({value}) ? null : ({converted})");
-                }
+                let converted = render_result_conversion(
+                    &result.typ,
+                    result.conversion,
+                    &value,
+                    result.may_be_unavailable,
+                );
                 output.push_str(&format!("    {}: {},\n", result.name, converted,));
             }
             if *last_error {
@@ -482,6 +487,28 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
             function.js_name
         ));
     }
+}
+
+fn render_optional_conversion(value: &str, converted: String, may_be_unavailable: bool) -> String {
+    if may_be_unavailable {
+        format!("DynWin32.isUnavailable({value}) ? null : ({converted})")
+    } else {
+        converted
+    }
+}
+
+fn render_result_conversion(
+    typ: &SurfaceType,
+    conversion: Conversion,
+    value: &str,
+    may_be_unavailable: bool,
+) -> String {
+    let converted = if let SurfaceType::NativeStruct(name) = typ {
+        format!("_nativeAggregate.toNativeStruct({value}, _nativeLayout_{name})")
+    } else {
+        render_output_conversion(conversion, value)
+    };
+    render_optional_conversion(value, converted, may_be_unavailable)
 }
 
 fn render_input(input: &InputExpression, function: &ProjectedFunction) -> String {
@@ -823,29 +850,32 @@ fn collect_handle_alias(typ: &SurfaceType, handles: &mut BTreeSet<String>) {
 fn dts_return_shape(shape: &ReturnShape) -> String {
     match shape {
         ReturnShape::Void => "void".into(),
-        ReturnShape::Direct { typ, .. } => dts_type(typ),
+        ReturnShape::Direct {
+            typ,
+            may_be_unavailable,
+            ..
+        } => dts_result_type(typ, *may_be_unavailable),
         ReturnShape::Object {
             status,
             return_value,
+            return_may_be_unavailable,
             outputs,
             last_error,
         } => {
             let mut fields = Vec::new();
             if *status {
-                fields.push("readonly status: number".into());
+                fields.push(format!(
+                    "readonly status: {}",
+                    dts_result_type(&SurfaceType::Number, *return_may_be_unavailable)
+                ));
             } else if let Some((typ, _)) = return_value {
-                fields.push(format!("readonly result: {}", dts_type(typ)));
+                fields.push(format!(
+                    "readonly result: {}",
+                    dts_result_type(typ, *return_may_be_unavailable)
+                ));
             }
             fields.extend(outputs.iter().map(|output| {
-                let mut typ = dts_type(&output.typ);
-                if output.may_be_unavailable
-                    && !matches!(
-                        output.typ,
-                        SurfaceType::Resource | SurfaceType::ResourceOrHandle
-                    )
-                {
-                    typ.push_str(" | null");
-                }
+                let typ = dts_result_type(&output.typ, output.may_be_unavailable);
                 format!("readonly {}: {typ}", output.name)
             }));
             if *last_error {
@@ -854,6 +884,14 @@ fn dts_return_shape(shape: &ReturnShape) -> String {
             format!("{{ {} }}", fields.join("; "))
         }
     }
+}
+
+fn dts_result_type(typ: &SurfaceType, may_be_unavailable: bool) -> String {
+    let mut result = dts_type(typ);
+    if may_be_unavailable && !matches!(typ, SurfaceType::Resource | SurfaceType::ResourceOrHandle) {
+        result.push_str(" | null");
+    }
+    result
 }
 
 fn dts_type(typ: &SurfaceType) -> String {

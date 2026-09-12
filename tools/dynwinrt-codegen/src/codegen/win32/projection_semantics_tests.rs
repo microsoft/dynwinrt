@@ -78,6 +78,7 @@ fn byte_and_element_capacity_relations_preserve_inout_output_order_and_nullabili
                     assert_eq!(
                         projected.return_shape,
                         ReturnShape::Object {
+                            return_may_be_unavailable: false,
                             status: false,
                             return_value: Some((SurfaceType::Number, Conversion::Number)),
                             last_error: false,
@@ -233,6 +234,7 @@ fn native_return_conventions_last_error_and_outputs_are_typed_independently() {
             ReturnShape::Direct {
                 typ: SurfaceType::Number,
                 conversion: Conversion::Number,
+                may_be_unavailable: false,
             },
         ),
         (
@@ -242,6 +244,7 @@ fn native_return_conventions_last_error_and_outputs_are_typed_independently() {
             SuccessRule::ReturnZero,
             ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 outputs: vec![],
                 last_error: false,
@@ -254,6 +257,7 @@ fn native_return_conventions_last_error_and_outputs_are_typed_independently() {
             SuccessRule::SignedNonNegative,
             ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 outputs: vec![],
                 last_error: false,
@@ -266,6 +270,7 @@ fn native_return_conventions_last_error_and_outputs_are_typed_independently() {
             SuccessRule::ReturnNonZero,
             ReturnShape::Object {
                 status: false,
+                return_may_be_unavailable: false,
                 return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
                 outputs: vec![],
                 last_error: true,
@@ -307,7 +312,8 @@ fn allocator_owned_pointer_returns_use_exact_cleanup_and_nonnull_success() {
             projected.return_shape,
             ReturnShape::Direct {
                 typ: SurfaceType::Resource,
-                conversion: Conversion::Resource
+                conversion: Conversion::Resource,
+                may_be_unavailable: true,
             }
         );
     }
@@ -389,6 +395,7 @@ fn mixed_out_inout_and_input_slots_keep_native_and_projected_result_order() {
     assert_eq!(
         projected.return_shape,
         ReturnShape::Object {
+            return_may_be_unavailable: false,
             status: false,
             return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
             last_error: true,

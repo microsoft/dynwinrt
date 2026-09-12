@@ -1,43 +1,30 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use napi::bindgen_prelude::{
-  BigInt, Buffer, Either, FromNapiValue, Function, ToNapiValue, Unknown,
-};
+use napi::bindgen_prelude::{BigInt, Buffer, Either, FromNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
-use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use windows::Win32::System::IO::{
-  CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED,
-  OVERLAPPED_0_0,
-};
+#[cfg(test)]
+use windows::Win32::Foundation::HANDLE;
 
-use super::{
-  com, managed_tsfn::ManagedTsfn, win32_subsystem, DynWin32SubsystemContext, DynWinRTValue, WinGUID,
-};
+use super::{com, win32_subsystem, DynWin32SubsystemContext, DynWinRTValue, WinGUID};
 
 #[path = "win32_boundary.rs"]
 pub(super) mod boundary;
+#[path = "win32_io.rs"]
+mod io;
+pub use io::DynWin32OverlappedOperation;
 #[path = "win32_spec.rs"]
 mod specification;
 #[path = "win32_storage.rs"]
 mod storage;
 
-const ERROR_IO_PENDING: u32 = 997;
-const ERROR_OPERATION_ABORTED: u32 = 995;
-const ERROR_HANDLE_EOF: u32 = 38;
-const ERROR_BROKEN_PIPE: u32 = 109;
 const MAX_NATIVE_AGGREGATE_DESCRIPTOR_LENGTH: usize = 1024 * 1024;
-const IOCP_COMPLETION_WORKERS_MAX: usize = 4;
-const IOCP_MAX_PENDING_OPERATIONS: usize = 1024;
-const IOCP_MAX_OPERATION_BUFFER_BYTES: usize = 64 * 1024 * 1024;
-const IOCP_MAX_PENDING_BUFFER_BYTES: usize = 256 * 1024 * 1024;
 
 #[napi(object)]
 pub struct DynWin32ParameterSpec {
@@ -561,629 +548,6 @@ impl DynWin32CallResult {
   }
 }
 
-#[derive(Clone, Copy)]
-enum OverlappedIoKind {
-  Read,
-  Write,
-}
-
-struct OverlappedControl {
-  active: bool,
-  handle: usize,
-  overlapped: *const OVERLAPPED,
-}
-
-struct OverlappedState {
-  control: Mutex<OverlappedControl>,
-  cancelled: AtomicBool,
-}
-
-// Safety: the OVERLAPPED pointer is read only while protected by `control` and
-// remains pinned in the IOCP registry until `deactivate` clears it.
-unsafe impl Send for OverlappedState {}
-unsafe impl Sync for OverlappedState {}
-
-impl OverlappedState {
-  fn new() -> Arc<Self> {
-    Arc::new(Self {
-      control: Mutex::new(OverlappedControl {
-        active: false,
-        handle: 0,
-        overlapped: std::ptr::null(),
-      }),
-      cancelled: AtomicBool::new(false),
-    })
-  }
-
-  fn activate(&self, handle: usize, overlapped: *const OVERLAPPED) {
-    let mut control = self
-      .control
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    control.handle = handle;
-    control.overlapped = overlapped;
-    control.active = true;
-  }
-
-  fn deactivate(&self) {
-    let mut control = self
-      .control
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    control.active = false;
-    control.handle = 0;
-    control.overlapped = std::ptr::null();
-  }
-
-  fn cancel(&self) {
-    self.cancelled.store(true, Ordering::Release);
-    let control = self
-      .control
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    if control.active && !control.overlapped.is_null() {
-      let _ = unsafe {
-        CancelIoEx(
-          HANDLE(control.handle as *mut std::ffi::c_void),
-          Some(control.overlapped),
-        )
-      };
-    }
-  }
-}
-
-pub struct OverlappedIoTask {
-  kind: OverlappedIoKind,
-  resource: Arc<dynwinrt::win32::OwnedResource>,
-  lease: dynwinrt::win32::OwnedResourceAsyncLease,
-  buffer: Option<Buffer>,
-  buffer_len: usize,
-  buffer_pointer: usize,
-  native_buffer: Vec<u8>,
-  offset: u64,
-  state: Arc<OverlappedState>,
-  _reservation: Option<IocpReservation>,
-}
-
-struct OverlappedCompletion {
-  task: OverlappedIoTask,
-  result: Result<u32, String>,
-}
-
-struct IocpOperation {
-  overlapped: OVERLAPPED,
-  task: OverlappedIoTask,
-  completion: ManagedTsfn<OverlappedCompletion>,
-}
-
-// Safety: the operation has exclusive ownership while it is moved into the
-// mutex-protected IOCP registry and moved out exactly once on completion.
-unsafe impl Send for IocpOperation {}
-
-#[derive(Default)]
-struct IocpRegistry {
-  operations: HashMap<usize, Box<IocpOperation>>,
-}
-
-#[derive(Default)]
-struct IocpCapacity {
-  operations: usize,
-  buffer_bytes: usize,
-}
-
-struct IocpReservation {
-  capacity: Arc<Mutex<IocpCapacity>>,
-  buffer_bytes: usize,
-}
-
-impl IocpReservation {
-  fn acquire(capacity: &Arc<Mutex<IocpCapacity>>, buffer_bytes: usize) -> napi::Result<Self> {
-    let mut state = capacity.lock().unwrap_or_else(|error| error.into_inner());
-    validate_iocp_capacity(state.operations, state.buffer_bytes, buffer_bytes)?;
-    state.operations += 1;
-    state.buffer_bytes += buffer_bytes;
-    drop(state);
-    Ok(Self {
-      capacity: Arc::clone(capacity),
-      buffer_bytes,
-    })
-  }
-}
-
-impl Drop for IocpReservation {
-  fn drop(&mut self) {
-    let mut state = self
-      .capacity
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    state.operations = state
-      .operations
-      .checked_sub(1)
-      .expect("IOCP operation accounting remains balanced");
-    state.buffer_bytes = state
-      .buffer_bytes
-      .checked_sub(self.buffer_bytes)
-      .expect("IOCP Buffer accounting remains balanced");
-  }
-}
-
-struct IocpRuntime {
-  port: usize,
-  associations: Mutex<HashMap<usize, Weak<dynwinrt::win32::OwnedResource>>>,
-  registry: Mutex<IocpRegistry>,
-  capacity: Arc<Mutex<IocpCapacity>>,
-  shutting_down: AtomicBool,
-}
-
-static IOCP_RUNTIME: LazyLock<Result<Arc<IocpRuntime>, String>> = LazyLock::new(IocpRuntime::new);
-
-impl IocpRuntime {
-  fn new() -> Result<Arc<Self>, String> {
-    use windows::Win32::Foundation::HMODULE;
-    use windows::Win32::System::LibraryLoader::{
-      GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
-    };
-    // Shared workers can outlive the last Node environment using the addon.
-    let mut module = HMODULE::default();
-    unsafe {
-      GetModuleHandleExW(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        windows::core::PCWSTR(Self::new as *const () as *const u16),
-        &mut module,
-      )
-    }
-    .map_err(|error| format!("Cannot pin the IOCP worker module: {error}"))?;
-    let worker_count = std::thread::available_parallelism()
-      .map(|count| count.get().min(IOCP_COMPLETION_WORKERS_MAX))
-      .unwrap_or(2)
-      .max(1);
-    let port = unsafe {
-      CreateIoCompletionPort(
-        INVALID_HANDLE_VALUE,
-        None,
-        0,
-        u32::try_from(worker_count).expect("IOCP worker count fits u32"),
-      )
-    }
-    .map_err(|error| format!("CreateIoCompletionPort failed: {error}"))?;
-    let runtime = Arc::new(Self {
-      port: port.0 as usize,
-      associations: Mutex::new(HashMap::new()),
-      registry: Mutex::new(IocpRegistry::default()),
-      capacity: Arc::new(Mutex::new(IocpCapacity::default())),
-      shutting_down: AtomicBool::new(false),
-    });
-    for index in 0..worker_count {
-      let worker = Arc::clone(&runtime);
-      if let Err(error) = std::thread::Builder::new()
-        .name(format!("dynwinrt-iocp-completion-{index}"))
-        .spawn(move || worker.completion_loop())
-      {
-        runtime.shutting_down.store(true, Ordering::Release);
-        let _ = unsafe { windows::Win32::Foundation::CloseHandle(port) };
-        return Err(format!("Failed to create IOCP completion worker: {error}"));
-      }
-    }
-    Ok(runtime)
-  }
-
-  fn port(&self) -> HANDLE {
-    HANDLE(self.port as *mut std::ffi::c_void)
-  }
-
-  fn associate(
-    &self,
-    resource: &Arc<dynwinrt::win32::OwnedResource>,
-    handle: usize,
-  ) -> napi::Result<()> {
-    let identity = Arc::as_ptr(resource) as usize;
-    let mut associations = self
-      .associations
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    associations.retain(|_, resource| resource.strong_count() != 0);
-    if associations
-      .get(&identity)
-      .and_then(Weak::upgrade)
-      .is_some_and(|existing| Arc::ptr_eq(&existing, resource))
-    {
-      return Ok(());
-    }
-    associations.remove(&identity);
-    let associated = unsafe {
-      CreateIoCompletionPort(
-        HANDLE(handle as *mut std::ffi::c_void),
-        Some(self.port()),
-        0,
-        0,
-      )
-    }
-    .map_err(|error| {
-      napi::Error::from_reason(format!(
-        "Failed to associate Win32 resource with dynwinrt IOCP: {error}"
-      ))
-    })?;
-    if associated != self.port() {
-      return Err(napi::Error::from_reason(
-        "Win32 resource was associated with an unexpected IOCP",
-      ));
-    }
-    associations.insert(identity, Arc::downgrade(resource));
-    Ok(())
-  }
-
-  fn submit(
-    &self,
-    task: OverlappedIoTask,
-    completion: ManagedTsfn<OverlappedCompletion>,
-  ) -> napi::Result<()> {
-    if task.state.cancelled.load(Ordering::Acquire) {
-      return Err(napi::Error::from_reason("OVERLAPPED operation was aborted"));
-    }
-    let handle = task.lease.raw();
-    if task._reservation.is_none() {
-      return Err(napi::Error::from_reason(
-        "OVERLAPPED operation has no capacity reservation",
-      ));
-    }
-    let mut overlapped = OVERLAPPED::default();
-    overlapped.Anonymous.Anonymous = OVERLAPPED_0_0 {
-      Offset: task.offset as u32,
-      OffsetHigh: (task.offset >> 32) as u32,
-    };
-    let mut operation = Box::new(IocpOperation {
-      overlapped,
-      task,
-      completion,
-    });
-    let overlapped_ptr = &mut operation.overlapped as *mut OVERLAPPED;
-    let key = overlapped_ptr as usize;
-
-    let mut registry = self
-      .registry
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    self.associate(&operation.task.resource, handle)?;
-    let completion_modes = operation
-      .task
-      .lease
-      .completion_modes()
-      .map_err(|error| napi::Error::from_reason(error.message()))?;
-    if registry.operations.contains_key(&key) {
-      return Err(napi::Error::from_reason(
-        "duplicate OVERLAPPED operation address",
-      ));
-    }
-    operation.task.state.activate(handle, overlapped_ptr);
-    operation.task.lease.mark_active();
-    let previous = registry.operations.insert(key, operation);
-    debug_assert!(previous.is_none());
-
-    let result = {
-      let operation = registry
-        .operations
-        .get_mut(&key)
-        .expect("IOCP operation was just registered");
-      unsafe {
-        match operation.task.kind {
-          OverlappedIoKind::Read => ReadFile(
-            HANDLE(handle as *mut std::ffi::c_void),
-            Some(operation.task.native_buffer.as_mut_slice()),
-            None,
-            Some(overlapped_ptr),
-          ),
-          OverlappedIoKind::Write => WriteFile(
-            HANDLE(handle as *mut std::ffi::c_void),
-            Some(operation.task.native_buffer.as_slice()),
-            None,
-            Some(overlapped_ptr),
-          ),
-        }
-      }
-    };
-    let error = result.err().map(|error| win32_error_code(&error));
-    if let Some(error) = error.filter(|error| *error != ERROR_IO_PENDING) {
-      let mut operation =
-        remove_iocp_operation(&mut registry, key).expect("failed IOCP operation was registered");
-      drop(registry);
-      operation.task.state.deactivate();
-      operation.task.lease.mark_inactive();
-      if is_read_eof(operation.task.kind, error) {
-        let _ = operation.completion.call(OverlappedCompletion {
-          task: operation.task,
-          result: Ok(0),
-        });
-        return Ok(());
-      }
-      return Err(native_error(
-        match operation.task.kind {
-          OverlappedIoKind::Read => "ReadFile",
-          OverlappedIoKind::Write => "WriteFile",
-        },
-        error,
-      ));
-    }
-    if error.is_none() && completion_modes & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS != 0 {
-      let mut transferred = 0;
-      let result = unsafe {
-        GetOverlappedResult(
-          HANDLE(handle as *mut std::ffi::c_void),
-          overlapped_ptr,
-          &mut transferred,
-          false,
-        )
-      };
-      let error = result.err().map(|error| win32_error_code(&error));
-      drop(registry);
-      self.complete(overlapped_ptr, transferred, error);
-      return Ok(());
-    }
-    if registry
-      .operations
-      .get(&key)
-      .expect("submitted IOCP operation remains registered")
-      .task
-      .state
-      .cancelled
-      .load(Ordering::Acquire)
-    {
-      registry
-        .operations
-        .get(&key)
-        .expect("submitted IOCP operation remains registered")
-        .task
-        .state
-        .cancel();
-    }
-    Ok(())
-  }
-
-  fn completion_loop(self: &Arc<Self>) {
-    loop {
-      let mut transferred = 0u32;
-      let mut completion_key = 0usize;
-      let mut overlapped = std::ptr::null_mut();
-      let result = unsafe {
-        GetQueuedCompletionStatus(
-          self.port(),
-          &mut transferred,
-          &mut completion_key,
-          &mut overlapped,
-          u32::MAX,
-        )
-      };
-      if overlapped.is_null() {
-        if self.shutting_down.load(Ordering::Acquire) {
-          return;
-        }
-        if let Err(error) = result {
-          eprintln!("[dynwinrt] IOCP completion wait failed: {error}");
-        }
-        continue;
-      }
-      let error = result.err().map(|error| win32_error_code(&error));
-      self.complete(overlapped, transferred, error);
-    }
-  }
-
-  fn complete(&self, overlapped: *mut OVERLAPPED, transferred: u32, error: Option<u32>) {
-    let mut registry = self
-      .registry
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    let Some(mut operation) = remove_iocp_operation(&mut registry, overlapped as usize) else {
-      eprintln!(
-        "[dynwinrt] ignored completion for unknown OVERLAPPED {:p}",
-        overlapped
-      );
-      return;
-    };
-    drop(registry);
-
-    operation.task.state.deactivate();
-    operation.task.lease.mark_inactive();
-    let result = match error {
-      Some(error) if is_read_eof(operation.task.kind, error) => Ok(0),
-      Some(error) => Err(format!(
-        "{} failed with Win32 error {error}",
-        if error == ERROR_OPERATION_ABORTED {
-          "OVERLAPPED operation"
-        } else {
-          "IOCP completion"
-        }
-      )),
-      None => Ok(transferred),
-    };
-    let _ = operation.completion.call(OverlappedCompletion {
-      task: operation.task,
-      result,
-    });
-  }
-}
-
-fn validate_iocp_capacity(
-  operation_count: usize,
-  buffer_bytes: usize,
-  new_buffer_bytes: usize,
-) -> napi::Result<()> {
-  validate_iocp_operation_buffer(new_buffer_bytes)?;
-  if operation_count >= IOCP_MAX_PENDING_OPERATIONS {
-    return Err(napi::Error::from_reason(format!(
-      "IOCP pending operation limit ({IOCP_MAX_PENDING_OPERATIONS}) was reached"
-    )));
-  }
-  let total = buffer_bytes
-    .checked_add(new_buffer_bytes)
-    .ok_or_else(|| napi::Error::from_reason("IOCP pending Buffer accounting overflow"))?;
-  if total > IOCP_MAX_PENDING_BUFFER_BYTES {
-    return Err(napi::Error::from_reason(format!(
-      "IOCP pending native Buffer limit ({IOCP_MAX_PENDING_BUFFER_BYTES} bytes) would be exceeded"
-    )));
-  }
-  Ok(())
-}
-
-fn validate_iocp_operation_buffer(buffer_bytes: usize) -> napi::Result<()> {
-  if buffer_bytes > IOCP_MAX_OPERATION_BUFFER_BYTES {
-    return Err(napi::Error::from_reason(format!(
-      "IOCP operation Buffer exceeds the {IOCP_MAX_OPERATION_BUFFER_BYTES} byte limit"
-    )));
-  }
-  Ok(())
-}
-
-fn remove_iocp_operation(registry: &mut IocpRegistry, key: usize) -> Option<Box<IocpOperation>> {
-  registry.operations.remove(&key)
-}
-
-pub struct DynWin32OverlappedOperation {
-  task: Option<OverlappedIoTask>,
-  state: Arc<OverlappedState>,
-}
-boundary::carrier!(
-  DynWin32OverlappedOperation,
-  7,
-  "DynWin32OverlappedOperation"
-);
-
-impl DynWin32OverlappedOperation {
-  pub fn cancel(&self) {
-    self.state.cancel();
-  }
-
-  pub fn start(&mut self, callback: Function<'static, (), ()>) -> napi::Result<()> {
-    let task = self
-      .task
-      .take()
-      .ok_or_else(|| napi::Error::from_reason("OVERLAPPED operation was already started"))?;
-    let env = callback.value().env;
-    let raw_callback = napi::JsValue::raw(&callback);
-    let closing_state = Arc::clone(&self.state);
-    let completion = ManagedTsfn::create(
-      env,
-      raw_callback,
-      1,
-      false,
-      |completion: OverlappedCompletion, env| completion.into_js_arguments(env),
-      Some(Box::new(move |_| closing_state.cancel())),
-    )?;
-    IOCP_RUNTIME
-      .as_ref()
-      .map_err(|error| napi::Error::from_reason(error.clone()))?
-      .submit(task, completion)
-  }
-}
-
-impl OverlappedIoTask {
-  fn resolve(mut self, env: napi::sys::napi_env, output: u32) -> napi::Result<u32> {
-    let transferred = usize::try_from(output)
-      .map_err(|_| napi::Error::from_reason("OVERLAPPED result exceeds usize"))?;
-    if transferred > self.buffer_len {
-      return Err(napi::Error::from_reason(
-        "OVERLAPPED result exceeds the original Buffer length",
-      ));
-    }
-    if matches!(self.kind, OverlappedIoKind::Read) {
-      let buffer = self
-        .buffer
-        .take()
-        .ok_or_else(|| napi::Error::from_reason("OVERLAPPED read Buffer is unavailable"))?;
-      let raw = unsafe { Buffer::to_napi_value(env, buffer) }?;
-      let mut is_buffer = false;
-      napi::check_status!(
-        unsafe { napi::sys::napi_is_buffer(env, raw, &mut is_buffer) },
-        "Failed to revalidate OVERLAPPED read Buffer"
-      )?;
-      if !is_buffer {
-        return Err(napi::Error::from_reason(
-          "OVERLAPPED read Buffer is no longer a Node Buffer",
-        ));
-      }
-      let info = storage::buffer_info(env, raw).map_err(|error| {
-        napi::Error::new(
-          error.status,
-          format!(
-            "OVERLAPPED read Buffer backing ArrayBuffer was detached or changed: {}",
-            error.reason
-          ),
-        )
-      })?;
-      if info.length != self.buffer_len
-        || (info.length != 0 && info.pointer as usize != self.buffer_pointer)
-      {
-        return Err(napi::Error::from_reason(
-          "OVERLAPPED read Buffer backing ArrayBuffer was detached or changed",
-        ));
-      }
-      if transferred != 0 {
-        unsafe {
-          std::ptr::copy_nonoverlapping(self.native_buffer.as_ptr(), info.pointer, transferred);
-        }
-      }
-    }
-    Ok(output)
-  }
-}
-
-impl OverlappedCompletion {
-  fn into_js_arguments(self, env: napi::sys::napi_env) -> napi::Result<Vec<napi::sys::napi_value>> {
-    let result = self.result.and_then(|output| {
-      self
-        .task
-        .resolve(env, output)
-        .map_err(|error| error.reason.clone())
-    });
-    match result {
-      Ok(output) => {
-        let mut null = std::ptr::null_mut();
-        napi::check_status!(
-          unsafe { napi::sys::napi_get_null(env, &mut null) },
-          "Failed to create OVERLAPPED completion null"
-        )?;
-        let output = unsafe { u32::to_napi_value(env, output) }?;
-        Ok(vec![null, output])
-      }
-      Err(reason) => {
-        let mut message = std::ptr::null_mut();
-        napi::check_status!(
-          unsafe {
-            napi::sys::napi_create_string_utf8(
-              env,
-              reason.as_ptr().cast(),
-              reason.len() as isize,
-              &mut message,
-            )
-          },
-          "Failed to create OVERLAPPED completion error message"
-        )?;
-        let mut error = std::ptr::null_mut();
-        napi::check_status!(
-          unsafe { napi::sys::napi_create_error(env, std::ptr::null_mut(), message, &mut error) },
-          "Failed to create OVERLAPPED completion error"
-        )?;
-        Ok(vec![error])
-      }
-    }
-  }
-}
-
-fn is_read_eof(kind: OverlappedIoKind, error: u32) -> bool {
-  matches!(kind, OverlappedIoKind::Read) && matches!(error, ERROR_HANDLE_EOF | ERROR_BROKEN_PIPE)
-}
-
-fn win32_error_code(error: &windows::core::Error) -> u32 {
-  let code = error.code().0 as u32;
-  if code & 0xffff_0000 == 0x8007_0000 {
-    code & 0xffff
-  } else {
-    code
-  }
-}
-
-fn native_error(function: &str, error: u32) -> napi::Error {
-  napi::Error::from_reason(format!("{function} failed with Win32 error {error}"))
-}
-
 #[napi]
 pub struct DynWin32;
 
@@ -1531,16 +895,7 @@ impl DynWin32 {
     #[napi(ts_arg_type = "Buffer")] buffer: Unknown,
     #[napi(ts_arg_type = "bigint | null")] offset: Option<Unknown>,
   ) -> napi::Result<DynWin32OverlappedOperation> {
-    overlapped_io_task(
-      OverlappedIoKind::Read,
-      file,
-      storage::native_buffer(buffer)?,
-      offset
-        .as_ref()
-        .map(storage::unsigned64)
-        .transpose()?
-        .unwrap_or(0),
-    )
+    io::prepare(dynwinrt::win32::io::IoKind::Read, file, buffer, offset)
   }
 
   #[napi]
@@ -1549,16 +904,7 @@ impl DynWin32 {
     #[napi(ts_arg_type = "Buffer")] buffer: Unknown,
     #[napi(ts_arg_type = "bigint | null")] offset: Option<Unknown>,
   ) -> napi::Result<DynWin32OverlappedOperation> {
-    overlapped_io_task(
-      OverlappedIoKind::Write,
-      file,
-      storage::native_buffer(buffer)?,
-      offset
-        .as_ref()
-        .map(storage::unsigned64)
-        .transpose()?
-        .unwrap_or(0),
-    )
+    io::prepare(dynwinrt::win32::io::IoKind::Write, file, buffer, offset)
   }
 
   #[napi]
@@ -1863,7 +1209,9 @@ impl DynWin32 {
   pub fn to_resource(value: &DynWin32Value) -> napi::Result<Option<DynWin32Resource>> {
     if matches!(
       &value.value,
-      dynwinrt::win32::Value::Handle(0) | dynwinrt::win32::Value::Null
+      dynwinrt::win32::Value::Handle(0)
+        | dynwinrt::win32::Value::Null
+        | dynwinrt::win32::Value::Discarded
     ) {
       return Ok(None);
     }
@@ -1878,7 +1226,10 @@ impl DynWin32 {
 
   #[napi]
   pub fn is_unavailable(value: &DynWin32Value) -> bool {
-    matches!(value.value, dynwinrt::win32::Value::Unavailable)
+    matches!(
+      value.value,
+      dynwinrt::win32::Value::Unavailable | dynwinrt::win32::Value::Discarded
+    )
   }
 
   #[napi]
@@ -1889,7 +1240,9 @@ impl DynWin32 {
       dynwinrt::win32::Value::Resource(resource) => {
         Ok(Some(Either::A(DynWin32Resource(Arc::clone(resource)))))
       }
-      dynwinrt::win32::Value::Handle(0) | dynwinrt::win32::Value::Null => Ok(None),
+      dynwinrt::win32::Value::Handle(0)
+      | dynwinrt::win32::Value::Null
+      | dynwinrt::win32::Value::Discarded => Ok(None),
       dynwinrt::win32::Value::Handle(bits) => Ok(Some(Either::B(BigInt::from(*bits as u64)))),
       _ => Err(napi::Error::from_reason(
         "Win32 value is not a resource or borrowed handle",
@@ -1910,57 +1263,6 @@ fn reject_required_null_pointer(value: &DynWin32Value, nullable: bool) -> napi::
     ));
   }
   Ok(())
-}
-
-fn overlapped_io_task(
-  kind: OverlappedIoKind,
-  file: &DynWin32Resource,
-  buffer: Buffer,
-  offset: u64,
-) -> napi::Result<DynWin32OverlappedOperation> {
-  if file.0.cleanup() != dynwinrt::win32::Cleanup::CloseHandle {
-    return Err(napi::Error::from_reason(
-      "OVERLAPPED I/O requires a CloseHandle resource",
-    ));
-  }
-  if file.0.is_closed() {
-    return Err(napi::Error::from_reason(
-      "OVERLAPPED I/O cannot use a closed Win32 resource",
-    ));
-  }
-  let handle_bits = file.0.raw();
-  if handle_bits == 0 || handle_bits == usize::MAX {
-    return Err(napi::Error::from_reason(
-      "OVERLAPPED I/O requires a valid file HANDLE",
-    ));
-  }
-  u32::try_from(buffer.len())
-    .map_err(|_| napi::Error::from_reason("OVERLAPPED buffer exceeds u32"))?;
-  validate_iocp_operation_buffer(buffer.len())?;
-  let runtime = IOCP_RUNTIME
-    .as_ref()
-    .map_err(|error| napi::Error::from_reason(error.clone()))?;
-  let reservation = IocpReservation::acquire(&runtime.capacity, buffer.len())?;
-  let lease = file
-    .0
-    .async_lease(dynwinrt::win32::Cleanup::CloseHandle)
-    .map_err(|error| napi::Error::from_reason(error.message()))?;
-  let state = OverlappedState::new();
-  Ok(DynWin32OverlappedOperation {
-    task: Some(OverlappedIoTask {
-      kind,
-      resource: Arc::clone(&file.0),
-      lease,
-      native_buffer: try_copy_io_buffer(kind, &buffer)?,
-      buffer_len: buffer.len(),
-      buffer_pointer: buffer.as_ptr() as usize,
-      buffer: Some(buffer),
-      offset,
-      state: Arc::clone(&state),
-      _reservation: Some(reservation),
-    }),
-    state,
-  })
 }
 
 fn validate_native_struct(value: &DynWin32NativeStruct, descriptor: &str) -> napi::Result<()> {
@@ -2335,18 +1637,6 @@ fn parse_native_aggregate_descriptor(descriptor: &str) -> napi::Result<serde_jso
   })
 }
 
-fn try_copy_io_buffer(kind: OverlappedIoKind, buffer: &Buffer) -> napi::Result<Vec<u8>> {
-  let mut native = Vec::new();
-  native
-    .try_reserve_exact(buffer.len())
-    .map_err(|_| napi::Error::from_reason("Unable to allocate private OVERLAPPED I/O buffer"))?;
-  match kind {
-    OverlappedIoKind::Read => native.resize(buffer.len(), 0),
-    OverlappedIoKind::Write => native.extend_from_slice(buffer),
-  }
-  Ok(native)
-}
-
 fn native_aggregate_ffi_type(layout: &serde_json::Value) -> napi::Result<libffi::middle::Type> {
   validate_native_layout(layout, false)?;
   let size = layout
@@ -2520,13 +1810,6 @@ impl DynWin32Unsafe {
 }
 
 fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
-  let contract = spec
-    .call_contract_descriptor
-    .as_deref()
-    .map(serde_json::from_str::<dynwinrt::win32::CallContract>)
-    .transpose()
-    .map_err(|error| napi::Error::from_reason(format!("Invalid Win32 call contract: {error}")))?
-    .unwrap_or_default();
   let mut parameter_aggregates = Vec::with_capacity(spec.parameters.len());
   let parameters = spec
     .parameters
@@ -2566,7 +1849,7 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
     .transpose()?
     .filter(|_| return_aggregate.is_none());
   let plan = unsafe {
-    dynwinrt::win32::CallPlan::new_with_contract(
+    dynwinrt::win32::CallPlan::new_with_descriptor(
       dynwinrt::win32::CallPlanSpec {
         dll: spec.dll,
         entry_point: spec.entry_point,
@@ -2581,7 +1864,7 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
         parameter_aggregates,
         return_aggregate,
       },
-      contract,
+      spec.call_contract_descriptor.as_deref(),
     )
   }
   .map_err(|error| napi::Error::from_reason(error.message()))?;
@@ -2829,45 +2112,21 @@ mod tests {
   use super::*;
 
   #[test]
-  fn iocp_capacity_bounds_operations_and_native_buffers() {
-    validate_iocp_capacity(IOCP_MAX_PENDING_OPERATIONS - 1, 0, 1).unwrap();
-    assert!(validate_iocp_capacity(IOCP_MAX_PENDING_OPERATIONS, 0, 1)
-      .unwrap_err()
-      .reason
-      .contains("operation limit"));
+  fn discarded_results_have_no_delivered_resource_without_relaxing_invalid_types() {
+    let discarded = DynWin32Value::new(dynwinrt::win32::Value::Discarded);
+    assert!(DynWin32::is_unavailable(&discarded));
+    assert!(DynWin32::to_resource(&discarded).unwrap().is_none());
+    assert!(DynWin32::to_resource_or_handle(&discarded)
+      .unwrap()
+      .is_none());
 
-    validate_iocp_capacity(0, IOCP_MAX_PENDING_BUFFER_BYTES - 1, 1).unwrap();
-    assert!(validate_iocp_capacity(0, IOCP_MAX_PENDING_BUFFER_BYTES, 1)
-      .unwrap_err()
-      .reason
-      .contains("Buffer limit"));
-    assert!(
-      validate_iocp_operation_buffer(IOCP_MAX_OPERATION_BUFFER_BYTES + 1)
-        .unwrap_err()
-        .reason
-        .contains("operation Buffer")
-    );
-    assert!(validate_iocp_capacity(0, usize::MAX, 1)
-      .unwrap_err()
-      .reason
-      .contains("accounting overflow"));
-
-    let capacity = Arc::new(Mutex::new(IocpCapacity::default()));
-    let reservation = IocpReservation::acquire(&capacity, 16).unwrap();
-    {
-      let state = capacity.lock().unwrap();
-      assert_eq!((state.operations, state.buffer_bytes), (1, 16));
-    }
-    drop(reservation);
-    let state = capacity.lock().unwrap();
-    assert_eq!((state.operations, state.buffer_bytes), (0, 0));
-  }
-
-  #[test]
-  fn hresult_from_win32_is_decoded_for_iocp_errors() {
-    let error = windows::core::Error::from_hresult(windows::core::HRESULT(
-      0x8007_0000u32.wrapping_add(ERROR_IO_PENDING) as i32,
-    ));
-    assert_eq!(win32_error_code(&error), ERROR_IO_PENDING);
+    let unavailable = DynWin32Value::new(dynwinrt::win32::Value::Unavailable);
+    assert!(DynWin32::is_unavailable(&unavailable));
+    assert!(DynWin32::to_resource(&unavailable).is_err());
+    assert!(DynWin32::to_resource_or_handle(&unavailable).is_err());
+    let invalid = DynWin32Value::new(dynwinrt::win32::Value::I32(0));
+    assert!(!DynWin32::is_unavailable(&invalid));
+    assert!(DynWin32::to_resource(&invalid).is_err());
+    assert!(DynWin32::to_resource_or_handle(&invalid).is_err());
   }
 }

@@ -10,8 +10,9 @@ mod validation;
 use crate::codegen::win32::{
     ir::{
         AbiType, CallingConvention, Condition, Conversion, Direction, EnumUnderlying,
-        InputExpression, OutputRule, ProjectedOutput, ReturnShape, RuntimeParameter, RuntimePlan,
-        StringEncoding, SuccessRule, SurfaceParameter, SurfaceType, ValueType,
+        InputExpression, InputPredicate, OutputAction, OutputRule, ProjectedOutput, ResourceEffect,
+        ReturnShape, RuntimeParameter, RuntimePlan, StringEncoding, SuccessRule, SurfaceParameter,
+        SurfaceType, ValueType,
     },
     test_support::{metadata, metadata_function, project_one, semantic},
 };
@@ -248,7 +249,10 @@ fn win32_free_library_has_a_consuming_hmodule_abi_and_ordered_bool_result() {
     assert_eq!(projected.js_name, "freeLibrary");
     assert_eq!(projected.unicode_alias, None);
     assert_eq!(projected.subsystem, None);
-    assert!(projected.runtime.call_contract.is_empty());
+    assert_eq!(
+        projected.runtime.call_contract,
+        CallContract::defaults(&projected.runtime.signature_shape(64))
+    );
     assert_eq!(
         projected.parameters,
         vec![surface(
@@ -285,13 +289,14 @@ fn win32_free_library_has_a_consuming_hmodule_abi_and_ordered_bool_result() {
             success_rule: SuccessRule::ReturnNonZero,
             capture_last_error: true,
             calling_convention: CallingConvention::System,
-            call_contract: CallContract::default(),
+            call_contract: projected.runtime.call_contract.clone(),
         }
     );
     assert_eq!(
         projected.return_shape,
         ReturnShape::Object {
             status: false,
+            return_may_be_unavailable: false,
             return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
             outputs: Vec::new(),
             last_error: true,
@@ -424,19 +429,20 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
             open.return_shape,
             ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 outputs: vec![ProjectedOutput {
                     name: "key".into(),
                     output_index: 0,
                     typ: SurfaceType::ResourceOrHandle,
                     conversion: Conversion::ResourceOrHandle,
-                    may_be_unavailable: false,
+                    may_be_unavailable: true,
                 }],
                 last_error: false,
             }
         );
         assert_eq!(
-            open.runtime.call_contract,
+            native.call_contract,
             CallContract {
                 outputs: vec![OutputRule {
                     parameter: 4,
@@ -466,13 +472,21 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
                             },
                         ],
                         return_value: None,
+                        ..Condition::default()
                     },
                     action: OutputAction::AliasInput { parameter: 0 },
                 }],
                 resource_effects: Vec::new(),
+                ..CallContract::default()
             }
         );
-        assert_eq!(native.call_contract, open.runtime.call_contract);
+        assert_eq!(
+            native
+                .call_contract
+                .upgrade_metadata(&open.runtime.signature_shape(64))
+                .unwrap(),
+            open.runtime.call_contract
+        );
 
         let query = raw
             .functions
@@ -599,6 +613,7 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
             query.return_shape,
             ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 last_error: false,
                 outputs: vec![
@@ -620,7 +635,7 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
             }
         );
         assert_eq!(
-            query.runtime.call_contract,
+            native.call_contract,
             CallContract {
                 outputs: vec![OutputRule {
                     parameter: 5,
@@ -631,13 +646,21 @@ fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
                             values: vec![0x8000_0004],
                         }],
                         return_value: Some(234),
+                        ..Condition::default()
                     },
                     action: OutputAction::Unavailable {},
                 }],
                 resource_effects: Vec::new(),
+                ..CallContract::default()
             }
         );
-        assert_eq!(native.call_contract, query.runtime.call_contract);
+        assert_eq!(
+            native
+                .call_contract
+                .upgrade_metadata(&query.runtime.signature_shape(64))
+                .unwrap(),
+            query.runtime.call_contract
+        );
         for function in [&open, &query] {
             assert_eq!(function.subsystem, None);
             assert_eq!(function.unicode_alias.is_some(), suffix == "W");
@@ -683,10 +706,12 @@ fn win32_registry_base_open_and_get_value_use_exact_native_output_rules() {
                             element_width: width,
                         }],
                         return_value: None,
+                        ..Condition::default()
                     },
                     action: OutputAction::AliasInput { parameter: 0 },
                 }],
                 resource_effects: Vec::new(),
+                ..CallContract::default()
             }
         );
         let projected = project_one(open.clone());
@@ -695,19 +720,26 @@ fn win32_registry_base_open_and_get_value_use_exact_native_output_rules() {
             projected.runtime.parameters[2].cleanup,
             Cleanup::RegCloseKey
         );
-        assert_eq!(projected.runtime.call_contract, native.call_contract);
+        assert_eq!(
+            projected.runtime.call_contract,
+            native
+                .call_contract
+                .upgrade_metadata(&projected.runtime.signature_shape(64))
+                .unwrap()
+        );
         assert_status_plan(&projected.runtime, &format!("RegOpenKey{suffix}"));
         assert_eq!(
             projected.return_shape,
             ReturnShape::Object {
                 status: true,
+                return_may_be_unavailable: false,
                 return_value: None,
                 outputs: vec![ProjectedOutput {
                     name: "key".into(),
                     output_index: 0,
                     typ: SurfaceType::ResourceOrHandle,
                     conversion: Conversion::ResourceOrHandle,
-                    may_be_unavailable: false,
+                    may_be_unavailable: true,
                 }],
                 last_error: false,
             }
@@ -745,15 +777,23 @@ fn win32_registry_base_open_and_get_value_use_exact_native_output_rules() {
                             values: vec![0x8000_0004],
                         }],
                         return_value: Some(234),
+                        ..Condition::default()
                     },
                     action: OutputAction::Unavailable {},
                 }],
                 resource_effects: Vec::new(),
+                ..CallContract::default()
             }
         );
         let projected = project_one(get.clone());
         assert_eq!(projected.parameters.len(), 5);
-        assert_eq!(projected.runtime.call_contract, native.call_contract);
+        assert_eq!(
+            projected.runtime.call_contract,
+            native
+                .call_contract
+                .upgrade_metadata(&projected.runtime.signature_shape(64))
+                .unwrap()
+        );
         assert_eq!(projected.runtime.parameters[6].abi, AbiType::U32);
         assert_eq!(projected.runtime.parameters[6].direction, Direction::InOut);
         assert_eq!(
@@ -823,10 +863,17 @@ fn win32_file_completion_modes_declare_shared_native_resource_state() {
                 handle_parameter: 0,
                 flags_parameter: 1,
             }],
+            ..CallContract::default()
         }
     );
     let projected = project_one(raw);
-    assert_eq!(projected.runtime.call_contract, native.call_contract);
+    assert_eq!(
+        projected.runtime.call_contract,
+        native
+            .call_contract
+            .upgrade_metadata(&projected.runtime.signature_shape(64))
+            .unwrap()
+    );
     assert_eq!(projected.runtime.return_abi, Some(AbiType::Bool32));
     assert_eq!(projected.runtime.success_rule, SuccessRule::ReturnNonZero);
     assert!(projected.runtime.capture_last_error);
@@ -847,6 +894,7 @@ fn win32_file_completion_modes_declare_shared_native_resource_state() {
         projected.return_shape,
         ReturnShape::Object {
             status: false,
+            return_may_be_unavailable: false,
             return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
             outputs: Vec::new(),
             last_error: true,
