@@ -917,6 +917,7 @@ fn slot(
         resource_cleanup,
         consumes_resource: false,
         aggregate: None,
+        pointee_aggregate: None,
     }
 }
 

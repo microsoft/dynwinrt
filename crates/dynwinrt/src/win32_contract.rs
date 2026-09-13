@@ -7,8 +7,12 @@ pub use dynwinrt_win32_contracts::{
     ResultContract, ResultOverride, ResultOwnership, ResultPolicy, ResultTarget,
 };
 
-use super::{CallPlanSpec, Cleanup, Direction, SuccessRule, Type, invalid_argument};
+use super::{
+    CallPlanSpec, Cleanup, Direction, NativeAggregatePointerLayout, SuccessRule, Type,
+    invalid_argument,
+};
 use crate::{abi::AbiValue, result::Result};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub(super) struct LegacySurface {
@@ -32,6 +36,7 @@ impl LegacySurface {
                     ResultTarget::Parameter { index } => {
                         spec.parameters[*index].cleanup.owns_resource()
                     }
+                    ResultTarget::AggregateField { .. } => false,
                 })
                 .collect(),
             explicit_undefined: contract
@@ -61,6 +66,13 @@ impl LegacySurface {
 }
 
 pub(super) fn shape(spec: &CallPlanSpec) -> protocol::SignatureShape {
+    shape_with_pointees(spec, &vec![None; spec.parameters.len()])
+}
+
+pub(super) fn shape_with_pointees(
+    spec: &CallPlanSpec,
+    pointees: &[Option<Arc<NativeAggregatePointerLayout>>],
+) -> protocol::SignatureShape {
     protocol::SignatureShape {
         pointer_width: usize::BITS as u8,
         parameters: spec
@@ -81,6 +93,19 @@ pub(super) fn shape(spec: &CallPlanSpec) -> protocol::SignatureShape {
                 cleanup: parameter.cleanup.into(),
                 resource_cleanup: parameter.resource_cleanup.into(),
                 consumes_resource: parameter.consumes_resource,
+                result_fields: pointees[index]
+                    .as_ref()
+                    .map(|layout| {
+                        layout
+                            .fields()
+                            .iter()
+                            .map(|field| protocol::ResultFieldShape {
+                                typ: native_type(field.typ),
+                                cleanup: field.cleanup.into(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect(),
         return_type: if spec.return_aggregate.is_some() {
@@ -101,9 +126,20 @@ pub(super) fn shape(spec: &CallPlanSpec) -> protocol::SignatureShape {
     }
 }
 
+#[cfg(test)]
 pub(super) fn resolve(spec: &CallPlanSpec, contract: &CallContract) -> Result<CallContract> {
     contract
         .upgrade(&shape(spec))
+        .map_err(|error| invalid_argument(&error.to_string()))
+}
+
+pub(super) fn resolve_with_pointees(
+    spec: &CallPlanSpec,
+    contract: &CallContract,
+    pointees: &[Option<Arc<NativeAggregatePointerLayout>>],
+) -> Result<CallContract> {
+    contract
+        .upgrade(&shape_with_pointees(spec, pointees))
         .map_err(|error| invalid_argument(&error.to_string()))
 }
 

@@ -292,6 +292,7 @@ pub(super) fn function_spec(value: Unknown) -> napi::Result<DynWin32FunctionSpec
         "consumesResource",
         "resourceCleanup",
         "aggregateDescriptor",
+        "pointeeDescriptor",
       ],
     )?;
     parameters.push(DynWin32ParameterSpec {
@@ -315,6 +316,12 @@ pub(super) fn function_spec(value: Unknown) -> napi::Result<DynWin32FunctionSpec
         env,
         parameter,
         c"aggregateDescriptor",
+        MAX_NATIVE_AGGREGATE_DESCRIPTOR_LENGTH,
+      )?,
+      pointee_descriptor: optional_string(
+        env,
+        parameter,
+        c"pointeeDescriptor",
         MAX_NATIVE_AGGREGATE_DESCRIPTOR_LENGTH,
       )?,
     });

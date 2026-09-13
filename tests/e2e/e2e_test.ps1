@@ -480,7 +480,7 @@ if ("win32" -in $Lang) {
         --types node --typeRoots (Join-Path $root "bindings\js\node_modules\@types") `
         (Join-Path $PSScriptRoot "typecheck\win32_contracts.ts")
     if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 declarations failed typecheck"; exit 1 }
-    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs", "contracts.mjs")
+    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs", "contracts.mjs", "owned-fields.mjs")
     $win32Passed = 0
     foreach ($runner in $win32Runners) {
         Write-Host "  $runner"

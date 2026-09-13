@@ -224,16 +224,23 @@ fn legacy_owned_output_cleanup_is_not_promoted_to_new_metadata_failure_guarantee
         "scalar/status failure results remain defined"
     );
 
-    native.call_contract =
-        CallContract::decode(&serde_json::to_string(&compatibility).unwrap()).unwrap();
-    assert_eq!(
-        project::project_function(&native)
-            .unwrap()
-            .runtime
-            .call_contract,
-        compatibility,
-        "an explicit complete v2 contract retains its failure guarantee"
-    );
+    for version in [
+        dynwinrt_win32_contracts::SLOT_VERSION,
+        dynwinrt_win32_contracts::CURRENT_VERSION,
+    ] {
+        let mut explicit = compatibility.clone();
+        explicit.version = version;
+        native.call_contract =
+            CallContract::decode(&serde_json::to_string(&explicit).unwrap()).unwrap();
+        assert_eq!(
+            project::project_function(&native)
+                .unwrap()
+                .runtime
+                .call_contract,
+            compatibility,
+            "an explicit complete v{version} contract retains its failure guarantee"
+        );
+    }
 
     native.call_contract = legacy;
     native.result_contracts = vec![historical.clone()];
@@ -493,7 +500,7 @@ const runtime={DynWin32:{
   toResource(value){assert.notEqual(value,unavailable);assert.notEqual(value,discarded);conversions++;return value}
 },DynWin32Function:{bind(spec){
   binds++
-  assert.equal(JSON.parse(spec.callContractDescriptor).version,2)
+  assert.equal(JSON.parse(spec.callContractDescriptor).version,3)
   return {invoke(){return {returnValue:spec.entryPoint==='OwnedOutput'?0:value,outputs:[value]}}}
 }}}
 "#,

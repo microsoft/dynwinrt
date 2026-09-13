@@ -13,6 +13,7 @@ fn registry_shape() -> SignatureShape {
                 cleanup: Cleanup::None,
                 resource_cleanup: Cleanup::RegCloseKey,
                 consumes_resource: false,
+                result_fields: Vec::new(),
             },
             ParameterShape {
                 typ: NativeType::Pointer,
@@ -20,6 +21,7 @@ fn registry_shape() -> SignatureShape {
                 cleanup: Cleanup::None,
                 resource_cleanup: Cleanup::None,
                 consumes_resource: false,
+                result_fields: Vec::new(),
             },
             ParameterShape {
                 typ: NativeType::Handle,
@@ -27,6 +29,7 @@ fn registry_shape() -> SignatureShape {
                 cleanup: Cleanup::RegCloseKey,
                 resource_cleanup: Cleanup::None,
                 consumes_resource: false,
+                result_fields: Vec::new(),
             },
         ],
         return_type: Some(NativeType::I32),
@@ -134,7 +137,7 @@ fn direct_return_alias_and_owned_discard_are_validated_like_output_slots() {
 fn protocol_versions_and_unknown_fields_fail_closed() {
     for json in [
         r#"{"version":0}"#,
-        r#"{"version":3}"#,
+        r#"{"version":4}"#,
         r#"{"version":2,"outputs":[{"parameter":0,"when":{},"action":{"kind":"unavailable"}}]}"#,
         r#"{"version":1,"results":[{"target":{"kind":"return"},"onSuccess":{"kind":"undefined"},"onFailure":{"kind":"undefined"}}]}"#,
         r#"{"version":2,"unknown":true}"#,
@@ -237,4 +240,52 @@ fn schema_is_derived_from_the_same_serialized_types() {
         assert!(defs.get(name).is_some(), "{name}");
     }
     assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
+fn aggregate_field_results_are_complete_and_versioned_separately_from_physical_inputs() {
+    let mut shape = registry_shape();
+    shape.parameters.truncate(1);
+    shape.parameters[0].typ = NativeType::Pointer;
+    shape.parameters[0].resource_cleanup = Cleanup::None;
+    shape.parameters[0].result_fields = vec![
+        ResultFieldShape {
+            typ: NativeType::Handle,
+            cleanup: Cleanup::CloseHandle,
+        },
+        ResultFieldShape {
+            typ: NativeType::U32,
+            cleanup: Cleanup::None,
+        },
+    ];
+    let mut contract = CallContract::default().upgrade_metadata(&shape).unwrap();
+    assert_eq!(contract.version, 3);
+    assert_eq!(contract.results.len(), 3);
+    assert!(
+        contract
+            .result(ResultTarget::AggregateField {
+                parameter: 0,
+                field: 0
+            })
+            .is_some()
+    );
+    assert!(
+        contract
+            .result(ResultTarget::Parameter { index: 0 })
+            .is_none()
+    );
+    contract.validate_signature(&shape).unwrap();
+    let mut old = contract.clone();
+    old.version = SLOT_VERSION;
+    assert!(old.validate_structure().is_err());
+    contract.results.pop();
+    assert!(contract.validate_signature(&shape).is_err());
+    let previous = CallContract {
+        version: SLOT_VERSION,
+        ..CallContract::defaults(&registry_shape())
+    };
+    assert_eq!(
+        previous.upgrade(&registry_shape()).unwrap().version,
+        CURRENT_VERSION
+    );
 }

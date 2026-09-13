@@ -240,7 +240,7 @@ fn render_js(apis: &ProjectedApis, runtime_import: &str, unsafe_runtime_import: 
         );
     }
     for function in &apis.functions {
-        render_function_js(&mut output, function, apis);
+        render_function_js(&mut output, function);
         output.push('\n');
     }
     for function in &apis.async_functions {
@@ -306,8 +306,13 @@ fn render_runtime_plan(
         runtime.dll, runtime.entry_point
     ));
     for parameter in &runtime.parameters {
+        let pointee = parameter
+            .pointee_aggregate
+            .as_ref()
+            .map(|layout| format!(", pointeeDescriptor: _nativeLayout_{}", layout.name))
+            .unwrap_or_default();
         output.push_str(&format!(
-            "      {{ type: {:?}, direction: {:?}, nullable: {}, cleanup: {:?}, consumesResource: {}, resourceCleanup: {:?}, aggregateDescriptor: {} }},\n",
+            "      {{ type: {:?}, direction: {:?}, nullable: {}, cleanup: {:?}, consumesResource: {}, resourceCleanup: {:?}, aggregateDescriptor: {}{pointee} }},\n",
             abi_name(parameter.abi),
             direction_name(parameter.direction),
             parameter.nullable,
@@ -344,7 +349,7 @@ fn render_runtime_plan(
     output.push_str("  })\n}\n");
 }
 
-fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &ProjectedApis) {
+fn render_function_js(output: &mut String, function: &ProjectedFunction) {
     let plan_name = format!("_{}Plan", function.js_name);
     let bind_name = format!("_bind{}Plan", function.metadata_name);
     render_runtime_plan(output, &function.runtime, &plan_name, &bind_name);
@@ -381,30 +386,6 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
         .map(|input| render_input(input, function))
         .collect::<Vec<_>>()
         .join(", ");
-    let output_aggregates = function
-        .inputs
-        .iter()
-        .filter_map(|input| {
-            let InputExpression::NativeAggregate {
-                parameter_index,
-                layout,
-                by_value: false,
-                ..
-            } = input
-            else {
-                return None;
-            };
-            apis.native_builders
-                .iter()
-                .find(|builder| builder.layout_name == layout.name && !builder.outputs.is_empty())
-                .map(|_| (&function.parameters[*parameter_index].name, &layout.name))
-        })
-        .collect::<Vec<_>>();
-    for (parameter, layout) in &output_aggregates {
-        output.push_str(&format!(
-            "  _nativeAggregate.prepareNativeStructCall({parameter}, _nativeLayout_{layout})\n"
-        ));
-    }
     let plan = format!("{bind_name}()");
     let invocation = function.subsystem.map_or_else(
         || format!("{plan}.invoke([{arguments}])"),
@@ -418,11 +399,6 @@ fn render_function_js(output: &mut String, function: &ProjectedFunction, apis: &
     output.push_str(&format!(
         "  const _call = {invocation}\n  const _return = _call.returnValue\n  const _outputs = _call.outputs\n"
     ));
-    for (parameter, layout) in &output_aggregates {
-        output.push_str(&format!(
-            "  _nativeAggregate.markNativeStructCallResult({parameter}, _nativeLayout_{layout}, _call.succeeded)\n"
-        ));
-    }
     match &function.return_shape {
         ReturnShape::Void => output.push_str("  return undefined\n"),
         ReturnShape::Direct {
@@ -954,13 +930,14 @@ fn collect_native_layouts(apis: &ProjectedApis) -> BTreeMap<String, NativeLayout
 
 fn native_layout_descriptor_js(layout: &NativeLayout) -> String {
     let descriptor = format!(
-        "{{\"name\":\"{}.{}\",\"kind\":\"{}\",\"x86\":{},\"x64\":{},\"arm64\":{}}}",
+        "{{\"name\":\"{}.{}\",\"kind\":\"{}\",\"outputFields\":{},\"x86\":{},\"x64\":{},\"arm64\":{}}}",
         layout.namespace,
         layout.name,
         match layout.kind {
             super::ir::NativeAggregateKind::Struct => "struct",
             super::ir::NativeAggregateKind::Union => "union",
         },
+        serde_json::to_string(&layout.output_fields).expect("validated native result field names"),
         native_architecture_json(&layout.x86),
         native_architecture_json(&layout.x64),
         native_architecture_json(&layout.arm64),

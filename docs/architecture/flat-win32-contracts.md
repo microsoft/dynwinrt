@@ -67,7 +67,8 @@ encoding, type identity and provenance against the selected WinMD; core still
 checks the executing ABI and its supported capabilities. Sharing the protocol
 does not merge these responsibilities or the WinRT/COM models.
 
-Version 2 describes every direct return and native output slot with a
+Version 3 describes every direct return, native output slot and declared
+caller-aggregate result field with a
 `ResultContract`: a target, explicit success/failure policies and bounded,
 non-overlapping conditional overrides. The schema is derived from these Rust
 types rather than separately maintained protocol definitions. Unknown fields,
@@ -90,10 +91,22 @@ erase cleanup obligations.
 
 Descriptors without a version are read as version 1. Their historical null
 resource results and cleanup behavior are isolated in an explicit compatibility
-adapter and lowered to the common execution plan. New generated code emits
-version 2. Metadata ownership evidence alone does not prove a pointer is defined
+adapter and lowered to the common execution plan. Version 2 slot-only contracts
+remain readable; aggregate field targets require version 3. New generated code emits
+version 3. Metadata ownership evidence alone does not prove a pointer is defined
 on failure: new generation leaves that failure result undefined unless reviewed
 result evidence establishes validity and the required cleanup/delivery policy.
+
+An aggregate pointer remains a physical input pointer; it is not converted into
+a pointer-to-pointer or an owned aggregate allocation. Its `pointeeDescriptor`
+retains the exact native layout and ordered `outputFields`. The caller owns the
+structure bytes, while the native buffer's result store independently owns
+resources written into fields such as `PROCESS_INFORMATION.hProcess/hThread`.
+Field validity and cleanup are registered immediately after native dispatch,
+before return/out decoding and before N-API wraps `_call`. Taking a field moves
+the existing resource owner rather than adopting its handle a second time.
+Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
+Legacy manual mark helpers cannot erase already registered native ownership.
 
 ## Runtime and package boundary
 
@@ -164,6 +177,11 @@ without loading Node. Native completion records keep their storage, resource
 occupancy and quota ownership until consumption or discard; failed notification
 or a dropped consumer cannot strand them.
 
+Native operations hand off owning records through a native queue/channel. They
+do not retain an arbitrary callback closure that can capture adapter objects.
+The Node adapter independently owns its completion receiver and TSFN
+registrations; even indirectly, no native operation owns a TSFN.
+
 The private Node bridge keeps JS references and original backing information on
 the owner thread. That thread revalidates the backing, performs read copy-back
 and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
@@ -221,6 +239,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Shared Win32 contract tests | Strict version decoding, legacy migration, complete result coverage, ownership/delivery combinations, disjoint conditions and Rust-derived schema consistency. |
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
+| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial conversion cleanup, extraction, failed cleanup retry and real `CreateProcessW` handle retirement. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |

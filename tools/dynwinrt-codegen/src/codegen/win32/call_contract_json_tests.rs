@@ -274,7 +274,7 @@ fn native_call_contract_schema_is_closed_at_every_wire_level() {
 
 fn result_descriptor() -> Value {
     json!({
-        "version": 2,
+        "version": 3,
         "results": [{
             "target": {"kind":"return"},
             "onSuccess": {"kind":"defined","ownership":{"kind":"owned","cleanup":"close-handle"},"delivery":"deliver"},
@@ -298,14 +298,21 @@ fn shared_version_decoder_preserves_legacy_and_current_evidence_without_mixing_p
         CallContract::decode(&unversioned.to_string()).unwrap()
     );
     let current = result_descriptor();
-    assert_eq!(
-        serde_json::to_value(CallContract::decode(&current.to_string()).unwrap()).unwrap(),
-        current
-    );
+    for version in [
+        dynwinrt_win32_contracts::SLOT_VERSION,
+        dynwinrt_win32_contracts::CURRENT_VERSION,
+    ] {
+        let mut value = current.clone();
+        value["version"] = version.into();
+        assert_eq!(
+            serde_json::to_value(CallContract::decode(&value.to_string()).unwrap()).unwrap(),
+            value
+        );
+    }
     for value in [
         json!({"version":0}),
-        json!({"version":3}),
-        json!({"version":"2"}),
+        json!({"version":4}),
+        json!({"version":"3"}),
         json!({"version":2,"outputs":legacy["outputs"]}),
         json!({"results":current["results"]}),
         json!({"version":1,"results":current["results"]}),
@@ -317,6 +324,38 @@ fn shared_version_decoder_preserves_legacy_and_current_evidence_without_mixing_p
         CallContract::decode(&" ".repeat(dynwinrt_win32_contracts::MAX_CONTRACT_BYTES + 1))
             .is_err()
     );
+}
+
+#[test]
+fn aggregate_field_wire_targets_require_version_three_and_closed_bounded_indices() {
+    let mut value = result_descriptor();
+    value["results"][0]["target"] = json!({"kind":"aggregate-field","parameter":9,"field":1});
+    let contract = CallContract::decode(&value.to_string()).unwrap();
+    assert_eq!(
+        contract.results[0].target,
+        super::ResultTarget::AggregateField {
+            parameter: 9,
+            field: 1
+        }
+    );
+    for version in [1, 2] {
+        let mut old = value.clone();
+        old["version"] = version.into();
+        assert!(CallContract::decode(&old.to_string()).is_err());
+    }
+    for target in [
+        json!({"kind":"aggregate-field","parameter":9}),
+        json!({"kind":"aggregate-field","field":1}),
+        json!({"kind":"aggregate-field","parameter":-1,"field":1}),
+        json!({"kind":"aggregate-field","parameter":9,"field":-1}),
+        json!({"kind":"aggregate-field","parameter":1024,"field":0}),
+        json!({"kind":"aggregate-field","parameter":9,"field":1024}),
+        json!({"kind":"aggregate-field","parameter":9,"field":1,"offset":8}),
+        json!({"kind":"aggregate-field","parameter":9,"field":"1"}),
+    ] {
+        value["results"][0]["target"] = target;
+        assert!(CallContract::decode(&value.to_string()).is_err(), "{value}");
+    }
 }
 
 #[test]

@@ -9,10 +9,13 @@ mod validation;
 
 pub use legacy::{OutputAction, OutputRule};
 use serde::{Deserialize, Serialize};
-pub use shape::{Direction, NativeType, ParameterShape, SignatureShape, SuccessRule};
+pub use shape::{
+    Direction, NativeType, ParameterShape, ResultFieldShape, SignatureShape, SuccessRule,
+};
 pub use validation::validate_condition_structure;
 
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
+pub const SLOT_VERSION: u32 = 2;
 pub const LEGACY_VERSION: u32 = 1;
 pub const MAX_CONTRACT_BYTES: usize = 1024 * 1024;
 pub const MAX_PARAMETERS: usize = 1024;
@@ -117,6 +120,7 @@ impl CallContract {
 pub enum ResultTarget {
     Return {},
     Parameter { index: usize },
+    AggregateField { parameter: usize, field: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

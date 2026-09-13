@@ -189,8 +189,10 @@ pipelines.
 Flat Win32 generation uses `dynwinrt-win32-contracts` as its single wire-protocol
 authority. Native metadata still determines pointer depth, constness, encoding,
 type identity, and ownership provenance. After caller-owned buffers become
-physical input pointers, projection resolves a version 2 descriptor covering
-every direct return and native output cell.
+physical input pointers, projection resolves a version 3 descriptor covering
+every direct return, native output cell, and declared aggregate result field.
+Version 1 and slot-only version 2 descriptors remain readable; aggregate field
+targets require version 3.
 
 `contracts\win32\function-contracts.json` accepts `result-contract` effects
 containing the shared `ResultContract` type. These replace the default or
@@ -200,11 +202,28 @@ alone does not establish defined output storage on failure, so owned failure
 results default to undefined. An explicit result policy may instead guarantee a
 defined failure result, including a discarded owned value requiring cleanup.
 Historical version 1 cleanup behavior is confined to compatibility decoding;
-scalar/status/count defaults remain unchanged.
+ordinary scalar/status/count defaults remain unchanged.
 Success, failure, and disjoint conditional overrides distinguish
 undefined storage from defined values, ownership/cleanup, and delivery/discard.
 Projection derives nullable results and resource conversions from those
 policies; renderers neither infer ownership nor bind native functions on import.
+
+An Out/InOut aggregate pointer retains its exact layout in `pointeeDescriptor`,
+separately from the by-value-only `aggregateDescriptor`. Its physical ABI remains
+Pointer/In, not pointer-to-pointer. The native descriptor's `outputFields` lists
+evidenced result fields in native declaration order; `aggregate-field` targets
+index that list and the native parameter, not the physical output cells.
+`PROCESS_INFORMATION` therefore has four field results: two independently owned
+CloseHandle resources and two scalar IDs. All four default to undefined on
+failure unless reviewed result evidence states otherwise.
+
+Generated builders, native-struct arguments, and pointee specifications share
+one descriptor constant. Native invocation prepares and registers field
+lifetimes before any return conversion or JavaScript wrapping; generated code
+does not call the manual `prepareNativeStructCall`/`markNativeStructCallResult`
+helpers. The caller still owns the structure bytes, and existing field getters
+and take-resource helpers keep their names and types. Unknown owned arrays,
+unions, and nested result shapes fail closed.
 
 The production registry schema references generated
 `contracts\win32\call-contract.schema.json`, not a second handwritten protocol.

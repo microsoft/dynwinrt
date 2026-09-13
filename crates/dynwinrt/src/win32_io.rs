@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 
 //! Bounded native file I/O. An owning completion carries its buffer, resource
-//! lease and capacity permit until the receiver consumes or drops it.
+//! lease and capacity permit until the receiver consumes or drops it. Operations
+//! publish tokenized records to native channels; adapters own their receivers
+//! and notification registrations independently of this runtime.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
@@ -223,25 +226,29 @@ impl PreparedIo {
         self.cancellation.clone()
     }
 
-    /// The receiver must not block a completion worker. Dropping or rejecting
-    /// its owning record retires the buffer, resource lease and quota together.
-    pub fn submit(
-        self,
-        receiver: impl FnOnce(IoCompletion) + Send + 'static,
-    ) -> IoResult<Submission> {
+    /// Publishes one terminal record to a native, nonblocking channel. The
+    /// capacity permit bounds queued records as well as active operations.
+    /// A closed receiver discards the record only after native completion.
+    /// Synchronous submission errors return without publishing a record.
+    pub fn submit(self, token: u64, completions: Sender<IoCompletion>) -> IoResult<Submission> {
         let runtime = Arc::clone(&self.runtime);
-        runtime.submit(self, Box::new(receiver))
+        runtime.submit(self, token, completions)
     }
 }
 
 /// A terminal result, including ownership of all storage still awaiting
 /// delivery. Merely receiving a native packet does not return capacity.
 pub struct IoCompletion {
+    token: u64,
     storage: IoStorage,
     result: IoResult<u32>,
 }
 
 impl IoCompletion {
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
     pub fn kind(&self) -> IoKind {
         self.storage.kind
     }
@@ -255,13 +262,12 @@ impl IoCompletion {
     }
 }
 
-type CompletionReceiver = Box<dyn FnOnce(IoCompletion) + Send + 'static>;
-
 struct NativeOperation {
     overlapped: OVERLAPPED,
     storage: IoStorage,
     cancellation: IoCancellation,
-    receiver: CompletionReceiver,
+    token: u64,
+    completions: Sender<IoCompletion>,
 }
 
 // The operation is moved only into or out of the mutex-protected registry.
@@ -290,15 +296,19 @@ impl NativeOperation {
             None => Ok(transferred),
         };
         let Self {
-            storage, receiver, ..
+            token,
+            storage,
+            completions,
+            ..
         } = *self;
-        let completion = IoCompletion { storage, result };
-        // A Rust consumer panic must not permanently reduce the shared worker
-        // pool or prevent later native operations from retiring.
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receiver(completion))).is_err()
-        {
-            eprintln!("[dynwinrt] native I/O completion receiver panicked");
-        }
+        let completion = IoCompletion {
+            token,
+            storage,
+            result,
+        };
+        // SendError owns the rejected record. Dropping it releases only native
+        // storage, after the OS has stopped accessing the OVERLAPPED and bytes.
+        drop(completions.send(completion));
     }
 }
 
@@ -441,7 +451,12 @@ impl IocpRuntime {
         HANDLE(self.port as *mut c_void)
     }
 
-    fn submit(&self, task: PreparedIo, receiver: CompletionReceiver) -> IoResult<Submission> {
+    fn submit(
+        &self,
+        task: PreparedIo,
+        token: u64,
+        completions: Sender<IoCompletion>,
+    ) -> IoResult<Submission> {
         if task.cancellation.is_cancelled() {
             return Err(IoError::new("OVERLAPPED operation was aborted"));
         }
@@ -455,7 +470,8 @@ impl IocpRuntime {
             overlapped,
             storage: task.storage,
             cancellation: task.cancellation,
-            receiver,
+            token,
+            completions,
         });
         let overlapped_ptr = &mut operation.overlapped as *mut OVERLAPPED;
         let key = overlapped_ptr as usize;

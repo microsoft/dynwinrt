@@ -168,7 +168,7 @@ const runtime={{DynWin32:{{
 }},DynWin32Function:{{bind(spec){{
   assert.equal(spec.parameters[0].type,'u32')
   assert.equal(spec.parameters[1].type,'u32')
-  assert.equal(JSON.parse(spec.callContractDescriptor).version,2)
+  assert.equal(JSON.parse(spec.callContractDescriptor).version,3)
   return {{invoke(args){{calls++;received=args;return {{returnValue:9,outputs:[]}}}}}}
 }}}}}}
 "#,

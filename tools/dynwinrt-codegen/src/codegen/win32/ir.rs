@@ -160,9 +160,66 @@ pub struct NativeLayout {
     pub name: String,
     pub kind: NativeAggregateKind,
     pub by_value_compatible: bool,
+    pub output_fields: Vec<String>,
     pub x86: NativeArchitectureLayout,
     pub x64: NativeArchitectureLayout,
     pub arm64: NativeArchitectureLayout,
+}
+
+impl NativeLayout {
+    fn result_fields(&self, pointer_width: u8) -> Vec<dynwinrt_win32_contracts::ResultFieldShape> {
+        use dynwinrt_win32_contracts::{NativeType, ResultFieldShape};
+        let layout = if pointer_width == 32 {
+            &self.x86
+        } else {
+            &self.x64
+        };
+        self.output_fields
+            .iter()
+            .map(|name| {
+                let field = layout
+                    .fields
+                    .iter()
+                    .find(|field| field.name == *name)
+                    .expect("validated native result field");
+                let (typ, cleanup) = match field.typ {
+                    NativeFieldType::Handle { cleanup } => (NativeType::Handle, cleanup),
+                    NativeFieldType::Scalar(scalar) => {
+                        (scalar.native_type(pointer_width), Cleanup::None)
+                    }
+                    NativeFieldType::Guid
+                    | NativeFieldType::Pointer
+                    | NativeFieldType::Struct { .. }
+                    | NativeFieldType::Union { .. } => {
+                        unreachable!("validated native result field type")
+                    }
+                };
+                ResultFieldShape { typ, cleanup }
+            })
+            .collect()
+    }
+}
+
+impl NativeScalar {
+    fn native_type(self, pointer_width: u8) -> dynwinrt_win32_contracts::NativeType {
+        use dynwinrt_win32_contracts::NativeType;
+        match self {
+            Self::I8 => NativeType::I8,
+            Self::U8 => NativeType::U8,
+            Self::I16 => NativeType::I16,
+            Self::U16 => NativeType::U16,
+            Self::I32 => NativeType::I32,
+            Self::U32 => NativeType::U32,
+            Self::I64 => NativeType::I64,
+            Self::U64 => NativeType::U64,
+            Self::F32 => NativeType::F32,
+            Self::F64 => NativeType::F64,
+            Self::NativeIsize if pointer_width == 32 => NativeType::I32,
+            Self::NativeIsize => NativeType::I64,
+            Self::NativeUsize if pointer_width == 32 => NativeType::U32,
+            Self::NativeUsize => NativeType::U64,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,6 +419,7 @@ pub struct RuntimeParameter {
     pub consumes_resource: bool,
     pub resource_cleanup: Cleanup,
     pub aggregate: Option<NativeLayout>,
+    pub pointee_aggregate: Option<NativeLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,6 +453,10 @@ impl RuntimePlan {
                     cleanup: parameter.cleanup,
                     resource_cleanup: parameter.resource_cleanup,
                     consumes_resource: parameter.consumes_resource,
+                    result_fields: parameter
+                        .pointee_aggregate
+                        .as_ref()
+                        .map_or_else(Vec::new, |layout| layout.result_fields(pointer_width)),
                 })
                 .collect(),
             return_type: if self.return_aggregate.is_some() {

@@ -65,6 +65,13 @@ pub struct ParameterShape {
     pub cleanup: Cleanup,
     pub resource_cleanup: Cleanup,
     pub consumes_resource: bool,
+    pub result_fields: Vec<ResultFieldShape>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResultFieldShape {
+    pub typ: NativeType,
+    pub cleanup: Cleanup,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +97,15 @@ impl SignatureShape {
                             .then_some(ResultTarget::Parameter { index })
                     }),
             )
+            .chain(
+                self.parameters
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(parameter, shape)| {
+                        (0..shape.result_fields.len())
+                            .map(move |field| ResultTarget::AggregateField { parameter, field })
+                    }),
+            )
     }
 
     pub fn result_type(&self, target: ResultTarget) -> Result<NativeType> {
@@ -105,6 +121,14 @@ impl SignatureShape {
                 .ok_or_else(|| {
                     ContractError::new("Result target is not a native output parameter")
                 }),
+            ResultTarget::AggregateField { parameter, field } => self
+                .parameters
+                .get(parameter)
+                .and_then(|parameter| parameter.result_fields.get(field))
+                .map(|field| field.typ)
+                .ok_or_else(|| {
+                    ContractError::new("Result target is not a declared aggregate field")
+                }),
         }
     }
 
@@ -112,6 +136,9 @@ impl SignatureShape {
         match target {
             ResultTarget::Return {} => self.return_cleanup,
             ResultTarget::Parameter { index } => self.parameters[index].cleanup,
+            ResultTarget::AggregateField { parameter, field } => {
+                self.parameters[parameter].result_fields[field].cleanup
+            }
         }
     }
 

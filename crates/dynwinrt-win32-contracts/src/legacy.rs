@@ -50,9 +50,11 @@ impl CallContract {
     /// Metadata planners may replace any policy with stronger reviewed evidence.
     pub fn upgrade(&self, shape: &SignatureShape) -> Result<Self> {
         self.validate_structure()?;
-        if self.version == CURRENT_VERSION {
-            self.validate_signature(shape)?;
-            return Ok(self.clone());
+        if matches!(self.version, SLOT_VERSION | CURRENT_VERSION) {
+            let mut contract = self.clone();
+            contract.version = CURRENT_VERSION;
+            contract.validate_signature(shape)?;
+            return Ok(contract);
         }
         let mut contract = Self::defaults(shape);
         contract.resource_effects.clone_from(&self.resource_effects);
@@ -141,7 +143,10 @@ impl CallContract {
                     on_success: ResultPolicy::delivered(ownership),
                     on_failure: match ownership {
                         ResultOwnership::Owned { .. }
-                            if matches!(target, ResultTarget::Return {}) =>
+                            if matches!(
+                                target,
+                                ResultTarget::Return {} | ResultTarget::AggregateField { .. }
+                            ) =>
                         {
                             ResultPolicy::Undefined {}
                         }

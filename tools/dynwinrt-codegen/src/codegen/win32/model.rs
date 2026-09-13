@@ -368,6 +368,14 @@ pub(super) fn validate_function_with_policy(
 }
 
 pub(super) fn validate_call_contract(function: &FunctionContract) -> Result<(), String> {
+    for parameter in &function.parameters {
+        if let ValueType::NativeStructPointer { layout }
+        | ValueType::NativeUnionPointer { layout }
+        | ValueType::NativeStruct { layout } = &parameter.typ
+        {
+            validate_native_result_layout(layout)?;
+        }
+    }
     let contract = &function.call_contract;
     contract
         .validate_structure()
@@ -475,7 +483,39 @@ fn validate_result_target(function: &FunctionContract, target: ResultTarget) -> 
             }
             Ok(())
         }
+        ResultTarget::AggregateField { parameter, field } => {
+            native_result_field(function, parameter, field).map(|_| ())
+        }
     }
+}
+
+fn native_result_field(
+    function: &FunctionContract,
+    parameter: usize,
+    field: usize,
+) -> Result<&NativeField, String> {
+    let parameter = native_parameter(function, parameter)?;
+    let ValueType::NativeStructPointer { layout } = &parameter.typ else {
+        return Err(
+            "win32.contract-shape-conflict: field result requires a native struct pointer".into(),
+        );
+    };
+    if parameter.direction == Direction::In
+        || parameter.pointer_depth != 1
+        || parameter.buffer.is_some()
+    {
+        return Err(
+            "win32.contract-shape-conflict: field result requires an output aggregate pointee"
+                .into(),
+        );
+    }
+    layout
+        .output_fields
+        .get(field)
+        .and_then(|name| layout.x64.fields.iter().find(|field| field.name == *name))
+        .ok_or_else(|| {
+            "win32.contract-shape-conflict: missing declared aggregate result field".into()
+        })
 }
 
 fn validate_condition_metadata(
@@ -554,6 +594,17 @@ fn validate_result_ownership(
     target: ResultTarget,
     ownership: ResultOwnership,
 ) -> Result<(), String> {
+    if let ResultTarget::AggregateField { parameter, field } = target {
+        let field = native_result_field(function, parameter, field)?;
+        return match (&field.typ, ownership) {
+            (NativeFieldType::Scalar(_), ResultOwnership::Value {}) => Ok(()),
+            (
+                NativeFieldType::Handle { cleanup },
+                ResultOwnership::Owned { cleanup: expected },
+            ) if *cleanup != Cleanup::None && *cleanup == expected => Ok(()),
+            _ => Err("win32.contract-shape-conflict: aggregate field ownership lacks matching native type and cleanup provenance".into()),
+        };
+    }
     let (typ, native_name, cleanup) = match target {
         ResultTarget::Return {} => (
             function.return_type.as_ref().ok_or("void result")?,
@@ -564,6 +615,7 @@ fn validate_result_ownership(
             let output = native_parameter(function, index)?;
             (&output.typ, &output.native_name, output.cleanup)
         }
+        ResultTarget::AggregateField { .. } => unreachable!("aggregate field checked above"),
     };
     match ownership {
         ResultOwnership::Owned { cleanup: expected } => {
@@ -583,6 +635,9 @@ fn validate_result_ownership(
                     output.direction == Direction::Out
                         && output.pointer_depth == 1
                         && output.abi == AbiType::Handle
+                }
+                ResultTarget::AggregateField { .. } => {
+                    unreachable!("aggregate field checked above")
                 }
             };
             if !target_is_handle
@@ -1025,7 +1080,21 @@ fn validate_native_layout(
             "architecture variants disagree on aggregate kind for {namespace}.{name}"
         ));
     }
-    Ok(NativeLayout {
+    let contract = Registry::builtin()?.layout_contract(raw)?;
+    let output_fields = x64
+        .fields
+        .iter()
+        .filter(|field| {
+            contract.is_some_and(|contract| {
+                contract
+                    .fields
+                    .iter()
+                    .any(|policy| policy.name == field.name && policy.contract.is_output())
+            })
+        })
+        .map(|field| field.name.clone())
+        .collect();
+    let layout = NativeLayout {
         namespace: namespace.into(),
         name: name.into(),
         kind,
@@ -1041,10 +1110,117 @@ fn validate_native_layout(
                 )
             })
         }),
+        output_fields,
         x86,
         x64,
         arm64,
-    })
+    };
+    validate_native_result_layout(&layout)?;
+    Ok(layout)
+}
+
+fn validate_native_result_layout(layout: &NativeLayout) -> Result<(), String> {
+    fn contains_owned_field(typ: &NativeFieldType) -> bool {
+        match typ {
+            NativeFieldType::Handle { cleanup } => *cleanup != Cleanup::None,
+            NativeFieldType::Struct { layout, .. } | NativeFieldType::Union { layout, .. } => {
+                layout
+                    .fields
+                    .iter()
+                    .any(|field| contains_owned_field(&field.typ))
+            }
+            NativeFieldType::Scalar(_) | NativeFieldType::Guid | NativeFieldType::Pointer => false,
+        }
+    }
+    let output_names = layout.output_fields.iter().collect::<BTreeSet<_>>();
+    if output_names.len() != layout.output_fields.len()
+        || output_names.len() > dynwinrt_win32_contracts::MAX_PARAMETERS
+    {
+        return Err("native aggregate result fields must have unique bounded names".into());
+    }
+    if !output_names.is_empty() && layout.kind != NativeAggregateKind::Struct {
+        return Err("native union result fields require a dedicated active-field contract".into());
+    }
+    let mut expected_types = None;
+    for (native, architecture) in [
+        (&layout.x86, LayoutArchitecture::X86),
+        (&layout.x64, LayoutArchitecture::X64),
+        (&layout.arm64, LayoutArchitecture::Arm64),
+    ] {
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        let mut end = 0;
+        let mut field_names = BTreeSet::new();
+        for field in &native.fields {
+            if let NativeFieldType::Struct { .. } | NativeFieldType::Union { .. } = &field.typ {
+                if contains_owned_field(&field.typ) {
+                    return Err(
+                        "nested owned native fields require a dedicated result contract".into(),
+                    );
+                }
+            } else if contains_owned_field(&field.typ) && !output_names.contains(&field.name) {
+                return Err(
+                    "owned native handle field is missing from aggregate result fields".into(),
+                );
+            }
+            if output_names.is_empty() {
+                continue;
+            }
+            if !field_names.insert(&field.name) {
+                return Err("native aggregate result layout has duplicate field names".into());
+            }
+            let element_size = match &field.typ {
+                NativeFieldType::Scalar(scalar) => {
+                    native_scalar_size_alignment(*scalar, architecture).0
+                }
+                NativeFieldType::Guid => 16,
+                NativeFieldType::Pointer | NativeFieldType::Handle { .. } => {
+                    architecture.pointer_size()
+                }
+                NativeFieldType::Struct { layout, .. } | NativeFieldType::Union { layout, .. } => {
+                    layout.size
+                }
+            };
+            let size = element_size
+                .checked_mul(field.count as usize)
+                .ok_or("native aggregate result field size overflow")?;
+            end = field
+                .offset
+                .checked_add(size)
+                .filter(|_| field.count > 0 && field.offset >= end)
+                .ok_or("native aggregate result field layout overlaps or overflows")?;
+            if end > native.size
+                || !native.alignment.is_power_of_two()
+                || native.size % native.alignment != 0
+            {
+                return Err("native aggregate result field is outside its native layout".into());
+            }
+            if !output_names.contains(&field.name) {
+                continue;
+            }
+            if field.count != 1
+                || !(matches!(field.typ, NativeFieldType::Scalar(_))
+                    || matches!(field.typ, NativeFieldType::Handle { cleanup } if cleanup != Cleanup::None))
+            {
+                return Err(
+                    "aggregate result field requires a scalar or independently owned handle".into(),
+                );
+            }
+            names.push(field.name.clone());
+            types.push(field.typ.clone());
+        }
+        if names != layout.output_fields {
+            return Err("aggregate result fields must follow native declaration order on every architecture".into());
+        }
+        if expected_types
+            .as_ref()
+            .is_some_and(|expected| *expected != types)
+        {
+            return Err("aggregate result field types differ between native architectures".into());
+        }
+        expected_types = Some(types);
+    }
+    Ok(())
 }
 
 fn compute_native_layout(
@@ -1132,6 +1308,14 @@ fn compute_native_layout_variant(
         let (typ, element_size, element_alignment) =
             native_field_type(&raw_field.typ, architecture, visiting, field_contract)?;
         let count = raw_field.fixed_count.unwrap_or(1);
+        if field_contract.is_some_and(FieldContract::is_output)
+            && (raw.kind != RawLayoutKind::Sequential || count != 1)
+        {
+            return Err(
+                "native aggregate result arrays and unions require dedicated field contracts"
+                    .into(),
+            );
+        }
         let count_u32 = u32::try_from(count)
             .map_err(|_| format!("fixed array `{}` exceeds u32", raw_field.name))?;
         if count_u32 == 0 {
@@ -1274,6 +1458,20 @@ fn native_field_type(
             kind: RawNamedKind::NativeStruct { layout },
         } => {
             let identity = format!("{namespace}.{name}");
+            if Registry::builtin()?
+                .layout_contract(layout)?
+                .is_some_and(|contract| {
+                    contract
+                        .fields
+                        .iter()
+                        .any(|field| field.contract.is_output())
+                })
+            {
+                return Err(
+                    "nested native aggregate result fields require a dedicated result contract"
+                        .into(),
+                );
+            }
             if !visiting.insert(identity.clone()) {
                 return Err(format!("recursive nested native layout {identity}"));
             }

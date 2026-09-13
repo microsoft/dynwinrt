@@ -56,16 +56,22 @@ fn handle_storage() -> Arc<NativeAggregateStorage> {
   let width = std::mem::size_of::<usize>();
   Arc::new(
     NativeAggregateStorage::new(
+      "Tests.HandlePair".into(),
       width * 2,
+      width,
       None,
       true,
       vec![
-        OwnedNativeField {
+        dynwinrt::win32::AggregateResultField {
+          name: "first".into(),
           offset: 0,
+          typ: dynwinrt::win32::Type::Handle,
           cleanup: dynwinrt::win32::Cleanup::CloseHandle,
         },
-        OwnedNativeField {
+        dynwinrt::win32::AggregateResultField {
+          name: "second".into(),
           offset: width,
+          typ: dynwinrt::win32::Type::Handle,
           cleanup: dynwinrt::win32::Cleanup::CloseHandle,
         },
       ],
@@ -101,20 +107,24 @@ fn aggregate_success_gates_adoption_reuse_and_unclaimed_cleanup() {
   storage.prepare_call().unwrap();
   let (first_raw, second_raw) = (first.take(), second.take());
   write_handles(&storage, first_raw, second_raw);
-  storage.mark_call_result(true);
+  storage.mark_call_result(true).unwrap();
   storage.require_success().unwrap();
   assert!(storage.bytes().is_err());
-  let taken = storage.take_usize(0).unwrap();
-  assert_eq!(taken, first_raw);
-  assert_eq!(storage.take_usize(0).unwrap(), 0);
-  let adopted =
-    unsafe { dynwinrt::win32::OwnedResource::adopt(taken, dynwinrt::win32::Cleanup::CloseHandle) }
-      .unwrap();
+  let taken = storage.backing.take_field(0).unwrap();
+  let adopted = Arc::clone(taken.resource().unwrap());
+  assert_eq!(adopted.raw(), first_raw);
+  assert!(matches!(
+    storage.backing.take_field(0).unwrap(),
+    dynwinrt::win32::Value::Handle(0)
+  ));
   storage.prepare_call().unwrap();
   assert!(first.exists());
   assert!(!second.exists());
   assert!(storage.require_success().is_err());
-  assert_eq!(storage.take_usize(std::mem::size_of::<usize>()).unwrap(), 0);
+  assert_eq!(
+    usize::from_ne_bytes(storage.read_field(std::mem::size_of::<usize>()).unwrap()),
+    0
+  );
   drop(storage);
   assert!(first.exists());
   adopted.close().unwrap();
@@ -125,7 +135,7 @@ fn aggregate_success_gates_adoption_reuse_and_unclaimed_cleanup() {
   let raw = unclaimed.take();
   let storage = handle_storage();
   write_handles(&storage, raw, 0);
-  storage.mark_call_result(true);
+  storage.mark_call_result(true).unwrap();
   drop(storage);
   assert!(!unclaimed.exists());
 }
@@ -135,7 +145,7 @@ fn aggregate_failed_outputs_are_not_adopted_or_guessed_as_owned() {
   let event = Event::new();
   let storage = handle_storage();
   write_handles(&storage, event.handle.0 as usize, 0);
-  storage.mark_call_result(false);
+  storage.mark_call_result(false).unwrap();
   assert!(storage.require_success().is_err());
   storage.prepare_call().unwrap();
   drop(storage);
@@ -146,8 +156,7 @@ struct UnprotectField(Arc<NativeAggregateStorage>);
 
 impl Drop for UnprotectField {
   fn drop(&mut self) {
-    let state = self.0.state.lock().unwrap();
-    let raw = read_usize_from_words(&state.words, self.0.byte_length, 0).unwrap();
+    let raw = usize::from_ne_bytes(self.0.read_field(0).unwrap());
     if raw != 0 {
       let _ = unsafe {
         SetHandleInformation(
@@ -176,26 +185,15 @@ fn aggregate_cleanup_failure_retains_failed_field_but_cleans_other_fields() {
   .unwrap();
   let (raw, other_raw) = (protected.take(), other.take());
   write_handles(&storage, raw, other_raw);
-  storage.mark_call_result(true);
+  storage.mark_call_result(true).unwrap();
   assert!(storage.prepare_call().is_err());
   assert!(protected.exists());
   assert!(!other.exists());
-  {
-    let state = storage.state.lock().unwrap();
-    assert_eq!(
-      read_usize_from_words(&state.words, storage.byte_length, 0).unwrap(),
-      raw
-    );
-    assert_eq!(
-      read_usize_from_words(
-        &state.words,
-        storage.byte_length,
-        std::mem::size_of::<usize>(),
-      )
-      .unwrap(),
-      0
-    );
-  }
+  assert_eq!(usize::from_ne_bytes(storage.read_field(0).unwrap()), raw);
+  assert_eq!(
+    usize::from_ne_bytes(storage.read_field(std::mem::size_of::<usize>()).unwrap()),
+    0
+  );
   unsafe {
     SetHandleInformation(
       HANDLE(raw as *mut c_void),
@@ -223,7 +221,8 @@ fn owned_text(value: &[u16]) -> Arc<RetainedNativePointer> {
 
 #[test]
 fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
-  let storage = NativeAggregateStorage::new(16, None, true, Vec::new()).unwrap();
+  let storage =
+    NativeAggregateStorage::new("Tests.Pointers".into(), 16, 8, None, true, Vec::new()).unwrap();
   let first = owned_text(&[65, 0]);
   let first_weak = Arc::downgrade(&first);
   let dynwinrt::WinRTValue::RawPtr(first_pointer) = first.value.0 else {
@@ -256,7 +255,15 @@ fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
 
 #[test]
 fn aggregate_storage_alignment_copy_isolation_and_field_bounds_are_exact() {
-  let storage = NativeAggregateStorage::new(24, Some(&[7; 24]), false, Vec::new()).unwrap();
+  let storage = NativeAggregateStorage::new(
+    "Tests.Bytes".into(),
+    24,
+    8,
+    Some(&[7; 24]),
+    false,
+    Vec::new(),
+  )
+  .unwrap();
   assert_eq!(storage.pointer() as usize % 8, 0);
   let mut bytes = storage.bytes().unwrap();
   bytes[0] = 99;
@@ -266,8 +273,16 @@ fn aggregate_storage_alignment_copy_isolation_and_field_bounds_are_exact() {
     .unwrap();
   assert_eq!(u32::from_le_bytes(storage.read_field(20).unwrap()), 123);
   assert!(storage.read_field::<8>(20).is_err());
-  assert!(storage.take_usize(usize::MAX).is_err());
-  assert!(NativeAggregateStorage::new(24, Some(&[0; 23]), false, Vec::new()).is_err());
+  assert!(storage.backing.take_field(usize::MAX).is_err());
+  assert!(NativeAggregateStorage::new(
+    "Tests.Bytes".into(),
+    24,
+    8,
+    Some(&[0; 23]),
+    false,
+    Vec::new()
+  )
+  .is_err());
 }
 
 #[test]

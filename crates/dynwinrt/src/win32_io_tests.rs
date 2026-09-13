@@ -6,7 +6,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::IntoRawHandle;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
@@ -25,6 +25,7 @@ use super::super::ResourceAccess;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_NAME: AtomicUsize = AtomicUsize::new(1);
 const TIMEOUT: Duration = Duration::from_secs(10);
+const COMPLETION_TOKEN: u64 = 0x1234_5678_9abc_def0;
 
 struct LocalFile {
     resource: Arc<OwnedResource>,
@@ -158,11 +159,7 @@ impl Drop for CancelOnDrop {
 fn submit(task: PreparedIo) -> (Submission, Receiver<IoCompletion>, CancelOnDrop) {
     let cancellation = CancelOnDrop(task.cancellation());
     let (sender, receiver) = channel();
-    let submission = task
-        .submit(move |completion| {
-            let _ = sender.send(completion);
-        })
-        .unwrap();
+    let submission = task.submit(COMPLETION_TOKEN, sender).unwrap();
     (submission, receiver, cancellation)
 }
 
@@ -193,9 +190,11 @@ fn native_io_types_are_send_without_a_language_runtime() {
     fn send_sync<T: Send + Sync>() {}
     send::<PreparedIo>();
     send::<IoCompletion>();
+    send_sync::<Sender<IoCompletion>>();
     send_sync::<IoCancellation>();
     send_sync::<IocpRuntime>();
     send_sync::<OwnedResource>();
+    let _: fn(PreparedIo, u64, Sender<IoCompletion>) -> IoResult<Submission> = PreparedIo::submit;
 }
 
 #[test]
@@ -379,6 +378,7 @@ fn native_modes_preserve_inline_packets_pending_cancellation_and_eof() {
             }
         );
         let completed = receive(&receiver);
+        assert_eq!(completed.token(), COMPLETION_TOKEN);
         assert_eq!(completed.result().unwrap(), 5);
         assert_eq!(completed.buffer(), b"ready");
         assert_eq!(
@@ -468,30 +468,36 @@ fn prepared_cancellation_submission_errors_and_file_offsets_retire_once() {
 
     let prepared = runtime.prepare_read(&file.resource, 16, 0).unwrap();
     prepared.cancellation().cancel();
-    let notified = Arc::new(AtomicBool::new(false));
-    let received = Arc::clone(&notified);
-    let error = prepared
-        .submit(move |_| received.store(true, Ordering::Release))
-        .unwrap_err();
+    let (sender, receiver) = channel();
+    let error = prepared.submit(COMPLETION_TOKEN, sender).unwrap_err();
     assert!(error.to_string().contains("aborted"));
-    assert!(!notified.load(Ordering::Acquire));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(TryRecvError::Disconnected)
+    ));
     assert_idle(runtime, &file.resource);
 
     let write = runtime.prepare_write(&file.resource, b"denied", 0).unwrap();
-    let error = write
-        .submit(|_| panic!("failed submission notified"))
-        .unwrap_err();
+    let (sender, receiver) = channel();
+    let error = write.submit(COMPLETION_TOKEN, sender).unwrap_err();
     assert!(error.to_string().contains("WriteFile"));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(TryRecvError::Disconnected)
+    ));
     assert_idle(runtime, &file.resource);
 
     let event = unsafe { windows::Win32::System::Threading::CreateEventW(None, true, false, None) }
         .unwrap();
     let event = unsafe { OwnedResource::adopt(event.0 as usize, Cleanup::CloseHandle) }.unwrap();
     let invalid = runtime.prepare_read(&event, 1, 0).unwrap();
-    let error = invalid
-        .submit(|_| panic!("invalid file notified"))
-        .unwrap_err();
+    let (sender, receiver) = channel();
+    let error = invalid.submit(COMPLETION_TOKEN, sender).unwrap_err();
     assert!(error.to_string().contains("associate"));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(TryRecvError::Disconnected)
+    ));
     assert_idle(runtime, &event);
     event.close().unwrap();
 
@@ -509,21 +515,63 @@ fn prepared_cancellation_submission_errors_and_file_offsets_retire_once() {
 }
 
 #[test]
-fn dropped_receivers_and_rejected_notifications_keep_pending_storage_until_terminal() {
+fn one_native_channel_routes_independent_operations_and_retains_their_leases() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let runtime = IocpRuntime::shared().unwrap();
+    let ready = Pipe::new(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS as u8);
+    let pending = Pipe::new(0);
+    let (sender, receiver) = channel();
+    ready.write(b"data");
+    assert_eq!(
+        runtime
+            .prepare_read(&ready.client, 4, 0)
+            .unwrap()
+            .submit(u64::MAX, sender.clone())
+            .unwrap(),
+        Submission::Inline
+    );
+    let task = runtime.prepare_read(&pending.client, 4, 0).unwrap();
+    let cancellation = CancelOnDrop(task.cancellation());
+    assert_eq!(task.submit(0, sender).unwrap(), Submission::Pending);
+    cancellation.0.cancel();
+
+    let completed = receive(&receiver);
+    assert_eq!(completed.token(), u64::MAX);
+    assert_eq!(completed.result().unwrap(), 4);
+    assert_eq!(completed.buffer(), b"data");
+    let cancelled = receive(&receiver);
+    assert_eq!(cancelled.token(), 0);
+    assert_eq!(
+        cancelled.result().unwrap_err().code(),
+        Some(ERROR_OPERATION_ABORTED)
+    );
+    assert_eq!(runtime.capacity_usage().operations, 2);
+    assert!(ready.client.has_async_leases());
+    assert!(pending.client.has_async_leases());
+    assert!(!ready.client.has_active_async_io());
+    assert!(!pending.client.has_active_async_io());
+    assert!(matches!(
+        receiver.recv_timeout(TIMEOUT),
+        Err(RecvTimeoutError::Disconnected)
+    ));
+    drop(completed);
+    assert!(!ready.client.has_async_leases());
+    assert!(pending.client.has_async_leases());
+    assert_eq!(runtime.capacity_usage().operations, 1);
+    drop(cancelled);
+    assert_idle(runtime, &pending.client);
+}
+
+#[test]
+fn dropped_receivers_keep_pending_storage_until_terminal_and_retire_once() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let runtime = IocpRuntime::shared().unwrap();
     let pipe = Pipe::new(0);
     let prepared = runtime.prepare_read(&pipe.client, 4, 0).unwrap();
     let cancellation = CancelOnDrop(prepared.cancellation());
     let (sender, receiver) = channel();
-    let (retired, retirement) = channel();
     assert_eq!(
-        prepared
-            .submit(move |completed| {
-                let _ = sender.send(completed);
-                retired.send(()).unwrap();
-            })
-            .unwrap(),
+        prepared.submit(COMPLETION_TOKEN, sender).unwrap(),
         Submission::Pending
     );
     drop(receiver);
@@ -535,22 +583,29 @@ fn dropped_receivers_and_rejected_notifications_keep_pending_storage_until_termi
         assert!(pipe.client.has_active_async_io());
         assert_eq!(runtime.capacity_usage().buffer_bytes, 4);
     }
-    retirement.recv_timeout(TIMEOUT).unwrap();
+    wait_for(|| runtime.capacity_usage().operations == 0);
     assert_idle(runtime, &pipe.client);
 
-    pipe.write(b"drop");
-    let (retired, retirement) = channel();
-    runtime
-        .prepare_read(&pipe.client, 4, 0)
-        .unwrap()
-        .submit(move |completed| {
-            assert_eq!(completed.result().unwrap(), 4);
-            drop(completed);
-            retired.send(()).unwrap();
-        })
-        .unwrap();
-    retirement.recv_timeout(TIMEOUT).unwrap();
-    assert_idle(runtime, &pipe.client);
+    for modes in [0, 1, 2, 3] {
+        let pipe = Pipe::new(modes);
+        pipe.write(b"drop");
+        let (sender, receiver) = channel();
+        drop(receiver);
+        assert_eq!(
+            runtime
+                .prepare_read(&pipe.client, 4, 0)
+                .unwrap()
+                .submit(COMPLETION_TOKEN, sender)
+                .unwrap(),
+            if modes & 1 == 0 {
+                Submission::CompletionPacket
+            } else {
+                Submission::Inline
+            }
+        );
+        wait_for(|| runtime.capacity_usage().operations == 0);
+        assert_idle(runtime, &pipe.client);
+    }
 
     let (_, receiver, cancellation) = submit(runtime.prepare_read(&pipe.client, 4, 0).unwrap());
     let weak = Arc::downgrade(&pipe.client);
@@ -582,6 +637,7 @@ fn cancellation_racing_success_has_one_terminal_delivery() {
                 cancellation.0.cancel();
             });
             let completed = receive(&receiver);
+            assert_eq!(completed.token(), COMPLETION_TOKEN);
             match completed.result() {
                 Ok(bytes) => {
                     assert_eq!(bytes, 4);
@@ -593,7 +649,10 @@ fn cancellation_racing_success_has_one_terminal_delivery() {
             assert!(!pipe.client.has_active_async_io());
             drop(completed);
             cancellation.0.cancel();
-            assert!(receiver.try_recv().is_err());
+            assert!(matches!(
+                receiver.recv_timeout(TIMEOUT),
+                Err(RecvTimeoutError::Disconnected)
+            ));
             assert_idle(runtime, &pipe.client);
         }
     }
@@ -603,23 +662,20 @@ fn cancellation_racing_success_has_one_terminal_delivery() {
 fn queued_completions_hold_operation_and_native_byte_quotas_until_consumed() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let runtime = IocpRuntime::shared().unwrap();
-    let file = LocalFile::new(false);
+    let pipe = Pipe::new(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS as u8);
     let (sender, receiver) = channel();
-    let delivered = Arc::new(AtomicUsize::new(0));
-    for _ in 0..MAX_PENDING_OPERATIONS {
-        let sender = sender.clone();
-        let delivered = Arc::clone(&delivered);
-        runtime
-            .prepare_read(&file.resource, 1, 0)
-            .unwrap()
-            .submit(move |completed| {
-                let _ = sender.send(completed);
-                delivered.fetch_add(1, Ordering::Release);
-            })
-            .unwrap();
+    pipe.write(&vec![b'q'; MAX_PENDING_OPERATIONS]);
+    for token in 0..MAX_PENDING_OPERATIONS {
+        assert_eq!(
+            runtime
+                .prepare_read(&pipe.client, 1, 0)
+                .unwrap()
+                .submit(token as u64, sender.clone())
+                .unwrap(),
+            Submission::Inline
+        );
     }
-    wait_for(|| delivered.load(Ordering::Acquire) == MAX_PENDING_OPERATIONS);
-    assert!(!file.resource.has_active_async_io());
+    assert!(!pipe.client.has_active_async_io());
     assert_eq!(
         runtime.capacity_usage(),
         CapacityUsage {
@@ -627,39 +683,38 @@ fn queued_completions_hold_operation_and_native_byte_quotas_until_consumed() {
             buffer_bytes: MAX_PENDING_OPERATIONS,
         }
     );
-    let error = runtime.prepare_read(&file.resource, 0, 0).err().unwrap();
+    let error = runtime.prepare_read(&pipe.client, 0, 0).err().unwrap();
     assert!(error.to_string().contains("operation limit"));
-    assert!(file.resource.close().is_err());
+    assert!(pipe.client.close().is_err());
     drop(receiver);
-    assert_idle(runtime, &file.resource);
+    assert_idle(runtime, &pipe.client);
 
     let (sender, receiver) = channel();
-    let delivered = Arc::new(AtomicUsize::new(0));
-    for _ in 0..MAX_PENDING_BUFFER_BYTES / MAX_OPERATION_BUFFER_BYTES {
-        let sender = sender.clone();
-        let delivered = Arc::clone(&delivered);
-        runtime
-            .prepare_read(&file.resource, MAX_OPERATION_BUFFER_BYTES, 0)
-            .unwrap()
-            .submit(move |completed| {
-                let _ = sender.send(completed);
-                delivered.fetch_add(1, Ordering::Release);
-            })
-            .unwrap();
+    for token in 0..MAX_PENDING_BUFFER_BYTES / MAX_OPERATION_BUFFER_BYTES {
+        pipe.write(b"native-iocp");
+        assert_eq!(
+            runtime
+                .prepare_read(&pipe.client, MAX_OPERATION_BUFFER_BYTES, 0)
+                .unwrap()
+                .submit(token as u64, sender.clone())
+                .unwrap(),
+            Submission::Inline
+        );
     }
-    wait_for(|| delivered.load(Ordering::Acquire) == 4);
+    assert!(!pipe.client.has_active_async_io());
     assert_eq!(
         runtime.capacity_usage().buffer_bytes,
         MAX_PENDING_BUFFER_BYTES
     );
-    let error = runtime.prepare_read(&file.resource, 1, 0).err().unwrap();
+    let error = runtime.prepare_read(&pipe.client, 1, 0).err().unwrap();
     assert!(error.to_string().contains("Buffer limit"));
     let error = runtime
-        .prepare_read(&file.resource, MAX_OPERATION_BUFFER_BYTES + 1, 0)
+        .prepare_read(&pipe.client, MAX_OPERATION_BUFFER_BYTES + 1, 0)
         .err()
         .unwrap();
     assert!(error.to_string().contains("operation Buffer"));
     let completed = receive(&receiver);
+    assert_eq!(completed.token(), 0);
     assert_eq!(completed.result().unwrap(), 11);
     assert_eq!(&completed.buffer()[..11], b"native-iocp");
     assert_eq!(
@@ -671,7 +726,7 @@ fn queued_completions_hold_operation_and_native_byte_quotas_until_consumed() {
         runtime.capacity_usage().buffer_bytes,
         3 * MAX_OPERATION_BUFFER_BYTES
     );
-    drop(runtime.prepare_read(&file.resource, 1, 0).unwrap());
+    drop(runtime.prepare_read(&pipe.client, 1, 0).unwrap());
     drop(receiver);
-    assert_idle(runtime, &file.resource);
+    assert_idle(runtime, &pipe.client);
 }

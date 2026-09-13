@@ -14,10 +14,12 @@ impl CallContract {
             LEGACY_VERSION if !self.results.is_empty() => {
                 return Err(error("Version 1 cannot contain version 2 result contracts"));
             }
-            CURRENT_VERSION if !self.outputs.is_empty() => {
-                return Err(error("Version 2 cannot contain legacy output actions"));
+            SLOT_VERSION | CURRENT_VERSION if !self.outputs.is_empty() => {
+                return Err(error(
+                    "Current result contracts cannot contain legacy output actions",
+                ));
             }
-            LEGACY_VERSION | CURRENT_VERSION => {}
+            LEGACY_VERSION | SLOT_VERSION | CURRENT_VERSION => {}
             _ => {
                 return Err(error(
                     "Unsupported Win32 call contract version; regenerate bindings with a compatible generator",
@@ -54,6 +56,16 @@ impl CallContract {
             if matches!(result.target, ResultTarget::Parameter { index } if index >= MAX_PARAMETERS)
             {
                 return Err(error("Result target exceeds the native parameter limit"));
+            }
+            if let ResultTarget::AggregateField { parameter, field } = result.target {
+                if self.version < CURRENT_VERSION
+                    || parameter >= MAX_PARAMETERS
+                    || field >= MAX_PARAMETERS
+                {
+                    return Err(error(
+                        "Aggregate field results require version 3 and bounded field indices",
+                    ));
+                }
             }
             if !results.insert(result.target) || result.overrides.len() > 32 {
                 return Err(error(
@@ -104,6 +116,17 @@ impl CallContract {
         if !matches!(shape.pointer_width, 32 | 64) || shape.parameters.len() > 1024 {
             return Err(error("Unsupported native signature shape"));
         }
+        for parameter in &shape.parameters {
+            if !parameter.result_fields.is_empty()
+                && (parameter.typ != NativeType::Pointer
+                    || parameter.direction != Direction::In
+                    || parameter.result_fields.len() > MAX_PARAMETERS)
+            {
+                return Err(error(
+                    "Aggregate result fields require a bounded physical pointer input",
+                ));
+            }
+        }
         let expected = shape.result_targets().collect::<BTreeSet<_>>();
         let actual = self
             .results
@@ -112,7 +135,7 @@ impl CallContract {
             .collect::<BTreeSet<_>>();
         if expected != actual {
             return Err(error(
-                "Version 2 must describe every direct return and native output slot exactly once",
+                "The contract must describe every direct return, output slot and aggregate result field exactly once",
             ));
         }
         for result in &self.results {

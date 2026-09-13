@@ -239,6 +239,9 @@ impl FunctionEffect {
             Self::ResultContract { contract } => match contract.target {
                 ResultTarget::Return {} => "result:return".into(),
                 ResultTarget::Parameter { index } => format!("result:parameter:{index}"),
+                ResultTarget::AggregateField { parameter, field } => {
+                    format!("result:aggregate-field:{parameter}:{field}")
+                }
             },
             Self::OverlappedIo { .. } => "async".into(),
             Self::Subsystem { .. } | Self::SubsystemExempt {} | Self::ManagedLifecycle { .. } => {
@@ -311,6 +314,12 @@ pub(crate) enum FieldContract {
         optional: bool,
     },
     OutputU32 {},
+}
+
+impl FieldContract {
+    pub fn is_output(self) -> bool {
+        matches!(self, Self::OwnedHandle { .. } | Self::OutputU32 {})
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -679,8 +688,8 @@ fn dll_name(dll: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
 }
 
-fn raw_result_target(raw: &RawFunction, target: ResultTarget) -> bool {
-    use crate::win32_metadata::{RawBaseType, RawDirection};
+fn raw_result_target(registry: &Registry, raw: &RawFunction, target: ResultTarget) -> bool {
+    use crate::win32_metadata::{RawBaseType, RawDirection, RawNamedKind};
     match target {
         ResultTarget::Return {} => {
             raw.return_type.pointer_depth != 0 || !matches!(raw.return_type.base, RawBaseType::Void)
@@ -690,6 +699,30 @@ fn raw_result_target(raw: &RawFunction, target: ResultTarget) -> bool {
                 && parameter.typ.pointer_depth > 0
                 && parameter.buffer.is_none()
         }),
+        ResultTarget::AggregateField { parameter, field } => {
+            raw.parameters.get(parameter).is_some_and(|parameter| {
+                let RawBaseType::Named {
+                    kind: RawNamedKind::NativeStruct { layout },
+                    ..
+                } = &parameter.typ.base
+                else {
+                    return false;
+                };
+                parameter.direction != RawDirection::In
+                    && parameter.typ.pointer_depth == 1
+                    && parameter.buffer.is_none()
+                    && registry.layout_contract(layout).is_ok_and(|contract| {
+                        contract.is_some_and(|contract| {
+                            contract
+                                .fields
+                                .iter()
+                                .filter(|field| field.contract.is_output())
+                                .count()
+                                > field
+                        })
+                    })
+            })
+        }
     }
 }
 
@@ -1096,10 +1129,10 @@ impl Registry {
                         }) && contract
                             .results
                             .iter()
-                            .all(|result| raw_result_target(raw, result.target))
+                            .all(|result| raw_result_target(self, raw, result.target))
                     }
                     FunctionEffect::ResultContract { contract } => {
-                        raw_result_target(raw, contract.target)
+                        raw_result_target(self, raw, contract.target)
                     }
                     FunctionEffect::OverlappedIo {
                         file_parameter,

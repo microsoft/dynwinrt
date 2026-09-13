@@ -34,7 +34,7 @@ const runtime={DynWin32:{
   assert.equal(spec.successRule,'nonzero')
   assert.equal(spec.captureLastError,true)
   assert.deepEqual(JSON.parse(spec.callContractDescriptor),{
-    version:2,
+    version:3,
     results:[{
       target:{kind:'return'},
       onSuccess:{kind:'defined',ownership:{kind:'value'},delivery:'deliver'},
@@ -183,7 +183,7 @@ const runtime = {
             {when:{inputs,returnValue:null,succeeded:false},policy:{kind:'undefined'}}
           ]
       assert.deepEqual(contract, {
-        version:2,
+        version:3,
         results: [
           valueResult({kind:'return'}),
           ...(query ? [valueResult({kind:'parameter',index:get ? 4 : 3})] : []),

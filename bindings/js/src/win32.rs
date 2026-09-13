@@ -36,6 +36,7 @@ pub struct DynWin32ParameterSpec {
   pub consumes_resource: Option<bool>,
   pub resource_cleanup: Option<String>,
   pub aggregate_descriptor: Option<String>,
+  pub pointee_descriptor: Option<String>,
 }
 
 #[napi(object)]
@@ -119,29 +120,23 @@ impl DynWin32Value {
 
 struct NativeAggregateStorage {
   state: std::sync::Mutex<NativeAggregateState>,
+  backing: Arc<dynwinrt::win32::NativeAggregateBuffer>,
   byte_length: usize,
   contains_pointers: bool,
-  owned_fields: Vec<OwnedNativeField>,
-}
-
-#[derive(Clone, Copy)]
-struct OwnedNativeField {
-  offset: usize,
-  cleanup: dynwinrt::win32::Cleanup,
 }
 
 struct NativeAggregateState {
-  words: Vec<u64>,
   owners: BTreeMap<usize, Arc<RetainedNativePointer>>,
-  call_succeeded: Option<bool>,
 }
 
 impl NativeAggregateStorage {
   fn new(
+    identity: String,
     byte_length: usize,
+    alignment: usize,
     bytes: Option<&[u8]>,
     contains_pointers: bool,
-    owned_fields: Vec<OwnedNativeField>,
+    fields: Vec<dynwinrt::win32::AggregateResultField>,
   ) -> napi::Result<Self> {
     if contains_pointers && bytes.is_some() {
       return Err(napi::Error::from_reason(
@@ -154,43 +149,23 @@ impl NativeAggregateStorage {
         dynwinrt::win32::MAX_NATIVE_AGGREGATE_SIZE
       )));
     }
-    let word_length = byte_length.div_ceil(std::mem::size_of::<u64>());
-    let mut words = Vec::new();
-    words.try_reserve_exact(word_length).map_err(|_| {
-      napi::Error::from_reason("Unable to allocate flat Win32 native aggregate storage")
-    })?;
-    words.resize(word_length, 0);
-    if let Some(bytes) = bytes {
-      if bytes.len() != byte_length {
-        return Err(napi::Error::from_reason(format!(
-          "native aggregate requires exactly {byte_length} bytes, received {}",
-          bytes.len()
-        )));
-      }
-      unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast::<u8>(), byte_length);
-      }
-    }
+    let layout =
+      dynwinrt::win32::NativeAggregatePointerLayout::new(identity, byte_length, alignment, fields)
+        .map_err(|error| napi::Error::from_reason(error.message()))?;
+    let backing = dynwinrt::win32::NativeAggregateBuffer::new(layout, bytes)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(Self {
       state: std::sync::Mutex::new(NativeAggregateState {
-        words,
         owners: BTreeMap::new(),
-        call_succeeded: None,
       }),
+      backing,
       byte_length,
       contains_pointers,
-      owned_fields,
     })
   }
 
   fn pointer(&self) -> *mut std::ffi::c_void {
-    self
-      .state
-      .lock()
-      .unwrap_or_else(|error| error.into_inner())
-      .words
-      .as_mut_ptr()
-      .cast()
+    self.backing.pointer()
   }
 
   fn bytes(&self) -> napi::Result<Vec<u8>> {
@@ -199,16 +174,10 @@ impl NativeAggregateStorage {
         "raw bytes are unavailable for pointer-bearing native aggregates",
       ));
     }
-    let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-    let mut bytes = storage::zeroed(self.byte_length)?;
-    unsafe {
-      std::ptr::copy_nonoverlapping(
-        state.words.as_ptr().cast::<u8>(),
-        bytes.as_mut_ptr(),
-        self.byte_length,
-      );
-    }
-    Ok(bytes)
+    self
+      .backing
+      .bytes()
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   fn write_field(
@@ -217,18 +186,11 @@ impl NativeAggregateStorage {
     bytes: &[u8],
     owner: Option<Arc<RetainedNativePointer>>,
   ) -> napi::Result<()> {
-    let end = offset
-      .checked_add(bytes.len())
-      .filter(|end| *end <= self.byte_length)
-      .ok_or_else(|| napi::Error::from_reason("native aggregate field exceeds its layout"))?;
     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-    unsafe {
-      std::ptr::copy_nonoverlapping(
-        bytes.as_ptr(),
-        state.words.as_mut_ptr().cast::<u8>().add(offset),
-        end - offset,
-      );
-    }
+    self
+      .backing
+      .write(offset, bytes)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     state.owners.remove(&offset);
     if let Some(owner) = owner {
       state.owners.insert(offset, owner);
@@ -237,136 +199,32 @@ impl NativeAggregateStorage {
   }
 
   fn read_field<const N: usize>(&self, offset: usize) -> napi::Result<[u8; N]> {
-    let end = offset
-      .checked_add(N)
-      .filter(|end| *end <= self.byte_length)
-      .ok_or_else(|| napi::Error::from_reason("native aggregate field exceeds its layout"))?;
-    let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-    let mut bytes = [0u8; N];
-    unsafe {
-      std::ptr::copy_nonoverlapping(
-        state.words.as_ptr().cast::<u8>().add(offset),
-        bytes.as_mut_ptr(),
-        end - offset,
-      );
-    }
-    Ok(bytes)
-  }
-
-  fn take_usize(&self, offset: usize) -> napi::Result<usize> {
-    let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-    let end = offset
-      .checked_add(std::mem::size_of::<usize>())
-      .filter(|end| *end <= self.byte_length)
-      .ok_or_else(|| napi::Error::from_reason("native handle field exceeds its layout"))?;
-    let mut bytes = [0u8; std::mem::size_of::<usize>()];
-    unsafe {
-      std::ptr::copy_nonoverlapping(
-        state.words.as_ptr().cast::<u8>().add(offset),
-        bytes.as_mut_ptr(),
-        end - offset,
-      );
-      std::ptr::write_bytes(
-        state.words.as_mut_ptr().cast::<u8>().add(offset),
-        0,
-        end - offset,
-      );
-    }
-    Ok(usize::from_le_bytes(bytes))
-  }
-
-  fn mark_call_result(&self, succeeded: bool) {
     self
-      .state
-      .lock()
-      .unwrap_or_else(|error| error.into_inner())
-      .call_succeeded = Some(succeeded);
+      .backing
+      .read(offset)
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  fn mark_call_result(&self, succeeded: bool) -> napi::Result<()> {
+    self
+      .backing
+      .mark_legacy(succeeded)
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   fn prepare_call(&self) -> napi::Result<()> {
-    self.cleanup_owned_fields(true)?;
-    self.mark_call_result(false);
-    Ok(())
+    self
+      .backing
+      .prepare()
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   fn require_success(&self) -> napi::Result<()> {
-    match self
-      .state
-      .lock()
-      .unwrap_or_else(|error| error.into_inner())
-      .call_succeeded
-    {
-      Some(true) => Ok(()),
-      Some(false) => Err(napi::Error::from_reason(
-        "native aggregate outputs are unavailable because the native call failed",
-      )),
-      None => Err(napi::Error::from_reason(
-        "native aggregate outputs are unavailable before a successful native call",
-      )),
-    }
+    self
+      .backing
+      .require_success()
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
-
-  fn cleanup_owned_fields(&self, only_after_success: bool) -> napi::Result<()> {
-    let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-    if only_after_success && state.call_succeeded != Some(true) {
-      return Ok(());
-    }
-    let mut first_error = None;
-    for field in &self.owned_fields {
-      let bits = read_usize_from_words(&state.words, self.byte_length, field.offset)?;
-      if bits == 0 {
-        continue;
-      }
-      if let Err(error) = unsafe { dynwinrt::win32::cleanup_owned_resource(bits, field.cleanup) } {
-        first_error.get_or_insert_with(|| napi::Error::from_reason(error.to_string()));
-        continue;
-      }
-      write_usize_to_words(&mut state.words, self.byte_length, field.offset, 0)?;
-    }
-    first_error.map_or(Ok(()), Err)
-  }
-}
-
-impl Drop for NativeAggregateStorage {
-  fn drop(&mut self) {
-    let _ = self.cleanup_owned_fields(true);
-  }
-}
-
-fn read_usize_from_words(words: &[u64], byte_length: usize, offset: usize) -> napi::Result<usize> {
-  let end = offset
-    .checked_add(std::mem::size_of::<usize>())
-    .filter(|end| *end <= byte_length)
-    .ok_or_else(|| napi::Error::from_reason("native handle field exceeds its layout"))?;
-  let mut bytes = [0u8; std::mem::size_of::<usize>()];
-  unsafe {
-    std::ptr::copy_nonoverlapping(
-      words.as_ptr().cast::<u8>().add(offset),
-      bytes.as_mut_ptr(),
-      end - offset,
-    );
-  }
-  Ok(usize::from_le_bytes(bytes))
-}
-
-fn write_usize_to_words(
-  words: &mut [u64],
-  byte_length: usize,
-  offset: usize,
-  value: usize,
-) -> napi::Result<()> {
-  let end = offset
-    .checked_add(std::mem::size_of::<usize>())
-    .filter(|end| *end <= byte_length)
-    .ok_or_else(|| napi::Error::from_reason("native handle field exceeds its layout"))?;
-  unsafe {
-    std::ptr::copy_nonoverlapping(
-      value.to_le_bytes().as_ptr(),
-      words.as_mut_ptr().cast::<u8>().add(offset),
-      end - offset,
-    );
-  }
-  Ok(())
 }
 
 pub struct DynWin32NativeStruct {
@@ -497,6 +355,17 @@ impl DynWin32Function {
         owner.validate()?;
       }
     }
+    let _by_value_guards = args
+      .iter()
+      .filter_map(|value| {
+        if matches!(value.value, dynwinrt::win32::Value::Aggregate { .. }) {
+          if let Some(Win32PointerOwner::Aggregate(owner)) = &value.pointer_owner {
+            return Some(owner.backing.lease());
+          }
+        }
+        None
+      })
+      .collect::<Vec<_>>();
     let values = args
       .iter()
       .map(|value| value.value.clone())
@@ -912,17 +781,17 @@ impl DynWin32 {
     #[napi(ts_arg_type = "string")] descriptor: specification::Descriptor,
     #[napi(ts_arg_type = "Buffer | Uint8Array | null")] bytes: Option<Unknown>,
   ) -> napi::Result<DynWin32NativeStruct> {
-    let (_, size, alignment, contains_pointers, owned_fields) =
-      native_aggregate_layout(&descriptor)?;
+    let (_, size, alignment, contains_pointers, fields) = native_aggregate_layout(&descriptor)?;
     if alignment > 8 {
       return Err(napi::Error::from_reason(
         "flat Win32 native aggregate alignment above 8 is unsupported",
       ));
     }
     Ok(DynWin32NativeStruct {
-      descriptor: descriptor.into_string(),
       storage: Arc::new(NativeAggregateStorage::new(
+        descriptor.as_str().to_string(),
         size,
+        alignment,
         bytes
           .as_ref()
           .map(|bytes| storage::buffer_info(bytes.value().env, bytes.raw()))
@@ -930,8 +799,9 @@ impl DynWin32 {
           .as_ref()
           .map(|info| unsafe { info.bytes() }),
         contains_pointers,
-        owned_fields,
+        fields,
       )?),
+      descriptor: descriptor.into_string(),
     })
   }
 
@@ -1020,14 +890,28 @@ impl DynWin32 {
     #[napi(ts_arg_type = "string")] field: specification::Name,
   ) -> napi::Result<u32> {
     validate_native_struct(value, &descriptor)?;
-    value.storage.require_success()?;
     let (offset, kind, _) = native_aggregate_field(&descriptor, &field)?;
     if kind != "u32" {
       return Err(napi::Error::from_reason(format!(
         "native field `{field}` is not u32"
       )));
     }
-    Ok(u32::from_le_bytes(value.storage.read_field(offset)?))
+    if let Some(index) = value.storage.backing.field_index(&field) {
+      match value
+        .storage
+        .backing
+        .field_value(index)
+        .map_err(|error| napi::Error::from_reason(error.message()))?
+      {
+        dynwinrt::win32::Value::U32(_) => Ok(u32::from_le_bytes(value.storage.read_field(offset)?)),
+        _ => Err(napi::Error::from_reason(
+          "Native aggregate result field is not u32",
+        )),
+      }
+    } else {
+      value.storage.require_success()?;
+      Ok(u32::from_le_bytes(value.storage.read_field(offset)?))
+    }
   }
 
   #[napi]
@@ -1038,8 +922,7 @@ impl DynWin32 {
     #[napi(ts_arg_type = "string")] cleanup: specification::Name,
   ) -> napi::Result<Option<DynWin32Resource>> {
     validate_native_struct(value, &descriptor)?;
-    value.storage.require_success()?;
-    let (offset, kind, field_cleanup) = native_aggregate_field(&descriptor, &field)?;
+    let (_, kind, field_cleanup) = native_aggregate_field(&descriptor, &field)?;
     if kind != "handle" || field_cleanup.as_deref() != Some(cleanup.as_str()) {
       return Err(napi::Error::from_reason(format!(
         "native field `{field}` does not have cleanup `{cleanup}`"
@@ -1051,13 +934,23 @@ impl DynWin32 {
         "Native resource fields require exact ownership cleanup",
       ));
     }
-    let bits = value.storage.take_usize(offset)?;
-    if bits == 0 {
-      return Ok(None);
+    let index = value.storage.backing.field_index(&field).ok_or_else(|| {
+      napi::Error::from_reason("Native handle field has no result ownership contract")
+    })?;
+    match value
+      .storage
+      .backing
+      .take_field(index)
+      .map_err(|error| napi::Error::from_reason(error.message()))?
+    {
+      dynwinrt::win32::Value::Resource(resource) if resource.cleanup() == cleanup => {
+        Ok(Some(DynWin32Resource(resource)))
+      }
+      dynwinrt::win32::Value::Handle(0) => Ok(None),
+      _ => Err(napi::Error::from_reason(
+        "Native aggregate result is not an owned handle",
+      )),
     }
-    let resource = unsafe { dynwinrt::win32::OwnedResource::adopt(bits, cleanup) }
-      .map_err(|error| napi::Error::from_reason(error.message()))?;
-    Ok(Some(DynWin32Resource(resource)))
   }
 
   #[napi]
@@ -1067,8 +960,7 @@ impl DynWin32 {
     succeeded: bool,
   ) -> napi::Result<()> {
     validate_native_struct(value, &descriptor)?;
-    value.storage.mark_call_result(succeeded);
-    Ok(())
+    value.storage.mark_call_result(succeeded)
   }
 
   #[napi]
@@ -1108,9 +1000,8 @@ impl DynWin32 {
         "DynWin32.nativeStruct(): native aggregate type mismatch",
       ));
     }
-    let pointer = value.storage.pointer();
     Ok(DynWin32Value {
-      value: dynwinrt::win32::Value::Pointer(pointer),
+      value: dynwinrt::win32::Value::AggregatePointer(Arc::clone(&value.storage.backing)),
       pointer_owner: Some(Win32PointerOwner::Aggregate(Arc::clone(&value.storage))),
     })
   }
@@ -1150,14 +1041,17 @@ impl DynWin32 {
         "native aggregate return identity mismatch",
       ));
     }
+    let (_, _, alignment, _, fields) = native_aggregate_layout(&descriptor)?;
     Ok(DynWin32NativeStruct {
-      descriptor: descriptor.into_string(),
       storage: Arc::new(NativeAggregateStorage::new(
+        descriptor.as_str().to_string(),
         bytes.len(),
+        alignment,
         Some(bytes),
         false,
-        Vec::new(),
+        fields,
       )?),
+      descriptor: descriptor.into_string(),
     })
   }
 
@@ -1457,7 +1351,13 @@ fn reserve_ffi_elements(
 
 fn native_aggregate_layout(
   descriptor: &str,
-) -> napi::Result<(String, usize, usize, bool, Vec<OwnedNativeField>)> {
+) -> napi::Result<(
+  String,
+  usize,
+  usize,
+  bool,
+  Vec<dynwinrt::win32::AggregateResultField>,
+)> {
   let root = parse_native_aggregate_descriptor(descriptor)?;
   let name = root
     .get("name")
@@ -1511,38 +1411,127 @@ fn native_aggregate_layout(
     size,
     alignment,
     native_layout_contains_pointers(layout)?,
-    native_layout_owned_fields(layout)?,
+    native_layout_result_fields(&root, layout)?,
   ))
 }
 
-fn native_layout_owned_fields(layout: &serde_json::Value) -> napi::Result<Vec<OwnedNativeField>> {
-  layout
+fn native_aggregate_pointer_layout(
+  descriptor: &str,
+) -> napi::Result<Arc<dynwinrt::win32::NativeAggregatePointerLayout>> {
+  let (_, size, alignment, _, fields) = native_aggregate_layout(descriptor)?;
+  dynwinrt::win32::NativeAggregatePointerLayout::new(
+    descriptor.to_string(),
+    size,
+    alignment,
+    fields,
+  )
+  .map_err(|error| napi::Error::from_reason(error.message()))
+}
+
+fn native_layout_result_fields(
+  root: &serde_json::Value,
+  layout: &serde_json::Value,
+) -> napi::Result<Vec<dynwinrt::win32::AggregateResultField>> {
+  let fields = layout
     .get("fields")
     .and_then(serde_json::Value::as_array)
-    .into_iter()
-    .flatten()
+    .ok_or_else(|| napi::Error::from_reason("Native aggregate fields are missing"))?;
+  let owned = fields
+    .iter()
     .filter_map(|field| {
       let typ = field.get("type")?;
-      (typ.get("kind").and_then(serde_json::Value::as_str) == Some("handle"))
-        .then_some((field, typ))
+      (typ.get("kind").and_then(serde_json::Value::as_str) == Some("handle")
+        && typ
+          .get("cleanup")
+          .and_then(serde_json::Value::as_str)
+          .is_some_and(|cleanup| cleanup != "none"))
+      .then(|| field.get("name").and_then(serde_json::Value::as_str))
+      .flatten()
     })
-    .map(|(field, typ)| {
+    .collect::<Vec<_>>();
+  let names = match root.get("outputFields") {
+    None => owned.clone(),
+    Some(value) => value
+      .as_array()
+      .ok_or_else(|| napi::Error::from_reason("outputFields must be an array"))?
+      .iter()
+      .map(|value| {
+        value
+          .as_str()
+          .ok_or_else(|| napi::Error::from_reason("outputFields must contain field names"))
+      })
+      .collect::<napi::Result<Vec<_>>>()?,
+  };
+  if names.len() > 1024 || owned.iter().any(|name| !names.contains(name)) {
+    return Err(napi::Error::from_reason(
+      "Native result fields omit owned handles or exceed the field limit",
+    ));
+  }
+  if !names.is_empty() && root.get("kind").and_then(serde_json::Value::as_str) != Some("struct") {
+    return Err(napi::Error::from_reason(
+      "Union result ownership requires an explicit active-arm contract",
+    ));
+  }
+  let mut seen = std::collections::BTreeSet::new();
+  names
+    .into_iter()
+    .map(|name| {
+      if !seen.insert(name) {
+        return Err(napi::Error::from_reason(
+          "Duplicate native aggregate output field",
+        ));
+      }
+      let field = fields
+        .iter()
+        .find(|field| field.get("name").and_then(serde_json::Value::as_str) == Some(name))
+        .ok_or_else(|| napi::Error::from_reason("Unknown native aggregate output field"))?;
+      if field.get("count").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err(napi::Error::from_reason(
+          "Aggregate result arrays require an element ownership contract",
+        ));
+      }
+      let typ = field
+        .get("type")
+        .ok_or_else(|| napi::Error::from_reason("Native output field type is missing"))?;
+      let kind = typ
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| napi::Error::from_reason("Native output field kind is missing"))?;
+      let abi = match kind {
+        "isize" => {
+          if cfg!(target_pointer_width = "64") {
+            dynwinrt::win32::Type::I64
+          } else {
+            dynwinrt::win32::Type::I32
+          }
+        }
+        "usize" => {
+          if cfg!(target_pointer_width = "64") {
+            dynwinrt::win32::Type::U64
+          } else {
+            dynwinrt::win32::Type::U32
+          }
+        }
+        _ => parse_type(kind)?,
+      };
+      let cleanup = typ
+        .get("cleanup")
+        .and_then(serde_json::Value::as_str)
+        .map(parse_cleanup)
+        .transpose()?
+        .unwrap_or(dynwinrt::win32::Cleanup::None);
       let offset = field
         .get("offset")
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(|| napi::Error::from_reason("owned native field has invalid offset"))?;
-      let cleanup = typ
-        .get("cleanup")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| napi::Error::from_reason("owned native field has no cleanup"))
-        .and_then(parse_cleanup)?;
-      if cleanup == dynwinrt::win32::Cleanup::None {
-        return Ok(None);
-      }
-      Ok(Some(OwnedNativeField { offset, cleanup }))
+        .ok_or_else(|| napi::Error::from_reason("Native output field offset is invalid"))?;
+      Ok(dynwinrt::win32::AggregateResultField {
+        name: name.to_owned(),
+        offset,
+        typ: abi,
+        cleanup,
+      })
     })
-    .filter_map(|result| result.transpose())
     .collect()
 }
 
@@ -1799,8 +1788,11 @@ impl DynWin32Unsafe {
   #[napi]
   pub fn pointer_address(value: &DynWin32Value) -> napi::Result<BigInt> {
     value.validate()?;
-    match value.value {
-      dynwinrt::win32::Value::Pointer(pointer) => Ok(BigInt::from(pointer as usize as u64)),
+    match &value.value {
+      dynwinrt::win32::Value::Pointer(pointer) => Ok(BigInt::from(*pointer as usize as u64)),
+      dynwinrt::win32::Value::AggregatePointer(buffer) => {
+        Ok(BigInt::from(buffer.pointer() as usize as u64))
+      }
       dynwinrt::win32::Value::Null => Ok(BigInt::from(0u64)),
       _ => Err(napi::Error::from_reason(
         "DynWin32Unsafe.pointerAddress(): value is not a data pointer",
@@ -1811,6 +1803,7 @@ impl DynWin32Unsafe {
 
 fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
   let mut parameter_aggregates = Vec::with_capacity(spec.parameters.len());
+  let mut parameter_pointees = Vec::with_capacity(spec.parameters.len());
   let parameters = spec
     .parameters
     .into_iter()
@@ -1820,12 +1813,18 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
         .as_deref()
         .map(native_aggregate_call_layout)
         .transpose()?;
+      let pointee = parameter
+        .pointee_descriptor
+        .as_deref()
+        .map(native_aggregate_pointer_layout)
+        .transpose()?;
       let typ = if aggregate.is_some() {
         dynwinrt::win32::Type::Pointer
       } else {
         parse_type(&parameter.typ)?
       };
       parameter_aggregates.push(aggregate);
+      parameter_pointees.push(pointee);
       Ok(dynwinrt::win32::Parameter {
         typ,
         direction: parse_direction(&parameter.direction)?,
@@ -1849,7 +1848,7 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
     .transpose()?
     .filter(|_| return_aggregate.is_none());
   let plan = unsafe {
-    dynwinrt::win32::CallPlan::new_with_descriptor(
+    dynwinrt::win32::CallPlan::new_with_described_pointees(
       dynwinrt::win32::CallPlanSpec {
         dll: spec.dll,
         entry_point: spec.entry_point,
@@ -1865,6 +1864,7 @@ fn bind_function(spec: DynWin32FunctionSpec) -> napi::Result<DynWin32Function> {
         return_aggregate,
       },
       spec.call_contract_descriptor.as_deref(),
+      parameter_pointees,
     )
   }
   .map_err(|error| napi::Error::from_reason(error.message()))?;

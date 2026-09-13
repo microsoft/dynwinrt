@@ -958,6 +958,23 @@ test.serial('Win32 IOCP completion modes preserve immediate, pending and cancell
   t.regex(result.stdout, /PASS completion modes/)
 })
 
+test.serial('Win32 IOCP relay survives owner-thread GC, exceptions and environment teardown', (t) => {
+  t.timeout(50000)
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--expose-gc',
+      fileURLToPath(new URL('./fixtures/win32-io-lifecycle.cjs', import.meta.url)),
+      JSON.stringify(fileSpec),
+    ],
+    { encoding: 'utf8', timeout: 45000 },
+  )
+  t.is(result.error, undefined, `${result.error}\n${result.stdout}\n${result.stderr}`)
+  t.is(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  t.is(result.stderr, '')
+  t.regex(result.stdout, /PASS IOCP owner-thread lifecycle/)
+})
+
 test.serial('Win32 IOCP AbortSignal cancels active native pipe I/O through CancelIoEx', async (t) => {
   t.timeout(20000)
   const pipe = `\\\\.\\pipe\\dynwinrt-iocp-${randomUUID()}`

@@ -282,7 +282,7 @@ const runtime={DynWin32:{beginReadFile:begin('read'),beginWriteFile:begin('write
 }
 
 #[test]
-fn native_builders_encode_size_retention_and_success_gated_handle_fields() {
+fn native_builders_encode_size_retention_and_native_owned_result_fields() {
     let Some(path) = metadata() else { return };
     let mut raw =
         crate::win32_metadata::parse_apis(&path, "Windows.Win32.System.Threading", "Apis").unwrap();
@@ -370,6 +370,90 @@ fn native_builders_encode_size_retention_and_success_gated_handle_fields() {
         let native = semantic(original);
         assert_eq!(original.parameters[1].direction, RawDirection::InOut);
         assert_eq!(native.parameters[1].direction, Direction::In);
+        assert_eq!(original.parameters[9].direction, RawDirection::Out);
+        assert_eq!(original.parameters[9].typ.pointer_depth, 1);
+        let result = &function.runtime.parameters[9];
+        assert_eq!(result.abi, AbiType::Pointer);
+        assert_eq!(result.direction, Direction::In);
+        assert_eq!(result.cleanup, Cleanup::None);
+        assert!(result.aggregate.is_none());
+        let result_layout = result.pointee_aggregate.as_ref().unwrap();
+        assert_eq!(result_layout.name, "PROCESS_INFORMATION");
+        assert_eq!(
+            result_layout.output_fields,
+            ["hProcess", "hThread", "dwProcessId", "dwThreadId"]
+        );
+        for (layout, size, alignment, offsets) in [
+            (&result_layout.x86, 16, 4, [0, 4, 8, 12]),
+            (&result_layout.x64, 24, 8, [0, 8, 16, 20]),
+            (&result_layout.arm64, 24, 8, [0, 8, 16, 20]),
+        ] {
+            assert_eq!((layout.size, layout.alignment), (size, alignment));
+            assert_eq!(
+                layout
+                    .fields
+                    .iter()
+                    .map(|field| field.offset)
+                    .collect::<Vec<_>>(),
+                offsets
+            );
+            for field in &layout.fields[..2] {
+                assert_eq!(field.count, 1);
+                assert_eq!(
+                    field.typ,
+                    NativeFieldType::Handle {
+                        cleanup: Cleanup::CloseHandle
+                    }
+                );
+            }
+        }
+        assert!(
+            function.runtime.parameters[..9]
+                .iter()
+                .all(|parameter| parameter.pointee_aggregate.is_none())
+        );
+        let call_contract = &function.runtime.call_contract;
+        assert_eq!(
+            call_contract.version,
+            dynwinrt_win32_contracts::CURRENT_VERSION
+        );
+        assert_eq!(call_contract.results.len(), 5);
+        assert!(
+            call_contract
+                .result(ResultTarget::Parameter { index: 9 })
+                .is_none()
+        );
+        for width in [32, 64] {
+            let shape = function.runtime.signature_shape(width);
+            call_contract.validate_signature(&shape).unwrap();
+            assert_eq!(shape.parameters[9].result_fields.len(), 4);
+            for field in 0..4 {
+                let target = ResultTarget::AggregateField {
+                    parameter: 9,
+                    field,
+                };
+                let policy = call_contract.result(target).unwrap();
+                let ownership = if field < 2 {
+                    assert_eq!(
+                        shape.result_type(target).unwrap(),
+                        dynwinrt_win32_contracts::NativeType::Handle
+                    );
+                    assert_eq!(shape.result_cleanup(target), Cleanup::CloseHandle);
+                    ResultOwnership::Owned {
+                        cleanup: Cleanup::CloseHandle,
+                    }
+                } else {
+                    assert_eq!(
+                        shape.result_type(target).unwrap(),
+                        dynwinrt_win32_contracts::NativeType::U32
+                    );
+                    assert_eq!(shape.result_cleanup(target), Cleanup::None);
+                    ResultOwnership::Value {}
+                };
+                assert_eq!(policy.on_success, ResultPolicy::delivered(ownership));
+                assert_eq!(policy.on_failure, ResultPolicy::Undefined {});
+            }
+        }
         for (layout_name, x86_size, x64_size) in [
             ("SECURITY_ATTRIBUTES", 12, 24),
             ("PROCESS_INFORMATION", 16, 24),
@@ -402,6 +486,20 @@ fn native_builders_encode_size_retention_and_success_gated_handle_fields() {
     }
     let (generated, omitted) = generate_apis_files(&raw, "@test/runtime/win32");
     assert!(omitted.is_empty());
+    assert!(!generated.js.contains("prepareNativeStructCall"));
+    assert!(!generated.js.contains("markNativeStructCallResult"));
+    assert_eq!(
+        generated
+            .js
+            .matches("pointeeDescriptor: _nativeLayout_PROCESS_INFORMATION")
+            .count(),
+        2
+    );
+    assert!(
+        generated
+            .js
+            .contains("\"outputFields\":[\"hProcess\",\"hThread\",\"dwProcessId\",\"dwThreadId\"]")
+    );
     run_js(
         &generated,
         r#"

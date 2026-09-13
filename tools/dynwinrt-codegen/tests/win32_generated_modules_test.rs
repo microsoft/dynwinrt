@@ -128,8 +128,8 @@ fn all_supported_win32_modules_load_and_have_valid_declarations() {
         "metadata must exercise actual generated modules"
     );
     assert_eq!(
-        (complete_functions, eligible_functions),
-        (8_936, 18_321),
+        (complete_functions, eligible_functions, namespace_count),
+        (8_936, 18_321, 182),
         "the pinned Win32Metadata complete-export census must not regress"
     );
     eprintln!(
@@ -194,14 +194,17 @@ export declare class DynWinRtValue {
     let node_script = r#"
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { basename } = require('node:path');
 const { pathToFileURL } = require('node:url');
 (async () => {
   const modules = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
   const failures = [];
+  let namespaceExports = 0;
   for (const file of modules) {
     try {
       const cjs = require(file);
       const esm = await import(pathToFileURL(file).href);
+      if (basename(file) === 'Apis.js') namespaceExports += Object.keys(cjs).length;
       for (const name of Object.keys(cjs)) {
         assert.notEqual(cjs[name], undefined, `${file}: undefined export ${name}`);
         assert.equal(esm[name], cjs[name], `${file}: missing ESM named export ${name}`);
@@ -211,7 +214,8 @@ const { pathToFileURL } = require('node:url');
     }
   }
   assert.equal(failures.length, 0, failures.join('\n'));
-  console.log(`Loaded ${modules.length} generated modules without native calls`);
+  assert.equal(namespaceExports, 10680, 'the pinned public namespace export census must not regress');
+  console.log(`Loaded ${modules.length} generated modules with ${namespaceExports} public namespace exports without native calls`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 "#;
     let node = Command::new("node")
@@ -219,6 +223,7 @@ const { pathToFileURL } = require('node:url');
         .arg(&modules_file)
         .output()
         .expect("Node is required for module loading tests");
+    eprintln!("{}", String::from_utf8_lossy(&node.stdout).trim());
     if !tsc.is_file() {
         assert!(
             node.status.success(),
@@ -248,6 +253,7 @@ import {{ REG_ROUTINE_FLAGS }} from {routine:?}
 import {{ REG_VALUE_TYPE }} from {value_type:?}
 import {{ FILE_FLAGS_AND_ATTRIBUTES }} from {file_flags:?}
 import {{ setFileAttributes }} from {files:?}
+import {{ createProcessInformation, takeProcessInformationProcess, takeProcessInformationThread, getProcessInformationProcessId, getProcessInformationThreadId }} from {threading:?}
 
 const access: REG_SAM_FLAGS = REG_SAM_FLAGS.KEY_QUERY_VALUE | REG_SAM_FLAGS.KEY_SET_VALUE
 const flags: REG_ROUTINE_FLAGS = REG_ROUTINE_FLAGS.RRF_RT_REG_DWORD | REG_ROUTINE_FLAGS.RRF_ZEROONFAILURE
@@ -265,9 +271,16 @@ const alias: DynWin32Resource | bigint | null = regOpenKey(managed, '').key
 if (alias !== null && typeof alias !== 'bigint') alias.close()
 const ordinary: REG_VALUE_TYPE = REG_VALUE_TYPE.REG_DWORD
 const exactOrdinaryMember: 4 = REG_VALUE_TYPE.REG_DWORD
+const processInformation = createProcessInformation()
+const processOwner: DynWin32Resource | null = takeProcessInformationProcess(processInformation)
+const threadOwner: DynWin32Resource | null = takeProcessInformationThread(processInformation)
+const processId: number = getProcessInformationProcessId(processInformation)
+const threadId: number = getProcessInformationThreadId(processInformation)
 
 // @ts-expect-error native unavailable output remains nullable
 const invalidGetCount: number = get.dataSize
+// @ts-expect-error taking an absent native field resource remains nullable
+const invalidProcessOwner: DynWin32Resource = takeProcessInformationProcess(processInformation)
 // @ts-expect-error native unavailable output remains nullable
 const invalidQueryCount: number = query.dataSize
 // @ts-expect-error ordinary enums retain their closed member union
@@ -281,6 +294,7 @@ const invalidFlags: REG_SAM_FLAGS = 'read'
             value_type = module("Windows.Win32.System.Registry", "REG_VALUE_TYPE"),
             file_flags = module("Windows.Win32.Storage.FileSystem", "FILE_FLAGS_AND_ATTRIBUTES"),
             files = module("Windows.Win32.Storage.FileSystem", "Apis"),
+            threading = module("Windows.Win32.System.Threading", "Apis"),
         ),
     )
     .unwrap();

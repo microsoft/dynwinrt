@@ -328,11 +328,11 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: Some(layout.clone()),
+                pointee_aggregate: None,
             }
-        } else if matches!(
-            &parameter.typ,
-            ValueType::NativeStructPointer { .. } | ValueType::NativeUnionPointer { .. }
-        ) {
+        } else if let ValueType::NativeStructPointer { layout }
+        | ValueType::NativeUnionPointer { layout } = &parameter.typ
+        {
             RuntimeParameter {
                 abi: AbiType::Pointer,
                 direction: Direction::In,
@@ -341,6 +341,9 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: (parameter.direction != Direction::In
+                    && !layout.output_fields.is_empty())
+                .then(|| layout.clone()),
             }
         } else if matches!(parameter.typ, ValueType::ScalarPointer { .. }) {
             RuntimeParameter {
@@ -351,6 +354,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if matches!(parameter.typ, ValueType::GuidPointer) {
             RuntimeParameter {
@@ -361,6 +365,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if matches!(parameter.typ, ValueType::NullPointer) {
             RuntimeParameter {
@@ -371,6 +376,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if matches!(parameter.typ, ValueType::ComInterface { .. }) {
             RuntimeParameter {
@@ -381,6 +387,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if matches!(parameter.typ, ValueType::StringPointerPointer(_)) {
             RuntimeParameter {
@@ -391,6 +398,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if parameter.buffer.is_some() {
             RuntimeParameter {
@@ -401,6 +409,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if reserved_pointer {
             RuntimeParameter {
@@ -411,6 +420,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: false,
                 resource_cleanup: Cleanup::None,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else if parameter.pointer_depth == 0 {
             RuntimeParameter {
@@ -421,6 +431,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                 consumes_resource: parameter.consumes_resource,
                 resource_cleanup: parameter.resource_cleanup,
                 aggregate: None,
+                pointee_aggregate: None,
             }
         } else {
             RuntimeParameter {
@@ -436,6 +447,7 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
                     Cleanup::None
                 },
                 aggregate: None,
+                pointee_aggregate: None,
             }
         };
 
@@ -550,17 +562,33 @@ pub(super) fn project_function(contract: &FunctionContract) -> Result<ProjectedF
         calling_convention: contract.calling_convention,
         call_contract: contract.call_contract.clone(),
     };
-    // Caller-owned buffers and aggregates have already become physical inputs.
-    // The supported x64/ARM64 plans must not invent native output cells for them.
+    // Caller-owned aggregates remain physical inputs, but their declared field
+    // results must survive lowering without inventing native output cells.
     let shape = runtime.signature_shape(64);
+    for (index, parameter) in contract.parameters.iter().enumerate() {
+        if let ValueType::NativeStructPointer { layout } | ValueType::NativeUnionPointer { layout } =
+            &parameter.typ
+            && parameter.direction != Direction::In
+            && shape.parameters[index].result_fields.len() != layout.output_fields.len()
+        {
+            return Err("win32.contract-shape-conflict: aggregate result fields were lost during physical pointer lowering".into());
+        }
+    }
     runtime.call_contract = contract
         .call_contract
         .upgrade_metadata(&shape)
         .map_err(|error| error.to_string())?;
+    if contract.call_contract.version == dynwinrt_win32_contracts::LEGACY_VERSION {
+        for result in &mut runtime.call_contract.results {
+            if matches!(result.target, ResultTarget::AggregateField { .. }) {
+                result.on_failure = ResultPolicy::Undefined {};
+            }
+        }
+    }
     for evidence in &contract.result_contracts {
         let result = runtime.call_contract.results.iter_mut()
             .find(|result| result.target == evidence.target)
-            .ok_or("win32.contract-shape-conflict: result evidence does not target a physical native result")?;
+            .ok_or("win32.contract-shape-conflict: result evidence does not target a declared native result")?;
         *result = evidence.clone();
     }
     runtime

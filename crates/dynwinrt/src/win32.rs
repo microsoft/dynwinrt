@@ -38,6 +38,12 @@ use crate::abi::{AbiType, AbiValue};
 use crate::native_call::system_cif;
 use crate::result::{Error, Result};
 
+#[path = "win32_aggregate.rs"]
+mod aggregate;
+pub use aggregate::{
+    AggregateResultField, NativeAggregateBuffer, NativeAggregateLease, NativeAggregatePointerLayout,
+};
+
 #[path = "win32_contract.rs"]
 mod contract;
 pub use contract::{
@@ -336,6 +342,7 @@ pub enum Value {
     FunctionPointer(usize),
     Handle(usize),
     Resource(Arc<OwnedResource>),
+    AggregatePointer(Arc<NativeAggregateBuffer>),
     Aggregate {
         layout: Arc<NativeAggregateLayout>,
         pointer: *mut c_void,
@@ -460,6 +467,7 @@ pub struct CallPlan {
     capture_last_error: bool,
     calling_convention: CallingConvention,
     parameter_aggregates: Vec<Option<Arc<NativeAggregateLayout>>>,
+    parameter_pointees: Vec<Option<Arc<NativeAggregatePointerLayout>>>,
     return_aggregate: Option<Arc<NativeAggregateLayout>>,
     contract: CallContract,
     legacy_surface: contract::LegacySurface,
@@ -547,14 +555,42 @@ impl CallPlan {
 
     /// # Safety
     ///
+    /// Pointee layouts and result fields must match the native parameter contracts.
+    pub unsafe fn new_with_described_pointees(
+        spec: CallPlanSpec,
+        descriptor: Option<&str>,
+        pointees: Vec<Option<Arc<NativeAggregatePointerLayout>>>,
+    ) -> Result<Arc<Self>> {
+        let contract = descriptor
+            .map(CallContract::decode)
+            .transpose()
+            .map_err(|error| invalid_argument(&error.to_string()))?
+            .unwrap_or_default();
+        unsafe { Self::new_with_contract_and_pointees(spec, contract, pointees) }
+    }
+
+    /// # Safety
+    ///
     /// The ABI and semantic contract must both describe the native export exactly.
     pub unsafe fn new_with_contract(
         spec: CallPlanSpec,
         contract: CallContract,
     ) -> Result<Arc<Self>> {
+        let pointees = vec![None; spec.parameters.len()];
+        unsafe { Self::new_with_contract_and_pointees(spec, contract, pointees) }
+    }
+
+    /// # Safety
+    ///
+    /// The aggregate field layouts, validity and ownership must match the export.
+    pub unsafe fn new_with_contract_and_pointees(
+        spec: CallPlanSpec,
+        contract: CallContract,
+        pointees: Vec<Option<Arc<NativeAggregatePointerLayout>>>,
+    ) -> Result<Arc<Self>> {
         #[cfg(all(windows, target_pointer_width = "32"))]
         {
-            let _ = (spec, contract);
+            let _ = (spec, contract, pointees);
             return Err(not_implemented(
                 "flat Win32 plans currently reject 32-bit targets because metadata calling conventions are not yet projected",
             ));
@@ -563,8 +599,20 @@ impl CallPlan {
         #[cfg(not(all(windows, target_pointer_width = "32")))]
         {
             validate_spec(&spec)?;
+            if pointees.len() != spec.parameters.len()
+                || pointees.iter().enumerate().any(|(index, layout)| {
+                    layout.is_some()
+                        && (spec.parameters[index].typ != Type::Pointer
+                            || spec.parameters[index].direction != Direction::In
+                            || spec.parameter_aggregates[index].is_some())
+                })
+            {
+                return Err(invalid_argument(
+                    "Aggregate pointee contracts require matching physical pointer inputs",
+                ));
+            }
             let legacy_surface = contract::LegacySurface::new(&spec, &contract);
-            let contract = contract::resolve(&spec, &contract)?;
+            let contract = contract::resolve_with_pointees(&spec, &contract, &pointees)?;
             let module = get_cached_module(&spec.dll)?;
             let function = proc_address(module, &spec.dll, &spec.entry_point)? as usize;
 
@@ -634,6 +682,7 @@ impl CallPlan {
                 capture_last_error: spec.capture_last_error,
                 calling_convention: spec.calling_convention,
                 parameter_aggregates: spec.parameter_aggregates,
+                parameter_pointees: pointees,
                 return_aggregate: spec.return_aggregate,
                 contract,
                 legacy_surface,
@@ -741,6 +790,50 @@ impl CallPlan {
             resource_guards.push(guard);
         }
 
+        let mut aggregate_inputs = args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                if let Value::AggregatePointer(buffer) = value {
+                    Some((index, buffer))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        aggregate_inputs.sort_by_key(|(_, buffer)| Arc::as_ptr(buffer) as usize);
+        if aggregate_inputs
+            .windows(2)
+            .any(|pair| Arc::ptr_eq(pair[0].1, pair[1].1))
+        {
+            return Err(invalid_argument(
+                "the same native aggregate cannot occupy multiple parameters in one call",
+            ));
+        }
+        let mut aggregate_by_arg = vec![None; args.len()];
+        let mut aggregate_guards = Vec::with_capacity(aggregate_inputs.len());
+        for (index, buffer) in aggregate_inputs {
+            aggregate_by_arg[index] = Some(aggregate_guards.len());
+            aggregate_guards.push(buffer.lock());
+        }
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            let Some(layout) = layout else {
+                continue;
+            };
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated pointee input");
+            match &args[input] {
+                Value::AggregatePointer(buffer) if buffer.layout().as_ref() == layout.as_ref() => {}
+                Value::Null if self.parameters[index].spec.nullable => {}
+                _ => {
+                    return Err(invalid_argument(
+                        "Native aggregate output requires matching managed caller storage",
+                    ));
+                }
+            }
+        }
+
         let input_storage = self
             .parameters
             .iter()
@@ -845,6 +938,17 @@ impl CallPlan {
             .as_ref()
             .map(|layout| try_zeroed_words(layout.size()))
             .transpose()?;
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            let Some(layout) = layout else {
+                continue;
+            };
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated aggregate input");
+            if let Some(guard) = aggregate_by_arg[input] {
+                aggregate_guards[guard].prepare(layout)?;
+            }
+        }
         let raw_return = if let (Some(layout), Some(words)) =
             (&self.return_aggregate, aggregate_return_words.as_mut())
         {
@@ -926,9 +1030,57 @@ impl CallPlan {
                             .null_on_failure(result.target, succeeded, overridden);
                     output_storage.cleanup[output] = result_cleanup(policy);
                 }
+                ResultTarget::AggregateField { parameter, field } => {
+                    let input = self.parameters[parameter]
+                        .input_index
+                        .expect("validated aggregate input");
+                    if let Some(guard) = aggregate_by_arg[input] {
+                        aggregate_guards[guard].policies[field] = policy;
+                        aggregate_guards[guard].raw_cleanup[field] = result_cleanup(policy);
+                    }
+                }
             }
         }
         output_storage.initialized = true;
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            let Some(layout) = layout else {
+                continue;
+            };
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated aggregate input");
+            let Some(guard_index) = aggregate_by_arg[input] else {
+                continue;
+            };
+            let state = &mut aggregate_guards[guard_index];
+            state.succeeded = Some(succeeded);
+            state.native_recorded = true;
+            for (field_index, field) in layout.fields().iter().enumerate() {
+                let policy = state.policies[field_index];
+                if matches!(policy, ResultPolicy::Undefined {}) {
+                    state.results[field_index] = Some(Value::Unavailable);
+                    continue;
+                }
+                #[cfg(test)]
+                outcome_tests::check_result_decode(ResultTarget::AggregateField {
+                    parameter: index,
+                    field: field_index,
+                })?;
+                let raw = state.read_abi(field);
+                if matches!(
+                    policy,
+                    ResultPolicy::Defined {
+                        delivery: Delivery::Discard,
+                        ..
+                    }
+                ) {
+                    state.raw_cleanup[field_index] = Cleanup::None;
+                }
+                let value = self.decode_result(field.typ, raw, policy, args, &input_storage)?;
+                state.raw_cleanup[field_index] = Cleanup::None;
+                state.results[field_index] = Some(value);
+            }
+        }
         if succeeded {
             for effect in &self.contract.resource_effects {
                 let ResourceEffect::AddFileCompletionModes {
@@ -1280,6 +1432,7 @@ fn value_to_abi(
         (Type::Pointer, Value::Pointer(value)) if nullable || !value.is_null() => {
             AbiValue::Pointer(*value)
         }
+        (Type::Pointer, Value::AggregatePointer(value)) => AbiValue::Pointer(value.pointer()),
         (Type::FunctionPointer, Value::FunctionPointer(value)) if nullable || *value != 0 => {
             AbiValue::Pointer(*value as *mut c_void)
         }
@@ -1478,6 +1631,9 @@ fn not_implemented(message: &str) -> Error {
     Error::WindowsError(windows_core::Error::new(E_NOTIMPL, message))
 }
 
+#[cfg(all(test, target_pointer_width = "64"))]
+#[path = "win32_aggregate_tests.rs"]
+mod aggregate_tests;
 #[cfg(all(test, target_pointer_width = "64"))]
 #[path = "win32_contract_tests.rs"]
 mod contract_tests;

@@ -586,7 +586,7 @@ fn ordinary_registry_data_can_override_direct_and_output_result_policies() {
     assert_eq!(policy.output_cleanup(2), Some(Cleanup::CloseHandle));
     let projected = project_with_policy(&raw, &policy).unwrap();
     let contract = &projected.runtime.call_contract;
-    assert_eq!(contract.version, 2);
+    assert_eq!(contract.version, dynwinrt_win32_contracts::CURRENT_VERSION);
     assert!(contract.outputs.is_empty());
     assert_eq!(contract.results.len(), 3);
     assert_eq!(
@@ -704,4 +704,55 @@ fn real_aggregate_provenance_and_nested_field_drift_fail_closed() {
         mutate(&mut changed);
         assert!(registry.layout_contract(&changed).is_err());
     }
+}
+
+#[test]
+fn real_aggregate_result_evidence_targets_logical_fields_not_physical_output_cells() {
+    let Some(path) = metadata() else { return };
+    let raw = metadata_function(&path, "Windows.Win32.System.Threading", "CreateProcessW");
+    let registry = Registry::builtin().unwrap();
+    for field in 0..4 {
+        let target = ResultTarget::AggregateField {
+            parameter: 9,
+            field,
+        };
+        assert!(raw_result_target(registry, &raw, target));
+        let contract = ResultContract {
+            target,
+            on_success: ResultPolicy::Undefined {},
+            on_failure: ResultPolicy::Undefined {},
+            overrides: Vec::new(),
+        };
+        let effect = FunctionEffect::ResultContract { contract };
+        assert_eq!(effect.key(), format!("result:aggregate-field:9:{field}"));
+        let encoded = serde_json::to_value(&effect).unwrap();
+        assert_eq!(encoded["contract"]["target"]["kind"], "aggregate-field");
+        assert!(serde_json::from_value::<FunctionEffect>(encoded).is_ok());
+    }
+    for target in [
+        ResultTarget::AggregateField {
+            parameter: 9,
+            field: 4,
+        },
+        ResultTarget::AggregateField {
+            parameter: 4,
+            field: 0,
+        },
+        ResultTarget::AggregateField {
+            parameter: 99,
+            field: 0,
+        },
+    ] {
+        assert!(!raw_result_target(registry, &raw, target));
+    }
+    let target = ResultTarget::AggregateField {
+        parameter: 9,
+        field: 0,
+    };
+    let mut input = raw.clone();
+    input.parameters[9].direction = RawDirection::In;
+    assert!(!raw_result_target(registry, &input, target));
+    let mut indirect = raw;
+    indirect.parameters[9].typ.pointer_depth = 2;
+    assert!(!raw_result_target(registry, &indirect, target));
 }

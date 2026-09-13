@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 #[cfg(test)]
+mod aggregate_result_tests;
+#[cfg(test)]
 mod call_contract_tests;
 #[cfg(test)]
 mod flags_tests;
