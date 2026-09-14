@@ -825,7 +825,7 @@ pub fn create_generated_iwbem_services_fake() -> napi::Result<DynWinRTValue> {
 pub fn probe_generated_iwbem_services_unimplemented_slots(
   value: &DynWinRTValue,
 ) -> napi::Result<()> {
-  let raw = match &value.0 {
+  let raw = match value.winrt() {
     dynwinrt::WinRTValue::Object(object) => object.as_raw(),
     _ => {
       return Err(napi::Error::from_reason(

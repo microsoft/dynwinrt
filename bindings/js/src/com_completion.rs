@@ -316,7 +316,7 @@ fn dispatch(token: u64, env: sys::napi_env) -> napi::Result<()> {
       .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
       let wrapped = unsafe { <&mut DynWinRTValue>::from_napi_value(env, value) }
         .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
-      wrapped.0 = dynwinrt::WinRTValue::Object(object);
+      *wrapped.winrt_mut() = dynwinrt::WinRTValue::Object(object);
       wrapped
         .bind_current_com_apartment()
         .map_err(|error| CompletionError::contract("projection", error.to_string()))?;

@@ -17,6 +17,7 @@ use napi_derive::napi;
 use windows::core::{IUnknown, Interface, HSTRING};
 
 mod com;
+mod com_value;
 pub use com::{
   initialize_com, DynCom, DynComDispatchInvokeResult, DynComDispatchParams, DynComExcepInfo,
   DynComInterface, DynComMethodHandle, DynComMethodSig, DynComNativeStruct,
@@ -36,8 +37,8 @@ mod com_completion_test_hooks;
 mod com_input;
 #[cfg(feature = "test-hooks")]
 mod generated_unsafe_test_hooks;
-mod managed_tsfn;
 mod js_storage;
+mod managed_tsfn;
 mod scheduled_start;
 mod win32;
 mod win32_subsystem;
@@ -318,7 +319,7 @@ fn js_safe_i64(value: i64, context: &str) -> napi::Result<i64> {
     let raw = unsafe {
       <&DynWinRTValue as FromNapiValue>::from_napi_value(env.raw(), napi::JsValue::raw(&value))
     }?;
-    match dynwinrt::unbox_property_value(&raw.0)
+    match dynwinrt::unbox_property_value(raw.winrt())
       .map_err(|error| napi::Error::from_reason(error.message()))?
     {
       dynwinrt::PropertyValueUnboxResult::Null => null_unknown(env),
@@ -730,7 +731,7 @@ impl DynWinRTMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
-    let raw = match &obj.0 {
+    let raw = match obj.winrt() {
       dynwinrt::WinRTValue::Object(o) => o.as_raw(),
       _ => {
         return Err(napi::Error::from_reason(
@@ -738,8 +739,8 @@ impl DynWinRTMethodHandle {
         ));
       }
     };
-    let _leases = com::collect_native_invocation_leases(&args)?;
-    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    let _leases = com_value::collect_invocation_leases(&args)?;
+    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.winrt().clone()).collect();
     let results = self
       .0
       .invoke(raw, &wrt_args)
@@ -762,12 +763,15 @@ impl DynWinRTMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<PromiseRaw<'env, ()>> {
-    let leases = com::collect_native_invocation_leases(&args)?;
+    let leases = com_value::collect_invocation_leases(&args)?;
     scheduled_start::schedule(
       env,
       self.0.clone(),
-      obj.0.clone(),
-      args.into_iter().map(|value| value.0.clone()).collect(),
+      obj.winrt().clone(),
+      args
+        .into_iter()
+        .map(|value| value.winrt().clone())
+        .collect(),
       leases,
     )
   }
@@ -780,7 +784,7 @@ impl DynWinRTMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
-    let raw = match &obj.0 {
+    let raw = match obj.winrt() {
       dynwinrt::WinRTValue::Object(o) => o.as_raw(),
       _ => {
         return Err(napi::Error::from_reason(
@@ -788,8 +792,8 @@ impl DynWinRTMethodHandle {
         ));
       }
     };
-    let _leases = com::collect_native_invocation_leases(&args)?;
-    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    let _leases = com_value::collect_invocation_leases(&args)?;
+    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.winrt().clone()).collect();
     let results = self
       .0
       .invoke(raw, &wrt_args)
@@ -803,7 +807,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("get_string: not an Object"))?
       .as_raw();
@@ -818,7 +822,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn get_i32(&self, obj: &DynWinRTValue) -> napi::Result<i32> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("get_i32: not an Object"))?
       .as_raw();
@@ -832,7 +836,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn get_bool(&self, obj: &DynWinRTValue) -> napi::Result<bool> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("get_bool: not an Object"))?
       .as_raw();
@@ -846,7 +850,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn get_obj(&self, obj: &DynWinRTValue) -> napi::Result<DynWinRTValue> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("get_obj: not an Object"))?
       .as_raw();
@@ -860,7 +864,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_hstring(&self, obj: &DynWinRTValue, value: String) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_hstring: not an Object"))?
       .as_raw();
@@ -873,7 +877,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_bool(&self, obj: &DynWinRTValue, value: bool) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_bool: not an Object"))?
       .as_raw();
@@ -886,7 +890,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_i32(&self, obj: &DynWinRTValue, value: i32) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_i32: not an Object"))?
       .as_raw();
@@ -899,7 +903,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_u32(&self, obj: &DynWinRTValue, value: u32) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_u32: not an Object"))?
       .as_raw();
@@ -912,7 +916,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_f32(&self, obj: &DynWinRTValue, value: f64) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_f32: not an Object"))?
       .as_raw();
@@ -925,7 +929,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn set_f64(&self, obj: &DynWinRTValue, value: f64) -> napi::Result<()> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("set_f64: not an Object"))?
       .as_raw();
@@ -939,7 +943,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> napi::Result<DynWinRTValue> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("invoke_hstring: not an Object"))?
       .as_raw();
@@ -956,7 +960,7 @@ impl DynWinRTMethodHandle {
   #[napi]
   pub fn invoke_i32(&self, obj: &DynWinRTValue, arg: i32) -> napi::Result<DynWinRTValue> {
     let raw = obj
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("invoke_i32: not an Object"))?
       .as_raw();
@@ -975,529 +979,22 @@ impl DynWinRTMethodHandle {
 // ======================================================================
 
 #[napi]
-pub struct DynWinRTValue(
-  dynwinrt::WinRTValue,
-  Option<com::NativePointerOwner>,
-  com::PointerProvenance,
-  Option<dynwinrt::com::NativeStructValue>,
-  Option<dynwinrt::com::ComBufferValue>,
-  Option<com::AutomationValue>,
-  Option<ComApartmentBinding>,
-  Option<com_input::InputBindings>,
-);
+pub struct DynWinRTValue {
+  winrt: dynwinrt::WinRTValue,
+  storage: Option<js_storage::CallStorage>,
+  com: com_value::ComValueState,
+}
 // Unbound WinRT bookkeeping is thread-safe. Once COM ownership is established,
 // owner checks protect apartment-local Rc state; foreign destruction leaks only
 // that bound state and its native owners instead of releasing them off-thread.
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
 
-#[derive(Clone)]
-struct ComApartmentBinding {
-  owner_thread: std::thread::ThreadId,
-  context: ComContextSlot,
-  identity_error: Option<String>,
-}
-
-type ComContextSlot = std::rc::Rc<std::cell::RefCell<Option<dynwinrt::com::borrowed::Identity>>>;
-
-thread_local! {
-  // Empty slots are pinned by their managed carriers' owned interface refs.
-  // Populated slots additionally own the core canonical-identity sidecar.
-  // Sharing slots at carrier creation keeps pre-existing independent aliases
-  // from forgetting provenance or poison when the first copier is released.
-  static COM_CONTEXT_SLOTS: std::cell::RefCell<std::collections::HashMap<usize,
-    std::rc::Weak<std::cell::RefCell<Option<dynwinrt::com::borrowed::Identity>>>>> =
-    std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-impl ComApartmentBinding {
-  fn for_object(object: &IUnknown) -> Self {
-    let owner_thread = std::thread::current().id();
-    let mut pointer = std::ptr::null_mut();
-    let hr = unsafe { object.query(&IUnknown::IID, &mut pointer) };
-    if hr.is_err() || pointer.is_null() {
-      return Self {
-        owner_thread,
-        context: Default::default(),
-        identity_error: Some(format!(
-          "COM canonical identity is unavailable (HRESULT 0x{:08X}, null={})",
-          hr.0 as u32,
-          pointer.is_null()
-        )),
-      };
-    }
-    let canonical = unsafe { IUnknown::from_raw(pointer) };
-    let key = canonical.as_raw().addr();
-    let context = COM_CONTEXT_SLOTS.with(|slots| {
-      let mut slots = slots.borrow_mut();
-      if let Some(slot) = slots.get(&key).and_then(std::rc::Weak::upgrade) {
-        return slot;
-      }
-      slots.retain(|_, slot| slot.strong_count() != 0);
-      let slot: ComContextSlot = Default::default();
-      slots.insert(key, std::rc::Rc::downgrade(&slot));
-      slot
-    });
-    Self {
-      owner_thread,
-      context,
-      identity_error: None,
-    }
-  }
-
-  fn ensure_identity(&self) -> napi::Result<()> {
-    if let Some(error) = &self.identity_error {
-      return Err(napi::Error::from_reason(error.clone()));
-    }
-    Ok(())
-  }
-
-  fn refresh_context(&self, object: &IUnknown) -> dynwinrt::Result<()> {
-    if self.owner_thread != std::thread::current().id() {
-      return Err(dynwinrt::Error::WindowsError(windows::core::Error::new(
-        windows::core::HRESULT(0x80070057u32 as i32),
-        "Classic COM object used from a different apartment thread",
-      )));
-    }
-    if self.context.borrow().is_none() {
-      let context = dynwinrt::com::borrowed::Identity::lookup(object)?;
-      *self.context.borrow_mut() = context;
-    }
-    Ok(())
-  }
-
-  fn ensure_idle(&self) -> napi::Result<()> {
-    if self.owner_thread != std::thread::current().id() {
-      return Err(napi::Error::from_reason(
-        "Classic COM object used from a different apartment thread",
-      ));
-    }
-    self.ensure_identity()?;
-    if let Some(context) = self.context.borrow().as_ref() {
-      context
-        .ensure_idle()
-        .map_err(|error| napi::Error::from_reason(error.message()))?;
-    }
-    Ok(())
-  }
-}
-
-impl DynWinRTValue {
-  fn new(value: dynwinrt::WinRTValue) -> Self {
-    let inputs = com_input::winrt_has_interfaces(&value).then(com_input::InputBindings::deferred);
-    Self(
-      value,
-      None,
-      com::PointerProvenance::None,
-      None,
-      None,
-      None,
-      None,
-      inputs,
-    )
-  }
-
-  pub(crate) fn bind_current_com_apartment(&mut self) -> napi::Result<()> {
-    if !matches!(
-      self.0,
-      dynwinrt::WinRTValue::Object(_) | dynwinrt::WinRTValue::Async(_)
-    ) {
-      return Err(napi::Error::from_reason(
-        "Classic COM apartment binding requires a managed COM object",
-      ));
-    }
-    if let Some(inputs) = &self.7 {
-      inputs.bind_current_apartment()?;
-    }
-    let current = std::thread::current().id();
-    if self
-      .6
-      .as_ref()
-      .is_some_and(|binding| binding.owner_thread != current)
-    {
-      return Err(napi::Error::from_reason(
-        "Classic COM object is already bound to a different apartment thread",
-      ));
-    }
-    if self.0.as_object().is_none() {
-      return Err(napi::Error::from_reason(
-        "Classic COM apartment binding requires a managed COM object",
-      ));
-    }
-    if self.6.is_none() {
-      self.6 = Some(ComApartmentBinding::for_object(
-        &self.0.as_object().expect("checked COM object"),
-      ));
-    }
-    self.existing_com_context()?;
-    if let Some(inputs) = &self.7 {
-      inputs.attach(self.6.as_ref().expect("bound COM object"))?;
-    }
-    Ok(())
-  }
-
-  pub(crate) fn ensure_com_apartment(&self) -> napi::Result<()> {
-    let current = std::thread::current().id();
-    match &self.6 {
-      Some(binding) if binding.owner_thread == current => Ok(()),
-      Some(_) => Err(napi::Error::from_reason(
-        "Classic COM object used from a different apartment thread",
-      )),
-      None => Err(napi::Error::from_reason(
-        "Classic COM object must be apartment-bound before native invocation",
-      )),
-    }
-  }
-
-  pub(crate) fn ensure_existing_com_apartment(&self) -> napi::Result<()> {
-    if let Some(inputs) = &self.7 {
-      if inputs.is_apartment_bound() {
-        inputs.ensure_owner()?;
-      }
-    }
-    if self.6.is_some() {
-      self.ensure_com_apartment()
-    } else {
-      Ok(())
-    }
-  }
-
-  fn com_context(&self) -> napi::Result<dynwinrt::com::borrowed::Identity> {
-    self.ensure_com_apartment()?;
-    let binding = self.6.as_ref().expect("checked apartment");
-    binding.ensure_identity()?;
-    if let Some(context) = binding.context.borrow().as_ref() {
-      return Ok(context.clone());
-    }
-    let object = self
-      .0
-      .as_object()
-      .ok_or_else(|| napi::Error::from_reason("COM object is released"))?;
-    let context = dynwinrt::com::borrowed::Identity::for_object(&object)
-      .map_err(|error| napi::Error::from_reason(error.message()))?;
-    *binding.context.borrow_mut() = Some(context.clone());
-    Ok(context)
-  }
-
-  fn existing_com_context(&self) -> napi::Result<Option<dynwinrt::com::borrowed::Identity>> {
-    self.ensure_com_apartment()?;
-    let binding = self.6.as_ref().expect("checked apartment");
-    binding.ensure_identity()?;
-    let object = match &self.0 {
-      dynwinrt::WinRTValue::Object(object) => object,
-      dynwinrt::WinRTValue::Async(value) => (&value.info).into(),
-      _ => return Err(napi::Error::from_reason("COM object is released")),
-    };
-    binding
-      .refresh_context(object)
-      .map_err(|error| napi::Error::from_reason(error.message()))?;
-    Ok(binding.context.borrow().clone())
-  }
-
-  fn ensure_tracked_com_idle(&self) -> napi::Result<()> {
-    if let Some(context) = self.existing_com_context()? {
-      context
-        .ensure_idle()
-        .map_err(|error| napi::Error::from_reason(error.message()))?;
-    }
-    Ok(())
-  }
-
-  fn retain_com_context(&mut self, context: dynwinrt::com::borrowed::Identity) -> napi::Result<()> {
-    let object = match &self.0 {
-      dynwinrt::WinRTValue::Object(object) => object,
-      dynwinrt::WinRTValue::RawPtr(pointer) if self.2 == com::PointerProvenance::ComOutput => {
-        unsafe { IUnknown::from_raw_borrowed(pointer) }
-          .ok_or_else(|| napi::Error::from_reason("COM context output is null"))?
-      }
-      _ => {
-        return Err(napi::Error::from_reason(
-          "COM context requires an owned interface output",
-        ))
-      }
-    };
-    let binding = ComApartmentBinding::for_object(object);
-    *binding.context.borrow_mut() = Some(context);
-    self.6 = Some(binding);
-    if let Some(inputs) = &self.7 {
-      inputs.attach(self.6.as_ref().unwrap())?;
-    }
-    self.6.as_ref().unwrap().ensure_identity()
-  }
-
-  fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
-    Self(
-      value,
-      Some(owner),
-      com::PointerProvenance::Borrowed,
-      None,
-      None,
-      None,
-      None,
-      None,
-    )
-  }
-
-  fn with_borrowed_pointer(value: dynwinrt::WinRTValue) -> Self {
-    Self(
-      value,
-      None,
-      com::PointerProvenance::Borrowed,
-      None,
-      None,
-      None,
-      None,
-      None,
-    )
-  }
-
-  fn with_detached_com_owner(
-    value: dynwinrt::WinRTValue,
-    owner: std::sync::Arc<com_raw::RawComReference>,
-  ) -> Self {
-    Self(
-      value,
-      Some(com::NativePointerOwner::RawCom(owner)),
-      com::PointerProvenance::DetachedCom,
-      None,
-      None,
-      None,
-      None,
-      None,
-    )
-  }
-
-  fn with_com_buffer(
-    buffer: dynwinrt::com::ComBufferValue,
-    owner: com::NativePointerOwner,
-  ) -> Self {
-    Self(
-      dynwinrt::WinRTValue::Null,
-      Some(owner),
-      com::PointerProvenance::Borrowed,
-      None,
-      Some(buffer),
-      None,
-      None,
-      None,
-    )
-  }
-
-  fn from_com_result(
-    value: dynwinrt::WinRTValue,
-    output_kind: dynwinrt::com::PointerOutputKind,
-  ) -> Self {
-    let provenance = if matches!(value, dynwinrt::WinRTValue::RawPtr(_)) {
-      match output_kind {
-        dynwinrt::com::PointerOutputKind::None | dynwinrt::com::PointerOutputKind::Unclassified => {
-          com::PointerProvenance::UnclassifiedOutput
-        }
-        dynwinrt::com::PointerOutputKind::Com => com::PointerProvenance::ComOutput,
-        dynwinrt::com::PointerOutputKind::CoTaskMem => com::PointerProvenance::CoTaskMemOutput,
-        dynwinrt::com::PointerOutputKind::Bstr => com::PointerProvenance::BstrOutput,
-        dynwinrt::com::PointerOutputKind::OwnedHandle(cleanup) => {
-          com::PointerProvenance::OwnedHandleOutput(cleanup)
-        }
-      }
-    } else {
-      com::PointerProvenance::None
-    };
-    let apartment = if let dynwinrt::WinRTValue::Object(object) = &value {
-      Some(ComApartmentBinding::for_object(object))
-    } else {
-      None
-    };
-    let mut result = Self::new(value);
-    if let (Some(inputs), Some(binding)) = (&result.7, &apartment) {
-      inputs
-        .attach(binding)
-        .expect("native COM output belongs to the current thread");
-    }
-    result.2 = provenance;
-    result.6 = apartment;
-    result
-  }
-
-  fn from_com_value(
-    value: dynwinrt::com::Value,
-    output_kind: dynwinrt::com::PointerOutputKind,
-  ) -> Self {
-    let inputs = com_input::InputBindings::capture(&value);
-    let mut result = match value {
-      dynwinrt::com::Value::WinRt(value) => Self::from_com_result(value, output_kind),
-      dynwinrt::com::Value::NativeStruct(value) => {
-        let mut result = Self::new(dynwinrt::WinRTValue::Null);
-        result.3 = Some(value);
-        result
-      }
-      dynwinrt::com::Value::Buffer(value) => {
-        let mut result = Self::new(dynwinrt::WinRTValue::Null);
-        result.4 = Some(value);
-        result
-      }
-      value @ (dynwinrt::com::Value::Bstr(_)
-      | dynwinrt::com::Value::NativeUnion(_)
-      | dynwinrt::com::Value::Variant(_)
-      | dynwinrt::com::Value::SafeArray(_)
-      | dynwinrt::com::Value::PropVariant(_)
-      | dynwinrt::com::Value::DispatchParams(_)
-      | dynwinrt::com::Value::ExcepInfo(_)
-      | dynwinrt::com::Value::StatStg(_)
-      | dynwinrt::com::Value::FormatEtc(_)
-      | dynwinrt::com::Value::StgMedium(_)
-      | dynwinrt::com::Value::AudioFormat(_)) => {
-        let mut result = Self::new(dynwinrt::WinRTValue::Null);
-        result.5 = Some(com::AutomationValue::new(value));
-        result
-      }
-    };
-    result.7 = inputs.contains_interfaces().then_some(inputs);
-    result
-  }
-
-  fn check_com_input_state(&self) -> napi::Result<()> {
-    if let Some(inputs) = &self.7 {
-      inputs.ensure_idle()?;
-    }
-    if let Some(binding) = &self.6 {
-      binding.ensure_idle()?;
-    }
-    if let Some(automation) = &self.5 {
-      automation.ensure_owner_thread()?;
-    }
-    Ok(())
-  }
-
-  fn admit_com_input(&self) -> napi::Result<()> {
-    self.check_com_input_state()?;
-    self.ensure_existing_com_apartment()?;
-    if let Some(inputs) = &self.7 {
-      inputs.admit_winrt(&self.0)?;
-    }
-    if self.6.is_some() {
-      self.ensure_tracked_com_idle()?;
-    }
-    Ok(())
-  }
-
-  fn to_com_value(&self) -> napi::Result<dynwinrt::com::Value> {
-    self.admit_com_input()?;
-    if let Some(value) = &self.5 {
-      value.to_com_value()
-    } else if let Some(value) = &self.4 {
-      Ok(dynwinrt::com::Value::Buffer(value.clone()))
-    } else if let Some(value) = &self.3 {
-      Ok(dynwinrt::com::Value::NativeStruct(value.clone()))
-    } else {
-      Ok(dynwinrt::com::Value::WinRt(self.0.clone()))
-    }
-  }
-
-  fn release_native_pointer_output(&mut self) -> napi::Result<()> {
-    let ptr = match &self.0 {
-      dynwinrt::WinRTValue::RawPtr(ptr) => *ptr,
-      _ => return Ok(()),
-    };
-    let provenance = self.2;
-    if let com::PointerProvenance::OwnedHandleOutput(cleanup) = provenance {
-      if !ptr.is_null() {
-        com::DynComOwnedHandle::cleanup_address(ptr.addr(), cleanup)?;
-      }
-      self.0 = dynwinrt::WinRTValue::Null;
-      self.2 = com::PointerProvenance::None;
-      return Ok(());
-    }
-    self.0 = dynwinrt::WinRTValue::Null;
-    self.2 = com::PointerProvenance::None;
-    if ptr.is_null() {
-      return Ok(());
-    }
-    match provenance {
-      com::PointerProvenance::ComOutput => {
-        drop(unsafe { IUnknown::from_raw(ptr) });
-      }
-      com::PointerProvenance::CoTaskMemOutput => unsafe {
-        windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
-      },
-      com::PointerProvenance::BstrOutput => {
-        drop(unsafe { windows::core::BSTR::from_raw(ptr.cast()) });
-      }
-      com::PointerProvenance::OwnedHandleOutput(_) => unreachable!(),
-      com::PointerProvenance::None
-      | com::PointerProvenance::Borrowed
-      | com::PointerProvenance::DetachedCom
-      | com::PointerProvenance::UnclassifiedOutput => {}
-    }
-    Ok(())
-  }
-}
-
-impl Drop for DynWinRTValue {
-  fn drop(&mut self) {
-    if self
-      .7
-      .as_ref()
-      .is_some_and(|inputs| inputs.is_apartment_bound() && !inputs.is_owner())
-      || self
-        .6
-        .as_ref()
-        .is_some_and(|binding| binding.owner_thread != std::thread::current().id())
-    {
-      let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
-      mem::forget(value);
-      if let Some(binding) = self.6.take() {
-        mem::forget(binding);
-      }
-      if let Some(value) = self.4.take() {
-        mem::forget(value);
-      }
-      return;
-    }
-    // After Application.Start returns, XAML has already torn down its thread
-    // state. Leaking late projected COM references is safer than releasing
-    // them into a destroyed DXamlCore; normal application teardown must call
-    // release()/releaseProjected() before this process-exit fallback is needed.
-    if winui_dispatcher_loop_exited() {
-      self.2 = com::PointerProvenance::None;
-      let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
-      mem::forget(value);
-      if let Some(value) = self.4.take() {
-        mem::forget(value);
-      }
-      if let Some(value) = &mut self.5 {
-        value.leak_for_shutdown();
-      }
-      if let Some(binding) = self.6.take() {
-        mem::forget(binding);
-      }
-    } else {
-      let _ = self.release_native_pointer_output();
-    }
-  }
-}
-
 #[napi]
 impl DynWinRTValue {
   #[napi]
   pub fn release(&mut self) -> napi::Result<()> {
-    if let Some(inputs) = &self.7 {
-      if inputs.is_apartment_bound() {
-        inputs.ensure_owner()?;
-      }
-    }
-    if self.6.is_some() {
-      self.ensure_com_apartment()?;
-    }
-    self.release_native_pointer_output()?;
-    self.0 = dynwinrt::WinRTValue::Null;
-    self.1 = None;
-    self.2 = com::PointerProvenance::None;
-    self.3 = None;
-    self.4 = None;
-    self.5 = None;
-    self.6 = None;
-    self.7 = None;
-    Ok(())
+    self.release_value()
   }
 
   #[napi]
@@ -1525,12 +1022,12 @@ impl DynWinRTValue {
     metadata_provider: &DynWinRTValue,
     launched_callback: Option<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
-    let provider = metadata_provider.0.as_object().ok_or_else(|| {
+    let provider = metadata_provider.winrt().as_object().ok_or_else(|| {
       napi::Error::from_reason("createXamlApplication: metadataProvider must be an Object")
     })?;
     let callback = launched_callback
       .map(|value| {
-        value.0.as_object().ok_or_else(|| {
+        value.winrt().as_object().ok_or_else(|| {
           napi::Error::from_reason("createXamlApplication: launchedCallback must be an Object")
         })
       })
@@ -1614,7 +1111,7 @@ impl DynWinRTValue {
     value: &DynWinRTValue,
     value_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
-    dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
+    dynwinrt::box_ireference(value.winrt().clone(), value_type.0.clone())
       .map(DynWinRTValue::new)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
@@ -1622,7 +1119,7 @@ impl DynWinRTValue {
   /// Get the i32 value of an enum. Returns None if not an enum.
   #[napi]
   pub fn get_enum_int(&self) -> Option<i32> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Enum { value, .. } => Some(*value),
       _ => None,
     }
@@ -1631,7 +1128,7 @@ impl DynWinRTValue {
   /// Get the member name of an enum value. Returns None if not an enum or no matching member.
   #[napi]
   pub fn get_enum_name(&self) -> Option<String> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Enum { value, type_handle } => type_handle.enum_member_name(*value),
       _ => None,
     }
@@ -1658,7 +1155,7 @@ impl DynWinRTValue {
     element_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
     let iids = TABLE.vector_iids(&element_type.0);
-    let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
+    let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.winrt().clone()).collect();
     let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
       .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(vector)))
@@ -1682,7 +1179,7 @@ impl DynWinRTValue {
     let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> = keys
       .iter()
       .zip(values.iter())
-      .map(|(key, value)| (key.0.clone(), value.0.clone()))
+      .map(|(key, value)| (key.winrt().clone(), value.winrt().clone()))
       .collect();
     let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
       .map_err(|error| napi::Error::from_reason(error.message()))?;
@@ -1691,8 +1188,8 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_promise<'env>(&self, env: Env) -> napi::Result<PromiseRaw<'env, DynWinRTValue>> {
-    let operation = match &self.0 {
-      dynwinrt::WinRTValue::Async(_) => self.0.clone(),
+    let operation = match &self.winrt {
+      dynwinrt::WinRTValue::Async(_) => self.winrt.clone(),
       _ => return Err(napi::Error::from_reason("toPromise: not an async value")),
     };
     async_promise::to_promise(env, operation)
@@ -1704,7 +1201,7 @@ impl DynWinRTValue {
   /// Throws if this value is not an async operation.
   #[napi]
   pub fn cancel(&self) -> napi::Result<()> {
-    let async_info = match &self.0 {
+    let async_info = match &self.winrt {
       dynwinrt::WinRTValue::Async(a) => a,
       _ => return Err(napi::Error::from_reason("cancel: not an async value")),
     };
@@ -1719,7 +1216,7 @@ impl DynWinRTValue {
     #[napi(ts_arg_type = "(progress: DynWinRtValue) => void")]
     callback: napi::bindgen_prelude::Function<'static, DynWinRTValue, ()>,
   ) -> napi::Result<()> {
-    let async_info = match &self.0 {
+    let async_info = match &self.winrt {
       dynwinrt::WinRTValue::Async(a) => a,
       _ => return Err(napi::Error::from_reason("onProgress: not an async value")),
     };
@@ -1779,12 +1276,12 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_string(&self) -> String {
-    if let Some(automation) = &self.5 {
+    if let Some(automation) = self.automation() {
       if let Ok(dynwinrt::com::Value::Bstr(value)) = automation.to_com_value() {
         return value.as_deref().unwrap_or_default().to_string();
       }
     }
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::HString(s) => s.to_string(),
       dynwinrt::WinRTValue::I32(i) => i.to_string(),
       dynwinrt::WinRTValue::I64(i) => i.to_string(),
@@ -1811,15 +1308,11 @@ impl DynWinRTValue {
   pub fn cast(&self, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
     self.ensure_existing_com_apartment()?;
     let result = self
-      .0
+      .winrt
       .cast(&iid.0)
       .map_err(|e| napi::Error::from_reason(format!("QueryInterface failed: {}", e.message())))?;
     let mut result = DynWinRTValue::new(result);
-    result.6 = self.6.clone();
-    result.7 = self
-      .7
-      .as_ref()
-      .map(com_input::InputBindings::copy_bookkeeping);
+    result.copy_com_bookkeeping_from(self);
     Ok(result)
   }
 
@@ -1835,13 +1328,13 @@ impl DynWinRTValue {
     #[napi(ts_arg_type = "DynWinRtValue[]")] args: Vec<Unknown<'_>>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
     self.ensure_existing_com_apartment()?;
-    let target = self.0.clone();
+    let target = self.winrt.clone();
     winrt_delegate_method::invoke_delegate_value(target, iid, signature, args)
   }
 
   #[napi]
   pub fn to_number(&self) -> napi::Result<f64> {
-    Ok(match &self.0 {
+    Ok(match &self.winrt {
       dynwinrt::WinRTValue::Bool(b) => {
         if *b {
           1.0
@@ -1860,7 +1353,7 @@ impl DynWinRTValue {
       _ => {
         return Err(napi::Error::from_reason(format!(
           "Cannot convert {:?} to number",
-          self.0.get_type_kind(),
+          self.winrt.get_type_kind(),
         )));
       }
     })
@@ -1868,7 +1361,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_bool(&self) -> napi::Result<bool> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Bool(b) => Ok(*b),
       _ => self.to_number().map(|value| value != 0.0),
     }
@@ -1876,7 +1369,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_i64(&self) -> napi::Result<i64> {
-    let value = match &self.0 {
+    let value = match &self.winrt {
       dynwinrt::WinRTValue::I64(i) => *i,
       dynwinrt::WinRTValue::U64(i) => i64::try_from(*i).map_err(|_| {
         napi::Error::from_reason("Cannot convert u64 value greater than i64::MAX to i64")
@@ -1888,7 +1381,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_i64_bigint(&self) -> napi::Result<BigInt> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::I64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason(
         "toI64Bigint requires a signed 64-bit value",
@@ -1898,7 +1391,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_u64_bigint(&self) -> napi::Result<BigInt> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::U64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason(
         "toU64Bigint requires an unsigned 64-bit value",
@@ -1908,7 +1401,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_f64(&self) -> napi::Result<f64> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::F64(f) => Ok(*f),
       dynwinrt::WinRTValue::F32(f) => Ok(*f as f64),
       _ => self.to_number(),
@@ -1917,7 +1410,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn to_guid(&self) -> napi::Result<WinGUID> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
       _ => Err(napi::Error::from_reason("Value is not a GUID")),
     }
@@ -1926,19 +1419,19 @@ impl DynWinRTValue {
   /// Copy the initialized bytes from a WinRT IBuffer into a Node.js Buffer.
   #[napi]
   pub fn to_buffer(&self) -> napi::Result<napi::bindgen_prelude::Buffer> {
-    dynwinrt::copy_from_ibuffer(&self.0)
+    dynwinrt::copy_from_ibuffer(&self.winrt)
       .map(Into::into)
       .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   #[napi]
   pub fn is_null(&self) -> bool {
-    self.3.is_none() && self.4.is_none() && self.5.is_none() && self.0.is_null_object()
+    !self.has_com_payload() && self.winrt.is_null_object()
   }
 
   #[napi]
   pub fn as_raw(&self) -> napi::Result<i64> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Object(o) => Ok(o.as_raw() as i64),
       _ => Err(napi::Error::from_reason(
         "Cannot get raw pointer from non-object",
@@ -1948,7 +1441,7 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn identity_raw(&self) -> napi::Result<i64> {
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Object(object) => object
         .cast::<IUnknown>()
         .map(|identity| identity.as_raw() as i64)
@@ -1963,18 +1456,17 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn is_array(&self) -> bool {
-    self.0.as_array().is_some()
+    self.winrt.as_array().is_some()
   }
 
   #[napi]
   pub fn as_array(&self) -> napi::Result<DynWinRTArray> {
     self.ensure_existing_com_apartment()?;
-    match &self.0 {
+    match &self.winrt {
       dynwinrt::WinRTValue::Array(data) => Ok(DynWinRTArray(
         data.clone(),
         self
-          .7
-          .as_ref()
+          .input_bindings()
           .map(com_input::InputBindings::copy_bookkeeping),
       )),
       _ => Err(napi::Error::from_reason("Value is not an Array")),
@@ -1983,16 +1475,17 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn is_struct(&self) -> bool {
-    self.0.as_struct().is_some()
+    self.winrt.as_struct().is_some()
   }
 
   #[napi]
   pub fn as_struct(&self) -> napi::Result<DynWinRTStruct> {
     self.ensure_existing_com_apartment()?;
-    match &self.0 {
-      dynwinrt::WinRTValue::Struct(data) => {
-        Ok(DynWinRTStruct::from_data(data.clone(), self.7.as_ref()))
-      }
+    match &self.winrt {
+      dynwinrt::WinRTValue::Struct(data) => Ok(DynWinRTStruct::from_data(
+        data.clone(),
+        self.input_bindings(),
+      )),
       _ => Err(napi::Error::from_reason("Value is not a Struct")),
     }
   }
@@ -2013,7 +1506,7 @@ impl DynWinRTArray {
   fn element_value(&self, index: usize) -> DynWinRTValue {
     let mut value = DynWinRTValue::new(self.0.get(index));
     if let Some(inputs) = &self.1 {
-      value.7 = Some(inputs.element_bookkeeping(index));
+      value.set_input_bindings(Some(inputs.element_bookkeeping(index)));
     }
     value
   }
@@ -2391,7 +1884,7 @@ impl DynWinRTArray {
       value.ensure_existing_com_apartment()?;
     }
     let inputs = com_input::InputBindings::inherit(&values);
-    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.winrt().clone()).collect();
     Ok(DynWinRTArray(
       dynwinrt::ArrayData::from_values(element_type.0.clone(), &wvals),
       Some(inputs),
@@ -2404,7 +1897,7 @@ impl DynWinRTArray {
     self.ensure_existing_com_apartment()?;
     let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Array(self.0.clone()));
     if let Some(inputs) = &self.1 {
-      value.7 = Some(inputs.copy_bookkeeping());
+      value.set_input_bindings(Some(inputs.copy_bookkeeping()));
     }
     Ok(value)
   }
@@ -2465,17 +1958,22 @@ mod js_boundary_tests {
     let error = value.release().unwrap_err();
     assert!(error.reason.contains("DeleteObject failed"));
     assert!(matches!(
-      value.0,
-      dynwinrt::WinRTValue::RawPtr(raw) if raw == pointer
+      value.winrt(),
+      dynwinrt::WinRTValue::RawPtr(raw) if *raw == pointer
     ));
     assert_eq!(
-      value.2,
-      com::PointerProvenance::OwnedHandleOutput(dynwinrt::com::OwnedHandleCleanup::DeleteObject)
+      value.pointer_provenance(),
+      crate::com_value::PointerProvenance::OwnedHandleOutput(
+        dynwinrt::com::OwnedHandleCleanup::DeleteObject
+      )
     );
 
     value.release().unwrap();
-    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
-    assert_eq!(value.2, com::PointerProvenance::None);
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::Null));
+    assert_eq!(
+      value.pointer_provenance(),
+      crate::com_value::PointerProvenance::None
+    );
     assert!(!unsafe {
       windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(pointer))
     }
@@ -2495,16 +1993,18 @@ mod js_boundary_tests {
     let error = value.release().unwrap_err();
     assert!(error.reason.contains("DeleteObject failed"));
     assert!(matches!(
-      value.0,
-      dynwinrt::WinRTValue::RawPtr(raw) if raw == pointer
+      value.winrt(),
+      dynwinrt::WinRTValue::RawPtr(raw) if *raw == pointer
     ));
     assert_eq!(
-      value.2,
-      com::PointerProvenance::OwnedHandleOutput(dynwinrt::com::OwnedHandleCleanup::DeleteObject)
+      value.pointer_provenance(),
+      crate::com_value::PointerProvenance::OwnedHandleOutput(
+        dynwinrt::com::OwnedHandleCleanup::DeleteObject
+      )
     );
 
-    value.0 = dynwinrt::WinRTValue::Null;
-    value.2 = com::PointerProvenance::None;
+    *value.winrt_mut() = dynwinrt::WinRTValue::Null;
+    value.clear_pointer_provenance();
   }
 }
 
@@ -2862,7 +2362,7 @@ impl DynWinRTStruct {
       Some(object) => {
         let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Object(object));
         if let Some(inputs) = &self.1[index] {
-          value.7 = Some(inputs.copy_bookkeeping());
+          value.set_input_bindings(Some(inputs.copy_bookkeeping()));
         }
         Ok(value)
       }
@@ -2877,7 +2377,7 @@ impl DynWinRTStruct {
       kind.is_com_pointer()
     })?;
     let inputs = com_input::InputBindings::inherit(&[value]);
-    match &value.0 {
+    match value.winrt() {
       dynwinrt::WinRTValue::Object(obj) => self
         .0
         .set_field_object(index, Some(obj))
@@ -2899,8 +2399,8 @@ impl DynWinRTStruct {
   pub fn to_value(&self) -> napi::Result<DynWinRTValue> {
     self.ensure_existing_com_apartment()?;
     let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Struct(self.0.clone()));
-    if value.7.is_some() {
-      value.7 = Some(com_input::InputBindings::fields(&self.1));
+    if value.input_bindings().is_some() {
+      value.set_input_bindings(Some(com_input::InputBindings::fields(&self.1)));
     }
     Ok(value)
   }
@@ -3580,7 +3080,7 @@ impl DynWinRtElementFactory {
                 )));
               }
               <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
-                .0
+                .winrt()
                 .cast(&element_iid)
                 .map_err(|error| napi::Error::from_reason(error.message()))
             })();
@@ -3716,7 +3216,7 @@ impl DynWinRtElementFactory {
 /// rawGetString(methodHandle, objValue) → string
 #[napi]
 pub fn raw_get_string(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<String> {
-  let raw = match &obj.0 {
+  let raw = match obj.winrt() {
     dynwinrt::WinRTValue::Object(o) => o.as_raw(),
     _ => return Err(napi::Error::from_reason("not an Object")),
   };
@@ -3732,7 +3232,7 @@ pub fn raw_get_string(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> nap
 /// rawGetI32(methodHandle, objValue) → number
 #[napi]
 pub fn raw_get_i32(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<i32> {
-  let raw = match &obj.0 {
+  let raw = match obj.winrt() {
     dynwinrt::WinRTValue::Object(o) => o.as_raw(),
     _ => return Err(napi::Error::from_reason("not an Object")),
   };

@@ -16,9 +16,10 @@ use napi_derive::napi;
 use windows::core::{IUnknown, Interface as _};
 
 use super::{
-  com::{native_struct_layout, native_union_layout, DynComType, NativePointerOwner},
+  com::{native_struct_layout, native_union_layout, DynComType},
   DynWinRTValue, WinGUID,
 };
+use crate::com_value::NativePointerOwner;
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 const RAW_MAX_AGGREGATE_BYTE_SIZE: usize = 1024 * 1024;
@@ -514,7 +515,7 @@ enum RawPointerKind {
 fn clone_managed_com_value(value: &DynWinRTValue, context: &str) -> napi::Result<IUnknown> {
   value.ensure_existing_com_apartment()?;
   value
-    .0
+    .winrt()
     .as_object()
     .ok_or_else(|| napi::Error::from_reason(format!("{context}: expected a live interface object")))
 }
@@ -970,7 +971,7 @@ impl DynComRawStructLayout {
 
   #[napi]
   pub fn read_value_bytes(&self, value: &DynWinRTValue) -> napi::Result<Buffer> {
-    let Some(value) = &value.3 else {
+    let Some(value) = value.native_struct() else {
       return Err(napi::Error::from_reason(
         "Raw struct value does not contain native struct storage",
       ));
@@ -1069,7 +1070,7 @@ impl DynComRawUnionLayout {
 
   #[napi]
   pub fn read_value_bytes(&self, value: &DynWinRTValue) -> napi::Result<Buffer> {
-    let Some(value) = &value.5 else {
+    let Some(value) = value.automation() else {
       return Err(napi::Error::from_reason(
         "Raw union value does not contain native union storage",
       ));
@@ -2284,7 +2285,8 @@ mod tests {
   use windows::core::HRESULT;
 
   use super::*;
-  use crate::com::{take_native_output_pointer, with_com_invocation_args, PointerProvenance};
+  use crate::com::{take_native_output_pointer, with_com_invocation_args};
+  use crate::com_value::PointerProvenance;
 
   fn number(value: usize) -> Either<BigInt, f64> {
     Either::B(value as f64)
@@ -2904,7 +2906,7 @@ mod tests {
   }
 
   fn preserved_hresult(values: &[DynWinRTValue]) -> i32 {
-    match values.first().map(|value| &value.0) {
+    match values.first().map(|value| value.winrt()) {
       Some(dynwinrt::WinRTValue::HResult(value)) => value.0,
       other => panic!("expected preserved HRESULT, found {other:?}"),
     }
@@ -3070,7 +3072,7 @@ mod tests {
       assert!(call.logical_release_visible);
       assert!(call.used_pointer_after_release);
       assert!(owner.released().unwrap());
-      assert!(value.1.as_ref().unwrap().validate().is_err());
+      assert!(value.pointer_owner().unwrap().validate().is_err());
       assert_eq!(
         object.releases.load(AtomicOrdering::Relaxed),
         object.addrefs.load(AtomicOrdering::Relaxed) + 1
@@ -3372,7 +3374,7 @@ mod tests {
     let owner = DynComRawOwnedComPointer::add_ref(&managed).unwrap();
     let child = owner.pointer().unwrap().to_value().unwrap();
     drop(owner);
-    assert!(child.1.as_ref().unwrap().validate().is_err());
+    assert!(child.pointer_owner().unwrap().validate().is_err());
     assert_eq!(object.releases.load(AtomicOrdering::Relaxed), 1);
     managed.release().unwrap();
   }
@@ -5331,8 +5333,8 @@ mod tests {
     let mutated_second = 0x5555666677778888u64.wrapping_add(0x0102030405060708);
     assert!(matches!(
       mutation_result.as_slice(),
-      [DynWinRTValue(dynwinrt::WinRTValue::U64(value), ..)]
-        if *value == mutated_first ^ mutated_second
+      [value] if matches!(value.winrt(), dynwinrt::WinRTValue::U64(value)
+        if *value == mutated_first ^ mutated_second)
     ));
     assert_eq!(guarded_original[0], 0xa5);
     assert_eq!(&guarded_original[1..17], u16_bytes);
@@ -5594,7 +5596,7 @@ mod tests {
       &[&input],
     )
     .unwrap();
-    assert!(matches!(by_value[0].0, dynwinrt::WinRTValue::U32(42)));
+    assert!(matches!(by_value[0].winrt(), dynwinrt::WinRTValue::U32(42)));
 
     let pointer = invoke_raw_aggregate_method(
       &table,
@@ -5605,7 +5607,7 @@ mod tests {
       &[&input],
     )
     .unwrap();
-    assert!(matches!(pointer[0].0, dynwinrt::WinRTValue::U32(42)));
+    assert!(matches!(pointer[0].winrt(), dynwinrt::WinRTValue::U32(42)));
 
     let output = invoke_raw_aggregate_method(
       &table,
@@ -6234,7 +6236,7 @@ mod tests {
     memory.release().unwrap();
     assert!(memory.allocation.deallocated());
     assert!(pointer.address().is_err());
-    assert!(value.1.as_ref().unwrap().validate().is_err());
+    assert!(value.pointer_owner().unwrap().validate().is_err());
   }
 
   #[test]
@@ -6267,7 +6269,7 @@ mod tests {
     assert_eq!(null.address_bits().unwrap(), 0);
     assert!(null.is_null().unwrap());
     assert!(matches!(
-      null.to_value().unwrap().0,
+      null.to_value().unwrap().winrt(),
       dynwinrt::WinRTValue::RawPtr(pointer) if pointer.is_null()
     ));
   }
@@ -6379,7 +6381,7 @@ mod tests {
     assert!(memory.released().unwrap());
     assert!(memory.allocation.deallocated());
     assert!(pointer.address().is_err());
-    assert!(value.1.as_ref().unwrap().validate().is_err());
+    assert!(value.pointer_owner().unwrap().validate().is_err());
   }
 
   #[test]

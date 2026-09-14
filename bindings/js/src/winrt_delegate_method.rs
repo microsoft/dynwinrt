@@ -30,7 +30,7 @@ fn clone_arguments(args: Vec<Unknown<'_>>) -> napi::Result<Vec<dynwinrt::WinRTVa
       require_instance::<DynWinRTValue>(&value, "DynWinRtValue")?;
       Ok(
         unsafe { <&DynWinRTValue>::from_napi_value(value.value().env, value.raw()) }?
-          .0
+          .winrt()
           .clone(),
       )
     })
@@ -123,7 +123,7 @@ impl DynWinRtDelegateMethod {
     require_instance::<DynWinRTValue>(&value, "DynWinRtValue")?;
     let value = unsafe { <&DynWinRTValue>::from_napi_value(value.value().env, value.raw()) }?;
     value.ensure_existing_com_apartment()?;
-    let target = value.0.clone();
+    let target = value.winrt().clone();
     let args = clone_arguments(args)?;
     self.invoke_native(target, &args)
   }

@@ -150,7 +150,7 @@ impl DynComBorrowedCopyTestFixture {
     self.check()?;
     object.ensure_com_apartment()?;
     let object = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("Probe requires a managed COM sink"))?;
     self
@@ -171,7 +171,7 @@ impl DynComBorrowedCopyPlan {
     let bytes = com::stage_copy_bytes(data)?;
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();
@@ -188,7 +188,7 @@ impl DynComBorrowedCopyPlan {
     }
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();
@@ -205,7 +205,7 @@ impl DynComBorrowedCopyPlan {
   ) -> napi::Result<Option<DynComCapturePacketCopy>> {
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();
@@ -235,7 +235,7 @@ impl DynComBorrowedCopyPlan {
   pub fn read_copy(&self, object: &DynWinRTValue) -> napi::Result<Buffer> {
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();
@@ -255,7 +255,7 @@ impl DynComBorrowedCopyPlan {
     let bytes = com::stage_copy_bytes(data)?;
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();
@@ -288,7 +288,7 @@ impl DynComBorrowedCopyPlan {
     ];
     let context = object.com_context()?;
     let view = object
-      .0
+      .winrt()
       .as_object()
       .ok_or_else(|| invalid("COM object is released"))?
       .clone();

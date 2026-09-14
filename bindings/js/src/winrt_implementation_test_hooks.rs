@@ -49,12 +49,12 @@ pub fn winrt_implementation_test_stats() -> WinRtImplementationTestStats {
 #[napi]
 pub fn winrt_implementation_test_retain(value: &DynWinRTValue) -> napi::Result<()> {
   value
-    .0
+    .winrt()
     .as_object()
     .ok_or_else(|| napi::Error::from_reason("Expected an object"))?
     .cast::<IStringable>()
     .map_err(|error| napi::Error::from_reason(error.message()))?;
-  let previous = RETAINED.lock().unwrap().replace(value.0.clone());
+  let previous = RETAINED.lock().unwrap().replace(value.winrt().clone());
   drop(previous);
   Ok(())
 }
@@ -187,7 +187,7 @@ pub fn winrt_implementation_test_background_instance() -> napi::Result<DynWinRTV
 #[napi]
 pub fn winrt_implementation_test_background_progress(value: &DynWinRTValue) -> napi::Result<u32> {
   value
-    .0
+    .winrt()
     .as_object()
     .ok_or_else(|| napi::Error::from_reason("Expected an object"))?
     .cast::<IBackgroundTaskInstance>()

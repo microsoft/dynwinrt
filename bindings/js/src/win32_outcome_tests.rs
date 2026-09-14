@@ -213,11 +213,8 @@ fn aggregate_cleanup_failure_retains_failed_field_but_cleans_other_fields() {
 fn owned_text(value: &[u16]) -> Arc<RetainedNativePointer> {
   let mut value = value.to_vec().into_boxed_slice();
   let pointer = value.as_mut_ptr().cast();
-  Arc::new(RetainedNativePointer {
-    value: DynWinRTValue::with_pointer_owner(
-      dynwinrt::WinRTValue::RawPtr(pointer),
-      com::NativePointerOwner::Storage(crate::js_storage::CallStorage::Words(value)),
-    ),
+  Arc::new(RetainedNativePointer::Storage {
+    value: storage::PointerStorage::retained(pointer, crate::js_storage::CallStorage::Words(value)),
     string: Some((true, false)),
   })
 }
@@ -228,8 +225,9 @@ fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
     NativeAggregateStorage::new("Tests.Pointers".into(), 16, 8, None, true, Vec::new()).unwrap();
   let first = owned_text(&[65, 0]);
   let first_weak = Arc::downgrade(&first);
-  let dynwinrt::WinRTValue::RawPtr(first_pointer) = first.value.0 else {
-    unreachable!()
+  let first_pointer = match first.as_ref() {
+    RetainedNativePointer::Storage { value, .. } => value.pointer,
+    _ => unreachable!(),
   };
   storage
     .write_field(0, &(first_pointer as usize).to_le_bytes(), Some(first))
@@ -237,8 +235,9 @@ fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
   assert!(first_weak.upgrade().is_some());
   let second = owned_text(&[66, 0]);
   let second_weak = Arc::downgrade(&second);
-  let dynwinrt::WinRTValue::RawPtr(second_pointer) = second.value.0 else {
-    unreachable!()
+  let second_pointer = match second.as_ref() {
+    RetainedNativePointer::Storage { value, .. } => value.pointer,
+    _ => unreachable!(),
   };
   storage
     .write_field(0, &(second_pointer as usize).to_le_bytes(), Some(second))

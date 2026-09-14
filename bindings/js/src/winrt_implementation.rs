@@ -404,7 +404,7 @@ fn parse_outputs(env: sys::napi_env, result: sys::napi_value) -> napi::Result<Ve
     })?;
     outputs.push(
       unsafe { <&DynWinRTValue>::from_napi_value(env, raw) }?
-        .0
+        .winrt()
         .clone(),
     );
   }

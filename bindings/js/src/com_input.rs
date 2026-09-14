@@ -5,7 +5,6 @@
 
 use std::{
   mem::ManuallyDrop,
-  rc::Rc,
   sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, MutexGuard, OnceLock,
@@ -13,7 +12,8 @@ use std::{
   thread::ThreadId,
 };
 
-use super::{ComApartmentBinding, DynWinRTValue};
+use super::DynWinRTValue;
+use crate::com_value::ComApartmentBinding;
 
 fn type_has_interfaces(typ: &dynwinrt::TypeHandle) -> bool {
   typ.kind().is_com_pointer()
@@ -178,8 +178,7 @@ impl InputBindings {
         .iter()
         .map(|value| {
           value
-            .7
-            .as_ref()
+            .input_bindings()
             .map_or_else(Self::deferred, Self::copy_bookkeeping)
         })
         .collect(),
@@ -229,7 +228,7 @@ impl InputBindings {
   }
 
   pub(super) fn attach(&self, binding: &ComApartmentBinding) -> napi::Result<()> {
-    if binding.owner_thread != std::thread::current().id() {
+    if !binding.is_owner() {
       return Err(napi::Error::from_reason(
         "Managed COM binding belongs to a different apartment thread",
       ));
@@ -239,7 +238,7 @@ impl InputBindings {
     if !state
       .bindings
       .iter()
-      .any(|existing| Rc::ptr_eq(&existing.context, &binding.context))
+      .any(|existing| existing.shares_identity_slot(binding))
     {
       state.bindings.push(binding.clone());
     }

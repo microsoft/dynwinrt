@@ -35,7 +35,10 @@ fn plan() -> BorrowedCopyPlan {
 fn poison(fixture: &CopyFixture, value: &DynWinRTValue) {
   fixture.configure("mediaUnlockHr", 0x80004005).unwrap();
   assert!(plan()
-    .read_copy(&value.com_context().unwrap(), &value.0.as_object().unwrap())
+    .read_copy(
+      &value.com_context().unwrap(),
+      &value.winrt().as_object().unwrap()
+    )
     .is_err());
 }
 
@@ -162,7 +165,10 @@ fn com_argument_busy_guard_runs_without_a_javascript_callback() {
     }
   })));
   plan()
-    .read_copy(&value.com_context().unwrap(), &value.0.as_object().unwrap())
+    .read_copy(
+      &value.com_context().unwrap(),
+      &value.winrt().as_object().unwrap(),
+    )
     .unwrap();
   fixture.hook(None);
   assert!(observed.get());
@@ -281,6 +287,37 @@ fn unbound_async_value() -> DynWinRTValue {
 }
 
 #[test]
+fn value_sidecar_is_deferred_until_com_and_cast_aliases_keep_their_own_reference() {
+  let (mut value, counts) = unbound_test_object();
+  assert_eq!(counts.queries.load(Ordering::SeqCst), 0);
+  assert!(!value.has_pointer_owner());
+  assert!(!value.has_com_payload());
+  assert!(value.com_binding().is_none());
+  assert!(!value.input_bindings().unwrap().is_apartment_bound());
+
+  value.bind_current_com_apartment().unwrap();
+  let alive = value.input_bindings().unwrap().state_alive_probe();
+  let mut alias = value.cast(&WinGUID(TEST_IID)).unwrap();
+  assert!(value
+    .com_binding()
+    .unwrap()
+    .shares_identity_slot(alias.com_binding().unwrap()));
+  value.release().unwrap();
+  assert!(alive());
+  alias.ensure_com_apartment().unwrap();
+  assert!(matches!(
+    alias.to_com_value().unwrap(),
+    dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::Object(_))
+  ));
+  alias.release().unwrap();
+  assert!(!alive());
+  assert_eq!(
+    counts.releases.load(Ordering::SeqCst),
+    counts.addrefs.load(Ordering::SeqCst) + 1
+  );
+}
+
+#[test]
 fn unbound_winrt_bookkeeping_allows_cross_thread_use_and_frees_on_drop() {
   use super::super::{com_input::InputBindings, DynWinRTArray, DynWinRTStruct};
   fn send_sync<T: Send + Sync>() {}
@@ -288,8 +325,8 @@ fn unbound_winrt_bookkeeping_allows_cross_thread_use_and_frees_on_drop() {
 
   let (value, counts) = unbound_test_object();
   let async_value = unbound_async_value();
-  let object_alive = value.7.as_ref().unwrap().state_alive_probe();
-  let async_alive = async_value.7.as_ref().unwrap().state_alive_probe();
+  let object_alive = value.input_bindings().unwrap().state_alive_probe();
+  let async_alive = async_value.input_bindings().unwrap().state_alive_probe();
   std::thread::spawn(move || {
     let alias = value.cast(&WinGUID(TEST_IID)).unwrap();
     let array =
@@ -306,7 +343,7 @@ fn unbound_winrt_bookkeeping_allows_cross_thread_use_and_frees_on_drop() {
       .cast(&WinGUID(windows_future::IAsyncOperation::<i32>::IID))
       .unwrap();
     let operation: windows_future::IAsyncOperation<i32> =
-      async_alias.0.as_object().unwrap().cast().unwrap();
+      async_alias.winrt().as_object().unwrap().cast().unwrap();
     assert_eq!(operation.GetResults().unwrap(), 42);
     for value in [
       &value,
@@ -316,7 +353,7 @@ fn unbound_winrt_bookkeeping_allows_cross_thread_use_and_frees_on_drop() {
       &async_value,
       &async_alias,
     ] {
-      assert!(!value.7.as_ref().unwrap().is_apartment_bound());
+      assert!(!value.input_bindings().unwrap().is_apartment_bound());
     }
   })
   .join()
@@ -368,8 +405,8 @@ fn unbound_winrt_values_first_enter_com_on_the_consumer_thread() {
   for explicit_binding in [false, true] {
     let (mut value, counts) = unbound_test_object();
     let async_value = unbound_async_value();
-    let object_alive = value.7.as_ref().unwrap().state_alive_probe();
-    let async_alive = async_value.7.as_ref().unwrap().state_alive_probe();
+    let object_alive = value.input_bindings().unwrap().state_alive_probe();
+    let async_alive = async_value.input_bindings().unwrap().state_alive_probe();
     let array =
       DynWinRTArray::from_object_values(vec![&value], &DynWinRTType(TABLE.interface(TEST_IID)))
         .unwrap();
@@ -390,12 +427,12 @@ fn unbound_winrt_values_first_enter_com_on_the_consumer_thread() {
       value.bind_current_com_apartment().unwrap();
       let mut extracted = array.get(0.0).unwrap();
       extracted.bind_current_com_apartment().unwrap();
-      assert!(Rc::ptr_eq(
-        &value.6.as_ref().unwrap().context,
-        &extracted.6.as_ref().unwrap().context,
-      ));
+      assert!(value
+        .com_binding()
+        .unwrap()
+        .shares_identity_slot(extracted.com_binding().unwrap()));
       for input in [&array_value, &snapshot, &value, &async_value] {
-        let inputs = input.7.as_ref().unwrap();
+        let inputs = input.input_bindings().unwrap();
         assert!(inputs.is_apartment_bound());
         assert!(inputs.is_owner());
       }
