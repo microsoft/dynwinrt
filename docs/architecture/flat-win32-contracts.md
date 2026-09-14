@@ -250,7 +250,12 @@ and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
 type enters core I/O. Environment teardown cancels native work without freeing
 OS-owned storage early, while JS references are released on their owner thread.
 COM/WinRT carriers and their backing-storage ownership remain separate from
-the native Win32 I/O engine.
+the native Win32 I/O engine. The adapter uses the private
+`js_storage::RetainedBuffer` for JS ownership and
+the original view; completion, cancellation and resource coordination remain
+Win32-specific. Synchronous Win32 byte/string storage also uses shared storage
+primitives directly, separate from managed COM inputs. See
+[JavaScript binding internals](javascript-binding-internals.md).
 
 Generic resource coordination governs borrowing, consuming, state mutation and
 asynchronous occupancy. File-specific modes and association state belong to a

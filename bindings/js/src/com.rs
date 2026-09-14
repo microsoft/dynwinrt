@@ -4,9 +4,9 @@
 use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, Function, ToNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface as _};
 #[cfg(test)]
 use windows::core::GUID;
+use windows::core::{IUnknown, Interface as _};
 
 use super::{com_raw::DynComRaw, DynWinRTType, DynWinRTValue, WinGUID, TABLE};
 use crate::com_value::{NativePointerOwner, PointerProvenance};
@@ -462,18 +462,12 @@ pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   if value_type == sys::ValueType::napi_number {
     let mut number = 0.0;
     unsafe { sys::napi_get_value_double(env, raw, &mut number) };
-    if !number.is_finite()
-      || number < 0.0
-      || number.fract() != 0.0
-      || number > 9_007_199_254_740_991.0
-      || number as u64 as usize as u64 != number as u64
-    {
-      return Err(napi::Error::from_reason(
-        "pointer(): number must be a non-negative safe integer that fits in a pointer",
-      ));
-    }
+    let bits = crate::js_numbers::unsigned_size_number(
+      number,
+      "pointer(): number must be a non-negative safe integer that fits in a pointer",
+    )?;
     return Ok(DynWinRTValue::with_borrowed_pointer(
-      dynwinrt::WinRTValue::RawPtr(number as usize as *mut std::ffi::c_void),
+      dynwinrt::WinRTValue::RawPtr(bits as *mut std::ffi::c_void),
     ));
   }
   if uint8_array_info(env, raw)?.is_some() {
@@ -5782,7 +5776,7 @@ impl DynCom {
       _ => None,
     };
     #[cfg(target_pointer_width = "32")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::I32(value) => Some(BigInt::from(i64::from(*value))),
       _ => None,
     };
@@ -5797,7 +5791,7 @@ impl DynCom {
       _ => None,
     };
     #[cfg(target_pointer_width = "32")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::U32(value) => Some(BigInt::from(u64::from(*value))),
       _ => None,
     };
@@ -6684,8 +6678,8 @@ mod tests {
     }
     #[cfg(target_pointer_width = "32")]
     {
-      assert!(matches!(signed.0, dynwinrt::WinRTValue::I32(-1)));
-      assert!(matches!(unsigned.0, dynwinrt::WinRTValue::U32(1)));
+      assert!(matches!(signed.winrt(), dynwinrt::WinRTValue::I32(-1)));
+      assert!(matches!(unsigned.winrt(), dynwinrt::WinRTValue::U32(1)));
     }
   }
 

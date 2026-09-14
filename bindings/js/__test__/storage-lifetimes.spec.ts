@@ -117,10 +117,22 @@ test('shared JS storage keeps the existing view-kind and shared-backing boundari
     message: 'SharedArrayBuffer-backed views cannot be passed to native COM calls',
   })
   t.throws(() => DynWin32.dataPointer(shared), { message: 'SharedArrayBuffer storage is unsupported for Win32' })
+  const sharedWide = new Uint16Array(new SharedArrayBuffer(8))
+  t.throws(() => Reflect.apply(DynCom.safeDataPointer, DynCom, [sharedWide]), {
+    message: 'SharedArrayBuffer-backed views cannot be passed to native COM calls',
+  })
+  t.throws(() => Reflect.apply(DynWin32.dataPointer, DynWin32, [sharedWide]), {
+    message: 'Expected unsigned byte Buffer or Uint8Array storage',
+  })
 })
 
 test('shared JS storage retains both JS owner strategies across collection', (t) => {
-  const output = execFileSync(process.execPath, ['--expose-gc', '-e', `
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--expose-gc',
+      '-e',
+      `
     const assert = require('node:assert/strict');
     const { DynCom } = require(${JSON.stringify(join(process.cwd(), 'dist', 'com-unsafe.js'))});
     const { DynWin32, DynWin32Unsafe } = require(${JSON.stringify(join(process.cwd(), 'dist', 'win32-unsafe.js'))});
@@ -149,6 +161,9 @@ test('shared JS storage retains both JS owner strategies across collection', (t)
       retained.counted.release();
       process.stdout.write('retained');
     })().catch(error => { console.error(error); process.exitCode = 1; });
-  `], { encoding: 'utf8', timeout: 30_000 })
+  `,
+    ],
+    { encoding: 'utf8', timeout: 30_000 },
+  )
   t.is(output, 'retained')
 })

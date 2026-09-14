@@ -17,6 +17,10 @@ pub(crate) struct ByteView {
   pub length: usize,
 }
 
+pub(crate) fn address_is_aligned(address: usize, alignment: usize) -> bool {
+  alignment != 0 && address.is_multiple_of(alignment)
+}
+
 impl ByteView {
   pub(crate) unsafe fn bytes(&self) -> &[u8] {
     if self.length == 0 {
@@ -42,7 +46,7 @@ impl ByteView {
   }
 
   pub(crate) fn is_aligned(self, alignment: usize) -> bool {
-    alignment != 0 && self.pointer as usize % alignment == 0
+    address_is_aligned(self.pointer as usize, alignment)
   }
 
   fn within(self, backing: Self, offset: usize, maximum: usize) -> bool {
@@ -193,29 +197,26 @@ pub(crate) fn typed_array_element_size(kind: i32) -> Option<usize> {
   use sys::TypedarrayType;
   match kind {
     value
-      if value == TypedarrayType::int8_array as i32
-        || value == TypedarrayType::uint8_array as i32
-        || value == TypedarrayType::uint8_clamped_array as i32 =>
+      if value == TypedarrayType::int8_array
+        || value == TypedarrayType::uint8_array
+        || value == TypedarrayType::uint8_clamped_array =>
     {
       Some(1)
     }
-    value
-      if value == TypedarrayType::int16_array as i32
-        || value == TypedarrayType::uint16_array as i32 =>
-    {
+    value if value == TypedarrayType::int16_array || value == TypedarrayType::uint16_array => {
       Some(2)
     }
     value
-      if value == TypedarrayType::int32_array as i32
-        || value == TypedarrayType::uint32_array as i32
-        || value == TypedarrayType::float32_array as i32 =>
+      if value == TypedarrayType::int32_array
+        || value == TypedarrayType::uint32_array
+        || value == TypedarrayType::float32_array =>
     {
       Some(4)
     }
     value
-      if value == TypedarrayType::float64_array as i32
-        || value == TypedarrayType::bigint64_array as i32
-        || value == TypedarrayType::biguint64_array as i32 =>
+      if value == TypedarrayType::float64_array
+        || value == TypedarrayType::bigint64_array
+        || value == TypedarrayType::biguint64_array =>
     {
       Some(8)
     }
@@ -241,7 +242,7 @@ pub(crate) fn uint8_array_info(
     Some("Failed to inspect TypedArray backing storage"),
     shared_error,
   )?;
-  if info.kind != sys::TypedarrayType::uint8_array as i32 {
+  if info.kind != sys::TypedarrayType::uint8_array {
     return Ok(None);
   }
   info.require_attached(
@@ -313,7 +314,7 @@ pub(crate) fn stage_copy_bytes(
   messages: &TypedBufferMessages,
 ) -> napi::Result<Vec<u8>> {
   let info = typed_buffer_info(value.value().env, value.value().value, messages)?;
-  if info.kind != sys::TypedarrayType::uint8_array as i32 {
+  if info.kind != sys::TypedarrayType::uint8_array {
     return Err(napi::Error::from_reason(
       "Owned-copy input must be Buffer or Uint8Array",
     ));
@@ -501,8 +502,8 @@ impl RetainedBuffer {
     self.original
   }
 
-  pub(crate) fn into_value(self, env: sys::napi_env) -> napi::Result<sys::napi_value> {
-    unsafe { Buffer::to_napi_value(env, self.buffer) }
+  pub(crate) fn into_value(self) -> napi::Result<sys::napi_value> {
+    unsafe { Buffer::to_napi_value(self.env(), self.buffer) }
   }
 }
 

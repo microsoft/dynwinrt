@@ -259,7 +259,7 @@ impl JsPendingIo {
       ));
     }
     if kind == IoKind::Read {
-      let raw = self.buffer.into_value(env)?;
+      let raw = self.buffer.into_value()?;
       let mut is_buffer = false;
       napi::check_status!(
         unsafe { sys::napi_is_buffer(env, raw, &mut is_buffer) },

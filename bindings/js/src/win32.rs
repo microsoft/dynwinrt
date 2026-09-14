@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -60,10 +61,10 @@ pub struct DynWin32Value {
 boundary::carrier!(DynWin32Value, 1, "DynWin32Value");
 
 enum Win32PointerOwner {
-  Native(Arc<RetainedNativePointer>),
-  Aggregate(Arc<NativeAggregateStorage>),
+  Native(Rc<RetainedNativePointer>),
+  Aggregate(Rc<NativeAggregateStorage>),
   PointerSlot {
-    inner: Arc<RetainedNativePointer>,
+    inner: Rc<RetainedNativePointer>,
     slot: Box<usize>,
   },
 }
@@ -73,7 +74,7 @@ enum RetainedNativePointer {
     value: storage::PointerStorage,
     string: Option<(bool, bool)>,
   },
-  Com(DynWinRTValue),
+  Com(Box<DynWinRTValue>),
 }
 
 impl RetainedNativePointer {
@@ -126,7 +127,7 @@ impl DynWin32Value {
   ) -> Self {
     Self {
       value,
-      pointer_owner: Some(Win32PointerOwner::Native(Arc::new(pointer_owner))),
+      pointer_owner: Some(Win32PointerOwner::Native(Rc::new(pointer_owner))),
     }
   }
 
@@ -153,7 +154,7 @@ struct NativeAggregateStorage {
 }
 
 struct NativeAggregateState {
-  owners: BTreeMap<usize, Arc<RetainedNativePointer>>,
+  owners: BTreeMap<usize, Rc<RetainedNativePointer>>,
 }
 
 impl NativeAggregateStorage {
@@ -211,7 +212,7 @@ impl NativeAggregateStorage {
     &self,
     offset: usize,
     bytes: &[u8],
-    owner: Option<Arc<RetainedNativePointer>>,
+    owner: Option<Rc<RetainedNativePointer>>,
   ) -> napi::Result<()> {
     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
     self
@@ -254,7 +255,7 @@ impl NativeAggregateStorage {
 
 pub struct DynWin32NativeStruct {
   descriptor: String,
-  storage: Arc<NativeAggregateStorage>,
+  storage: Rc<NativeAggregateStorage>,
 }
 boundary::carrier!(DynWin32NativeStruct, 2, "DynWin32NativeStruct");
 
@@ -364,10 +365,10 @@ impl DynWin32Function {
         _ => None,
       })
       .collect::<Vec<_>>();
-    aggregates.sort_by_key(|owner| Arc::as_ptr(owner) as usize);
+    aggregates.sort_by_key(|owner| Rc::as_ptr(owner) as usize);
     if aggregates
       .windows(2)
-      .any(|pair| Arc::ptr_eq(pair[0], pair[1]))
+      .any(|pair| Rc::ptr_eq(pair[0], pair[1]))
     {
       return Err(napi::Error::from_reason(
         "the same native aggregate cannot occupy multiple parameters in one call",
@@ -639,8 +640,8 @@ impl DynWin32 {
       .as_raw();
     Ok(DynWin32Value {
       value: dynwinrt::win32::Value::Pointer(pointer),
-      pointer_owner: Some(Win32PointerOwner::Native(Arc::new(
-        RetainedNativePointer::Com(owner),
+      pointer_owner: Some(Win32PointerOwner::Native(Rc::new(
+        RetainedNativePointer::Com(Box::new(owner)),
       ))),
     })
   }
@@ -709,7 +710,9 @@ impl DynWin32 {
     let value = pointer_value(storage::data_pointer(value, nullable)?)?;
     reject_required_null_pointer(&value, nullable)?;
     if let dynwinrt::win32::Value::Pointer(pointer) = &value.value {
-      if !pointer.is_null() && (*pointer as usize) % alignment as usize != 0 {
+      if !pointer.is_null()
+        && !crate::js_storage::address_is_aligned(*pointer as usize, alignment as usize)
+      {
         return Err(napi::Error::from_reason(format!(
           "native buffer address is not aligned to {alignment} bytes"
         )));
@@ -819,7 +822,7 @@ impl DynWin32 {
       ));
     }
     Ok(DynWin32NativeStruct {
-      storage: Arc::new(NativeAggregateStorage::new(
+      storage: Rc::new(NativeAggregateStorage::new(
         descriptor.as_str().to_string(),
         size,
         alignment,
@@ -896,7 +899,7 @@ impl DynWin32 {
       (dynwinrt::win32::Value::Pointer(pointer), Some(Win32PointerOwner::Native(owner)))
         if owner.has_storage() =>
       {
-        (*pointer as usize, Some(Arc::clone(owner)))
+        (*pointer as usize, Some(Rc::clone(owner)))
       }
       (dynwinrt::win32::Value::Pointer(_), _) => {
         return Err(napi::Error::from_reason(
@@ -1040,7 +1043,7 @@ impl DynWin32 {
     }
     Ok(DynWin32Value {
       value: dynwinrt::win32::Value::AggregatePointer(Arc::clone(&value.storage.backing)),
-      pointer_owner: Some(Win32PointerOwner::Aggregate(Arc::clone(&value.storage))),
+      pointer_owner: Some(Win32PointerOwner::Aggregate(Rc::clone(&value.storage))),
     })
   }
 
@@ -1060,7 +1063,7 @@ impl DynWin32 {
         layout,
         pointer: value.storage.pointer(),
       },
-      pointer_owner: Some(Win32PointerOwner::Aggregate(Arc::clone(&value.storage))),
+      pointer_owner: Some(Win32PointerOwner::Aggregate(Rc::clone(&value.storage))),
     })
   }
 
@@ -1081,7 +1084,7 @@ impl DynWin32 {
     }
     let (_, _, alignment, _, fields) = native_aggregate_layout(&descriptor)?;
     Ok(DynWin32NativeStruct {
-      storage: Arc::new(NativeAggregateStorage::new(
+      storage: Rc::new(NativeAggregateStorage::new(
         descriptor.as_str().to_string(),
         bytes.len(),
         alignment,
@@ -2041,7 +2044,7 @@ fn string_pointer_pointer(
   Ok(DynWin32Value {
     value: dynwinrt::win32::Value::Pointer(slot_pointer),
     pointer_owner: Some(Win32PointerOwner::PointerSlot {
-      inner: Arc::new(RetainedNativePointer::Storage {
+      inner: Rc::new(RetainedNativePointer::Storage {
         value: inner,
         string: Some((wide, false)),
       }),

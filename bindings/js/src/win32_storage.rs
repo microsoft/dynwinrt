@@ -197,17 +197,11 @@ pub(super) fn unsafe_pointer(value: Unknown) -> napi::Result<PointerStorage> {
   if value.get_type()? == napi::ValueType::Number {
     let mut number = 0.0;
     unsafe { sys::napi_get_value_double(value.value().env, value.raw(), &mut number) };
-    if !number.is_finite()
-      || number < 0.0
-      || number.fract() != 0.0
-      || number > 9_007_199_254_740_991.0
-      || number as u64 as usize as u64 != number as u64
-    {
-      return Err(napi::Error::from_reason(
-        "pointer(): number must be a non-negative safe integer that fits in a pointer",
-      ));
-    }
-    return Ok(PointerStorage::borrowed(number as usize as *mut c_void));
+    let bits = crate::js_numbers::unsigned_size_number(
+      number,
+      "pointer(): number must be a non-negative safe integer that fits in a pointer",
+    )?;
+    return Ok(PointerStorage::borrowed(bits as *mut c_void));
   }
   Err(napi::Error::from_reason(
     "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",

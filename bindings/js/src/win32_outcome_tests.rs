@@ -52,9 +52,9 @@ impl Drop for Event {
   }
 }
 
-fn handle_storage() -> Arc<NativeAggregateStorage> {
+fn handle_storage() -> Rc<NativeAggregateStorage> {
   let width = std::mem::size_of::<usize>();
-  Arc::new(
+  Rc::new(
     NativeAggregateStorage::new(
       "Tests.HandlePair".into(),
       width * 2,
@@ -154,7 +154,7 @@ fn aggregate_failed_outputs_are_not_adopted_or_guessed_as_owned() {
   assert!(event.exists());
 }
 
-struct UnprotectField(Arc<NativeAggregateStorage>);
+struct UnprotectField(Rc<NativeAggregateStorage>);
 
 impl Drop for UnprotectField {
   fn drop(&mut self) {
@@ -176,7 +176,7 @@ fn aggregate_cleanup_failure_retains_failed_field_but_cleans_other_fields() {
   let mut protected = Event::new();
   let mut other = Event::new();
   let storage = handle_storage();
-  let protection = UnprotectField(Arc::clone(&storage));
+  let protection = UnprotectField(Rc::clone(&storage));
   unsafe {
     SetHandleInformation(
       protected.handle,
@@ -210,10 +210,10 @@ fn aggregate_cleanup_failure_retains_failed_field_but_cleans_other_fields() {
   drop(protection);
 }
 
-fn owned_text(value: &[u16]) -> Arc<RetainedNativePointer> {
+fn owned_text(value: &[u16]) -> Rc<RetainedNativePointer> {
   let mut value = value.to_vec().into_boxed_slice();
   let pointer = value.as_mut_ptr().cast();
-  Arc::new(RetainedNativePointer::Storage {
+  Rc::new(RetainedNativePointer::Storage {
     value: storage::PointerStorage::retained(pointer, crate::js_storage::CallStorage::Words(value)),
     string: Some((true, false)),
   })
@@ -224,7 +224,7 @@ fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
   let storage =
     NativeAggregateStorage::new("Tests.Pointers".into(), 16, 8, None, true, Vec::new()).unwrap();
   let first = owned_text(&[65, 0]);
-  let first_weak = Arc::downgrade(&first);
+  let first_weak = Rc::downgrade(&first);
   let first_pointer = match first.as_ref() {
     RetainedNativePointer::Storage { value, .. } => value.pointer,
     _ => unreachable!(),
@@ -234,7 +234,7 @@ fn aggregate_owner_replacement_and_failed_field_writes_are_atomic() {
     .unwrap();
   assert!(first_weak.upgrade().is_some());
   let second = owned_text(&[66, 0]);
-  let second_weak = Arc::downgrade(&second);
+  let second_weak = Rc::downgrade(&second);
   let second_pointer = match second.as_ref() {
     RetainedNativePointer::Storage { value, .. } => value.pointer,
     _ => unreachable!(),

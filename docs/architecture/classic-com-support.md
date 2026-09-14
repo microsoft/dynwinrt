@@ -24,6 +24,10 @@ Both entrypoints use the same native N-API binary and private libffi call
 machinery. Classic COM metadata, generated wrappers, ownership rules, and
 public APIs remain separate from the WinRT projection.
 
+The private Node storage, value-sidecar and registration boundaries are described
+in [JavaScript binding internals](javascript-binding-internals.md). Sharing JS
+backing-store protection does not share COM ownership or ABI semantics.
+
 Language ergonomics belong to codegen projection, after native semantics have
 been validated. The runtime executes a faithful ABI plan; the JavaScript
 projection chooses Buffer/string/bigint, naming, hidden ABI parameters, and
