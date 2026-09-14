@@ -107,7 +107,8 @@ fn aggregate_success_gates_adoption_reuse_and_unclaimed_cleanup() {
   storage.prepare_call().unwrap();
   let (first_raw, second_raw) = (first.take(), second.take());
   write_handles(&storage, first_raw, second_raw);
-  storage.mark_call_result(true).unwrap();
+  // Event::take transferred both live handles into the aggregate fields.
+  unsafe { storage.mark_call_result(true) }.unwrap();
   storage.require_success().unwrap();
   assert!(storage.bytes().is_err());
   let taken = storage.backing.take_field(0).unwrap();
@@ -135,7 +136,8 @@ fn aggregate_success_gates_adoption_reuse_and_unclaimed_cleanup() {
   let raw = unclaimed.take();
   let storage = handle_storage();
   write_handles(&storage, raw, 0);
-  storage.mark_call_result(true).unwrap();
+  // The event handle is exclusively owned by the aggregate; the other field is null.
+  unsafe { storage.mark_call_result(true) }.unwrap();
   drop(storage);
   assert!(!unclaimed.exists());
 }
@@ -145,7 +147,7 @@ fn aggregate_failed_outputs_are_not_adopted_or_guessed_as_owned() {
   let event = Event::new();
   let storage = handle_storage();
   write_handles(&storage, event.handle.0 as usize, 0);
-  storage.mark_call_result(false).unwrap();
+  unsafe { storage.mark_call_result(false) }.unwrap();
   assert!(storage.require_success().is_err());
   storage.prepare_call().unwrap();
   drop(storage);
@@ -185,7 +187,8 @@ fn aggregate_cleanup_failure_retains_failed_field_but_cleans_other_fields() {
   .unwrap();
   let (raw, other_raw) = (protected.take(), other.take());
   write_handles(&storage, raw, other_raw);
-  storage.mark_call_result(true).unwrap();
+  // Event::take transferred the handles; protection affects cleanup, not ownership.
+  unsafe { storage.mark_call_result(true) }.unwrap();
   assert!(storage.prepare_call().is_err());
   assert!(protected.exists());
   assert!(!other.exists());

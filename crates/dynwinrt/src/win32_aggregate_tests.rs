@@ -2,7 +2,11 @@
 // Licensed under the MIT License.
 
 use super::*;
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    fs::File,
+    os::windows::io::{AsRawHandle, IntoRawHandle},
+};
 
 #[repr(C)]
 struct NativeInfo {
@@ -98,6 +102,75 @@ fn planned(layout: Arc<NativeAggregatePointerLayout>) -> Arc<CallPlan> {
 }
 
 #[test]
+#[forbid(unsafe_code)]
+fn safe_aggregate_storage_does_not_adopt_borrowed_handles() {
+    outcome_tests::reset();
+    let file = File::open(std::env::current_exe().unwrap()).unwrap();
+    let handle = file.as_raw_handle() as usize;
+    let layout = layout();
+    let mut bytes = vec![0; layout.size()];
+    for offset in [
+        std::mem::offset_of!(NativeInfo, process),
+        std::mem::offset_of!(NativeInfo, thread),
+    ] {
+        bytes[offset..offset + size_of::<usize>()].copy_from_slice(&handle.to_ne_bytes());
+    }
+    for initialize in [false, true] {
+        for prepare in [false, true] {
+            let buffer = NativeAggregateBuffer::new(
+                Arc::clone(&layout),
+                initialize.then_some(bytes.as_slice()),
+            )
+            .unwrap();
+            if !initialize {
+                buffer.write(0, &bytes).unwrap();
+            }
+            assert_eq!(buffer.bytes().unwrap(), bytes);
+            for field in 0..2 {
+                assert!(buffer.field_value(field).is_err());
+                assert!(buffer.take_field(field).is_err());
+            }
+            if prepare {
+                buffer.prepare().unwrap();
+                assert!(file.metadata().is_ok());
+            }
+            drop(buffer);
+            assert_eq!(outcome_tests::cleanup_count_for(handle), 0);
+            assert!(file.metadata().is_ok());
+        }
+    }
+}
+
+#[test]
+fn unsafe_legacy_adoption_transfers_and_retires_ownership_once() {
+    for take in [false, true] {
+        outcome_tests::reset();
+        let buffer = NativeAggregateBuffer::new(layout(), None).unwrap();
+        let handle = File::open(std::env::current_exe().unwrap())
+            .unwrap()
+            .into_raw_handle() as usize;
+        buffer.write(0, &handle.to_ne_bytes()).unwrap();
+        // IntoRawHandle relinquished File's unique ownership; CloseHandle matches it.
+        unsafe { buffer.mark_legacy(true) }.unwrap();
+        assert_eq!(
+            buffer.field_value(0).unwrap().resource().unwrap().raw(),
+            handle
+        );
+        let taken = take.then(|| buffer.take_field(0).unwrap());
+        drop(buffer);
+        assert_eq!(outcome_tests::cleanup_count_for(handle), usize::from(!take));
+        if let Some(value) = taken {
+            let resource = value.resource().unwrap();
+            assert_eq!(resource.raw(), handle);
+            resource.close().unwrap();
+            resource.close().unwrap();
+            drop(value);
+        }
+        assert_eq!(outcome_tests::cleanup_count_for(handle), 1);
+    }
+}
+
+#[test]
 fn fields_are_owned_before_direct_return_conversion_and_result_delivery() {
     for failure in [Some(ResultTarget::Return {}), None] {
         outcome_tests::reset();
@@ -142,6 +215,75 @@ fn partially_converted_fields_keep_all_native_cleanup_responsibilities() {
     drop(buffer);
     for handle in handles {
         assert_eq!(outcome_tests::cleanup_count_for(handle), 1);
+    }
+}
+
+#[test]
+fn safe_writes_cannot_replace_pending_raw_cleanup_targets() {
+    let file = File::open(std::env::current_exe().unwrap()).unwrap();
+    let borrowed = file.as_raw_handle() as usize;
+    let borrowed_bytes = borrowed.to_ne_bytes();
+    let offset = std::mem::offset_of!(NativeInfo, thread);
+    let width = size_of::<usize>();
+    for prepare in [false, true] {
+        outcome_tests::reset();
+        let layout = layout();
+        let buffer = NativeAggregateBuffer::new(Arc::clone(&layout), None).unwrap();
+        outcome_tests::fail_decode(ResultTarget::AggregateField {
+            parameter: 0,
+            field: 1,
+        });
+        assert!(
+            unsafe { planned(layout).invoke(&[Value::AggregatePointer(Arc::clone(&buffer))]) }
+                .is_err()
+        );
+        let handles = WRITTEN.get();
+        assert!(buffer.field_value(1).is_err());
+        let original = buffer.bytes().unwrap();
+        let mut replacement = original.clone();
+        replacement[offset..offset + width].copy_from_slice(&borrowed_bytes);
+        for (start, bytes) in [
+            (offset, borrowed_bytes.as_slice()),
+            (offset, &borrowed_bytes[..1]),
+            (offset + width - 1, &borrowed_bytes[..1]),
+            (offset - 1, &borrowed_bytes[..2]),
+            (offset + width - 1, &borrowed_bytes[..2]),
+            (0, replacement.as_slice()),
+        ] {
+            assert!(
+                buffer
+                    .write(start, bytes)
+                    .unwrap_err()
+                    .message()
+                    .contains("owned result awaits cleanup")
+            );
+            assert_eq!(buffer.bytes().unwrap(), original);
+        }
+        buffer.write(offset, &[]).unwrap();
+        buffer.write(buffer.layout().size(), &[]).unwrap();
+        let scalar_offset = std::mem::offset_of!(NativeInfo, process_id);
+        buffer.write(scalar_offset, &99u32.to_ne_bytes()).unwrap();
+        assert_eq!(u32::from_ne_bytes(buffer.read(scalar_offset).unwrap()), 99);
+
+        // Captured owners no longer use mutable field bytes as their cleanup targets.
+        buffer.write(0, &borrowed_bytes).unwrap();
+        assert_eq!(
+            buffer.field_value(0).unwrap().resource().unwrap().raw(),
+            handles[0]
+        );
+        if prepare {
+            buffer.prepare().unwrap();
+            for handle in handles {
+                assert_eq!(outcome_tests::cleanup_count_for(handle), 1);
+            }
+            buffer.write(offset, &borrowed_bytes).unwrap();
+        }
+        drop(buffer);
+        for handle in handles {
+            assert_eq!(outcome_tests::cleanup_count_for(handle), 1);
+        }
+        assert_eq!(outcome_tests::cleanup_count_for(borrowed), 0);
+        assert!(file.metadata().is_ok());
     }
 }
 
@@ -277,8 +419,9 @@ fn later_language_markers_cannot_erase_native_ownership() {
     drop(
         unsafe { planned(layout).invoke(&[Value::AggregatePointer(Arc::clone(&buffer))]) }.unwrap(),
     );
-    assert!(buffer.mark_legacy(false).is_err());
-    buffer.mark_legacy(true).unwrap();
+    // The completed native call has already established the fields' ownership.
+    assert!(unsafe { buffer.mark_legacy(false) }.is_err());
+    unsafe { buffer.mark_legacy(true) }.unwrap();
     let handles = WRITTEN.get();
     drop(buffer);
     for handle in handles {

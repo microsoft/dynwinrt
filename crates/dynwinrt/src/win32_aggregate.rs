@@ -197,9 +197,24 @@ impl NativeAggregateBuffer {
         Ok(bytes)
     }
 
+    /// Copies caller storage without transferring resource ownership. Writes
+    /// overlapping owned fields that still await raw cleanup are rejected.
     pub fn write(&self, offset: usize, bytes: &[u8]) -> Result<()> {
         self.check_range(offset, bytes.len())?;
         let mut state = self.lock();
+        let end = offset + bytes.len();
+        // Undecoded owned fields still use their stored bytes as cleanup targets.
+        if !bytes.is_empty()
+            && self.layout.fields.iter().enumerate().any(|(index, field)| {
+                state.raw_cleanup[index].owns_resource()
+                    && offset < field.offset + field_size(field.typ)
+                    && field.offset < end
+            })
+        {
+            return Err(invalid_argument(
+                "Cannot overwrite an aggregate field while its owned result awaits cleanup",
+            ));
+        }
         unsafe {
             std::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
@@ -280,7 +295,40 @@ impl NativeAggregateBuffer {
 
     /// Compatibility for manually described calls. Generated contracts register
     /// results inside CallPlan and cannot have that ownership erased by JS.
-    pub fn mark_legacy(&self, succeeded: bool) -> Result<()> {
+    ///
+    /// # Safety
+    ///
+    /// When registering previously unrecorded successful legacy outputs, all
+    /// result fields must be initialized and valid for their declared types. Every non-null
+    /// owned field must transfer exclusive ownership of a live resource with the
+    /// exact declared cleanup. It must not alias another owning field or a
+    /// resource still owned elsewhere, including a borrowed `File`/`OwnedHandle`.
+    /// External native writes must have completed, and the resources must not be
+    /// freed or transferred concurrently with this call. Layout validation and
+    /// caller-written bytes do not establish any of these ownership guarantees.
+    ///
+    /// ```compile_fail,E0133
+    /// #![forbid(unsafe_code)]
+    /// use std::{fs::File, os::windows::io::AsRawHandle};
+    /// use dynwinrt::win32::{
+    ///     AggregateResultField, Cleanup, NativeAggregateBuffer,
+    ///     NativeAggregatePointerLayout, Type,
+    /// };
+    ///
+    /// fn cannot_adopt_a_borrowed_file(file: &File) {
+    ///     let layout = NativeAggregatePointerLayout::new(
+    ///         "BorrowedFile".into(), size_of::<usize>(), align_of::<usize>(),
+    ///         vec![AggregateResultField {
+    ///             name: "handle".into(), offset: 0,
+    ///             typ: Type::Handle, cleanup: Cleanup::CloseHandle,
+    ///         }],
+    ///     ).unwrap();
+    ///     let buffer = NativeAggregateBuffer::new(layout, None).unwrap();
+    ///     buffer.write(0, &(file.as_raw_handle() as usize).to_ne_bytes()).unwrap();
+    ///     buffer.mark_legacy(true).unwrap();
+    /// }
+    /// ```
+    pub unsafe fn mark_legacy(&self, succeeded: bool) -> Result<()> {
         let mut state = self.lock();
         if state.native_recorded || state.succeeded == Some(true) {
             return if state.succeeded == Some(succeeded) {

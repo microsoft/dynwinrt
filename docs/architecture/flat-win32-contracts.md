@@ -108,6 +108,16 @@ the existing resource owner rather than adopting its handle a second time.
 Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
 Legacy manual mark helpers cannot erase already registered native ownership.
 
+Legacy raw-field adoption is explicitly `unsafe` in Rust, including the binding
+adapter entrypoint. The caller must prove that successful fields are initialized
+and valid, that each non-null owned resource transfers exclusive ownership, and
+that its declared cleanup matches the allocator/resource kind. Native writes must
+have completed; borrowed handles and duplicated owning fields cannot be adopted.
+Safe aggregate construction, reads and writes only manage bytes, not resource
+ownership. If field conversion fails with raw cleanup still pending, safe writes
+cannot overwrite any part of those cleanup targets until they are retired.
+Version 3's native result registration does not use this legacy adoption boundary.
+
 ## Runtime and package boundary
 
 Win32 stays outside the public WinRT model and the `@microsoft/dynwinrt` root.
@@ -239,7 +249,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Shared Win32 contract tests | Strict version decoding, legacy migration, complete result coverage, ownership/delivery combinations, disjoint conditions and Rust-derived schema consistency. |
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
-| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial conversion cleanup, extraction, failed cleanup retry and real `CreateProcessW` handle retirement. |
+| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial conversion cleanup, unsafe legacy transfers, safe-write protection, extraction, failed cleanup retry and real `CreateProcessW` handle retirement. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |

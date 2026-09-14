@@ -205,10 +205,8 @@ impl NativeAggregateStorage {
       .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
-  fn mark_call_result(&self, succeeded: bool) -> napi::Result<()> {
-    self
-      .backing
-      .mark_legacy(succeeded)
+  unsafe fn mark_call_result(&self, succeeded: bool) -> napi::Result<()> {
+    unsafe { self.backing.mark_legacy(succeeded) }
       .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
@@ -953,14 +951,21 @@ impl DynWin32 {
     }
   }
 
+  /// # Safety
+  ///
+  /// Successful legacy fields must be defined native results transferring
+  /// exclusive ownership with their declared cleanup; borrowed handles or
+  /// caller-written pointer bytes alone do not satisfy this contract. The caller
+  /// must uphold `dynwinrt::win32::NativeAggregateBuffer::mark_legacy`'s safety
+  /// requirements, including completed native writes and no other owners.
   #[napi]
-  pub fn mark_native_struct_call_result(
+  pub unsafe fn mark_native_struct_call_result(
     value: &DynWin32NativeStruct,
     #[napi(ts_arg_type = "string")] descriptor: specification::Descriptor,
     succeeded: bool,
   ) -> napi::Result<()> {
     validate_native_struct(value, &descriptor)?;
-    value.storage.mark_call_result(succeeded)
+    unsafe { value.storage.mark_call_result(succeeded) }
   }
 
   #[napi]
