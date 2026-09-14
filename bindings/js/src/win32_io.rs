@@ -8,8 +8,6 @@
 use std::{
   cell::RefCell,
   collections::HashMap,
-  marker::PhantomData,
-  rc::Rc,
   sync::{
     atomic::{AtomicU64, Ordering},
     mpsc::{channel, Sender},
@@ -19,11 +17,12 @@ use std::{
 
 use dynwinrt::win32::io::{IoCancellation, IoCompletion, IoKind, IocpRuntime, PreparedIo};
 use napi::{
-  bindgen_prelude::{Buffer, Function, ToNapiValue, Unknown},
+  bindgen_prelude::{Function, ToNapiValue, Unknown},
   sys, JsValue,
 };
 
 use super::{boundary, storage, DynWin32Resource};
+use crate::js_storage::RetainedBuffer;
 use crate::managed_tsfn::ManagedTsfn;
 
 static NEXT_PENDING_ID: AtomicU64 = AtomicU64::new(1);
@@ -122,11 +121,7 @@ thread_local! {
 }
 
 struct JsPendingIo {
-  buffer: Buffer,
-  buffer_len: usize,
-  buffer_pointer: usize,
-  env: usize,
-  _owner_thread: PhantomData<Rc<()>>,
+  buffer: RetainedBuffer,
 }
 
 struct JsPreparedIo {
@@ -156,7 +151,7 @@ impl DynWin32OverlappedOperation {
       .take()
       .ok_or_else(|| napi::Error::from_reason("OVERLAPPED operation was already started"))?;
     let env = callback.value().env;
-    if task.pending.env != env as usize {
+    if task.pending.buffer.env() != env {
       return Err(napi::Error::from_reason(
         "OVERLAPPED operation belongs to a different Node environment",
       ));
@@ -212,7 +207,7 @@ pub(super) fn prepare(
   buffer: Unknown,
   offset: Option<Unknown>,
 ) -> napi::Result<DynWin32OverlappedOperation> {
-  let env = buffer.value().env as usize;
+  let env = buffer.value().env;
   let buffer = storage::native_buffer(buffer)?;
   let offset = offset
     .as_ref()
@@ -231,11 +226,7 @@ pub(super) fn prepare(
     task: Some(JsPreparedIo {
       native,
       pending: JsPendingIo {
-        buffer_len: buffer.len(),
-        buffer_pointer: buffer.as_ptr() as usize,
-        buffer,
-        env,
-        _owner_thread: PhantomData,
+        buffer: RetainedBuffer::new(buffer, env),
       },
     }),
     cancellation,
@@ -254,20 +245,21 @@ impl JsPendingIo {
     env: sys::napi_env,
     output: u32,
   ) -> napi::Result<u32> {
-    if self.env != env as usize {
+    if self.buffer.env() != env {
       return Err(napi::Error::from_reason(
         "OVERLAPPED result belongs to a different Node environment",
       ));
     }
     let transferred = usize::try_from(output)
       .map_err(|_| napi::Error::from_reason("OVERLAPPED result exceeds usize"))?;
-    if transferred > self.buffer_len || transferred > native.len() {
+    let original = self.buffer.original();
+    if transferred > original.length || transferred > native.len() {
       return Err(napi::Error::from_reason(
         "OVERLAPPED result exceeds the original Buffer length",
       ));
     }
     if kind == IoKind::Read {
-      let raw = unsafe { Buffer::to_napi_value(env, self.buffer) }?;
+      let raw = self.buffer.into_value(env)?;
       let mut is_buffer = false;
       napi::check_status!(
         unsafe { sys::napi_is_buffer(env, raw, &mut is_buffer) },
@@ -287,9 +279,7 @@ impl JsPendingIo {
           ),
         )
       })?;
-      if info.length != self.buffer_len
-        || (info.length != 0 && info.pointer as usize != self.buffer_pointer)
-      {
+      if !original.same_storage(info) {
         return Err(napi::Error::from_reason(
           "OVERLAPPED read Buffer backing ArrayBuffer was detached or changed",
         ));
@@ -353,15 +343,12 @@ fn completion_arguments(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use napi::bindgen_prelude::Buffer;
 
   fn pending() -> JsPendingIo {
     let buffer = Buffer::from(vec![1, 2, 3]);
     JsPendingIo {
-      buffer_len: buffer.len(),
-      buffer_pointer: buffer.as_ptr() as usize,
-      buffer,
-      env: 0,
-      _owner_thread: PhantomData,
+      buffer: RetainedBuffer::new(buffer, std::ptr::null_mut()),
     }
   }
 

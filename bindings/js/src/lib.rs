@@ -37,6 +37,7 @@ mod com_input;
 #[cfg(feature = "test-hooks")]
 mod generated_unsafe_test_hooks;
 mod managed_tsfn;
+mod js_storage;
 mod scheduled_start;
 mod win32;
 mod win32_subsystem;

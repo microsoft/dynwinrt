@@ -216,7 +216,7 @@ fn owned_text(value: &[u16]) -> Arc<RetainedNativePointer> {
   Arc::new(RetainedNativePointer {
     value: DynWinRTValue::with_pointer_owner(
       dynwinrt::WinRTValue::RawPtr(pointer),
-      com::NativePointerOwner::WideString(value),
+      com::NativePointerOwner::Storage(crate::js_storage::CallStorage::Words(value)),
     ),
     string: Some((true, false)),
   })

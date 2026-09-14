@@ -4,11 +4,13 @@
 use std::{ffi::c_void, ptr};
 
 use napi::{
-  bindgen_prelude::{Buffer, FromNapiValue, ToNapiValue, Unknown},
+  bindgen_prelude::{Buffer, FromNapiValue, Unknown},
   sys, JsValue,
 };
 
 use super::{com, DynWinRTValue};
+pub(super) use crate::js_storage::ByteView as BufferInfo;
+use crate::js_storage::{self, CallStorage, TypedArrayView};
 
 pub(super) const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
@@ -40,86 +42,33 @@ pub(super) fn unsigned64(value: &Unknown) -> napi::Result<u64> {
   Ok(integer)
 }
 
-pub(super) struct BufferInfo {
-  pub pointer: *mut u8,
-  pub length: usize,
-}
-
-impl BufferInfo {
-  pub unsafe fn bytes(&self) -> &[u8] {
-    if self.length == 0 {
-      &[]
-    } else {
-      unsafe { std::slice::from_raw_parts(self.pointer, self.length) }
-    }
-  }
-}
-
 pub(super) fn buffer_info(env: sys::napi_env, raw: sys::napi_value) -> napi::Result<BufferInfo> {
-  let mut is_typed_array = false;
-  napi::check_status!(unsafe { sys::napi_is_typedarray(env, raw, &mut is_typed_array) })?;
-  if !is_typed_array {
+  if !js_storage::is_typed_array(env, raw, None)? {
     return Err(napi::Error::from_reason(
       "Expected Buffer or Uint8Array native storage",
     ));
   }
-  let mut kind = 0;
-  let mut length = 0;
-  let mut data = ptr::null_mut();
-  let mut backing = ptr::null_mut();
-  let mut offset = 0;
-  napi::check_status!(unsafe {
-    sys::napi_get_typedarray_info(
-      env,
-      raw,
-      &mut kind,
-      &mut length,
-      &mut data,
-      &mut backing,
-      &mut offset,
-    )
-  })?;
-  if kind != sys::TypedarrayType::uint8_array as i32 {
+  let info = TypedArrayView::inspect(env, raw, None)?;
+  if info.kind != sys::TypedarrayType::uint8_array as i32 {
     return Err(napi::Error::from_reason(
       "Expected unsigned byte Buffer or Uint8Array storage",
     ));
   }
-  let mut is_array_buffer = false;
-  napi::check_status!(unsafe { sys::napi_is_arraybuffer(env, backing, &mut is_array_buffer) })?;
-  if !is_array_buffer {
-    return Err(napi::Error::from_reason(
-      "SharedArrayBuffer storage is unsupported for Win32",
-    ));
-  }
-  let mut detached = false;
-  napi::check_status!(unsafe { sys::napi_is_detached_arraybuffer(env, backing, &mut detached) })?;
-  if detached {
-    return Err(napi::Error::from_reason(
-      "Cannot use a detached Win32 Buffer/Uint8Array",
-    ));
-  }
-  let mut backing_data: *mut c_void = ptr::null_mut();
-  let mut backing_length = 0;
-  napi::check_status!(unsafe {
-    sys::napi_get_arraybuffer_info(env, backing, &mut backing_data, &mut backing_length)
-  })?;
-  if length > MAX_BUFFER_BYTES
-    || offset
-      .checked_add(length)
-      .is_none_or(|end| end > backing_length)
-    || (length != 0
-      && (data.is_null()
-        || backing_data.is_null()
-        || (backing_data as usize).checked_add(offset) != Some(data as usize)))
-  {
-    return Err(napi::Error::from_reason(
-      "Invalid or excessive Win32 native buffer extent (64 MiB maximum)",
-    ));
-  }
-  Ok(BufferInfo {
-    pointer: data.cast(),
-    length,
-  })
+  info.require_unshared(
+    env,
+    None,
+    "SharedArrayBuffer storage is unsupported for Win32",
+  )?;
+  info.require_attached(env, None, "Cannot use a detached Win32 Buffer/Uint8Array")?;
+  info.checked_extent(
+    env,
+    BufferInfo {
+      pointer: info.pointer,
+      length: info.elements,
+    },
+    MAX_BUFFER_BYTES,
+    "Invalid or excessive Win32 native buffer extent (64 MiB maximum)",
+  )
 }
 
 pub(super) fn length(value: &Unknown) -> napi::Result<usize> {
@@ -311,7 +260,7 @@ pub(super) fn string_pointer(
       let pointer = units.as_mut_ptr().cast();
       Ok(DynWinRTValue::with_pointer_owner(
         dynwinrt::WinRTValue::RawPtr(pointer),
-        com::NativePointerOwner::WideString(units),
+        com::NativePointerOwner::Storage(CallStorage::Words(units)),
       ))
     } else {
       if units.iter().any(|unit| *unit > 0x7f) {
@@ -326,7 +275,7 @@ pub(super) fn string_pointer(
       let pointer = bytes.as_mut_ptr().cast();
       Ok(DynWinRTValue::with_pointer_owner(
         dynwinrt::WinRTValue::RawPtr(pointer),
-        com::NativePointerOwner::AnsiString(bytes),
+        com::NativePointerOwner::Storage(CallStorage::Bytes(bytes)),
       ))
     };
   }
@@ -342,7 +291,7 @@ pub(super) fn validate_string_bytes(
 ) -> napi::Result<()> {
   let terminator = if wide { 2 } else { 1 } * if multi { 2 } else { 1 };
   if info.length < terminator
-    || (wide && (info.length % 2 != 0 || info.pointer as usize % 2 != 0))
+    || (wide && (info.length % 2 != 0 || !info.is_aligned(2)))
     || unsafe { info.bytes() }[info.length - terminator..]
       .iter()
       .any(|byte| *byte != 0)
@@ -364,31 +313,30 @@ pub(super) fn validate_string_owner(
   multi: bool,
 ) -> napi::Result<()> {
   match &owner.1 {
-    Some(com::NativePointerOwner::Uint8Array { value, env, .. }) => {
-      let mut value = value
-        .lock()
-        .map_err(|_| napi::Error::from_reason("Win32 string owner lock is poisoned"))?;
-      let raw = unsafe {
-        <&mut napi::bindgen_prelude::Uint8Array as ToNapiValue>::to_napi_value(*env, &mut *value)
-      }?;
-      validate_string_bytes(&buffer_info(*env, raw)?, wide, multi)
+    Some(com::NativePointerOwner::Storage(CallStorage::Uint8Array(storage))) => storage
+      .with_value("Win32 string owner lock is poisoned", |env, raw| {
+        validate_string_bytes(&buffer_info(env, raw)?, wide, multi)
+      }),
+    Some(com::NativePointerOwner::Storage(CallStorage::Words(units))) if wide => {
+      validate_string_bytes(
+        &BufferInfo {
+          pointer: units.as_ptr().cast::<u8>().cast_mut(),
+          length: units.len() * 2,
+        },
+        wide,
+        multi,
+      )
     }
-    Some(com::NativePointerOwner::WideString(units)) if wide => validate_string_bytes(
-      &BufferInfo {
-        pointer: units.as_ptr().cast::<u8>().cast_mut(),
-        length: units.len() * 2,
-      },
-      wide,
-      multi,
-    ),
-    Some(com::NativePointerOwner::AnsiString(bytes)) if !wide => validate_string_bytes(
-      &BufferInfo {
-        pointer: bytes.as_ptr().cast_mut(),
-        length: bytes.len(),
-      },
-      wide,
-      multi,
-    ),
+    Some(com::NativePointerOwner::Storage(CallStorage::Bytes(bytes))) if !wide => {
+      validate_string_bytes(
+        &BufferInfo {
+          pointer: bytes.as_ptr().cast_mut(),
+          length: bytes.len(),
+        },
+        wide,
+        multi,
+      )
+    }
     None if matches!(owner.0, dynwinrt::WinRTValue::Null) => Ok(()),
     None if matches!(owner.0, dynwinrt::WinRTValue::RawPtr(pointer) if pointer.is_null()) => Ok(()),
     _ => Err(napi::Error::from_reason(

@@ -7,6 +7,7 @@ use napi_derive::napi;
 use windows::core::{IUnknown, Interface as _, GUID};
 
 use super::{com_raw::DynComRaw, DynWinRTType, DynWinRTValue, WinGUID, TABLE};
+use crate::js_storage::{self, CallStorage, RetainedTypedBuffer, RetainedUint8Array};
 
 #[cfg(all(test, feature = "test-hooks"))]
 #[path = "com_input_tests.rs"]
@@ -14,23 +15,9 @@ mod input_tests;
 
 #[allow(dead_code)]
 pub(super) enum NativePointerOwner {
-  Uint8Array {
-    value: std::sync::Mutex<napi::bindgen_prelude::Uint8Array>,
-    env: napi::sys::napi_env,
-    pointer: usize,
-    length: usize,
-  },
-  TypedBuffer {
-    env: napi::sys::napi_env,
-    reference: napi::sys::napi_ref,
-    pointer: usize,
-    byte_length: usize,
-    typed_array_type: i32,
-  },
+  Storage(CallStorage),
   CoTaskMem(*mut std::ffi::c_void),
   Guid(*mut GUID),
-  WideString(Box<[u16]>),
-  AnsiString(Box<[u8]>),
   RawMemory(std::sync::Arc<super::com_raw::RawAllocation>),
   RawCom(std::sync::Arc<super::com_raw::RawComReference>),
 }
@@ -241,91 +228,12 @@ pub(super) struct NativeInvocationLeases {
 
 impl NativePointerOwner {
   pub(super) fn validate(&self) -> napi::Result<()> {
-    if let Self::RawMemory(allocation) = self {
-      return allocation.validate_live();
+    match self {
+      Self::Storage(storage) => storage.validate(),
+      Self::RawMemory(allocation) => allocation.validate_live(),
+      Self::RawCom(reference) => reference.validate_live(),
+      Self::CoTaskMem(_) | Self::Guid(_) => Ok(()),
     }
-    if let Self::RawCom(reference) = self {
-      return reference.validate_live();
-    }
-    if let Self::TypedBuffer {
-      env,
-      reference,
-      pointer,
-      byte_length,
-      typed_array_type,
-    } = self
-    {
-      let mut raw = std::ptr::null_mut();
-      napi::check_status!(
-        unsafe { napi::sys::napi_get_reference_value(*env, *reference, &mut raw) },
-        "Failed to revalidate COM buffer owner"
-      )?;
-      let info = typed_buffer_info(*env, raw)?;
-      if info.pointer != *pointer
-        || info.byte_length != *byte_length
-        || info.typed_array_type != *typed_array_type
-      {
-        return Err(napi::Error::from_reason(
-          "Cannot use a COM buffer whose TypedArray backing storage changed",
-        ));
-      }
-      return Ok(());
-    }
-    let Self::Uint8Array {
-      value,
-      env,
-      pointer,
-      length,
-    } = self
-    else {
-      return Ok(());
-    };
-    let mut value = value
-      .lock()
-      .map_err(|_| napi::Error::from_reason("TypedArray pointer owner lock is poisoned"))?;
-    let raw = unsafe {
-      <&mut napi::bindgen_prelude::Uint8Array as ToNapiValue>::to_napi_value(*env, &mut *value)
-    }?;
-    let mut typed_array_type = 0;
-    let mut current_length = 0usize;
-    let mut current_pointer = std::ptr::null_mut();
-    let mut array_buffer = std::ptr::null_mut();
-    let mut byte_offset = 0usize;
-    napi::check_status!(
-      unsafe {
-        napi::sys::napi_get_typedarray_info(
-          *env,
-          raw,
-          &mut typed_array_type,
-          &mut current_length,
-          &mut current_pointer,
-          &mut array_buffer,
-          &mut byte_offset,
-        )
-      },
-      "Failed to revalidate TypedArray backing storage"
-    )?;
-    let mut detached = false;
-    napi::check_status!(
-      unsafe { napi::sys::napi_is_detached_arraybuffer(*env, array_buffer, &mut detached) },
-      "Failed to inspect TypedArray backing storage"
-    )?;
-    if detached {
-      return Err(napi::Error::from_reason(
-        "Cannot use a pointer whose TypedArray backing ArrayBuffer is detached",
-      ));
-    }
-    let current_pointer = if current_length == 0 {
-      0
-    } else {
-      current_pointer as usize
-    };
-    if current_length != *length || current_pointer != *pointer {
-      return Err(napi::Error::from_reason(
-        "Cannot use a pointer whose TypedArray backing storage changed",
-      ));
-    }
-    Ok(())
   }
 }
 
@@ -342,12 +250,6 @@ impl Drop for NativePointerOwner {
         if !ptr.is_null() {
           drop(unsafe { Box::from_raw(*ptr) });
           *ptr = std::ptr::null_mut();
-        }
-      }
-      Self::TypedBuffer { env, reference, .. } => {
-        if !reference.is_null() {
-          let _ = unsafe { napi::sys::napi_delete_reference(*env, *reference) };
-          *reference = std::ptr::null_mut();
         }
       }
       _ => {}
@@ -682,175 +584,35 @@ fn create_test_hwnd() -> napi::Result<BigInt> {
   Ok(BigInt::from(bits as u64))
 }
 
-struct Uint8ArrayInfo {
-  data: *const u8,
-  length: usize,
-}
+const SHARED_STORAGE_ERROR: &str =
+  "SharedArrayBuffer-backed views cannot be passed to native COM calls";
 
-struct TypedBufferInfo {
-  pointer: usize,
-  byte_length: usize,
-  source_element_size: usize,
-  raw_bytes: bool,
-  typed_array_type: i32,
-}
-
-fn reject_shared_array_buffer(
-  env: napi::sys::napi_env,
-  array_buffer: napi::sys::napi_value,
-) -> napi::Result<()> {
-  let mut is_array_buffer = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_arraybuffer(env, array_buffer, &mut is_array_buffer) },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  if !is_array_buffer {
-    return Err(napi::Error::from_reason(
-      "SharedArrayBuffer-backed views cannot be passed to native COM calls",
-    ));
-  }
-  Ok(())
-}
-
-fn typed_array_element_size(typed_array_type: i32) -> napi::Result<usize> {
-  use napi::sys::TypedarrayType;
-  match typed_array_type {
-    value
-      if value == TypedarrayType::int8_array as i32
-        || value == TypedarrayType::uint8_array as i32
-        || value == TypedarrayType::uint8_clamped_array as i32 =>
-    {
-      Ok(1)
-    }
-    value
-      if value == TypedarrayType::int16_array as i32
-        || value == TypedarrayType::uint16_array as i32 =>
-    {
-      Ok(2)
-    }
-    value
-      if value == TypedarrayType::int32_array as i32
-        || value == TypedarrayType::uint32_array as i32
-        || value == TypedarrayType::float32_array as i32 =>
-    {
-      Ok(4)
-    }
-    value
-      if value == TypedarrayType::float64_array as i32
-        || value == TypedarrayType::bigint64_array as i32
-        || value == TypedarrayType::biguint64_array as i32 =>
-    {
-      Ok(8)
-    }
-    _ => Err(napi::Error::from_reason(
-      "Unsupported TypedArray element type for a COM buffer",
-    )),
-  }
-}
-
-fn typed_buffer_info(
-  env: napi::sys::napi_env,
-  raw: napi::sys::napi_value,
-) -> napi::Result<TypedBufferInfo> {
-  let mut is_typed_array = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_typedarray(env, raw, &mut is_typed_array) },
-    "Failed to inspect COM buffer value"
-  )?;
-  if !is_typed_array {
-    return Err(napi::Error::from_reason(
-      "DynCom.buffer(): expected Buffer or TypedArray",
-    ));
-  }
-
-  let mut typed_array_type = 0;
-  let mut length = 0usize;
-  let mut data = std::ptr::null_mut();
-  let mut array_buffer = std::ptr::null_mut();
-  let mut byte_offset = 0usize;
-  napi::check_status!(
-    unsafe {
-      napi::sys::napi_get_typedarray_info(
-        env,
-        raw,
-        &mut typed_array_type,
-        &mut length,
-        &mut data,
-        &mut array_buffer,
-        &mut byte_offset,
-      )
-    },
-    "Failed to inspect COM TypedArray backing storage"
-  )?;
-  reject_shared_array_buffer(env, array_buffer)?;
-  let mut detached = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_detached_arraybuffer(env, array_buffer, &mut detached) },
-    "Failed to inspect COM TypedArray backing storage"
-  )?;
-  if detached {
-    return Err(napi::Error::from_reason(
-      "Cannot use a COM buffer whose backing ArrayBuffer is detached",
-    ));
-  }
-  let source_element_size = typed_array_element_size(typed_array_type)?;
-  let byte_length = length
-    .checked_mul(source_element_size)
-    .ok_or_else(|| napi::Error::from_reason("COM buffer byte length overflow"))?;
-  let mut is_buffer = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_buffer(env, raw, &mut is_buffer) },
-    "Failed to identify Node Buffer storage"
-  )?;
-  Ok(TypedBufferInfo {
-    pointer: if byte_length == 0 { 0 } else { data as usize },
-    byte_length,
-    source_element_size,
-    raw_bytes: is_buffer,
-    typed_array_type,
-  })
-}
+const BUFFER_MESSAGES: js_storage::TypedBufferMessages = js_storage::TypedBufferMessages {
+  inspect_value: "Failed to inspect COM buffer value",
+  expected: "DynCom.buffer(): expected Buffer or TypedArray",
+  inspect_backing: "Failed to inspect COM TypedArray backing storage",
+  shared: SHARED_STORAGE_ERROR,
+  detached: "Cannot use a COM buffer whose backing ArrayBuffer is detached",
+  element_type: "Unsupported TypedArray element type for a COM buffer",
+  overflow: "COM buffer byte length overflow",
+  retain: "Failed to retain COM buffer backing storage",
+  revalidate: "Failed to revalidate COM buffer owner",
+  changed: "Cannot use a COM buffer whose TypedArray backing storage changed",
+};
 
 pub(super) fn stage_copy_bytes(value: Unknown) -> napi::Result<Vec<u8>> {
-  let info = typed_buffer_info(value.value().env, value.value().value)?;
-  if info.typed_array_type != napi::sys::TypedarrayType::uint8_array as i32 {
-    return Err(napi::Error::from_reason(
-      "Owned-copy input must be Buffer or Uint8Array",
-    ));
-  }
-  if info.byte_length > 64 * 1024 * 1024 {
-    return Err(napi::Error::from_reason(
-      "Owned-copy input exceeds the 64 MiB safety cap",
-    ));
-  }
-  let mut bytes = Vec::new();
-  bytes
-    .try_reserve_exact(info.byte_length)
-    .map_err(|_| napi::Error::from_reason("Unable to stage owned copy"))?;
-  if info.byte_length != 0 {
-    if info.pointer == 0 {
-      return Err(napi::Error::from_reason("Owned-copy input storage is null"));
-    }
-    bytes.extend_from_slice(unsafe {
-      std::slice::from_raw_parts(info.pointer as *const u8, info.byte_length)
-    });
-  }
-  Ok(bytes)
+  js_storage::stage_copy_bytes(value, &BUFFER_MESSAGES)
 }
 
 fn com_buffer(value: Unknown) -> napi::Result<DynWinRTValue> {
   let env = value.value().env;
   let raw = value.value().value;
-  let info = typed_buffer_info(env, raw)?;
-  let mut reference = std::ptr::null_mut();
-  napi::check_status!(
-    unsafe { napi::sys::napi_create_reference(env, raw, 1, &mut reference) },
-    "Failed to retain COM buffer backing storage"
-  )?;
+  let storage = RetainedTypedBuffer::new(env, raw, &BUFFER_MESSAGES)?;
+  let info = storage.info();
   let buffer = unsafe {
     dynwinrt::com::ComBufferValue::borrowed(
-      info.pointer as *mut u8,
-      info.byte_length,
+      info.bytes.pointer,
+      info.bytes.length,
       info.source_element_size,
       info.raw_bytes,
       true,
@@ -859,13 +621,7 @@ fn com_buffer(value: Unknown) -> napi::Result<DynWinRTValue> {
   .map_err(|error| napi::Error::from_reason(error.message()))?;
   Ok(DynWinRTValue::with_com_buffer(
     buffer,
-    NativePointerOwner::TypedBuffer {
-      env,
-      reference,
-      pointer: info.pointer,
-      byte_length: info.byte_length,
-      typed_array_type: info.typed_array_type,
-    },
+    NativePointerOwner::Storage(CallStorage::TypedBuffer(storage)),
   ))
 }
 
@@ -913,55 +669,8 @@ fn validate_ansi_string_bytes(bytes: &[u8]) -> napi::Result<()> {
 fn uint8_array_info(
   env: napi::sys::napi_env,
   raw: napi::sys::napi_value,
-) -> napi::Result<Option<Uint8ArrayInfo>> {
-  let mut is_typed_array = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_typedarray(env, raw, &mut is_typed_array) },
-    "Failed to inspect TypedArray value"
-  )?;
-  if !is_typed_array {
-    return Ok(None);
-  }
-
-  let mut typed_array_type = 0;
-  let mut length = 0usize;
-  let mut data = std::ptr::null_mut();
-  let mut array_buffer = std::ptr::null_mut();
-  let mut byte_offset = 0usize;
-  napi::check_status!(
-    unsafe {
-      napi::sys::napi_get_typedarray_info(
-        env,
-        raw,
-        &mut typed_array_type,
-        &mut length,
-        &mut data,
-        &mut array_buffer,
-        &mut byte_offset,
-      )
-    },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  reject_shared_array_buffer(env, array_buffer)?;
-  if typed_array_type != napi::sys::TypedarrayType::uint8_array as i32 {
-    return Ok(None);
-  }
-
-  let mut detached = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_detached_arraybuffer(env, array_buffer, &mut detached) },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  if detached {
-    return Err(napi::Error::from_reason(
-      "Cannot use a detached Buffer/Uint8Array",
-    ));
-  }
-
-  Ok(Some(Uint8ArrayInfo {
-    data: data.cast(),
-    length,
-  }))
+) -> napi::Result<Option<js_storage::ByteView>> {
+  js_storage::uint8_array_info(env, raw, SHARED_STORAGE_ERROR)
 }
 
 pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
@@ -1010,21 +719,11 @@ pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
     ));
   }
   if uint8_array_info(env, raw)?.is_some() {
-    let array = unsafe { napi::bindgen_prelude::Uint8Array::from_napi_value(env, raw) }?;
-    let length = array.len();
-    let pointer = if length == 0 {
-      0
-    } else {
-      array.as_ref().as_ptr() as usize
-    };
+    let storage = RetainedUint8Array::new(env, raw)?;
+    let pointer = storage.view().pointer;
     return Ok(DynWinRTValue::with_pointer_owner(
-      dynwinrt::WinRTValue::RawPtr(pointer as *mut std::ffi::c_void),
-      NativePointerOwner::Uint8Array {
-        value: std::sync::Mutex::new(array),
-        env,
-        pointer,
-        length,
-      },
+      dynwinrt::WinRTValue::RawPtr(pointer.cast()),
+      NativePointerOwner::Storage(CallStorage::Uint8Array(storage)),
     ));
   }
   // Reject existing DynWinRtValue inputs. Borrowing an Object's raw COM pointer
@@ -1105,16 +804,16 @@ fn wide_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
     let ptr = storage.as_mut_ptr().cast();
     return Ok(DynWinRTValue::with_pointer_owner(
       dynwinrt::WinRTValue::RawPtr(ptr),
-      NativePointerOwner::WideString(storage),
+      NativePointerOwner::Storage(CallStorage::Words(storage)),
     ));
   }
   if let Some(array) = uint8_array_info(env, raw)? {
-    if !array.data.is_null() && (array.data as usize) % std::mem::align_of::<u16>() != 0 {
+    if !array.is_aligned(std::mem::align_of::<u16>()) {
       return Err(napi::Error::from_reason(
         "wideStringPointer(): Buffer/Uint8Array backing address must be aligned for UTF-16",
       ));
     }
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     validate_wide_string_bytes(bytes)?;
   }
   pointer(value)
@@ -1140,11 +839,11 @@ fn ansi_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
     let ptr = storage.as_mut_ptr().cast();
     return Ok(DynWinRTValue::with_pointer_owner(
       dynwinrt::WinRTValue::RawPtr(ptr),
-      NativePointerOwner::AnsiString(storage),
+      NativePointerOwner::Storage(CallStorage::Bytes(storage)),
     ));
   }
   if let Some(array) = uint8_array_info(env, raw)? {
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     validate_ansi_string_bytes(bytes)?;
   }
   pointer(value)
@@ -1228,12 +927,12 @@ fn handle_value(value: Unknown) -> napi::Result<BigInt> {
         "handleValue(): Buffer/Uint8Array must contain exactly {expected} bytes on this target",
       )));
     }
-    if array.data.is_null() {
+    if array.pointer.is_null() {
       return Err(napi::Error::from_reason(
         "handleValue(): Buffer/Uint8Array backing storage is null",
       ));
     }
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     #[cfg(target_pointer_width = "64")]
     let bits = u64::from_le_bytes(bytes.try_into().expect("validated handle byte length"));
     #[cfg(target_pointer_width = "32")]
@@ -6974,6 +6673,7 @@ mod tests {
 
   #[test]
   fn com_typed_buffer_widths_are_exact() {
+    use crate::js_storage::typed_array_element_size;
     use napi::sys::TypedarrayType;
 
     for typ in [
@@ -7000,7 +6700,7 @@ mod tests {
     ] {
       assert_eq!(typed_array_element_size(typ as i32).unwrap(), 8);
     }
-    assert!(typed_array_element_size(i32::MAX).is_err());
+    assert!(typed_array_element_size(i32::MAX).is_none());
   }
 
   #[test]
