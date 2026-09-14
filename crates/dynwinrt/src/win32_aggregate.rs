@@ -10,7 +10,8 @@ use std::{
 };
 
 use super::{
-    Cleanup, MAX_NATIVE_AGGREGATE_SIZE, ResultPolicy, Type, Value, invalid_argument, result_cleanup,
+    Cleanup, MAX_NATIVE_AGGREGATE_SIZE, OwnedResource, ResultPolicy, Type, Value, invalid_argument,
+    result_cleanup,
 };
 use crate::{
     abi::AbiValue,
@@ -388,21 +389,39 @@ impl NativeAggregateBuffer {
 }
 
 impl AggregateBufferState {
+    fn owned_resource(&self, index: usize) -> Option<&Arc<OwnedResource>> {
+        if matches!(
+            self.policies[index],
+            ResultPolicy::Defined {
+                ownership: super::ResultOwnership::Owned { .. },
+                ..
+            }
+        ) {
+            self.results[index].as_ref().and_then(Value::resource)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn owned_resources(&self) -> impl Iterator<Item = &Arc<OwnedResource>> {
+        (0..self.results.len()).filter_map(|index| self.owned_resource(index))
+    }
+
     pub(super) fn prepare(&mut self, layout: &NativeAggregatePointerLayout) -> Result<()> {
+        self.prepare_with_owned_cleanup(layout, |resource| resource.close())
+    }
+
+    pub(super) fn prepare_with_owned_cleanup(
+        &mut self,
+        layout: &NativeAggregatePointerLayout,
+        mut close: impl FnMut(&Arc<OwnedResource>) -> windows_core::Result<()>,
+    ) -> Result<()> {
         let mut first_error = self.cleanup_raw(layout).err();
         for (index, field) in layout.fields.iter().enumerate() {
-            if matches!(
-                self.policies[index],
-                ResultPolicy::Defined {
-                    ownership: super::ResultOwnership::Owned { .. },
-                    ..
-                }
-            ) {
-                if let Some(Value::Resource(resource)) = &self.results[index] {
-                    if let Err(error) = resource.close() {
-                        first_error.get_or_insert(Error::WindowsError(error));
-                        continue;
-                    }
+            if let Some(resource) = self.owned_resource(index) {
+                if let Err(error) = close(resource) {
+                    first_error.get_or_insert(Error::WindowsError(error));
+                    continue;
                 }
             }
             if self.raw_cleanup[index].owns_resource() {

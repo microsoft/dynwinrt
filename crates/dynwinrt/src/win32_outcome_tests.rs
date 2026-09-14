@@ -40,6 +40,10 @@ pub(super) fn record_call_lock(value: usize) {
     OBSERVED.with(|observed| observed.borrow_mut().locks.push(value));
 }
 
+pub(super) fn call_lock_order() -> Vec<usize> {
+    OBSERVED.with(|observed| observed.borrow().locks.clone())
+}
+
 pub(super) fn record_output_decode(index: usize) {
     OBSERVED.with(|observed| observed.borrow_mut().decoded_outputs.push(index));
 }

@@ -744,7 +744,7 @@ impl CallPlan {
             }
         }
 
-        let mut resources = args
+        let mut input_resources = args
             .iter()
             .enumerate()
             .filter_map(|(index, value)| match value {
@@ -752,8 +752,8 @@ impl CallPlan {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        resources.sort_by_key(|(_, resource)| Arc::as_ptr(resource) as usize);
-        if resources
+        input_resources.sort_by_key(|(_, resource)| Arc::as_ptr(resource) as usize);
+        if input_resources
             .windows(2)
             .any(|pair| Arc::ptr_eq(pair[0].1, pair[1].1))
         {
@@ -761,35 +761,6 @@ impl CallPlan {
                 "the same managed Win32 resource cannot occupy multiple parameters in one call",
             ));
         }
-        let mut resource_guard_by_arg = vec![None; args.len()];
-        let mut resource_guards = Vec::with_capacity(resources.len());
-        for (arg_index, resource) in resources {
-            let consumes_resource = self.parameters.iter().any(|parameter| {
-                parameter.input_index == Some(arg_index) && parameter.spec.consumes_resource
-            });
-            let changes_completion_modes =
-                self.parameters
-                    .iter()
-                    .enumerate()
-                    .any(|(index, parameter)| {
-                        parameter.input_index == Some(arg_index)
-                            && self.contract.changes_resource(index)
-                    });
-            let access = if consumes_resource {
-                ResourceAccess::Consume
-            } else if changes_completion_modes {
-                ResourceAccess::MutateState("file completion modes")
-            } else {
-                ResourceAccess::Borrow
-            };
-            let guard = resource.lock_for_call(access)?;
-            #[cfg(test)]
-            outcome_tests::record_call_lock(Arc::as_ptr(resource) as usize);
-            let guard_index = resource_guards.len();
-            resource_guard_by_arg[arg_index] = Some(guard_index);
-            resource_guards.push(guard);
-        }
-
         let mut aggregate_inputs = args
             .iter()
             .enumerate()
@@ -832,6 +803,69 @@ impl CallPlan {
                     ));
                 }
             }
+        }
+
+        // Lock aggregate storage first, then one ordered set of input and retiring owners.
+        let mut resources = input_resources
+            .iter()
+            .map(|(index, resource)| (Some(*index), Arc::clone(resource)))
+            .collect::<Vec<_>>();
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            if layout.is_none() {
+                continue;
+            }
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated aggregate input");
+            if let Some(guard) = aggregate_by_arg[input] {
+                for resource in aggregate_guards[guard].owned_resources() {
+                    let identity = Arc::as_ptr(resource) as usize;
+                    if input_resources
+                        .binary_search_by_key(&identity, |(_, owner)| Arc::as_ptr(owner) as usize)
+                        .is_ok()
+                    {
+                        return Err(invalid_argument(
+                            "Cannot retire an aggregate output owner used as an input in the same call; take the field before reusing the output buffer",
+                        ));
+                    }
+                    resources.push((None, Arc::clone(resource)));
+                }
+            }
+        }
+        resources.sort_by_key(|(_, resource)| Arc::as_ptr(resource) as usize);
+        resources.dedup_by(|first, second| Arc::ptr_eq(&first.1, &second.1));
+        let mut resource_guard_by_arg = vec![None; args.len()];
+        let mut resource_guards = Vec::with_capacity(resources.len());
+        for (arg_index, resource) in &resources {
+            let access = if let Some(arg_index) = *arg_index {
+                let consumes_resource = self.parameters.iter().any(|parameter| {
+                    parameter.input_index == Some(arg_index) && parameter.spec.consumes_resource
+                });
+                let changes_completion_modes =
+                    self.parameters
+                        .iter()
+                        .enumerate()
+                        .any(|(index, parameter)| {
+                            parameter.input_index == Some(arg_index)
+                                && self.contract.changes_resource(index)
+                        });
+                if consumes_resource {
+                    ResourceAccess::Consume
+                } else if changes_completion_modes {
+                    ResourceAccess::MutateState("file completion modes")
+                } else {
+                    ResourceAccess::Borrow
+                }
+            } else {
+                ResourceAccess::Consume
+            };
+            let guard = resource.lock_for_call(access)?;
+            #[cfg(test)]
+            outcome_tests::record_call_lock(Arc::as_ptr(resource) as usize);
+            if let Some(arg_index) = *arg_index {
+                resource_guard_by_arg[arg_index] = Some(resource_guards.len());
+            }
+            resource_guards.push(guard);
         }
 
         let input_storage = self
@@ -946,7 +980,13 @@ impl CallPlan {
                 .input_index
                 .expect("validated aggregate input");
             if let Some(guard) = aggregate_by_arg[input] {
-                aggregate_guards[guard].prepare(layout)?;
+                aggregate_guards[guard].prepare_with_owned_cleanup(layout, |resource| {
+                    let identity = Arc::as_ptr(resource) as usize;
+                    let index = resources
+                        .binary_search_by_key(&identity, |(_, owner)| Arc::as_ptr(owner) as usize)
+                        .expect("registered aggregate result owner");
+                    resource_guards[index].close()
+                })?;
             }
         }
         let raw_return = if let (Some(layout), Some(words)) =

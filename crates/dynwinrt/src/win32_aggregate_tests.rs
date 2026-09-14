@@ -13,6 +13,8 @@ use windows::Win32::Foundation::{
 
 #[path = "win32_aggregate_effect_tests.rs"]
 mod effect_tests;
+#[path = "win32_aggregate_lock_tests.rs"]
+mod lock_tests;
 
 #[repr(C)]
 struct NativeInfo {

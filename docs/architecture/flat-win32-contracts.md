@@ -112,6 +112,15 @@ cleanup does not release ownership or remove overlapping-write protection.
 Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
 Legacy manual mark helpers cannot erase already registered native ownership.
 
+Output-buffer reuse first locks the aggregate storage, then coordinates input
+owners and old owned-field results in one identity-ordered resource lock set.
+If retiring an old field would close an input owner in the same call, invocation
+fails before any old output is retired or the native function is dispatched.
+`field_value()` shares the field's owner; use `take_field()` to move that owner
+out before reusing its buffer as an output. Input-alias result policies do not
+retire their shared input owner. Retirement uses the already acquired owner
+guards rather than recursively calling a locking `close()` method.
+
 Once all output guards and native aggregate states are registered, the call
 commits successful input consumption and resource effects while input-resource
 locks are still held, before any field/return/out conversion or discard cleanup.
@@ -261,6 +270,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
 | Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
+| Aggregate owner lock tests | Bounded real `DuplicateHandle` reuse, shared-owner rejection without mutation, moved/distinct owners, input-alias policies, failed/busy retirement, invalid-input preservation and ordered/cross-thread resource coordination. |
 | Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |

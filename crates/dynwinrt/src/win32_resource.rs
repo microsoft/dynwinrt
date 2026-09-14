@@ -4,6 +4,7 @@
 //! Win32 owner identity and access coordination, independent of projections.
 
 use core::ffi::c_void;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -164,6 +165,32 @@ pub struct OwnedResource {
     capabilities: ResourceCapabilities,
 }
 
+#[derive(Debug)]
+pub(super) struct OwnedResourceCallGuard<'a> {
+    owner: &'a OwnedResource,
+    value: MutexGuard<'a, usize>,
+}
+
+impl Deref for OwnedResourceCallGuard<'_> {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl DerefMut for OwnedResourceCallGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl OwnedResourceCallGuard<'_> {
+    pub(super) fn close(&mut self) -> windows_core::Result<()> {
+        self.owner.close_locked(&mut self.value)
+    }
+}
+
 pub struct OwnedResourceLease<'a> {
     value: MutexGuard<'a, usize>,
 }
@@ -287,8 +314,14 @@ impl OwnedResource {
         Ok(OwnedResourceLease { value })
     }
 
-    pub(super) fn lock_for_call(&self, access: ResourceAccess) -> Result<MutexGuard<'_, usize>> {
-        self.control.lock(access)
+    pub(super) fn lock_for_call(
+        &self,
+        access: ResourceAccess,
+    ) -> Result<OwnedResourceCallGuard<'_>> {
+        Ok(OwnedResourceCallGuard {
+            owner: self,
+            value: self.control.lock(access)?,
+        })
     }
 
     pub fn async_lease(
@@ -318,6 +351,10 @@ impl OwnedResource {
             .value
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        self.close_locked(&mut value)
+    }
+
+    fn close_locked(&self, value: &mut usize) -> windows_core::Result<()> {
         if self.has_async_leases() {
             return Err(windows_core::Error::new(
                 HRESULT(0x800700AAu32 as i32),
