@@ -46,6 +46,12 @@ COM retains its own interface/IID/vtable contracts. Both follow the
 [contract evidence principles](classic-com-contract-evidence-registry.md);
 their selectors and ABI models are not interchangeable.
 
+Generate-command routing uses one lazily loaded flat-function index for the
+metadata set, rather than rereading and hashing WinMD for every requested COM
+interface. Presence-only lookup preserves the existing DllImport-based routing
+order and does not compute provenance hashes. Actual flat Win32 parsing still
+performs the unchanged metadata-hash and contract-fingerprint validation.
+
 Metadata-complete shapes use generic projection. Manual facts such as missing
 count relationships, ownership, cleanup, special layouts and lifecycle
 requirements belong in typed, closed contracts with exact selectors,

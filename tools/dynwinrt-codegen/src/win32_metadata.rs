@@ -27,6 +27,59 @@ struct MetadataContext {
     type_hashes: RefCell<HashMap<(String, String), String>>,
 }
 
+fn load_metadata_index(
+    paths: &str,
+    mut inspect_bytes: impl FnMut(&[u8]),
+) -> Result<reader::Index, String> {
+    let mut files = Vec::new();
+    for path in paths.split(';').filter(|path| !path.is_empty()) {
+        let bytes =
+            std::fs::read(path).map_err(|error| format!("win32.metadata: {path}: {error}"))?;
+        inspect_bytes(&bytes);
+        files.push(
+            reader::File::new(bytes)
+                .ok_or_else(|| format!("win32.metadata: invalid file {path}"))?,
+        );
+    }
+    if files.is_empty() {
+        return Err("win32.metadata: no files supplied".into());
+    }
+    Ok(reader::Index::new(files))
+}
+
+/// A lazy, command-scoped index for native-domain routing. Presence queries do
+/// not require provenance hashes or semantic contract projection.
+pub struct FlatFunctionIndex<'a> {
+    paths: &'a str,
+    index: Option<reader::Index>,
+}
+
+impl<'a> FlatFunctionIndex<'a> {
+    pub fn new(paths: &'a str) -> Self {
+        Self { paths, index: None }
+    }
+
+    pub fn has_flat_functions(
+        &mut self,
+        namespace: &str,
+        class_name: &str,
+    ) -> Result<bool, String> {
+        if self.index.is_none() {
+            self.index = Some(load_metadata_index(self.paths, |_| {})?);
+        }
+        Ok(self
+            .index
+            .as_ref()
+            .expect("loaded routing index")
+            .get(namespace, class_name)
+            .any(|definition| {
+                definition
+                    .methods()
+                    .any(|method| method.impl_map().is_some())
+            }))
+    }
+}
+
 impl Deref for MetadataContext {
     type Target = reader::Index;
     fn deref(&self) -> &Self::Target {
@@ -36,21 +89,12 @@ impl Deref for MetadataContext {
 
 impl MetadataContext {
     fn load(paths: &str) -> Result<Self, String> {
-        let mut files = Vec::new();
         let mut hashes = Vec::new();
-        for path in paths.split(';').filter(|p| !p.is_empty()) {
-            let bytes = std::fs::read(path).map_err(|e| format!("win32.metadata: {path}: {e}"))?;
-            hashes.push(win32_contracts::sha256(&bytes));
-            files.push(
-                reader::File::new(bytes)
-                    .ok_or_else(|| format!("win32.metadata: invalid file {path}"))?,
-            );
-        }
-        if files.is_empty() {
-            return Err("win32.metadata: no files supplied".into());
-        }
+        let index = load_metadata_index(paths, |bytes| {
+            hashes.push(win32_contracts::sha256(bytes));
+        })?;
         Ok(Self {
-            index: reader::Index::new(files),
+            index,
             hashes,
             type_hashes: RefCell::new(HashMap::new()),
         })
@@ -318,12 +362,7 @@ pub fn has_flat_functions(
     namespace: &str,
     class_name: &str,
 ) -> Result<bool, String> {
-    let index = MetadataContext::load(winmd_paths)?;
-    Ok(index.get(namespace, class_name).any(|definition| {
-        definition
-            .methods()
-            .any(|method| method.impl_map().is_some())
-    }))
+    FlatFunctionIndex::new(winmd_paths).has_flat_functions(namespace, class_name)
 }
 
 pub fn parse_apis(winmd_paths: &str, namespace: &str, class_name: &str) -> Option<RawApis> {

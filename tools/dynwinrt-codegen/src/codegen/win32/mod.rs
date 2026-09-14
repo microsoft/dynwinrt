@@ -26,6 +26,7 @@ mod shape_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use crate::win32_metadata::FlatFunctionIndex;
 use crate::win32_metadata::RawApis;
 
 pub use ir::{OmittedFunction, ProjectionResult};

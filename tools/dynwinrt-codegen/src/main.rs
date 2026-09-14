@@ -487,6 +487,7 @@ fn run() -> Result<(), String> {
 
             // Auto-discover sibling .winmd files in the same directories
             let winmd = meta::expand_winmd_paths(&winmd_joined);
+            let mut win32_type_index = win32::FlatFunctionIndex::new(&winmd);
 
             // Build XML doc table from sibling .xml files of each winmd.
             let expanded_parts: Vec<String> = winmd
@@ -546,7 +547,7 @@ fn run() -> Result<(), String> {
                 let mut native_audio_completion = false;
                 for (ns, cls) in &class_requests {
                     if ns.starts_with("Windows.Win32.")
-                        && win32::has_flat_functions(&winmd, ns, cls)?
+                        && win32_type_index.has_flat_functions(ns, cls)?
                     {
                         if cls != "Apis" {
                             return Err(format!(
@@ -1050,7 +1051,7 @@ fn run() -> Result<(), String> {
                     .as_deref()
                     .filter(|ns| ns.starts_with("Windows.Win32."))
                     && com_metadata::first_classic_com_interface_in_namespace(&winmd, ns).is_none()
-                    && win32::has_flat_functions(&winmd, ns, "Apis")?
+                    && win32_type_index.has_flat_functions(ns, "Apis")?
                 {
                     if lang != "js" {
                         return Err(format!(
