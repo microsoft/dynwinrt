@@ -396,6 +396,9 @@ jobs:
           npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:entrypoints --silent
+      - name: Check production native imports
+        working-directory: bindings/js
+        run: npm run test:imports
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
