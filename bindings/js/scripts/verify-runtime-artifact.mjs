@@ -6,16 +6,30 @@ import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { verifyAddonImports } from './pe-imports.mjs'
 
-if (process.argv.length !== 3) {
-  throw new Error('Usage: node verify-runtime-artifact.mjs <downloaded-artifact-directory>')
+const args = process.argv.slice(2)
+if (args.length !== 1 && !(args.length === 2 && args[1] === '--test-hooks')) {
+  throw new Error('Usage: node verify-runtime-artifact.mjs <downloaded-artifact-directory> [--test-hooks]')
 }
 
-const artifact = realpathSync(process.argv[2])
+const artifact = realpathSync(args[0])
 const source = dirname(fileURLToPath(import.meta.url))
 const manifest = JSON.parse(readFileSync(join(source, '..', 'package.json'), 'utf8'))
 const require = createRequire(join(artifact, 'artifact-consumer.cjs'))
 const modules = new Map()
+const testHooksAddon = args[1] === '--test-hooks' ? `dynwinrt.win32-${process.arch}-msvc.node` : undefined
+const addons = verifyAddonImports(artifact, { testHooksAddon })
+if (testHooksAddon) {
+  assert.equal(
+    typeof require(join(artifact, testHooksAddon)).DynComBorrowedCopyTestFixture,
+    'function',
+    '--test-hooks requires the actual native COM borrowed-copy fixture export',
+  )
+}
+console.log(
+  `Verified ordinary PE imports for ${addons.join(', ')}${testHooksAddon ? ' (explicit test-hooks mode)' : ''}`,
+)
 
 function artifactFile(target) {
   assert.ok(target.startsWith('./dist/'), `Unexpected runtime export target: ${target}`)

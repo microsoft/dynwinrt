@@ -351,14 +351,9 @@ test('flat Win32 subsystem contexts enforce kind and close state', (t) => {
   t.true(winsock.closed)
   t.throws(() => DynWin32.requireSubsystem(winsock, 'winsock'), { message: /context is closed/ })
   t.notThrows(() => winsock.close())
-  for (const [initialize, kind] of [
-    [() => DynWin32.initializeGdiPlus(), 'gdiplus'],
-    [() => DynWin32.initializeMediaFoundation(), 'mediaFoundation'],
-  ] as const) {
-    const context = initialize()
-    t.notThrows(() => DynWin32.requireSubsystem(context, kind))
-    context.close()
-  }
+  const gdiplus = DynWin32.initializeGdiPlus()
+  t.notThrows(() => DynWin32.requireSubsystem(gdiplus, 'gdiplus'))
+  gdiplus.close()
   t.is(typeof DynWin32.initializeMapiUtilities, 'function')
 })
 

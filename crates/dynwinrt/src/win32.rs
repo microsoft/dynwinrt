@@ -8,14 +8,10 @@
 
 use core::ffi::c_void;
 #[cfg(not(all(windows, target_pointer_width = "32")))]
-use std::collections::HashMap;
-#[cfg(not(all(windows, target_pointer_width = "32")))]
 use std::ffi::CString;
 use std::sync::Arc;
 #[cfg(all(test, not(all(windows, target_pointer_width = "32"))))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-use std::sync::{Mutex, OnceLock};
 
 use libffi::middle::Type as FfiType;
 use libffi::middle::{Arg, Cif, Ret, arg};
@@ -23,15 +19,9 @@ use windows::Win32::Foundation::{
     CloseHandle, FreeLibrary, GetLastError, HANDLE, HLOCAL, HMODULE, LocalFree,
 };
 use windows::Win32::Security::Credentials::CredFree;
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-use windows::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
-};
 use windows::Win32::System::Registry::{HKEY, RegCloseKey};
 use windows::Win32::System::Services::{CloseServiceHandle, SC_HANDLE};
 use windows_core::HRESULT;
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-use windows_core::{HSTRING, PCSTR};
 
 use crate::abi::{AbiType, AbiValue};
 #[cfg(not(all(windows, target_pointer_width = "32")))]
@@ -56,6 +46,12 @@ mod resource;
 pub use resource::{
     FileCapability, OwnedResource, OwnedResourceAsyncLease, OwnedResourceLease, ResourceAccess,
 };
+
+#[doc(hidden)]
+#[path = "win32_module.rs"]
+pub mod module;
+#[cfg(not(all(windows, target_pointer_width = "32")))]
+use module::{SystemModule, is_bare_system_module_name};
 
 #[path = "win32_io.rs"]
 pub mod io;
@@ -613,8 +609,10 @@ impl CallPlan {
             }
             let legacy_surface = contract::LegacySurface::new(&spec, &contract);
             let contract = contract::resolve_with_pointees(&spec, &contract, &pointees)?;
-            let module = get_cached_module(&spec.dll)?;
-            let function = proc_address(module, &spec.dll, &spec.entry_point)? as usize;
+            let module = unsafe { SystemModule::cached(&spec.dll) }?;
+            let entry = CString::new(spec.entry_point.as_str())
+                .map_err(|_| invalid_argument("invalid export name"))?;
+            let function = module.export(&entry)? as usize;
 
             let mut input_count = 0;
             let mut output_count = 0;
@@ -1594,69 +1592,6 @@ fn success_matches(rule: SuccessRule, value: Option<&AbiValue>) -> Result<bool> 
             )),
         },
     }
-}
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-struct CachedModule(HMODULE);
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-unsafe impl Send for CachedModule {}
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-fn module_cache() -> &'static Mutex<HashMap<String, CachedModule>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, CachedModule>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-fn get_cached_module(dll: &str) -> Result<HMODULE> {
-    if !is_bare_system_module_name(dll) {
-        return Err(invalid_argument("invalid System32 module name"));
-    }
-    let key = dll.to_ascii_lowercase();
-    if let Some(module) = module_cache()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .get(&key)
-        .map(|module| module.0)
-    {
-        return Ok(module);
-    }
-    let module = unsafe { LoadLibraryExW(&HSTRING::from(dll), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
-        .map_err(Error::WindowsError)?;
-    let mut cache = module_cache()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    Ok(cache.entry(key).or_insert(CachedModule(module)).0)
-}
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-fn proc_address(module: HMODULE, dll: &str, entry: &str) -> Result<*mut c_void> {
-    let entry = CString::new(entry).map_err(|_| invalid_argument("invalid export name"))?;
-    let function = unsafe { GetProcAddress(module, PCSTR(entry.as_ptr().cast())) };
-    function
-        .map(|function| function as *const () as *mut c_void)
-        .ok_or_else(|| {
-            Error::WindowsError(windows_core::Error::new(
-                HRESULT(0x8007007Fu32 as i32),
-                &format!(
-                    "Export `{}` was not found in `{dll}`",
-                    entry.to_string_lossy()
-                ),
-            ))
-        })
-}
-
-#[cfg(not(all(windows, target_pointer_width = "32")))]
-fn is_bare_system_module_name(dll: &str) -> bool {
-    let lower = dll.to_ascii_lowercase();
-    !dll.is_empty()
-        && (lower.ends_with(".dll") || lower.ends_with(".drv"))
-        && !dll.encode_utf16().any(|unit| unit == 0)
-        && !dll
-            .chars()
-            .any(|character| matches!(character, '/' | '\\' | ':'))
-        && !matches!(dll, "." | "..")
 }
 
 fn invalid_argument(message: &str) -> Error {

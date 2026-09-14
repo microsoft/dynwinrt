@@ -181,7 +181,28 @@ internally. The full `DynWin32*` capability set is retained across the Win32
 entrypoints. x86 plan invocation remains explicitly unsupported;
 x64 is exercised live and ARM64 is compile-validated.
 
-MAPI utility symbols are resolved lazily from the system DLL. Their x86
+Win32 optional lifecycle DLLs are loaded on explicit subsystem initialization,
+not on addon or generated-wrapper import. Winsock, GDI+, Media Foundation and
+MAPI use complete typed startup/shutdown function tables, including rollback
+and native error-query entrypoints. Every required export is resolved before
+Startup; neither a missing module/export nor a failed Startup publishes a
+context. Module and function-table caches retain successful values only, so
+later requests can retry failures. Winsock version-negotiation rollback failure
+is reported and retried before any new Startup.
+
+The shared Win32 module loader accepts bare system DLL/DRV names, uses
+`LOAD_LIBRARY_SEARCH_SYSTEM32`, and owns each successful load reference.
+Concurrent first loads publish one module and release losing references outside
+the cache lock. Cached modules and tables live for the process; their lifetime
+is separate from subsystem activation. The last context closes the activation,
+not the DLL. Explicit Shutdown failure leaves the context active for retry.
+Ordinary export plans still bind lazily, and subsystem-exempt contracts do not
+gain an initialization requirement. WinRT/COM models and foundational imports
+remain unchanged. Normal shared-addon PE import tables must not contain these
+optional lifecycle DLLs; test-hook-only COM media fixtures retain their separate
+native test dependencies.
+
+MAPI utility symbols follow the same loading and caching policy. Their x86
 exports carry stdcall suffixes (`ScInitMapiUtil@4`, `DeinitMapiUtil@0`);
 binding them as unconditional undecorated imports would prevent unrelated
 WinRT/COM consumers from loading the addon. Missing utility exports produce
@@ -198,8 +219,13 @@ cancellation. The limits are 1,024 pending operations, 64 MiB per
 operation and 256 MiB of pending private buffers. These limits include completed
 results waiting to be consumed or discarded, not only active OS requests.
 A shared worker set is used,
-not one blocked OS/libuv worker per operation. Subsystem close cannot race
-dependent calls or retained operations.
+not one blocked OS/libuv worker per operation. Subsystem call guards prevent
+close from racing synchronous dependent calls. File I/O retains its native
+resource leases independently and does not require these optional subsystems.
+Opaque unsafe subsystem resources remain caller-managed: callers must retain
+their context for the required native lifetime. A future managed subsystem-owned
+resource or asynchronous operation requires an explicit retained subsystem
+lease; DLL caching alone does not provide that activation lifetime.
 
 The native Win32 I/O module owns the operation registry, stable `OVERLAPPED`,
 private buffers, cancellation and terminal completion. It can run from Rust
@@ -274,6 +300,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
+| Module/lifecycle loading tests | Controlled System32 paths, successful-cache identity, retryable failures, concurrent load reference balance, complete function-table publication, startup/shutdown/rollback state, and the actual shared-addon PE import boundary. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |
 | Generated-module tests | Load every currently admitted JS/enum module as CJS and ESM without native dispatch, and compile its declarations with TypeScript. Expected behavior comes from actual exports and type rules, not stored implementation hashes. |
 | Win32 E2E runners | Actual Registry, aggregate, resource, IOCP, subsystem and generated declaration behavior. |

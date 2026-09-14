@@ -111,14 +111,17 @@ test('Win32 facades retain the full isolated runtime without manual safe descrip
 })
 
 test('Win32 artifact consumers require the complete runtime dependency tree', (t) => {
-  const artifact = mkdtempSync(join(tmpdir(), 'dynwinrt-artifact-'))
+  const artifact = mkdtempSync(fileURLToPath(new URL('../target-artifact-', import.meta.url)))
   const consumer = fileURLToPath(new URL('../scripts/verify-runtime-artifact.mjs', import.meta.url))
+  const hostAddon = fileURLToPath(new URL(`../dist/dynwinrt.win32-${process.arch}-msvc.node`, import.meta.url))
+  const testHooks = typeof require(hostAddon).DynComBorrowedCopyTestFixture === 'function'
+  const consumerArgs = [consumer, artifact, ...(testHooks ? ['--test-hooks'] : [])]
   try {
     cpSync(fileURLToPath(new URL('../dist/', import.meta.url)), artifact, { recursive: true })
-    const complete = spawnSync(process.execPath, [consumer, artifact], { encoding: 'utf8', timeout: 15000 })
+    const complete = spawnSync(process.execPath, consumerArgs, { encoding: 'utf8', timeout: 15000 })
     t.is(complete.status, 0, `${complete.error}\n${complete.stdout}\n${complete.stderr}`)
     unlinkSync(join(artifact, 'win32-internal.js'))
-    const incomplete = spawnSync(process.execPath, [consumer, artifact], { encoding: 'utf8', timeout: 15000 })
+    const incomplete = spawnSync(process.execPath, consumerArgs, { encoding: 'utf8', timeout: 15000 })
     t.is(incomplete.status, 1, `${incomplete.error}\n${incomplete.stdout}\n${incomplete.stderr}`)
     t.regex(incomplete.stderr, /Cannot find module '\.\/win32-internal\.js'/)
   } finally {

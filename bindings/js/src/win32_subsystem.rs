@@ -4,16 +4,17 @@
 use std::mem::MaybeUninit;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use windows::core::{w, PCSTR};
-use windows::Win32::Graphics::GdiPlus::{
-  GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, Ok as GDIPLUS_OK,
-};
-use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
-use windows::Win32::Networking::WinSock::{WSACleanup, WSAGetLastError, WSAStartup, WSADATA};
-use windows::Win32::{
-  Foundation::{FreeLibrary, HMODULE},
-  System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
-};
+use windows::Win32::Graphics::GdiPlus::{GdiplusStartupInput, Ok as GDIPLUS_OK};
+use windows::Win32::Media::MediaFoundation::{MFSTARTUP_FULL, MF_VERSION};
+use windows::Win32::Networking::WinSock::WSADATA;
+
+#[path = "win32_subsystem_api.rs"]
+mod api;
+use api::{GdiPlusFunctions, MapiUtilityFunctions, MediaFoundationFunctions, WinsockFunctions};
+
+#[cfg(test)]
+#[path = "win32_subsystem_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 const WINSOCK_VERSION_2_2: u16 = 0x0202;
 
@@ -54,40 +55,25 @@ struct CountedState {
 }
 
 #[derive(Default)]
+struct WinsockState {
+  leases: usize,
+  rollback_pending: bool,
+}
+
+#[derive(Default)]
 struct GdiPlusState {
   leases: usize,
   token: usize,
 }
 
-static WINSOCK_STATE: LazyLock<Mutex<CountedState>> =
-  LazyLock::new(|| Mutex::new(CountedState::default()));
+static WINSOCK_STATE: LazyLock<Mutex<WinsockState>> =
+  LazyLock::new(|| Mutex::new(WinsockState::default()));
 static GDIPLUS_STATE: LazyLock<Mutex<GdiPlusState>> =
   LazyLock::new(|| Mutex::new(GdiPlusState::default()));
 static MEDIA_FOUNDATION_STATE: LazyLock<Mutex<CountedState>> =
   LazyLock::new(|| Mutex::new(CountedState::default()));
 static MAPI_UTILITIES_STATE: LazyLock<Mutex<CountedState>> =
   LazyLock::new(|| Mutex::new(CountedState::default()));
-
-struct MapiModule(usize);
-
-impl Drop for MapiModule {
-  fn drop(&mut self) {
-    if let Err(error) = unsafe { FreeLibrary(HMODULE(self.0 as *mut std::ffi::c_void)) } {
-      eprintln!("[dynwinrt] MAPI utility module cleanup failed: {error}");
-    }
-  }
-}
-
-#[derive(Clone, Copy)]
-struct MapiUtilityFunctions {
-  initialize: unsafe extern "system" fn(u32) -> i32,
-  deinitialize: unsafe extern "system" fn(),
-}
-
-struct MapiUtilities {
-  functions: MapiUtilityFunctions,
-  _module: MapiModule,
-}
 
 #[cfg(target_arch = "x86")]
 const MAPI_INIT_EXPORT: &std::ffi::CStr = c"ScInitMapiUtil@4";
@@ -98,47 +84,32 @@ const MAPI_INIT_EXPORT: &std::ffi::CStr = c"ScInitMapiUtil";
 #[cfg(not(target_arch = "x86"))]
 const MAPI_DEINIT_EXPORT: &std::ffi::CStr = c"DeinitMapiUtil";
 
-fn system_mapi_utilities() -> napi::Result<&'static MapiUtilities> {
-  static API: LazyLock<Result<MapiUtilities, String>> = LazyLock::new(|| {
-    let module = unsafe { LoadLibraryExW(w!("mapi32.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
-      .map_err(|error| format!("MAPI utilities are unavailable: {error}"))?;
-    let owner = MapiModule(module.0 as usize);
-    let initialize = unsafe { GetProcAddress(module, PCSTR(MAPI_INIT_EXPORT.as_ptr().cast())) }
-      .ok_or_else(|| {
-        format!(
-          "System MAPI32.dll has no {}",
-          MAPI_INIT_EXPORT.to_string_lossy()
-        )
-      })?;
-    let deinitialize = unsafe { GetProcAddress(module, PCSTR(MAPI_DEINIT_EXPORT.as_ptr().cast())) }
-      .ok_or_else(|| {
-        format!(
-          "System MAPI32.dll has no {}",
-          MAPI_DEINIT_EXPORT.to_string_lossy()
-        )
-      })?;
-    // The exact exported signatures are SCODE(ULONG) and void(), both WINAPI.
-    // Retaining the module keeps these immutable function pointers valid.
-    Ok(MapiUtilities {
-      functions: MapiUtilityFunctions {
-        initialize: unsafe {
-          std::mem::transmute::<
-            unsafe extern "system" fn() -> isize,
-            unsafe extern "system" fn(u32) -> i32,
-          >(initialize)
-        },
-        deinitialize: unsafe {
-          std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(
-            deinitialize,
-          )
-        },
-      },
-      _module: owner,
-    })
-  });
-  API
-    .as_ref()
-    .map_err(|message| napi::Error::from_reason(message.clone()))
+fn system_mapi_utilities() -> napi::Result<std::sync::Arc<api::LoadedApi<MapiUtilityFunctions>>> {
+  api::mapi()
+}
+
+fn winsock_functions() -> napi::Result<WinsockFunctions> {
+  #[cfg(test)]
+  if let Some(functions) = lifecycle_tests::winsock_functions() {
+    return functions;
+  }
+  Ok(api::winsock()?.functions)
+}
+
+fn gdiplus_functions() -> napi::Result<GdiPlusFunctions> {
+  #[cfg(test)]
+  if let Some(functions) = lifecycle_tests::gdiplus_functions() {
+    return functions;
+  }
+  Ok(api::gdiplus()?.functions)
+}
+
+fn media_foundation_functions() -> napi::Result<MediaFoundationFunctions> {
+  #[cfg(test)]
+  if let Some(functions) = lifecycle_tests::media_foundation_functions() {
+    return functions;
+  }
+  Ok(api::media_foundation()?.functions)
 }
 
 fn mapi_utilities() -> napi::Result<MapiUtilityFunctions> {
@@ -306,8 +277,19 @@ fn acquire_winsock() -> napi::Result<()> {
     .lock()
     .unwrap_or_else(|error| error.into_inner());
   if state.leases == 0 {
+    let functions = winsock_functions()?;
+    if state.rollback_pending {
+      let status = unsafe { (functions.cleanup)() };
+      if status != 0 {
+        return Err(napi::Error::from_reason(format!(
+          "Winsock initialization rollback is still pending; WSACleanup failed with Winsock error {}",
+          unsafe { (functions.last_error)() }
+        )));
+      }
+      state.rollback_pending = false;
+    }
     let mut data = MaybeUninit::<WSADATA>::uninit();
-    let status = unsafe { WSAStartup(WINSOCK_VERSION_2_2, data.as_mut_ptr()) };
+    let status = unsafe { (functions.startup)(WINSOCK_VERSION_2_2, data.as_mut_ptr()) };
     if status != 0 {
       return Err(napi::Error::from_reason(format!(
         "WSAStartup(2.2) failed with Winsock error {status}"
@@ -315,7 +297,14 @@ fn acquire_winsock() -> napi::Result<()> {
     }
     let data = unsafe { data.assume_init() };
     if data.wVersion != WINSOCK_VERSION_2_2 {
-      let _ = unsafe { WSACleanup() };
+      if unsafe { (functions.cleanup)() } != 0 {
+        state.rollback_pending = true;
+        return Err(napi::Error::from_reason(format!(
+          "Winsock 2.2 is unavailable; negotiated version 0x{:04x}; WSACleanup rollback failed with Winsock error {}",
+          data.wVersion,
+          unsafe { (functions.last_error)() }
+        )));
+      }
       return Err(napi::Error::from_reason(format!(
         "Winsock 2.2 is unavailable; negotiated version 0x{:04x}",
         data.wVersion
@@ -339,11 +328,12 @@ fn release_winsock() -> napi::Result<()> {
     ));
   }
   if state.leases == 1 {
-    let status = unsafe { WSACleanup() };
+    let functions = winsock_functions()?;
+    let status = unsafe { (functions.cleanup)() };
     if status != 0 {
       return Err(napi::Error::from_reason(format!(
         "WSACleanup failed with Winsock error {}",
-        unsafe { WSAGetLastError().0 }
+        unsafe { (functions.last_error)() }
       )));
     }
   }
@@ -356,6 +346,7 @@ fn acquire_gdiplus() -> napi::Result<()> {
     .lock()
     .unwrap_or_else(|error| error.into_inner());
   if state.leases == 0 {
+    let functions = gdiplus_functions()?;
     let input = GdiplusStartupInput {
       GdiplusVersion: 1,
       DebugEventCallback: 0,
@@ -363,7 +354,7 @@ fn acquire_gdiplus() -> napi::Result<()> {
       SuppressExternalCodecs: false.into(),
     };
     let mut token = 0usize;
-    let status = unsafe { GdiplusStartup(&mut token, &input, std::ptr::null_mut()) };
+    let status = unsafe { (functions.startup)(&mut token, &input, std::ptr::null_mut()) };
     if status != GDIPLUS_OK {
       return Err(napi::Error::from_reason(format!(
         "GdiplusStartup failed with status {}",
@@ -393,11 +384,12 @@ fn release_gdiplus() -> napi::Result<()> {
       "GDI+ subsystem context is not active",
     ));
   }
-  state.leases -= 1;
-  if state.leases == 0 {
-    let token = std::mem::take(&mut state.token);
-    unsafe { GdiplusShutdown(token) };
+  if state.leases == 1 {
+    let functions = gdiplus_functions()?;
+    unsafe { (functions.shutdown)(state.token) };
+    state.token = 0;
   }
+  state.leases -= 1;
   Ok(())
 }
 
@@ -406,7 +398,9 @@ fn acquire_media_foundation() -> napi::Result<()> {
     .lock()
     .unwrap_or_else(|error| error.into_inner());
   if state.leases == 0 {
-    unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }
+    let functions = media_foundation_functions()?;
+    unsafe { (functions.startup)(MF_VERSION, MFSTARTUP_FULL) }
+      .ok()
       .map_err(|error| napi::Error::from_reason(format!("MFStartup failed: {error}")))?;
   }
   state.leases = state
@@ -426,7 +420,9 @@ fn release_media_foundation() -> napi::Result<()> {
     ));
   }
   if state.leases == 1 {
-    unsafe { MFShutdown() }
+    let functions = media_foundation_functions()?;
+    unsafe { (functions.shutdown)() }
+      .ok()
       .map_err(|error| napi::Error::from_reason(format!("MFShutdown failed: {error}")))?;
   }
   state.leases -= 1;
@@ -462,15 +458,17 @@ fn release_mapi_utilities() -> napi::Result<()> {
       "MAPI utility subsystem context is not active",
     ));
   }
-  state.leases -= 1;
-  if state.leases == 0 {
-    unsafe { (mapi_utilities()?.deinitialize)() };
+  if state.leases == 1 {
+    let functions = mapi_utilities()?;
+    unsafe { (functions.deinitialize)() };
   }
+  state.leases -= 1;
   Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+  use super::lifecycle_tests::Fixture as NativeFixture;
   use super::*;
   use std::{
     process::{Command, Stdio},
@@ -478,7 +476,7 @@ mod tests {
     time::{Duration, Instant},
   };
 
-  static TEST_SERIAL: Mutex<()> = Mutex::new(());
+  pub(super) static TEST_SERIAL: Mutex<()> = Mutex::new(());
   static MAPI_FIXTURE_ENABLED: AtomicBool = AtomicBool::new(false);
   static MAPI_FIXTURE_LOAD_FAILURE: AtomicBool = AtomicBool::new(false);
   static MAPI_FIXTURE_STATUS: AtomicI32 = AtomicI32::new(0);
@@ -607,7 +605,7 @@ mod tests {
     eprintln!("[subsystem-test] dropped {name}");
   }
 
-  fn lease_count(kind: SubsystemKind) -> usize {
+  pub(super) fn lease_count(kind: SubsystemKind) -> usize {
     match kind {
       SubsystemKind::Winsock => WINSOCK_STATE.lock().unwrap().leases,
       SubsystemKind::GdiPlus => GDIPLUS_STATE.lock().unwrap().leases,
@@ -641,7 +639,7 @@ mod tests {
     winsock.close().unwrap();
   }
 
-  fn assert_call_guard_blocks_close(subsystem: &str) {
+  pub(super) fn assert_call_guard_blocks_close(subsystem: &str) {
     let context = std::sync::Arc::new(initialize(subsystem).unwrap());
     let guard = call_guard(&context, subsystem).unwrap();
     let closing = std::sync::Arc::clone(&context);
@@ -688,6 +686,8 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let _gdi = NativeFixture::new(SubsystemKind::GdiPlus);
+    let _media = NativeFixture::new(SubsystemKind::MediaFoundation);
     let mapi = MapiFixture::new(0);
     for subsystem in ["gdiplus", "mediaFoundation", "mapiUtilities"] {
       let first = live_context(subsystem);
@@ -710,6 +710,8 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let _gdi = NativeFixture::new(SubsystemKind::GdiPlus);
+    let _media = NativeFixture::new(SubsystemKind::MediaFoundation);
     let mapi_fixture = MapiFixture::new(0);
     let winsock = live_context("winsock");
     let winsock_alias = live_context("winsock");
@@ -775,6 +777,8 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let _gdi = NativeFixture::new(SubsystemKind::GdiPlus);
+    let _media = NativeFixture::new(SubsystemKind::MediaFoundation);
     let mapi = MapiFixture::new(0);
     for kind in [
       SubsystemKind::Winsock,
@@ -909,5 +913,44 @@ mod tests {
     assert!(!MAPI_INIT_EXPORT.to_bytes().is_empty());
     assert!(!MAPI_DEINIT_EXPORT.to_bytes().is_empty());
     system_mapi_utilities().expect("resolve the exact system utility exports");
+  }
+
+  #[test]
+  fn installed_native_lifecycle_tables_initialize_and_reinitialize() {
+    if isolated_native_test(installed_native_lifecycle_tables_initialize_and_reinitialize) {
+      return;
+    }
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    for kind in [
+      SubsystemKind::Winsock,
+      SubsystemKind::GdiPlus,
+      SubsystemKind::MediaFoundation,
+    ] {
+      let first = match initialize(kind.name()) {
+        Ok(context) => context,
+        Err(error)
+          if kind != SubsystemKind::Winsock
+            && (error.reason.starts_with("0x8007007E:")
+              || error.reason.starts_with("0x8007007F:")) =>
+        {
+          assert_eq!(lease_count(kind), 0);
+          eprintln!(
+            "[subsystem-test] SKIP unavailable {}: {}",
+            kind.name(),
+            error.reason
+          );
+          continue;
+        }
+        Err(error) => panic!("{} initialization failed: {error}", kind.name()),
+      };
+      let second = initialize(kind.name()).unwrap();
+      first.close().unwrap();
+      require(&second, kind.name()).unwrap();
+      second.close().unwrap();
+      assert_eq!(lease_count(kind), 0);
+      initialize(kind.name()).unwrap().close().unwrap();
+    }
   }
 }
