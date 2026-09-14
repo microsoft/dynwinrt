@@ -7,6 +7,9 @@ use std::{
     fs::File,
     os::windows::io::{AsRawHandle, IntoRawHandle},
 };
+use windows::Win32::Foundation::{
+    HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAGS, SetHandleInformation,
+};
 
 #[repr(C)]
 struct NativeInfo {
@@ -99,6 +102,44 @@ fn planned(layout: Arc<NativeAggregatePointerLayout>) -> Arc<CallPlan> {
     .unwrap();
     plan.function = produce as *const () as usize;
     Arc::new(plan)
+}
+
+fn native_handles(buffer: &NativeAggregateBuffer) -> [usize; 2] {
+    [
+        usize::from_ne_bytes(buffer.read(0).unwrap()),
+        usize::from_ne_bytes(buffer.read(size_of::<usize>()).unwrap()),
+    ]
+}
+
+fn protect_handle(raw: usize, protected: bool) {
+    unsafe {
+        SetHandleInformation(
+            HANDLE(raw as *mut c_void),
+            HANDLE_FLAG_PROTECT_FROM_CLOSE.0,
+            if protected {
+                HANDLE_FLAG_PROTECT_FROM_CLOSE
+            } else {
+                HANDLE_FLAGS(0)
+            },
+        )
+    }
+    .unwrap();
+}
+
+fn retirement_counts(handles: [usize; 2]) -> [(usize, usize); 2] {
+    let counts = handles.map(|raw| {
+        (
+            outcome_tests::cleanup_count_for(raw),
+            outcome_tests::successful_cleanup_count_for(raw),
+        )
+    });
+    // Measure before reclaiming leaked fixture handles, so a regression still fails.
+    for (raw, (_, successes)) in handles.into_iter().zip(counts) {
+        if successes == 0 {
+            unsafe { CloseHandle(HANDLE(raw as *mut c_void)) }.unwrap();
+        }
+    }
+    counts
 }
 
 #[test]
@@ -541,4 +582,238 @@ fn defined_but_discarded_field_resources_are_cleaned_on_business_failure() {
     for handle in handles {
         assert_eq!(outcome_tests::cleanup_count_for(handle), 1);
     }
+}
+
+#[test]
+fn failed_discard_preserves_raw_cleanup_and_write_protection_until_retirement() {
+    unsafe extern "system" fn protected_outputs(info: *mut NativeInfo, succeeded: i32) -> i32 {
+        unsafe { produce(info) };
+        protect_handle(unsafe { (*info).process }, true);
+        succeeded
+    }
+
+    for succeeded in [false, true] {
+        for prepare in [false, true] {
+            outcome_tests::reset();
+            let layout = layout();
+            let buffer = NativeAggregateBuffer::new(Arc::clone(&layout), None).unwrap();
+            let mut spec = spec();
+            spec.parameters.push(Parameter::input(Type::Bool32, false));
+            spec.parameter_aggregates.push(None);
+            let pointees = vec![Some(layout), None];
+            let mut contract = CallContract::default()
+                .upgrade_metadata(&contract::shape_with_pointees(&spec, &pointees))
+                .unwrap();
+            for result in &mut contract.results {
+                if matches!(
+                    result.target,
+                    ResultTarget::AggregateField { field: 0 | 1, .. }
+                ) {
+                    let policy = ResultPolicy::discarded(ResultOwnership::Owned {
+                        cleanup: dynwinrt_win32_contracts::Cleanup::CloseHandle,
+                    });
+                    result.on_success = policy;
+                    result.on_failure = policy;
+                }
+            }
+            let mut plan = Arc::try_unwrap(
+                unsafe { CallPlan::new_with_contract_and_pointees(spec, contract, pointees) }
+                    .unwrap(),
+            )
+            .unwrap();
+            plan.function = protected_outputs as *const () as usize;
+            let call_failed = unsafe {
+                plan.invoke(&[
+                    Value::AggregatePointer(Arc::clone(&buffer)),
+                    Value::Bool(succeeded),
+                ])
+            }
+            .is_err();
+            let raw = native_handles(&buffer);
+            let guard_after_call = buffer.lock().raw_cleanup[0];
+            let write_rejected = buffer.write(0, &raw[0].to_ne_bytes()).is_err();
+            let partial_write_rejected = buffer
+                .write(
+                    size_of::<usize>() - 1,
+                    &raw[0].to_ne_bytes()[size_of::<usize>() - 1..],
+                )
+                .is_err();
+            let retry_failed = buffer.prepare().is_err();
+            let guard_after_retry = buffer.lock().raw_cleanup[0];
+            let raw_after_retry = native_handles(&buffer);
+            let retry_write_rejected = buffer.write(0, &raw[0].to_ne_bytes()).is_err();
+            protect_handle(raw[0], false);
+            if prepare {
+                buffer.prepare().unwrap();
+                buffer.prepare().unwrap();
+                buffer.write(0, &0usize.to_ne_bytes()).unwrap();
+            }
+            drop(buffer);
+            let counts = retirement_counts(raw);
+            assert!(call_failed);
+            assert!(retry_failed);
+            assert_eq!(guard_after_call, Cleanup::CloseHandle);
+            assert_eq!(guard_after_retry, Cleanup::CloseHandle);
+            assert!(write_rejected && partial_write_rejected && retry_write_rejected);
+            assert_eq!(raw_after_retry, [raw[0], 0]);
+            assert_eq!(
+                counts,
+                [(3, 1), (1, 1)],
+                "succeeded={succeeded}, prepare={prepare}"
+            );
+        }
+    }
+}
+
+#[test]
+fn all_aggregate_states_are_recorded_before_fallible_field_processing() {
+    unsafe extern "system" fn outputs(
+        first: *mut NativeInfo,
+        second: *mut NativeInfo,
+        succeeded: i32,
+        protect_first: i32,
+    ) -> i32 {
+        unsafe {
+            produce(first);
+            produce(second);
+            if protect_first != 0 {
+                protect_handle((*first).process, true);
+            }
+        }
+        succeeded
+    }
+
+    for succeeded in [false, true] {
+        for failed_field in [Some(0), Some(1), None] {
+            for prepare in [false, true] {
+                outcome_tests::reset();
+                let layout = layout();
+                let first = NativeAggregateBuffer::new(Arc::clone(&layout), None).unwrap();
+                let second = NativeAggregateBuffer::new(Arc::clone(&layout), None).unwrap();
+                let mut spec = spec();
+                spec.parameters.extend([
+                    Parameter::input(Type::Pointer, false),
+                    Parameter::input(Type::Bool32, false),
+                    Parameter::input(Type::Bool32, false),
+                ]);
+                spec.parameter_aggregates.resize(4, None);
+                let pointees = vec![Some(Arc::clone(&layout)), Some(layout), None, None];
+                let mut contract = CallContract::default()
+                    .upgrade_metadata(&contract::shape_with_pointees(&spec, &pointees))
+                    .unwrap();
+                for result in &mut contract.results {
+                    if matches!(
+                        result.target,
+                        ResultTarget::AggregateField { field: 0 | 1, .. }
+                    ) {
+                        result.on_failure = result.on_success;
+                    }
+                    if failed_field.is_none()
+                        && result.target
+                            == (ResultTarget::AggregateField {
+                                parameter: 0,
+                                field: 0,
+                            })
+                    {
+                        let policy = ResultPolicy::discarded(ResultOwnership::Owned {
+                            cleanup: dynwinrt_win32_contracts::Cleanup::CloseHandle,
+                        });
+                        result.on_success = policy;
+                        result.on_failure = policy;
+                    }
+                }
+                let mut plan = Arc::try_unwrap(
+                    unsafe { CallPlan::new_with_contract_and_pointees(spec, contract, pointees) }
+                        .unwrap(),
+                )
+                .unwrap();
+                plan.function = outputs as *const () as usize;
+                if let Some(field) = failed_field {
+                    outcome_tests::fail_decode(ResultTarget::AggregateField {
+                        parameter: 0,
+                        field,
+                    });
+                }
+                let error = unsafe {
+                    plan.invoke(&[
+                        Value::AggregatePointer(Arc::clone(&first)),
+                        Value::AggregatePointer(Arc::clone(&second)),
+                        Value::Bool(succeeded),
+                        Value::Bool(failed_field.is_none()),
+                    ])
+                }
+                .unwrap_err();
+                let first_raw = native_handles(&first);
+                let second_raw = native_handles(&second);
+                if failed_field.is_none() {
+                    protect_handle(first_raw[0], false);
+                }
+                let (recorded, native_succeeded, guards_before) = {
+                    let state = second.lock();
+                    (
+                        state.native_recorded,
+                        state.succeeded,
+                        [state.raw_cleanup[0], state.raw_cleanup[1]],
+                    )
+                };
+                // The native writes completed; this is their actual success/failure status.
+                let marker = unsafe { second.mark_legacy(succeeded) };
+                let guards_after = {
+                    let state = second.lock();
+                    [state.raw_cleanup[0], state.raw_cleanup[1]]
+                };
+                let write_rejected = second.write(0, &second_raw[0].to_ne_bytes()).is_err();
+                drop(first);
+                if prepare {
+                    second.prepare().unwrap();
+                }
+                drop(second);
+                let first_counts = retirement_counts(first_raw);
+                let second_counts = retirement_counts(second_raw);
+                if failed_field.is_some() {
+                    assert!(
+                        error
+                            .message()
+                            .contains("Injected native result conversion failure")
+                    );
+                }
+                assert!(recorded);
+                assert_eq!(native_succeeded, Some(succeeded));
+                assert!(marker.is_ok());
+                assert_eq!(guards_before, [Cleanup::CloseHandle; 2]);
+                assert_eq!(guards_after, guards_before);
+                assert!(write_rejected);
+                assert_eq!(
+                    first_counts,
+                    [(if failed_field.is_none() { 2 } else { 1 }, 1), (1, 1)]
+                );
+                assert_eq!(second_counts, [(1, 1); 2]);
+            }
+        }
+    }
+}
+
+#[test]
+fn undescribed_aggregate_calls_keep_the_legacy_registration_path() {
+    outcome_tests::reset();
+    let buffer = NativeAggregateBuffer::new(layout(), None).unwrap();
+    buffer.prepare().unwrap();
+    let mut plan = Arc::try_unwrap(unsafe { CallPlan::new(spec()) }.unwrap()).unwrap();
+    plan.function = produce as *const () as usize;
+    let result = unsafe { plan.invoke(&[Value::AggregatePointer(Arc::clone(&buffer))]) }.unwrap();
+    let raw = native_handles(&buffer);
+    let recorded = buffer.lock().native_recorded;
+    // This legacy call transferred both live event handles into the caller's fields.
+    unsafe { buffer.mark_legacy(result.succeeded) }.unwrap();
+    let owned = [0, 1].map(|field| {
+        buffer
+            .field_value(field)
+            .is_ok_and(|value| value.resource().is_some())
+    });
+    drop(buffer);
+    let counts = retirement_counts(raw);
+    assert!(result.succeeded);
+    assert!(!recorded);
+    assert_eq!(owned, [true; 2]);
+    assert_eq!(counts, [(1, 1); 2]);
 }

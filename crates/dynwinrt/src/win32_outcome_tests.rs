@@ -80,6 +80,17 @@ pub(super) fn cleanup_count_for(value: usize) -> usize {
     })
 }
 
+pub(super) fn successful_cleanup_count_for(value: usize) -> usize {
+    OBSERVED.with(|observed| {
+        observed
+            .borrow()
+            .cleanup
+            .iter()
+            .filter(|call| call.value == value && call.succeeded)
+            .count()
+    })
+}
+
 pub(super) fn check_aggregate_return_allocation() -> Result<()> {
     if OBSERVED.with(|observed| std::mem::take(&mut observed.borrow_mut().fail_return_allocation)) {
         Err(out_of_memory(

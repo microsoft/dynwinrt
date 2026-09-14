@@ -1042,6 +1042,20 @@ impl CallPlan {
             }
         }
         output_storage.initialized = true;
+        // Publish every described aggregate's state before any field conversion or cleanup.
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            if layout.is_none() {
+                continue;
+            }
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated aggregate input");
+            if let Some(guard_index) = aggregate_by_arg[input] {
+                let state = &mut aggregate_guards[guard_index];
+                state.succeeded = Some(succeeded);
+                state.native_recorded = true;
+            }
+        }
         for (index, layout) in self.parameter_pointees.iter().enumerate() {
             let Some(layout) = layout else {
                 continue;
@@ -1053,8 +1067,6 @@ impl CallPlan {
                 continue;
             };
             let state = &mut aggregate_guards[guard_index];
-            state.succeeded = Some(succeeded);
-            state.native_recorded = true;
             for (field_index, field) in layout.fields().iter().enumerate() {
                 let policy = state.policies[field_index];
                 if matches!(policy, ResultPolicy::Undefined {}) {
@@ -1067,15 +1079,6 @@ impl CallPlan {
                     field: field_index,
                 })?;
                 let raw = state.read_abi(field);
-                if matches!(
-                    policy,
-                    ResultPolicy::Defined {
-                        delivery: Delivery::Discard,
-                        ..
-                    }
-                ) {
-                    state.raw_cleanup[field_index] = Cleanup::None;
-                }
                 let value = self.decode_result(field.typ, raw, policy, args, &input_storage)?;
                 state.raw_cleanup[field_index] = Cleanup::None;
                 state.results[field_index] = Some(value);

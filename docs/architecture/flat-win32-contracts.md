@@ -102,9 +102,13 @@ a pointer-to-pointer or an owned aggregate allocation. Its `pointeeDescriptor`
 retains the exact native layout and ordered `outputFields`. The caller owns the
 structure bytes, while the native buffer's result store independently owns
 resources written into fields such as `PROCESS_INFORMATION.hProcess/hThread`.
-Field validity and cleanup are registered immediately after native dispatch,
-before return/out decoding and before N-API wraps `_call`. Taking a field moves
-the existing resource owner rather than adopting its handle a second time.
+Field validity, cleanup and native completion state for every described aggregate
+are registered immediately after native dispatch, before any per-field conversion
+or discard cleanup can fail, before return/out decoding and before N-API wraps
+`_call`. Taking a field moves the existing resource owner rather than adopting
+its handle a second time. Failed discard cleanup preserves the original field
+bytes and cleanup guard for retry by `prepare()` or destruction; merely attempting
+cleanup does not release ownership or remove overlapping-write protection.
 Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
 Legacy manual mark helpers cannot erase already registered native ownership.
 
@@ -249,7 +253,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Shared Win32 contract tests | Strict version decoding, legacy migration, complete result coverage, ownership/delivery combinations, disjoint conditions and Rust-derived schema consistency. |
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
-| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial conversion cleanup, unsafe legacy transfers, safe-write protection, extraction, failed cleanup retry and real `CreateProcessW` handle retirement. |
+| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |
