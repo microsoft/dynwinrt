@@ -1056,34 +1056,7 @@ impl CallPlan {
                 state.native_recorded = true;
             }
         }
-        for (index, layout) in self.parameter_pointees.iter().enumerate() {
-            let Some(layout) = layout else {
-                continue;
-            };
-            let input = self.parameters[index]
-                .input_index
-                .expect("validated aggregate input");
-            let Some(guard_index) = aggregate_by_arg[input] else {
-                continue;
-            };
-            let state = &mut aggregate_guards[guard_index];
-            for (field_index, field) in layout.fields().iter().enumerate() {
-                let policy = state.policies[field_index];
-                if matches!(policy, ResultPolicy::Undefined {}) {
-                    state.results[field_index] = Some(Value::Unavailable);
-                    continue;
-                }
-                #[cfg(test)]
-                outcome_tests::check_result_decode(ResultTarget::AggregateField {
-                    parameter: index,
-                    field: field_index,
-                })?;
-                let raw = state.read_abi(field);
-                let value = self.decode_result(field.typ, raw, policy, args, &input_storage)?;
-                state.raw_cleanup[field_index] = Cleanup::None;
-                state.results[field_index] = Some(value);
-            }
-        }
+        // Commit native side effects before any fallible result processing.
         if succeeded {
             for effect in &self.contract.resource_effects {
                 let ResourceEffect::AddFileCompletionModes {
@@ -1112,6 +1085,34 @@ impl CallPlan {
                 if let Some(guard_index) = resource_guard_by_arg[input_index] {
                     *resource_guards[guard_index] = 0;
                 }
+            }
+        }
+        for (index, layout) in self.parameter_pointees.iter().enumerate() {
+            let Some(layout) = layout else {
+                continue;
+            };
+            let input = self.parameters[index]
+                .input_index
+                .expect("validated aggregate input");
+            let Some(guard_index) = aggregate_by_arg[input] else {
+                continue;
+            };
+            let state = &mut aggregate_guards[guard_index];
+            for (field_index, field) in layout.fields().iter().enumerate() {
+                let policy = state.policies[field_index];
+                if matches!(policy, ResultPolicy::Undefined {}) {
+                    state.results[field_index] = Some(Value::Unavailable);
+                    continue;
+                }
+                #[cfg(test)]
+                outcome_tests::check_result_decode(ResultTarget::AggregateField {
+                    parameter: index,
+                    field: field_index,
+                })?;
+                let raw = state.read_abi(field);
+                let value = self.decode_result(field.typ, raw, policy, args, &input_storage)?;
+                state.raw_cleanup[field_index] = Cleanup::None;
+                state.results[field_index] = Some(value);
             }
         }
 

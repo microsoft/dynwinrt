@@ -112,6 +112,13 @@ cleanup does not release ownership or remove overlapping-write protection.
 Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
 Legacy manual mark helpers cannot erase already registered native ownership.
 
+Once all output guards and native aggregate states are registered, the call
+commits successful input consumption and resource effects while input-resource
+locks are still held, before any field/return/out conversion or discard cleanup.
+The decision uses native success, not result-delivery success. A native failure
+leaves consuming-input ownership and success-only resource effects unchanged,
+even when valid failure outputs subsequently fail to decode or clean up.
+
 Legacy raw-field adoption is explicitly `unsafe` in Rust, including the binding
 adapter entrypoint. The caller must prove that successful fields are initialized
 and valid, that each non-null owned resource transfers exclusive ownership, and
@@ -254,6 +261,7 @@ PR's implementation or hashes of Rust `Debug` output:
 | Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
 | Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
 | Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
+| Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |

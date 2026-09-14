@@ -11,6 +11,9 @@ use windows::Win32::Foundation::{
     HANDLE_FLAG_PROTECT_FROM_CLOSE, HANDLE_FLAGS, SetHandleInformation,
 };
 
+#[path = "win32_aggregate_effect_tests.rs"]
+mod effect_tests;
+
 #[repr(C)]
 struct NativeInfo {
     process: usize,
