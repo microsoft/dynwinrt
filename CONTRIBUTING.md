@@ -80,7 +80,19 @@ The script builds instrumented Python and Node native modules, runs the
 Rust/Python/JavaScript tests and E2E suite, and writes HTML, LCOV, XML, and JSON
 reports under `artifacts\coverage`. Default line gates are Rust 45%, Python
 70%, and JavaScript 18%; override them with the `-Min*LineCoverage` parameters,
-or re-check an existing report tree without rerunning tests via `-ValidateOnly`.
+or re-check the percentage gates in an existing report tree without rerunning
+tests via `-ValidateOnly`.
+
+Report generation also requires executed Rust lines in each JavaScript native
+binding module `winrt_types.rs`, `winrt_methods.rs`, `value.rs`, `winrt_array.rs`,
+`winrt_struct.rs`, `js_storage.rs`, and `com_value.rs` under `bindings/js/src`,
+plus `bindings/py/src/runtime.rs`. The wiring-only JavaScript `lib.rs` need not
+appear in LCOV. E2E coverage additionally requires the JavaScript and Python
+native WinRT implementation adapters and the core `winrt_implementation`
+source family. Missing or unexecuted required sources fail independently of the
+percentage gates; hits in another source or language cannot replace them.
+Run `.\eng\coverage\coverage.threshold.tests.ps1` for the source-guard and
+threshold boundary regression tests without building native modules.
 
 ### Code Style
 

@@ -249,6 +249,36 @@ function Test-LcovSourceCovered {
     return $false
 }
 
+function Assert-NativeSourceCoverage {
+    param(
+        [string]$Lcov,
+        [switch]$RequireWinrtImplementation
+    )
+    $requiredNativeSources = @(
+        "bindings/js/src/winrt_types.rs",
+        "bindings/js/src/winrt_methods.rs",
+        "bindings/js/src/value.rs",
+        "bindings/js/src/winrt_array.rs",
+        "bindings/js/src/winrt_struct.rs",
+        "bindings/js/src/js_storage.rs",
+        "bindings/js/src/com_value.rs",
+        "bindings/py/src/runtime.rs"
+    )
+    if ($RequireWinrtImplementation) {
+        $requiredNativeSources += @(
+            "bindings/js/src/winrt_implementation.rs",
+            "bindings/py/src/implementation.rs",
+            "crates/dynwinrt/src/winrt_implementation/"
+        )
+    }
+    foreach ($requiredSource in $requiredNativeSources) {
+        $pattern = [regex]::Escape($requiredSource).Replace("/", "[\\/]")
+        if (-not (Test-LcovSourceCovered $Lcov $pattern)) {
+            throw "Rust coverage did not execute native binding source: $requiredSource"
+        }
+    }
+}
+
 function Write-JavaScriptCoverageReport {
     param(
         [string]$Name,
@@ -349,23 +379,7 @@ function Write-Reports {
         }
 
         $lcov = Get-Content -LiteralPath (Join-Path $rustReport "lcov.info") -Raw
-        $requiredNativeSources = @(
-            "bindings/js/src/lib.rs",
-            "bindings/py/src/runtime.rs"
-        )
-        if ($winrtCoverageExpected) {
-            $requiredNativeSources += @(
-                "bindings/js/src/winrt_implementation.rs",
-                "bindings/py/src/implementation.rs",
-                "crates/dynwinrt/src/winrt_implementation/"
-            )
-        }
-        foreach ($requiredSource in $requiredNativeSources) {
-            $pattern = [regex]::Escape($requiredSource).Replace("/", "[\\/]")
-            if (-not (Test-LcovSourceCovered $lcov $pattern)) {
-                throw "Rust coverage did not execute native binding source: $requiredSource"
-            }
-        }
+        Assert-NativeSourceCoverage -Lcov $lcov -RequireWinrtImplementation:$winrtCoverageExpected
     } else {
         throw "No Rust .profraw files were produced"
     }

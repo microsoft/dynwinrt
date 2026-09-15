@@ -63,6 +63,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile($coverageScript, [ref]
 foreach ($name in @(
     "Get-JavaScriptCoverageLayers",
     "Test-LcovSourceCovered",
+    "Assert-NativeSourceCoverage",
     "Assert-MinimumCoverage",
     "Get-CoverageSummaryMarkdown",
     "Write-CoverageSummary"
@@ -109,6 +110,79 @@ foreach ($separator in @("/", "\")) {
     }
     if (Test-LcovSourceCovered "SF:$source`nLH:0`nend_of_record`n" $pattern) {
         throw "An unexecuted native source must not satisfy coverage presence checks"
+    }
+}
+
+function New-NativeLcovFixture {
+    param(
+        [string[]]$Sources,
+        [string[]]$UncoveredSources = @(),
+        [string]$Prefix = "",
+        [string]$Separator = "/",
+        [string]$NewLine = "`n"
+    )
+    return (@(
+        foreach ($source in $Sources) {
+            $path = if ($source.EndsWith("/")) { "${source}mod.rs" } else { $source }
+            $path = ($Prefix + $path).Replace("/", $Separator)
+            $hits = if ($UncoveredSources -contains $source) { 0 } else { 1 }
+            @("SF:$path", "DA:1,$hits", "LF:1", "LH:$hits", "end_of_record", "") -join $NewLine
+        }
+    ) -join "")
+}
+
+Write-Host "Validating split native binding source guards..."
+$nativeSources = @(
+    "bindings/js/src/winrt_types.rs",
+    "bindings/js/src/winrt_methods.rs",
+    "bindings/js/src/value.rs",
+    "bindings/js/src/winrt_array.rs",
+    "bindings/js/src/winrt_struct.rs",
+    "bindings/js/src/js_storage.rs",
+    "bindings/js/src/com_value.rs",
+    "bindings/py/src/runtime.rs"
+)
+$implementationSources = @(
+    "bindings/js/src/winrt_implementation.rs",
+    "bindings/py/src/implementation.rs",
+    "crates/dynwinrt/src/winrt_implementation/"
+)
+$wiringSource = "bindings/js/src/lib.rs"
+$unrelatedSources = @(
+    $wiringSource,
+    "bindings/js/src/benchmarks.rs",
+    "bindings/py/src/value.rs",
+    "tests/e2e/e2e_generated/ts/value.js"
+)
+foreach ($separator in @("/", "\")) {
+    foreach ($prefix in @("", "D:/a/dynwinrt/dynwinrt/")) {
+        foreach ($newLine in @("`n", "`r`n")) {
+            $format = @{ Separator = $separator; Prefix = $prefix; NewLine = $newLine }
+            foreach ($requireImplementation in @($false, $true)) {
+                $requiredSources = @($nativeSources)
+                if ($requireImplementation) { $requiredSources += $implementationSources }
+
+                $lcov = New-NativeLcovFixture -Sources $requiredSources @format
+                Assert-NativeSourceCoverage -Lcov $lcov -RequireWinrtImplementation:$requireImplementation
+                $lcov = New-NativeLcovFixture `
+                    -Sources ($requiredSources + $wiringSource) -UncoveredSources $wiringSource @format
+                Assert-NativeSourceCoverage -Lcov $lcov -RequireWinrtImplementation:$requireImplementation
+
+                foreach ($requiredSource in $requiredSources) {
+                    $remainingSources = @($requiredSources | Where-Object { $_ -ne $requiredSource })
+                    $lcov = New-NativeLcovFixture -Sources ($remainingSources + $unrelatedSources) @format
+                    Assert-ExpectedFailure {
+                        Assert-NativeSourceCoverage -Lcov $lcov -RequireWinrtImplementation:$requireImplementation
+                    } "Rust coverage did not execute native binding source: $requiredSource"
+
+                    $lcov = New-NativeLcovFixture `
+                        -Sources ($requiredSources + $unrelatedSources) -UncoveredSources $requiredSource @format
+                    Assert-ExpectedFailure {
+                        Assert-NativeSourceCoverage -Lcov $lcov -RequireWinrtImplementation:$requireImplementation
+                    } "Rust coverage did not execute native binding source: $requiredSource"
+                }
+            }
+        }
     }
 }
 
