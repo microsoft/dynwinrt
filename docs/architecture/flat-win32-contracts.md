@@ -4,6 +4,14 @@ Flat Win32 bindings dynamically invoke DLL exports described by Windows
 metadata. They use a Win32-local ABI model and explicit semantic contracts,
 separate from WinRT activation and Classic COM vtables.
 
+> **Status: experimental.** Flat Win32 support is under active development and
+> intended for evaluation and prototyping. Its JavaScript/TypeScript APIs,
+> generated bindings, and Win32 runtime/codegen contracts may change between
+> releases; backward compatibility is not yet guaranteed. Do not treat this
+> projection as a stable production dependency. Use matching runtime and
+> codegen versions, regenerate Win32 bindings when upgrading, and validate the
+> APIs you rely on in your target environment.
+
 ## Metadata and supported capabilities
 
 Built-in contracts are validated against
