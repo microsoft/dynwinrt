@@ -161,7 +161,7 @@ implementation, aggregation, or custom marshaling.
 | Custom allocators and resource handles                     | The runtime lacks the exact cleanup operation.                                                       | Raw pointer plus explicit cleanup primitive where one exists.                                     |
 | Cross-apartment callbacks                                  | JavaScript is tied to its V8 owner thread while COM callbacks can be synchronous on foreign threads. | Not solved by raw ABI; requires marshaling and dispatch architecture.                             |
 | COM aggregation, custom marshaling, and registered servers | These change object identity, activation, and process semantics rather than only method ABI.         | Separate architecture work.                                                                       |
-| Flat Win32 DLL exports                                     | They are not COM vtable methods.                                                                     | Separate Win32 raw function layer.                                                                |
+| Flat Win32 DLL exports                                     | They are not COM vtable methods.                                                                     | Use the separate [contract-driven Win32 layer](../architecture/flat-win32-contracts.md) for supported exports. |
 
 ## How users check a specific API
 
@@ -571,7 +571,8 @@ as ABI support. The legacy `com-census --json` output remains unchanged.
 
 - Expand Automation and native-layout semantic support.
 - Design apartment marshaling and agility independently from raw ABI.
-- Keep flat Win32 exports and COM server support as separate projects.
+- Keep DLL exports in the separate [Win32 contract layer](../architecture/flat-win32-contracts.md);
+  COM server support remains independent architecture work.
 
 ## Copyable user-facing statement
 

@@ -55,8 +55,8 @@ npx dynwinrt-codegen generate \
 |---|---|
 | `--winmd PATH[;PATH...]` | Path to `.winmd` file(s) (auto-detects Windows SDK if omitted) |
 | `--folder PATH` | Directory containing `.winmd` files |
-| `--namespace NAMESPACE` | WinRT namespace to generate (omit for all non-`Windows.*` namespaces) |
-| `--class-name CLASS` | Specific class (transitively pulls in dependencies) |
+| `--namespace NAMESPACE` | Metadata namespace to generate (omit for all non-`Windows.*` namespaces) |
+| `--class-name CLASS` | Specific classes, interfaces, or native `Apis` containers (comma-separated; transitively pulls in dependencies) |
 | `--ref PATH` | Additional `.winmd` files for type resolution only (no code emitted) |
 | `--lang LANG` | `js` (default, emits `.js` + `.d.ts`) or `py` (Python) |
 | `--output DIR` | Output directory (default `./generated`) |
@@ -87,6 +87,27 @@ Only interfaces with complete validated ABI, layout, ownership, and cleanup
 contracts are emitted under the generated `com/` subpackage; unsupported
 interfaces fail closed. See the
 [Classic COM usage guide](https://github.com/microsoft/dynwinrt/blob/main/docs/guides/windows/classic-com-usage.md).
+
+### Flat Win32 DLL exports
+
+Generate namespace-organized JavaScript modules and TypeScript declarations
+from `Windows.Win32.winmd` by selecting an `Apis` container:
+
+```powershell
+npx dynwinrt-codegen generate `
+  --winmd $env:DYNWINRT_WIN32_WINMD `
+  --class-name Windows.Win32.System.Registry.Apis `
+  --output .\generated
+```
+
+Generated modules live under `win32/` and use `@microsoft/dynwinrt/win32`,
+separately from WinRT and Classic COM. Metadata and explicit contracts validate
+native layout, buffers, ownership, and lifecycle requirements; unsupported
+exports produce diagnostics. Supported wrappers include managed resource
+cleanup and IOCP-backed asynchronous file I/O. Subsystem initialization remains
+explicit, with lifecycle DLLs loaded on demand.
+See the [Win32 capabilities and contract boundary](https://github.com/microsoft/dynwinrt/blob/main/docs/architecture/flat-win32-contracts.md)
+and [JavaScript samples](https://github.com/microsoft/dynwinrt/tree/main/samples/js/win32).
 
 ## Platform
 

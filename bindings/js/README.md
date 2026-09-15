@@ -197,6 +197,26 @@ See the repository's
 codegen, current coverage and limitations, GUID/IID/CLSID, lifetime, Automation,
 and `/com/unsafe` examples.
 
+### Flat Win32 DLL exports
+
+Generated Win32 wrappers use `@microsoft/dynwinrt/win32` to invoke DLL exports
+described by `Windows.Win32.winmd`. They support validated native structures,
+counted buffers, managed handle cleanup, and IOCP-backed asynchronous file I/O.
+Manual raw ABI operations remain isolated under
+`@microsoft/dynwinrt/win32/unsafe`; the package root stays WinRT-only.
+
+Winsock, GDI+, and Media Foundation functions that require initialization take
+an explicit subsystem context. Keep that context for the required native
+lifetime and call `close()` when finished. Lifecycle DLLs load on initialization,
+not package import; missing components fail the requested initialization without
+adding an eager dependency to ordinary WinRT/COM imports. MAPI utility
+initialization is available only on the unsafe subpath and requires a configured
+provider.
+
+See the [Win32 generation guide](../../tools/dynwinrt-codegen/README.md#contract-driven-flat-win32),
+[JavaScript samples](../../samples/js/win32/README.md), and
+[supported capabilities and ownership rules](../../docs/architecture/flat-win32-contracts.md).
+
 ### Generated WinRT values
 
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.

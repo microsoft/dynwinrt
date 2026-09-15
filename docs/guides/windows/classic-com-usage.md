@@ -203,8 +203,8 @@ This is still unsafe. Verify acquisition, apartment, optional-pointer, storage,
 and cleanup rules against the native contract. A failing HRESULT may throw
 after native code has mutated caller-owned slots; inspect and reconcile such
 storage according to the API contract. See the
-[complete generated unsafe examples](generated-com-unsafe-example.zh-CN.md) for
-synchronous/semisynchronous WMI and manual-contract raw calls.
+[generated unsafe strategy reference](../../architecture/classic-com-generated-unsafe.md#generated-strategy-runtime)
+for explicit pointer, buffer, and output-ownership strategies.
 
 Stage 2 also emits `raw_manual_contract` methods with required strategies from
 `generated/com/unsafe/runtime.js`. A pointer output with unknown ownership
@@ -1466,8 +1466,11 @@ Handwritten signatures, vtable slots, and pointer cleanup are unsafe ABI operati
 
 ### Can Classic COM call ordinary Win32 DLL functions?
 
-No. Flat DLL exports such as `CreateFileW`, registry APIs, and GDI APIs are not COM vtables. They require a separate
-Win32 DLL and handle model.
+Not through the COM entrypoint. Flat DLL exports such as `CreateFileW`,
+Registry APIs, and GDI APIs are not COM vtables. Generate their `Apis`
+containers and use `@microsoft/dynwinrt/win32` for supported exports.
+See the [Win32 generation guide](../../../tools/dynwinrt-codegen/README.md#contract-driven-flat-win32)
+and [native contract boundary](../../architecture/flat-win32-contracts.md).
 
 ## 13. Additional resources
 

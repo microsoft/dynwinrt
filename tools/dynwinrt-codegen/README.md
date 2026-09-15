@@ -7,6 +7,8 @@ bindings for [dynwinrt](https://github.com/microsoft/dynwinrt):
 - WinRT Python (`.py`) with type stubs (`.pyi`) and a `py.typed` marker
 - Supported Classic COM APIs from `Windows.Win32.winmd` as JavaScript and
   TypeScript
+- Contract-driven Win32 DLL exports from `Windows.Win32.winmd` as JavaScript
+  and TypeScript
 
 The command is available for Windows x64 and ARM64. Generated JavaScript uses
 `@microsoft/dynwinrt`; generated Python uses `dynwinrt`.
@@ -50,7 +52,7 @@ package.
 | `--winmd-list FILE` | Newline-separated metadata paths to emit; blank lines and `#` comments are ignored. |
 | `--folder DIR` | Load every `.winmd` file directly inside a directory. |
 | `--namespace NS` | Generate one namespace. Without it, generate all non-`Windows.*` namespaces in the input. |
-| `--class-name NAME[,NAME...]` | Generate specific classes or public interfaces. Use fully qualified names, or unqualified names together with `--namespace`. |
+| `--class-name NAME[,NAME...]` | Generate specific classes, public interfaces, or native `Apis` containers. Use fully qualified names, or unqualified names together with `--namespace`. |
 | `--ref PATH[;PATH...]` | Metadata used only for type resolution. Sibling discovery is disabled for references. |
 | `--ref-list FILE` | Newline-separated reference metadata paths; blank lines and `#` comments are ignored. |
 | `--lang js\|py` | `js` emits CommonJS `.js`, an ESM facade, and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
@@ -99,11 +101,11 @@ dynwinrt-codegen generate `
 
 ### Contract-driven flat Win32
 
-The JavaScript flat DLL-export migration targets the full PR #102 capability
-set from the pinned `Microsoft.Windows.SDK.Win32Metadata` `71.0.14-preview`
-package. A five-export foundation is not a complete replacement. Metadata
-provides generic ABI facts; the independent Win32 registry supplies exact
-manual evidence where required.
+Generate JavaScript bindings and TypeScript declarations for Win32 DLL exports
+from `Windows.Win32.winmd`. Built-in contracts are validated against the pinned
+`Microsoft.Windows.SDK.Win32Metadata` `71.0.14-preview` package. Metadata
+provides native ABI facts; the independent Win32 registry supplies explicit
+ownership, buffer, and lifecycle evidence where required.
 
 ```powershell
 dynwinrt-codegen generate `
@@ -117,10 +119,10 @@ dynwinrt-codegen generate `
 `win32/windows/win32/system/registry/` and
 `win32/windows/win32/system/system-information/`, outside the WinRT root.
 The runtime package must include the matching `win32` entrypoint. The
-`win32-census --winmd <PATH> --json` command preserves the original census
-format; the exact baseline parity gate additionally checks individual exports,
-aliases, ABI contracts, builders, enums and subsystem requirements.
-See the [contract architecture and migration scope](../../docs/architecture/flat-win32-contracts.md).
+`win32-census --winmd <PATH> --json` command reports eligible exports and complete
+projections. Support requires validated ABI, ownership, and lifecycle contracts;
+unsupported APIs remain explicit diagnostics.
+See the [supported capabilities and contract architecture](../../docs/architecture/flat-win32-contracts.md).
 
 ### Other commands
 

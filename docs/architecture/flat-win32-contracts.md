@@ -22,11 +22,11 @@ every API has been exercised against a live system.
 | Return contracts | Direct, void, status/HRESULT and LastError behavior, including expected failure results. |
 | Strings and buffers | UTF-16/ANSI storage, double-NUL lists, reserved inputs, counted buffers, capacity/actual-size relationships and caller-owned output semantics. |
 | Resources | Exact HKEY, HANDLE, HLOCAL, HGLOBAL, HMODULE, SC_HANDLE, CoTaskMem and credential cleanup; synchronized leases and consuming calls. |
-| Native builders | Existing SECURITY_ATTRIBUTES, STARTUPINFOA/W, PROCESS_INFORMATION and POD helpers, including retained pointer fields and owned outputs. |
+| Native builders | SECURITY_ATTRIBUTES, STARTUPINFOA/W, PROCESS_INFORMATION and POD helpers, including retained pointer fields and owned outputs. |
 | COM inputs | Exact-IID, borrowed managed interface inputs without changing the WinRT model. |
 | Asynchronous I/O | IOCP-backed ReadFile/WriteFile Promises, cancellation, EOF, retained storage, detachment checks and bounded pending work. |
 | Subsystems | Winsock, GDI+, Media Foundation and explicit unsafe MAPI utility context behavior. |
-| Tooling | Safe/unsafe entrypoints, declarations, CLI/census, manifests, examples and original stock-Windows scenarios. |
+| Tooling | Safe/unsafe entrypoints, declarations, CLI/census, manifests, examples and stock-Windows scenarios. |
 
 The examples under `samples/js/win32` demonstrate system information,
 Registry queries and asynchronous file I/O with the namespace layout.
@@ -183,8 +183,8 @@ Normal-key size queries retain their prior behavior.
 Native Win32 carriers use type tags rather than mutable JavaScript prototypes.
 Manual aggregate descriptors and MAPI utility initialization are available on
 the explicit unsafe subpath; generated validated helpers call those primitives
-internally. The full `DynWin32*` capability set is retained across the Win32
-entrypoints. x86 plan invocation remains explicitly unsupported;
+internally. Win32 runtime types are exposed through the dedicated safe and
+unsafe entrypoints. x86 plan invocation remains explicitly unsupported;
 x64 is exercised live and ARM64 is compile-validated.
 
 Win32 optional lifecycle DLLs are loaded on explicit subsystem initialization,
@@ -249,8 +249,8 @@ the owner thread. That thread revalidates the backing, performs read copy-back
 and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
 type enters core I/O. Environment teardown cancels native work without freeing
 OS-owned storage early, while JS references are released on their owner thread.
-This extraction does not reorganize existing COM/WinRT carriers or shared
-backing storage; that remains a separate binding-internals change.
+COM/WinRT carriers and their backing-storage ownership remain separate from
+the native Win32 I/O engine.
 
 Generic resource coordination governs borrowing, consuming, state mutation and
 asynchronous occupancy. File-specific modes and association state belong to a
@@ -272,7 +272,7 @@ of a managed handle.
 
 ## Namespace output
 
-Generated modules use main's lowercase/kebab namespace directory mapping, for
+Generated modules use a lowercase/kebab namespace directory mapping, for
 example `win32/windows/win32/system/registry/Apis.js`. The Win32 output manifest
 records namespace exports and generated file hashes. The CLI uses the shared
 atomic output transaction, retaining other generated namespaces on incremental
@@ -293,8 +293,8 @@ through CommonJS, ESM and native dispatch.
 
 ## Tests
 
-Behavior is protected by ordinary tests, not a frozen copy of a previous
-PR's implementation or hashes of Rust `Debug` output:
+Behavior is protected by contract, ABI, ownership, generated-output, package,
+and live Windows API tests:
 
 | Tests | Assertions |
 | --- | --- |
@@ -325,14 +325,15 @@ Native subsystem lifecycle tests run in isolated, time-bounded processes with
 initialization/cleanup stage output, so a platform startup failure cannot
 silently block unrelated tests behind a process-global lock.
 
-Winsock, GDI+ and Media Foundation lifecycle tests call the native OS APIs.
-MAPI lifecycle tests use a test-only function table because stock CI images
-do not supply an Extended MAPI provider. These mandatory tests exercise the
-same context, counting and call-guard implementation, asserting reserved flags,
-first-lease initialization, last-lease cleanup, retries after initialization
-failure, missing exports, aliases, idempotent close, `Drop` and concurrent close.
-Architecture-specific system export resolution is also mandatory and does
-not invoke the provider.
+Deterministic lifecycle tests use test-only function tables to exercise the
+same context, counting and call-guard implementation. They cover reserved
+flags, first-lease initialization, last-lease cleanup, retries after startup
+or shutdown failure, rollback, missing exports, aliases, idempotent close,
+`Drop` and concurrent close. Separate integration cases invoke the installed
+Winsock, GDI+ and Media Foundation APIs; only positively identified missing
+optional DLLs or lifecycle exports permit a skip, not arbitrary Startup
+failures. Architecture-specific MAPI system export resolution is mandatory
+without invoking a provider.
 
 The real MAPI lifecycle test remains available separately on a machine with a
 configured provider (for example, matching-bitness Outlook). It is ignored by

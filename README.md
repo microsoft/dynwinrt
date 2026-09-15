@@ -1,12 +1,23 @@
 # dynwinrt
 
-**Call Windows Runtime (WinRT) APIs from JavaScript, TypeScript, or Python — without writing a native extension.**
+**An experimental runtime for calling Windows APIs from JavaScript, TypeScript, or Python — without writing a native extension.**
 
 [![@microsoft/dynwinrt](https://img.shields.io/npm/v/@microsoft/dynwinrt.svg?label=%40microsoft%2Fdynwinrt)](https://www.npmjs.com/package/@microsoft/dynwinrt)
 [![@microsoft/dynwinrt-codegen](https://img.shields.io/npm/v/@microsoft/dynwinrt-codegen.svg?label=%40microsoft%2Fdynwinrt-codegen)](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen)
 [![dynwinrt on PyPI](https://img.shields.io/pypi/v/dynwinrt.svg?label=PyPI%20dynwinrt)](https://pypi.org/project/dynwinrt/)
 [![dynwinrt-codegen on PyPI](https://img.shields.io/pypi/v/dynwinrt-codegen.svg?label=PyPI%20dynwinrt-codegen)](https://pypi.org/project/dynwinrt-codegen/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+> **Status: experimental.** `dynwinrt` is under active development and intended
+> for evaluation and prototyping. Public APIs, generated bindings, and
+> runtime/codegen contracts may change between releases; backward compatibility
+> is not yet guaranteed. Do not treat it as a stable production dependency.
+> Use matching runtime and codegen versions, regenerate bindings when upgrading,
+> and validate the APIs you rely on in your target environment.
+>
+> WinRT projections are available for JavaScript/TypeScript and Python.
+> Classic COM and flat Win32 projections currently support JavaScript/TypeScript
+> only, with the capability boundaries described below.
 
 ## Why dynwinrt?
 
@@ -20,7 +31,8 @@ If you've ever tried to call a modern Windows API (WinAppSDK, Windows AI, notifi
 
 > **Scope** — `dynwinrt` primarily targets **data-style WinRT APIs**. WinUI
 > `Application + Window` hosting is also supported on a caller-managed STA UI
-> thread. Classic COM has a separate preview surface described below.
+> thread. Classic COM and contract-driven flat Win32 have separate
+> JavaScript/TypeScript surfaces described below.
 
 ## Quick start
 
@@ -207,16 +219,20 @@ contracts or provide a universal overload parser. See the
 - [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
 - [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)
 
-## Flat Win32 migration
+## Contract-driven flat Win32
 
-The contract-driven flat Win32 migration must preserve the complete
-capability set of PR #102, not replace it with a small export allowlist.
-It uses a separate `contracts/win32` registry and runtime
-`@microsoft/dynwinrt/win32` entrypoint, not the COM or WinRT semantic models.
-Full parity is a blocking acceptance condition while the replacement is draft.
-See the
-[contract boundary and migration scope](docs/architecture/flat-win32-contracts.md)
-and [generation command](tools/dynwinrt-codegen/README.md#contract-driven-flat-win32).
+Generate JavaScript bindings with TypeScript declarations for Win32 DLL exports
+from `Windows.Win32.winmd`. Supported features include native structures,
+counted buffers, managed resource cleanup, and IOCP-backed asynchronous file I/O.
+Explicit subsystem contexts load their lifecycle DLLs on demand.
+
+An independent `contracts/win32` registry describes ownership, buffer
+relationships, and lifecycle rules. Generated bindings use the separate
+`@microsoft/dynwinrt/win32` entrypoint, preserving the existing COM and WinRT
+semantic models.
+See the [supported capabilities and contract boundary](docs/architecture/flat-win32-contracts.md),
+[generation command](tools/dynwinrt-codegen/README.md#contract-driven-flat-win32),
+and [JavaScript examples](samples/js/win32/README.md).
 
 ## Repository layout
 

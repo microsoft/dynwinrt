@@ -138,9 +138,9 @@ complete output.
   `py3-none-win_arm64` wheels for Python 3.8–3.14.
 - Generated bindings and the `dynwinrt` runtime require CPython 3.11–3.14 on
   Windows x64 or ARM64.
-- Python generation currently supports WinRT metadata. Classic COM generation
-  from `Windows.Win32.winmd` is currently available only for JavaScript and
-  TypeScript.
+- Python generation currently supports WinRT metadata. Classic COM and flat
+  Win32 DLL-export generation from `Windows.Win32.winmd` are available only
+  for JavaScript and TypeScript.
 - Some APIs require their Windows component, package identity, or framework
   bootstrap to be present at runtime.
 

@@ -8,8 +8,9 @@ This document summarizes the current language projections across:
 - the JavaScript/TypeScript and Python generators in
   `tools/dynwinrt-codegen`.
 
-Classic COM has a separate semantic type system and safety boundary. See
-[Classic COM support](../../docs/architecture/classic-com-support.md) instead
+Classic COM and flat Win32 each have their own semantic type system and safety
+boundary. See [Classic COM support](../../docs/architecture/classic-com-support.md)
+and [flat Win32 support](../../docs/architecture/flat-win32-contracts.md) instead
 of applying the WinRT mappings below to `Windows.Win32.winmd`.
 
 ## Scalar and foundation types
@@ -134,6 +135,7 @@ Current limits that affect type coverage:
 2. JavaScript GUID and Boolean arrays use per-element conversion rather than a
    dedicated bulk fast path.
 3. Python does not yet expose a zero-copy buffer protocol for WinRT buffers.
-4. Classic COM, native Win32 pointers, Automation variants, SAFEARRAY, and
-   ownership-specific outputs use the separate fail-closed COM model and
-   currently generate only JavaScript/TypeScript.
+4. Classic COM methods, including their native pointers, Automation variants,
+   SAFEARRAY, and ownership-specific outputs, use the fail-closed COM model.
+   Flat Win32 DLL exports use an independent native ABI and contract model.
+   Both currently generate only JavaScript/TypeScript.

@@ -765,9 +765,12 @@ Remaining apartment work includes:
 Examples include `CoGetMalloc`, `CreateBindCtx`, `D2D1CreateFactory`,
 `DWriteCreateFactory`, `D3D11CreateDevice`, and shell helper functions.
 
-The current Classic COM layer can invoke an acquired interface, but a separate
-flat-Win32 layer is needed for the 17,760 DLL exports, their calling
-conventions, `GetLastError`, callbacks, and handle cleanup.
+The Classic COM layer invokes acquired interfaces; DLL exports use the separate
+[contract-driven flat Win32 layer](flat-win32-contracts.md) and
+`@microsoft/dynwinrt/win32` entrypoint. Its supported calling conventions,
+status/LastError behavior, buffers, and resource cleanup are validated
+independently. This does not imply support for every interface-acquisition
+function or native callback shape.
 
 ### Recommended implementation order
 
@@ -779,12 +782,12 @@ conventions, `GetLastError`, callbacks, and handle cleanup.
 6. Broaden generated COM sink/interface implementation beyond the initial
    same-thread interface-input subset.
 7. Apartment-aware marshaling.
-8. Separate flat-Win32 acquisition/invocation layer.
+8. Keep DLL-export acquisition/invocation separate from COM vtable semantics.
 
-## What the current PR handles
+## Current Classic COM implementation
 
-The PR establishes a safe Classic COM subset and rejects the rest. It should
-not be described as solving every problem in the map above.
+The Classic COM implementation provides a validated subset and rejects
+unsupported contracts. It does not solve every problem in the map above.
 
 ### Implemented
 
@@ -998,8 +1001,10 @@ and `@microsoft/dynwinrt/com`.
   FORMATETC/STGMEDIUM callback methods;
 - callback methods containing unmodeled ownership, Automation, union, array,
   or interface-replacement contracts;
-- cross-thread/apartment marshaling; and
-- the general flat-Win32 DLL-export and handle-cleanup layer.
+- cross-thread/apartment marshaling.
+
+Flat Win32 DLL exports and handle cleanup are outside this COM model; they use
+the separate [Win32 contract layer](flat-win32-contracts.md).
 
 ## Supported ABI surface
 
@@ -1121,7 +1126,7 @@ of every type in the 24 MB metadata file.
 | Callback methods outside the validated implementation subset | Automation providers, custom marshaling, and resource-owning callbacks | The dynamic backend supports broad scalar/string/POD/buffer ABI shapes and multi-interface inheritance, but VARIANT/SAFEARRAY/PROPVARIANT callbacks, untagged unions, unknown pointers/allocators, interface replacement, and custom marshal contracts still fail the whole interface closed. | Runtime/codegen validation boundary |
 | COM aggregation | `IClassFactory::CreateInstance` with `pUnkOuter` | The public activation helper always creates a non-aggregated in-process object. | Runtime/public-API boundary |
 | General out-of-process activation controls | Custom `CLSCTX` scenarios | The unsafe runtime's `DynCom.coCreateInstance()` currently uses `CLSCTX_INPROC_SERVER`. | Runtime/public-API boundary |
-| Flat Win32 DLL exports | `CreateFile`, registry functions, GDI, etc. | These are not COM interfaces and need a separate DLL-export/handle model. | Architecture boundary |
+| Flat Win32 DLL exports | `CreateFile`, registry functions, GDI, etc. | These are not COM interfaces; supported exports use the separate [Win32 DLL-export/handle model](flat-win32-contracts.md). | Architecture boundary |
 
 Consequently, `IDataObject` now generates completely for the closed HGLOBAL
 subset. Unsupported target-device and storage-medium inputs cannot be

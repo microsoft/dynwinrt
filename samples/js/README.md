@@ -11,6 +11,7 @@ The JavaScript samples use generated bindings and the
 | [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
 | [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
 | [`interface-implementation`](interface-implementation/) | Standalone JavaScript-backed WinRT interfaces, native IBackgroundTask calls, and multi-interface lifetime |
+| [`win32`](win32/) | Generated Win32 DLL exports, Registry buffers and handle cleanup, and IOCP-backed asynchronous file I/O |
 
 The WinUI samples use WinApp CLI to restore matching Windows App SDK metadata,
 runtime packages, bootstrap binaries, and generated npm bindings.
