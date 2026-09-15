@@ -172,12 +172,17 @@ test('package facades exactly partition native exports', (t) => {
     'win32ResultOutputs',
     'win32ResultLastError',
     'win32ResultSucceeded',
+    'win32CallErrorCleanupFailures',
+    'win32CallErrorRetryCleanup',
     'win32SubsystemName',
     'win32SubsystemClosed',
     'win32SubsystemClose',
     'win32OverlappedCancel',
     'win32OverlappedStart',
   ])
+  if (typeof nativeRuntime.win32TestCleanupFailure === 'function') {
+    win32NativeNames.add('win32TestCleanupFailure')
+  }
   t.deepEqual(
     nativeKeys.filter((name) => name.startsWith('win32') || name.startsWith('DynWin32')),
     [...win32NativeNames].sort(),
@@ -248,7 +253,7 @@ test('package facades exactly partition native exports', (t) => {
       t.false(Object.prototype.hasOwnProperty.call(facade, name))
     }
     const safeWin32Names = [
-      'DynWin32', 'DynWin32NativeStruct', 'DynWin32OverlappedOperation', 'DynWin32Resource',
+      'DynWin32', 'DynWin32CallError', 'DynWin32NativeStruct', 'DynWin32OverlappedOperation', 'DynWin32Resource',
       'DynWin32SubsystemContext', 'DynWin32Value', 'DynWinRtValue',
     ]
     t.deepEqual(moduleKeys(win32CjsRuntime), safeWin32Names.sort())
@@ -386,6 +391,30 @@ test('flat Win32 pointer-bearing aggregates retain safe field owners', (t) => {
     dll: 'kernel32.dll', entryPoint: 'GetLastError', parameters: [], returnType: 'u32',
   })
   t.throws(() => noArgs.invoke([aggregate]), { message: /detached/ })
+  const create = DynWin32Function.bind({
+    dll: 'kernel32.dll', entryPoint: 'CreateEventW',
+    parameters: [
+      { type: 'pointer', direction: 'in', pointeeDescriptor: descriptor },
+      { type: 'bool32', direction: 'in' },
+      { type: 'bool32', direction: 'in' },
+      { type: 'pointer', direction: 'in', nullable: true },
+    ],
+    returnType: 'handle', returnCleanup: 'closeHandle', successRule: 'nonnull',
+  })
+  const args = [aggregate, DynWin32.bool32(true), DynWin32.bool32(false), DynWin32.nullPointer()]
+  t.throws(() => create.invoke(args), { message: /detached/ })
+  DynWin32.setNativeStructPointer(attributes, descriptor, 'lpSecurityDescriptor', DynWin32.nullPointer())
+  const result = create.invoke(args)
+  t.true(result.succeeded)
+  const event = DynWin32.toResource(result.returnValue!)!
+  try {
+    const alias = DynWin32.toResource(DynWin32.handle(event))!
+    alias.close()
+    t.true(event.closed)
+    t.true(alias.closed)
+  } finally {
+    event.close()
+  }
 })
 
 test('FORMATETC and STGMEDIUM expose a closed HGLOBAL semantic subset', (t) => {

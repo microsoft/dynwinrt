@@ -358,6 +358,9 @@ jobs:
       - name: Test metadata-driven COM borrowed copies
         working-directory: bindings/js
         run: npm run test:borrowed-copy
+      - name: Test Win32 failed-cleanup recovery
+        working-directory: bindings/js
+        run: node --expose-gc __test__\fixtures\win32-cleanup-errors.cjs
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:

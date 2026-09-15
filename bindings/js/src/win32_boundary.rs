@@ -163,9 +163,18 @@ pub(crate) unsafe fn wrap<T: Carrier>(
   env: sys::napi_env,
   value: T,
 ) -> napi::Result<sys::napi_value> {
-  let api = tags()?;
   let mut object = ptr::null_mut();
   napi::check_status!(unsafe { sys::napi_create_object(env, &mut object) })?;
+  unsafe { wrap_existing(env, object, value) }?;
+  Ok(object)
+}
+
+pub(super) unsafe fn wrap_existing<T: Carrier>(
+  env: sys::napi_env,
+  object: sys::napi_value,
+  value: T,
+) -> napi::Result<*mut T> {
+  let api = tags()?;
   let mut value = Box::new(value);
   napi::check_status!(unsafe {
     sys::napi_wrap(
@@ -178,9 +187,9 @@ pub(crate) unsafe fn wrap<T: Carrier>(
     )
   })?;
   // The registered finalizer owns the value even if tagging or JS projection fails.
-  let _ = Box::into_raw(value);
+  let pointer = Box::into_raw(value);
   napi::check_status!(unsafe { (api.tag)(env, object, &tag(T::KIND)) })?;
-  Ok(object)
+  Ok(pointer)
 }
 
 unsafe fn has_tag(env: sys::napi_env, raw: sys::napi_value, kind: u32) -> napi::Result<bool> {
@@ -292,7 +301,7 @@ pub(crate) use carrier;
 
 #[napi]
 pub fn win32_carrier_kind(value: Unknown) -> napi::Result<u32> {
-  for kind in 1..=7 {
+  for kind in 1..=8 {
     if unsafe { has_tag(value.value().env, value.raw(), kind) }? {
       return Ok(kind);
     }
@@ -301,7 +310,7 @@ pub fn win32_carrier_kind(value: Unknown) -> napi::Result<u32> {
 }
 
 pub(super) fn has_carrier(env: sys::napi_env, raw: sys::napi_value) -> napi::Result<bool> {
-  for kind in 1..=7 {
+  for kind in 1..=8 {
     if unsafe { has_tag(env, raw, kind) }? {
       return Ok(true);
     }
@@ -363,20 +372,23 @@ pub fn win32_function_entry_point(value: &DynWin32Function) -> String {
 
 #[napi]
 pub fn win32_invoke(
+  env: Env,
   value: &DynWin32Function,
   #[napi(ts_arg_type = "DynWin32Value[]")] args: Unknown,
 ) -> napi::Result<DynWin32CallResult> {
-  value.invoke(super::specification::arguments(&args)?)
+  value.invoke(env, super::specification::arguments(&args)?)
 }
 
 #[napi]
 pub fn win32_invoke_with_subsystem(
+  env: Env,
   value: &DynWin32Function,
   context: &DynWin32SubsystemContext,
   #[napi(ts_arg_type = "string")] subsystem: super::specification::Name,
   #[napi(ts_arg_type = "DynWin32Value[]")] args: Unknown,
 ) -> napi::Result<DynWin32CallResult> {
   value.invoke_with_subsystem(
+    env,
     context,
     subsystem.into_string(),
     super::specification::arguments(&args)?,

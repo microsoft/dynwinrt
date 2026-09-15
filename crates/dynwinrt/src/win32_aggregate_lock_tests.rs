@@ -59,7 +59,7 @@ fn duplicate(
     plan: &CallPlan,
     input: &Arc<OwnedResource>,
     buffer: &Arc<NativeAggregateBuffer>,
-) -> Result<CallResult> {
+) -> std::result::Result<CallResult, CallError> {
     duplicate_with_access(plan, input, buffer, Value::U32(0))
 }
 
@@ -68,7 +68,7 @@ fn duplicate_with_access(
     input: &Arc<OwnedResource>,
     buffer: &Arc<NativeAggregateBuffer>,
     access: Value,
-) -> Result<CallResult> {
+) -> std::result::Result<CallResult, CallError> {
     let process = unsafe { GetCurrentProcess() }.0 as usize;
     unsafe {
         plan.invoke(&[

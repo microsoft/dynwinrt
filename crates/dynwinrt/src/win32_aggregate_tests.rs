@@ -223,6 +223,7 @@ fn fields_are_owned_before_direct_return_conversion_and_result_delivery() {
         let layout = layout();
         let buffer = NativeAggregateBuffer::new(Arc::clone(&layout), None).unwrap();
         let plan = planned(layout);
+        assert!(!plan.has_owned_result_cleanup());
         if let Some(target) = failure {
             outcome_tests::fail_decode(target);
         }

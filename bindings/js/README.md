@@ -226,6 +226,31 @@ adding an eager dependency to ordinary WinRT/COM imports. MAPI utility
 initialization is available only on the unsafe subpath and requires a configured
 provider.
 
+When a failed call cannot close an owned result, both Win32 entrypoints throw
+`DynWin32CallError`, an `Error` with the original invocation message.
+Its read-only `cleanupFailures` array contains each native `target`, the original
+cleanup `error` (`code`, a signed HRESULT, and `message`), and a managed
+`DynWin32Resource`. Keep the error or a resource alias until cleanup succeeds.
+After correcting the native condition, call `error.retryCleanup()` or close the
+individual resources. Retry does not invoke the original function again.
+Failed retries retain the owners; successful retries and `close()` are
+idempotent, and the original records remain available with `resource.closed`
+set to `true`. Aliases share that close state.
+
+If projecting a recoverable error or its records fails, the runtime attempts
+to create an `AggregateError` retaining the native error in `cause` and
+`errors[0]`, alongside the projection failure in `errors[1]`.
+It also exposes `cleanupFailures` and `retryCleanup()`
+for recovery without discarding the native owner. Recovery property descriptors
+have no prototype, so inherited descriptor fields cannot break decoration.
+If constructing or decorating that aggregate also fails, the original native
+error is rethrown unchanged. It can remain unprojected or non-extensible and
+need not satisfy `instanceof DynWin32CallError`; use
+`DynWin32CallError.getCleanupFailures(error)` and
+`DynWin32CallError.retryCleanup(error)` to recover without modifying its
+prototype. These static methods validate the native carrier, not `instanceof`.
+Errors without cleanup failures retain their existing behavior.
+
 See the [Win32 generation guide](../../tools/dynwinrt-codegen/README.md#contract-driven-flat-win32),
 [JavaScript samples](../../samples/js/win32/README.md), and
 [supported capabilities and ownership rules](../../docs/architecture/flat-win32-contracts.md).

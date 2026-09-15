@@ -4,6 +4,14 @@ Flat Win32 bindings dynamically invoke DLL exports described by Windows
 metadata. They use a Win32-local ABI model and explicit semantic contracts,
 separate from WinRT activation and Classic COM vtables.
 
+> **Status: experimental.** Flat Win32 support is under active development and
+> intended for evaluation and prototyping. Its JavaScript/TypeScript APIs,
+> generated bindings, and Win32 runtime/codegen contracts may change between
+> releases; backward compatibility is not yet guaranteed. Do not treat this
+> projection as a stable production dependency. Use matching runtime and
+> codegen versions, regenerate Win32 bindings when upgrading, and validate the
+> APIs you rely on in your target environment.
+
 ## Metadata and supported capabilities
 
 Built-in contracts are validated against
@@ -94,6 +102,40 @@ and out parameters have cleanup guards before any fallible conversion, so an
 allocation or conversion failure also retires valid, untransferred resources.
 Language projection chooses nullability and exception/result shape; it cannot
 erase cleanup obligations.
+
+Direct-return and independent out-slot resource owners are captured before
+fallible result processing. An error retires untransferred results and preserves
+any failed cleanup in `win32::CallError::cleanup_failures()`, together with its
+result target, original cleanup error, and shared `OwnedResource`. This includes
+results converted earlier in the call but not yet delivered to the caller.
+`retry_cleanup()` attempts every retained cleanup without invoking the original
+function again; successful owners stay closed and failed owners remain available
+for another retry. Native consumption and resource effects are not rolled back
+by a result-processing failure. Callers can also retain
+or explicitly close the same resource owner through the failure record.
+No raw-handle re-adoption or process-global recovery queue is used.
+
+The JavaScript call boundary retains byte/string storage independently of managed
+COM inputs. COM admission and leases, retained-storage validation, and aggregate
+owner validation precede native dispatch. After these checks, plans with owned
+direct returns or out slots prepare their JavaScript recovery carrier before
+dispatch; scalar and aggregate-only plans do not allocate that carrier.
+
+JavaScript recovery wrapping uses null-prototype property descriptors. If an
+`AggregateError` cannot be constructed or decorated after projection failure,
+the original native error carrier is rethrown rather than replaced by the
+wrapping exception. `DynWin32CallError.getCleanupFailures(error)` and
+`DynWin32CallError.retryCleanup(error)` work without installing an instance
+prototype, including for non-extensible carriers. Keeping the thrown carrier
+therefore keeps the native cleanup owner and its recovery path alive.
+
+`CallPlan::invoke()` returns the Win32-specific `CallError` on failure; its
+`message()` and `source_error()` preserve the original invocation error.
+Dropping the error releases its retained owners and performs best-effort cleanup.
+Deterministic recovery requires keeping the error or resource alive, resolving
+the reason cleanup was refused, and retrying. The runtime does not remove native
+close-protection flags or bypass resource leases. Aggregate-field ownership
+continues to reside in the caller's aggregate buffer.
 
 Descriptors without a version are read as version 1. Their historical null
 resource results and cleanup behavior are isolated in an explicit compatibility
@@ -309,6 +351,7 @@ and live Windows API tests:
 | Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
 | Aggregate owner lock tests | Bounded real `DuplicateHandle` reuse, shared-owner rejection without mutation, moved/distinct owners, input-alias policies, failed/busy retirement, invalid-input preservation and ordered/cross-thread resource coordination. |
 | Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
+| Result cleanup recovery tests | Protected-handle cleanup failures for direct returns and out slots, partial conversion, cleanup of other results, repeated and partial retries, shared owner state, lease exclusion, and best-effort error destruction. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Module/lifecycle loading tests | Controlled System32 paths, successful-cache identity, retryable failures, concurrent load reference balance, complete function-table publication, startup/shutdown/rollback state, and the actual shared-addon PE import boundary. |

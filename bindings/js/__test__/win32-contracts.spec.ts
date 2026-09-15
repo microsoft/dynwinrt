@@ -16,17 +16,20 @@ import { DynCom, DynWinRtValue, initializeCom } from '../dist/com-unsafe.js'
 import { DynWinRtType, WinGuid } from '../dist/winrt.js'
 import {
   DynWin32,
+  DynWin32CallError,
   DynWin32Function,
   DynWin32NativeStruct,
   DynWin32Resource,
   DynWin32Unsafe,
+  type DynWin32CleanupFailure,
   type DynWin32OverlappedOperation,
+  type DynWin32ResultTarget,
 } from '../dist/win32-unsafe.js'
 import * as safe from '../dist/win32.js'
 
 const require = createRequire(import.meta.url)
 const machine = () => DynWin32.handle(0x80000002n)
-const openKey = () => {
+const openKey = (path = DynWin32.wideString('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion')) => {
   const open = DynWin32Function.bind({
     dll: 'advapi32.dll',
     entryPoint: 'RegOpenKeyExW',
@@ -40,12 +43,7 @@ const openKey = () => {
     returnType: 'i32',
     successRule: 'zero',
   })
-  const result = open.invoke([
-    machine(),
-    DynWin32.wideString('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'),
-    DynWin32.u32(0),
-    DynWin32.u32(1),
-  ])
+  const result = open.invoke([machine(), path, DynWin32.u32(0), DynWin32.u32(1)])
   if (!result.succeeded) throw new Error(`RegOpenKeyExW: ${DynWin32.toNumber(result.returnValue!)}`)
   return DynWin32.toResource(result.outputs[0])!
 }
@@ -83,6 +81,7 @@ test('Win32 facades retain the full isolated runtime without manual safe descrip
       .sort(),
     [
       'DynWin32',
+      'DynWin32CallError',
       'DynWin32NativeStruct',
       'DynWin32OverlappedOperation',
       'DynWin32Resource',
@@ -107,6 +106,138 @@ test('Win32 facades retain the full isolated runtime without manual safe descrip
       expected,
     )
     t.deepEqual(result.outputs, [])
+  }
+})
+
+test('Win32 cleanup errors have a read-only typed recovery surface on both Win32 subpaths', (t) => {
+  t.is(safe.DynWin32CallError, DynWin32CallError)
+  t.true(DynWin32CallError.prototype instanceof Error)
+  t.throws(() => Reflect.construct(DynWin32CallError, []), { instanceOf: TypeError, message: /native dispatch/ })
+  const getter = Object.getOwnPropertyDescriptor(DynWin32CallError.prototype, 'cleanupFailures')!
+  t.is(getter.set, undefined)
+  for (const forged of [
+    {},
+    new Error('ordinary error'),
+    Object.create(DynWin32CallError.prototype),
+    Object.setPrototypeOf(DynWin32.i32(1), DynWin32CallError.prototype),
+    Object.setPrototypeOf(Buffer.alloc(8), DynWin32CallError.prototype),
+  ]) {
+    t.throws(() => getter.get!.call(forged), { message: /native DynWin32CallError/ })
+    t.throws(() => DynWin32CallError.prototype.retryCleanup.call(forged), { message: /native DynWin32CallError/ })
+    t.throws(() => DynWin32CallError.getCleanupFailures(forged), { message: /native DynWin32CallError/ })
+    t.throws(() => DynWin32CallError.retryCleanup(forged), { message: /native DynWin32CallError/ })
+  }
+
+  const typecheck = (error: DynWin32CallError) => {
+    const ordinary: Error = error
+    const records: readonly DynWin32CleanupFailure[] = error.cleanupFailures
+    const target: DynWin32ResultTarget = records[0].target
+    const resource: DynWin32Resource = records[0].resource
+    const diagnostic: { readonly code: number; readonly message: string } = records[0].error
+    const safeError: safe.DynWin32CallError = error
+    const safeRecord: safe.DynWin32CleanupFailure = records[0]
+    const safeTarget: safe.DynWin32ResultTarget = target
+    const unprojected: unknown = error
+    const recovered: readonly DynWin32CleanupFailure[] = DynWin32CallError.getCleanupFailures(unprojected)
+    safe.DynWin32CallError.retryCleanup(unprojected)
+    // @ts-expect-error recovery records cannot be replaced
+    error.cleanupFailures = []
+    // @ts-expect-error the recovery list is immutable
+    records.push(records[0])
+    // @ts-expect-error targets are immutable
+    records[0].target.kind = 'return'
+    // @ts-expect-error original diagnostics are immutable
+    records[0].error.message = 'changed'
+    // @ts-expect-error managed owners cannot be replaced
+    records[0].resource = resource
+    return [ordinary, diagnostic, safeError, safeRecord, safeTarget, recovered]
+  }
+  t.is(typeof typecheck, 'function')
+})
+
+test('Win32 cleanup error facade retains recovery on projection failures without native fixtures', (t) => {
+  const child = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./fixtures/win32-cleanup-facade.cjs', import.meta.url))],
+    { encoding: 'utf8', timeout: 15000, windowsHide: true },
+  )
+  t.is(child.status, 0, `${child.error}\n${child.stdout}\n${child.stderr}`)
+  t.regex(child.stdout, /PASS Win32 cleanup error facade/)
+})
+
+const cleanupNativeTest = typeof require('../dist/index.js').win32TestCleanupFailure === 'function' ? test : test.skip
+cleanupNativeTest('Win32 cleanup failure native owners survive transport, retries, aliases and GC', (t) => {
+  const child = spawnSync(
+    process.execPath,
+    ['--expose-gc', fileURLToPath(new URL('./fixtures/win32-cleanup-errors.cjs', import.meta.url))],
+    { encoding: 'utf8', timeout: 30000, windowsHide: true },
+  )
+  t.is(child.status, 0, `${child.error}\n${child.stdout}\n${child.stderr}`)
+  t.regex(child.stdout, /PASS Win32 cleanup error native recovery and lifetime/)
+})
+
+test('Win32 invocation errors without cleanup retain their messages and user-thrown values', (t) => {
+  const mulDiv = DynWin32Function.bind({
+    dll: 'kernel32.dll',
+    entryPoint: 'MulDiv',
+    parameters: Array.from({ length: 3 }, () => ({ type: 'i32', direction: 'in' })),
+    returnType: 'i32',
+  })
+  const ordinary = t.throws(() => mulDiv.invoke([DynWin32.u32(1), DynWin32.i32(2), DynWin32.i32(3)]))!
+  t.false(ordinary instanceof DynWin32CallError)
+  t.regex(ordinary.message, /^DynWin32Function kernel32\.dll!MulDiv: /)
+  t.false('cleanupFailures' in ordinary)
+  t.false('retryCleanup' in ordinary)
+
+  let coercions = 0
+  const hostile = {
+    toString() {
+      coercions++
+      throw new Error('User toString must not run')
+    },
+    get cause() {
+      coercions++
+      throw new Error('User cause must not run')
+    },
+  }
+  const revoked = Proxy.revocable({}, {})
+  revoked.revoke()
+  const context = DynWin32.initializeWinsock()
+  try {
+    for (const thrown of [
+      ordinary,
+      hostile,
+      Object.create(DynWin32CallError.prototype),
+      revoked.proxy,
+      'plain string',
+      7,
+      2n,
+      Symbol('thrown'),
+      null,
+      undefined,
+      false,
+      () => {},
+    ]) {
+      const args = [DynWin32.i32(1)]
+      Object.defineProperty(args, 0, {
+        get() {
+          throw thrown
+        },
+      })
+      for (const invoke of [() => mulDiv.invoke(args), () => mulDiv.invokeWithSubsystem(context, 'winsock', args)]) {
+        let caught = false
+        try {
+          invoke()
+        } catch (error) {
+          caught = true
+          t.is(error, thrown)
+        }
+        t.true(caught)
+      }
+    }
+    t.is(coercions, 0)
+  } finally {
+    context.close()
   }
 })
 
@@ -216,6 +347,30 @@ test('Win32 native alias contracts share HKEY ownership and preserve borrowed in
       t.true(borrowed.succeeded)
       t.is(DynWin32.toResourceOrHandle(borrowed.outputs[0]), 0x80000002n)
     }
+  }
+})
+
+test('Win32 owned outputs preserve retained byte and string input validation', (t) => {
+  for (const construct of [DynWin32.dataPointer, DynWin32.wideString]) {
+    const bytes = new Uint8Array(Buffer.from('SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\0', 'utf16le'))
+    const pointer = construct(bytes)
+    const resource = openKey(pointer)
+    try {
+      const alias = DynWin32.toResource(DynWin32.handle(resource))!
+      alias.close()
+      t.true(resource.closed)
+      t.true(alias.closed)
+    } finally {
+      resource.close()
+    }
+    if (construct === DynWin32.wideString) {
+      bytes[bytes.length - 2] = 65
+      t.throws(() => openKey(pointer), { message: /NUL-terminated/ })
+    }
+    structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+    const error = t.throws(() => openKey(pointer), { message: /detached/ })!
+    t.false(error instanceof DynWin32CallError)
+    t.false('cleanupFailures' in error)
   }
 })
 
@@ -648,6 +803,13 @@ test('Win32 COM inputs borrow an exact IID and retain the independent reference'
     }
     object.release()
     t.true(DynWin32Unsafe.pointerAddress(borrowed) > 0n)
+    const connected = DynWin32Function.bind({
+      dll: 'ole32.dll',
+      entryPoint: 'CoIsHandlerConnected',
+      parameters: [{ type: 'pointer', direction: 'in' }],
+      returnType: 'bool32',
+    })
+    t.true(DynWin32.toBoolean(connected.invoke([borrowed]).returnValue!))
   } finally {
     object.release()
   }

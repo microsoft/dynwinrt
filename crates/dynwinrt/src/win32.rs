@@ -47,6 +47,14 @@ pub use resource::{
     FileCapability, OwnedResource, OwnedResourceAsyncLease, OwnedResourceLease, ResourceAccess,
 };
 
+#[path = "win32_result_cleanup.rs"]
+mod result_cleanup;
+use result_cleanup::ResultOwners;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use result_cleanup::test_cleanup_failure_plan;
+pub use result_cleanup::{CallError, CleanupFailure};
+
 #[doc(hidden)]
 #[path = "win32_module.rs"]
 pub mod module;
@@ -709,11 +717,42 @@ impl CallPlan {
         self.calling_convention
     }
 
+    /// Whether any direct return or native out slot can own a cleanup resource.
+    pub fn has_owned_result_cleanup(&self) -> bool {
+        self.owned_result_capacity() != 0
+    }
+
+    fn owned_result_capacity(&self) -> usize {
+        self.contract
+            .results
+            .iter()
+            .filter(|result| {
+                !matches!(result.target, ResultTarget::AggregateField { .. })
+                    && result
+                        .policies()
+                        .any(|policy| result_cleanup(*policy).owns_resource())
+            })
+            .count()
+    }
+
+    /// Invokes the native function, retaining failed result cleanups in the
+    /// returned `CallError` so callers can retry without adopting raw handles.
+    ///
     /// # Safety
     ///
     /// Every pointer and aggregate argument must remain valid for the complete
     /// native call and satisfy the contract used to construct this plan.
-    pub unsafe fn invoke(&self, args: &[Value]) -> Result<CallResult> {
+    pub unsafe fn invoke(&self, args: &[Value]) -> std::result::Result<CallResult, CallError> {
+        let mut result_owners = ResultOwners::default();
+        unsafe { self.invoke_inner(args, &mut result_owners) }
+            .map_err(|error| result_owners.into_error(error))
+    }
+
+    unsafe fn invoke_inner(
+        &self,
+        args: &[Value],
+        result_owners: &mut ResultOwners,
+    ) -> Result<CallResult> {
         if args.len() != self.input_count {
             return Err(invalid_argument(&format!(
                 "{}!{} expects {} inputs, received {}",
@@ -970,6 +1009,7 @@ impl CallPlan {
             .as_ref()
             .map(|layout| try_zeroed_words(layout.size()))
             .transpose()?;
+        result_owners.reserve(self.owned_result_capacity())?;
         for (index, layout) in self.parameter_pointees.iter().enumerate() {
             let Some(layout) = layout else {
                 continue;
@@ -1125,6 +1165,22 @@ impl CallPlan {
                 }
             }
         }
+        if let Some(value) = &return_storage.value {
+            unsafe {
+                result_owners.capture(ResultTarget::Return {}, value, &mut return_storage.cleanup)
+            };
+        }
+        for (index, parameter) in self.parameters.iter().enumerate() {
+            if let Some(output) = parameter.output_index {
+                unsafe {
+                    result_owners.capture(
+                        ResultTarget::Parameter { index },
+                        &output_storage.values[output],
+                        &mut output_storage.cleanup[output],
+                    )
+                };
+            }
+        }
         for (index, layout) in self.parameter_pointees.iter().enumerate() {
             let Some(layout) = layout else {
                 continue;
@@ -1154,59 +1210,65 @@ impl CallPlan {
             }
         }
 
-        let mut return_value =
-            if let (Some(layout), Some(words)) = (&self.return_aggregate, aggregate_return_words) {
-                match return_policy.expect("validated aggregate return policy") {
-                    ResultPolicy::Undefined {} => Some(Value::Unavailable),
-                    ResultPolicy::Defined {
-                        delivery: Delivery::Discard,
-                        ..
-                    } => Some(Value::Discarded),
-                    ResultPolicy::Defined {
-                        ownership: ResultOwnership::Value {},
-                        delivery: Delivery::Deliver,
-                    } => {
-                        let source = unsafe {
-                            std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), layout.size())
-                        };
-                        let mut bytes = Vec::new();
-                        #[cfg(test)]
-                        outcome_tests::check_aggregate_return_allocation()?;
-                        bytes
-                            .try_reserve_exact(source.len())
-                            .map_err(|_| out_of_memory("native aggregate return"))?;
-                        bytes.extend_from_slice(source);
-                        Some(Value::OwnedAggregate {
-                            layout: Arc::clone(layout),
-                            bytes,
-                        })
-                    }
-                    _ => {
-                        return Err(invalid_argument(
-                            "Aggregate return has unsupported ownership",
-                        ));
-                    }
+        let mut return_value = if let (Some(layout), Some(words)) =
+            (&self.return_aggregate, aggregate_return_words)
+        {
+            match return_policy.expect("validated aggregate return policy") {
+                ResultPolicy::Undefined {} => Some(Value::Unavailable),
+                ResultPolicy::Defined {
+                    delivery: Delivery::Discard,
+                    ..
+                } => Some(Value::Discarded),
+                ResultPolicy::Defined {
+                    ownership: ResultOwnership::Value {},
+                    delivery: Delivery::Deliver,
+                } => {
+                    let source = unsafe {
+                        std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), layout.size())
+                    };
+                    let mut bytes = Vec::new();
+                    #[cfg(test)]
+                    outcome_tests::check_aggregate_return_allocation()?;
+                    bytes
+                        .try_reserve_exact(source.len())
+                        .map_err(|_| out_of_memory("native aggregate return"))?;
+                    bytes.extend_from_slice(source);
+                    Some(Value::OwnedAggregate {
+                        layout: Arc::clone(layout),
+                        bytes,
+                    })
                 }
-            } else {
-                match (self.return_type, return_policy) {
-                    (Some(_), Some(ResultPolicy::Undefined {})) => Some(Value::Unavailable),
-                    (Some(typ), Some(policy)) => {
-                        #[cfg(test)]
-                        outcome_tests::check_result_decode(ResultTarget::Return {})?;
-                        let value = return_storage
-                            .value
-                            .take()
-                            .ok_or_else(|| invalid_argument("Missing native return storage"))?;
-                        Some(self.decode_result(typ, value, policy, args, &input_storage)?)
-                    }
-                    (None, None) => None,
-                    _ => {
-                        return Err(invalid_argument(
-                            "flat Win32 call plan produced an inconsistent return value",
-                        ));
-                    }
+                _ => {
+                    return Err(invalid_argument(
+                        "Aggregate return has unsupported ownership",
+                    ));
                 }
-            };
+            }
+        } else {
+            match (self.return_type, return_policy) {
+                (Some(_), Some(ResultPolicy::Undefined {})) => Some(Value::Unavailable),
+                (Some(typ), Some(policy)) => {
+                    #[cfg(test)]
+                    outcome_tests::check_result_decode(ResultTarget::Return {})?;
+                    let value = return_storage
+                        .value
+                        .take()
+                        .ok_or_else(|| invalid_argument("Missing native return storage"))?;
+                    Some(
+                        match result_owners.decode(ResultTarget::Return {}, policy) {
+                            Some(result) => result?,
+                            None => self.decode_result(typ, value, policy, args, &input_storage)?,
+                        },
+                    )
+                }
+                (None, None) => None,
+                _ => {
+                    return Err(invalid_argument(
+                        "flat Win32 call plan produced an inconsistent return value",
+                    ));
+                }
+            }
+        };
         if legacy_null_return {
             return_value = Some(Value::Handle(0));
         }
@@ -1234,13 +1296,21 @@ impl CallPlan {
                 &mut output_storage.values[output_index],
                 parameter.spec.typ.default_abi_value(),
             );
-            let decoded = self.decode_result(
-                parameter.spec.typ,
-                raw,
+            let decoded = match result_owners.decode(
+                ResultTarget::Parameter {
+                    index: _parameter_index,
+                },
                 output_policies[output_index],
-                args,
-                &input_storage,
-            )?;
+            ) {
+                Some(result) => result?,
+                None => self.decode_result(
+                    parameter.spec.typ,
+                    raw,
+                    output_policies[output_index],
+                    args,
+                    &input_storage,
+                )?,
+            };
             outputs.push(if legacy_null_outputs[output_index] {
                 Value::Handle(0)
             } else {
