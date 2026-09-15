@@ -21,6 +21,19 @@ metadata revisions without rebuilding a native addon.
 
 The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers can initialize the runtime with `initWinappsdk()`; the helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
 
+### System DispatcherQueue loading
+
+The system DispatcherQueue helper resolves
+`CoreMessaging.dll!CreateDispatcherQueueController` only when it needs to create
+a current-thread queue, loading the DLL from the Windows system directory.
+Capturing an existing queue skips that resolution. A successful resolution
+retains the module for the process lifetime so controllers and callbacks remain
+valid; DLL or export failures are reported at queue creation and can be retried.
+Importing the root or `/com` entrypoint does not load CoreMessaging for this
+helper. Apartment, message-pumping, and shutdown requirements are unchanged.
+This is not a general older-Windows compatibility or addon feature-isolation
+guarantee.
+
 ## Quick start
 
 `@microsoft/dynwinrt` is the **runtime**. You generate the typed bindings ahead of time with [`@microsoft/dynwinrt-codegen`](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen), then import them at runtime:
