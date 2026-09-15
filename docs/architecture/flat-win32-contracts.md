@@ -95,6 +95,26 @@ allocation or conversion failure also retires valid, untransferred resources.
 Language projection chooses nullability and exception/result shape; it cannot
 erase cleanup obligations.
 
+Direct-return and independent out-slot resource owners are captured before
+fallible result processing. An error retires untransferred results and preserves
+any failed cleanup in `win32::CallError::cleanup_failures()`, together with its
+result target, original cleanup error, and shared `OwnedResource`. This includes
+results converted earlier in the call but not yet delivered to the caller.
+`retry_cleanup()` attempts every retained cleanup without invoking the original
+function again; successful owners stay closed and failed owners remain available
+for another retry. Native consumption and resource effects are not rolled back
+by a result-processing failure. Callers can also retain
+or explicitly close the same resource owner through the failure record.
+No raw-handle re-adoption or process-global recovery queue is used.
+
+`CallPlan::invoke()` returns the Win32-specific `CallError` on failure; its
+`message()` and `source_error()` preserve the original invocation error.
+Dropping the error releases its retained owners and performs best-effort cleanup.
+Deterministic recovery requires keeping the error or resource alive, resolving
+the reason cleanup was refused, and retrying. The runtime does not remove native
+close-protection flags or bypass resource leases. Aggregate-field ownership
+continues to reside in the caller's aggregate buffer.
+
 Descriptors without a version are read as version 1. Their historical null
 resource results and cleanup behavior are isolated in an explicit compatibility
 adapter and lowered to the common execution plan. Version 2 slot-only contracts
@@ -304,6 +324,7 @@ and live Windows API tests:
 | Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
 | Aggregate owner lock tests | Bounded real `DuplicateHandle` reuse, shared-owner rejection without mutation, moved/distinct owners, input-alias policies, failed/busy retirement, invalid-input preservation and ordered/cross-thread resource coordination. |
 | Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
+| Result cleanup recovery tests | Protected-handle cleanup failures for direct returns and out slots, partial conversion, cleanup of other results, repeated and partial retries, shared owner state, lease exclusion, and best-effort error destruction. |
 | Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
 | JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
 | Module/lifecycle loading tests | Controlled System32 paths, successful-cache identity, retryable failures, concurrent load reference balance, complete function-table publication, startup/shutdown/rollback state, and the actual shared-addon PE import boundary. |

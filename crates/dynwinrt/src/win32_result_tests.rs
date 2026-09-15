@@ -4,6 +4,9 @@
 use super::*;
 use std::cell::RefCell;
 
+#[path = "win32_result_cleanup_tests.rs"]
+mod cleanup_tests;
+
 thread_local! { static ALLOCATED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
 
 fn allocate() -> *mut c_void {

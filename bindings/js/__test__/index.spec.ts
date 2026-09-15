@@ -172,12 +172,17 @@ test('package facades exactly partition native exports', (t) => {
     'win32ResultOutputs',
     'win32ResultLastError',
     'win32ResultSucceeded',
+    'win32CallErrorCleanupFailures',
+    'win32CallErrorRetryCleanup',
     'win32SubsystemName',
     'win32SubsystemClosed',
     'win32SubsystemClose',
     'win32OverlappedCancel',
     'win32OverlappedStart',
   ])
+  if (typeof nativeRuntime.win32TestCleanupFailure === 'function') {
+    win32NativeNames.add('win32TestCleanupFailure')
+  }
   t.deepEqual(
     nativeKeys.filter((name) => name.startsWith('win32') || name.startsWith('DynWin32')),
     [...win32NativeNames].sort(),
@@ -248,7 +253,7 @@ test('package facades exactly partition native exports', (t) => {
       t.false(Object.prototype.hasOwnProperty.call(facade, name))
     }
     const safeWin32Names = [
-      'DynWin32', 'DynWin32NativeStruct', 'DynWin32OverlappedOperation', 'DynWin32Resource',
+      'DynWin32', 'DynWin32CallError', 'DynWin32NativeStruct', 'DynWin32OverlappedOperation', 'DynWin32Resource',
       'DynWin32SubsystemContext', 'DynWin32Value', 'DynWinRtValue',
     ]
     t.deepEqual(moduleKeys(win32CjsRuntime), safeWin32Names.sort())

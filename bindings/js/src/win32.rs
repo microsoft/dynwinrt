@@ -16,6 +16,8 @@ use super::{com, win32_subsystem, DynWin32SubsystemContext, DynWinRTValue, WinGU
 
 #[path = "win32_boundary.rs"]
 pub(super) mod boundary;
+#[path = "win32_call_error.rs"]
+mod call_error;
 #[path = "win32_io.rs"]
 mod io;
 pub use io::DynWin32OverlappedOperation;
@@ -285,23 +287,32 @@ impl DynWin32Function {
     self.0.entry_point().to_string()
   }
 
-  pub fn invoke(&self, args: Vec<&DynWin32Value>) -> napi::Result<DynWin32CallResult> {
-    self.invoke_impl(args)
+  pub fn invoke(
+    &self,
+    env: napi::Env,
+    args: Vec<&DynWin32Value>,
+  ) -> napi::Result<DynWin32CallResult> {
+    self.invoke_impl(env, args)
   }
 
   pub fn invoke_with_subsystem(
     &self,
+    env: napi::Env,
     context: &DynWin32SubsystemContext,
     subsystem: String,
     args: Vec<&DynWin32Value>,
   ) -> napi::Result<DynWin32CallResult> {
     let _subsystem_guard = win32_subsystem::call_guard(context, &subsystem)?;
-    self.invoke_impl(args)
+    self.invoke_impl(env, args)
   }
 }
 
 impl DynWin32Function {
-  fn invoke_impl(&self, args: Vec<&DynWin32Value>) -> napi::Result<DynWin32CallResult> {
+  fn invoke_impl(
+    &self,
+    env: napi::Env,
+    args: Vec<&DynWin32Value>,
+  ) -> napi::Result<DynWin32CallResult> {
     let owners = args
       .iter()
       .filter_map(|value| match &value.pointer_owner {
@@ -311,12 +322,13 @@ impl DynWin32Function {
       })
       .collect::<Vec<_>>();
     com::with_win32_input_leases(&owners, |validate_inputs| {
-      self.invoke_validated(&args, validate_inputs)
+      self.invoke_validated(env, &args, validate_inputs)
     })
   }
 
   fn invoke_validated(
     &self,
+    env: napi::Env,
     args: &[&DynWin32Value],
     validate_inputs: &dyn Fn() -> napi::Result<()>,
   ) -> napi::Result<DynWin32CallResult> {
@@ -369,14 +381,32 @@ impl DynWin32Function {
       .map(|value| value.value.clone())
       .collect::<Vec<_>>();
     validate_inputs()?;
-    let result = unsafe { self.0.invoke(&values) }.map_err(|error| {
-      napi::Error::from_reason(format!(
-        "DynWin32Function {}!{}: {}",
-        self.0.dll(),
-        self.0.entry_point(),
-        error.message()
-      ))
-    })?;
+    let failure = if self.0.has_owned_result_cleanup() {
+      Some(call_error::PreparedCallError::new(
+        env,
+        format!(
+          "DynWin32Function {}!{}: ",
+          self.0.dll(),
+          self.0.entry_point()
+        ),
+      )?)
+    } else {
+      None
+    };
+    let result = match unsafe { self.0.invoke(&values) } {
+      Ok(result) => result,
+      Err(error) => {
+        return Err(match failure {
+          Some(failure) => failure.raise(error),
+          None => napi::Error::from_reason(format!(
+            "DynWin32Function {}!{}: {}",
+            self.0.dll(),
+            self.0.entry_point(),
+            error.message()
+          )),
+        });
+      }
+    };
     Ok(DynWin32CallResult {
       return_value: result.return_value.map(DynWin32Value::new),
       outputs: Some(result.outputs.into_iter().map(DynWin32Value::new).collect()),
