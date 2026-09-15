@@ -129,6 +129,8 @@ test('Win32 cleanup errors have a read-only typed recovery surface on both Win32
   ]) {
     t.throws(() => getter.get!.call(forged), { message: /native DynWin32CallError/ })
     t.throws(() => DynWin32CallError.prototype.retryCleanup.call(forged), { message: /native DynWin32CallError/ })
+    t.throws(() => DynWin32CallError.getCleanupFailures(forged), { message: /native DynWin32CallError/ })
+    t.throws(() => DynWin32CallError.retryCleanup(forged), { message: /native DynWin32CallError/ })
   }
 
   const typecheck = (error: DynWin32CallError) => {
@@ -140,6 +142,9 @@ test('Win32 cleanup errors have a read-only typed recovery surface on both Win32
     const safeError: safe.DynWin32CallError = error
     const safeRecord: safe.DynWin32CleanupFailure = records[0]
     const safeTarget: safe.DynWin32ResultTarget = target
+    const unprojected: unknown = error
+    const recovered: readonly DynWin32CleanupFailure[] = DynWin32CallError.getCleanupFailures(unprojected)
+    safe.DynWin32CallError.retryCleanup(unprojected)
     // @ts-expect-error recovery records cannot be replaced
     error.cleanupFailures = []
     // @ts-expect-error the recovery list is immutable
@@ -150,7 +155,7 @@ test('Win32 cleanup errors have a read-only typed recovery surface on both Win32
     records[0].error.message = 'changed'
     // @ts-expect-error managed owners cannot be replaced
     records[0].resource = resource
-    return [ordinary, diagnostic, safeError, safeRecord, safeTarget]
+    return [ordinary, diagnostic, safeError, safeRecord, safeTarget, recovered]
   }
   t.is(typeof typecheck, 'function')
 })

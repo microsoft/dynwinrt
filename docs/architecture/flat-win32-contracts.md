@@ -115,6 +115,14 @@ by a result-processing failure. Callers can also retain
 or explicitly close the same resource owner through the failure record.
 No raw-handle re-adoption or process-global recovery queue is used.
 
+JavaScript recovery wrapping uses null-prototype property descriptors. If an
+`AggregateError` cannot be constructed or decorated after projection failure,
+the original native error carrier is rethrown rather than replaced by the
+wrapping exception. `DynWin32CallError.getCleanupFailures(error)` and
+`DynWin32CallError.retryCleanup(error)` work without installing an instance
+prototype, including for non-extensible carriers. Keeping the thrown carrier
+therefore keeps the native cleanup owner and its recovery path alive.
+
 `CallPlan::invoke()` returns the Win32-specific `CallError` on failure; its
 `message()` and `source_error()` preserve the original invocation error.
 Dropping the error releases its retained owners and performs best-effort cleanup.

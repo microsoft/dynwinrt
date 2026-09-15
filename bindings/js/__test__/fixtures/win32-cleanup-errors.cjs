@@ -4,6 +4,9 @@
 'use strict'
 
 const assert = require('node:assert/strict')
+const { readFileSync } = require('node:fs')
+const { join } = require('node:path')
+const { runInNewContext } = require('node:vm')
 const native = require('../../dist/index.js')
 
 if (typeof native.win32TestCleanupFailure !== 'function') {
@@ -67,7 +70,7 @@ async function main() {
       native.win32CallErrorRetryCleanup(error)
     }
   }
-  const throughFacade = (error, subsystem) => {
+  const throughFacade = (error, subsystem, functionView = fn) => {
     const name = subsystem ? 'win32InvokeWithSubsystem' : 'win32Invoke'
     const original = native[name]
     // The real test-only ABI supplies the failure; only facade routing is replaced.
@@ -75,7 +78,9 @@ async function main() {
       throw error
     }
     try {
-      return capture(() => (subsystem ? fn.invokeWithSubsystem(subsystem, 'winsock', []) : fn.invoke([])))
+      return capture(() =>
+        subsystem ? functionView.invokeWithSubsystem(subsystem, 'winsock', []) : functionView.invoke([]),
+      )
     } finally {
       native[name] = original
     }
@@ -204,6 +209,121 @@ async function main() {
     assert.doesNotThrow(() => aggregate.retryCleanup())
   } finally {
     retire(unprojectable, unprojectableResource)
+  }
+
+  const pollutedError = capture(() => native.win32TestCleanupFailure())
+  const pollutedResource = resourceOf(pollutedError)
+  try {
+    Object.preventExtensions(pollutedError)
+    const previousGet = Object.getOwnPropertyDescriptor(Object.prototype, 'get')
+    let received
+    try {
+      Object.defineProperty(Object.prototype, 'get', {
+        __proto__: null,
+        value: undefined,
+        configurable: true,
+      })
+      received = throughFacade(pollutedError)
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'get')
+      if (previousGet) Object.defineProperty(Object.prototype, 'get', { __proto__: null, ...previousGet })
+    }
+    assert.ok(received instanceof AggregateError)
+    assert.equal(received.cause, pollutedError)
+    assert.equal(received.errors[0], pollutedError)
+    const resource = received.cleanupFailures[0].resource
+    assert.throws(() => received.retryCleanup())
+    unprotect(resource)
+    received.retryCleanup()
+    assert.equal(resource.closed, true)
+  } finally {
+    retire(pollutedError, pollutedResource)
+  }
+
+  const facadeSource = readFileSync(join(__dirname, '..', '..', 'dist', 'win32-internal.js'), 'utf8')
+  for (const stage of ['construct', 'decorate']) {
+    const wrappingFailure = new Error(`Injected ${stage} failure`)
+    const overrides =
+      stage === 'construct'
+        ? {
+            AggregateError: function () {
+              throw wrappingFailure
+            },
+          }
+        : {
+            Object: new Proxy(Object, {
+              get(target, name) {
+                if (name === 'defineProperties')
+                  return () => {
+                    throw wrappingFailure
+                  }
+                return Reflect.get(target, name)
+              },
+            }),
+          }
+    const module = { exports: {} }
+    runInNewContext(facadeSource, {
+      module,
+      require(name) {
+        assert.equal(name, './index.js')
+        return native
+      },
+      Error,
+      TypeError,
+      AggregateError,
+      ...overrides,
+    })
+    const Recovery = module.exports.DynWin32CallError
+    const functionView = module.exports.DynWin32Function.bind({
+      dll: 'kernel32.dll',
+      entryPoint: 'GetLastError',
+      parameters: [],
+      returnType: 'u32',
+    })
+    for (const mode of ['invoke', 'records']) {
+      const state = (() => {
+        const original = capture(() => native.win32TestCleanupFailure())
+        const handle = native.win32ResourceValue(resourceOf(original))
+        if (mode === 'invoke') Object.preventExtensions(original)
+        let received = throughFacade(original, undefined, functionView)
+        if (mode === 'records') {
+          const read = native.win32CallErrorCleanupFailures
+          try {
+            native.win32CallErrorCleanupFailures = (error) => {
+              const records = read(error)
+              Object.preventExtensions(records[0].resource)
+              return records
+            }
+            received = capture(() => received.cleanupFailures)
+          } finally {
+            native.win32CallErrorCleanupFailures = read
+          }
+        }
+        return { received, carrier: new WeakRef(original), handle }
+      })()
+      try {
+        assert.equal(native.win32CarrierKind(state.received), 8, `${stage}/${mode} lost its native error`)
+        assert.equal(state.received, state.carrier.deref())
+        for (let iteration = 0; iteration < 3; iteration++) {
+          await new Promise((resolve) => setImmediate(resolve))
+          global.gc()
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+        assert.equal(state.carrier.deref(), state.received, 'Keeping the thrown value must retain the native carrier')
+        assert.equal(inspect(state.handle).succeeded, true)
+        assert.throws(() => Recovery.retryCleanup(state.received))
+        const resource = Recovery.getCleanupFailures(state.received)[0].resource
+        assert.equal(resource.value, state.handle)
+        unprotect(resource)
+        Recovery.retryCleanup(state.received)
+        Recovery.retryCleanup(state.received)
+        assert.equal(resource.closed, true)
+        assert.equal(inspect(state.handle).succeeded, false)
+      } finally {
+        const original = state.carrier.deref()
+        if (original) retire(original, resourceOf(original))
+      }
+    }
   }
 
   const recordError = capture(() => native.win32TestCleanupFailure())

@@ -6,7 +6,7 @@
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
-const { runInNewContext } = require('node:vm')
+const { createContext, runInContext } = require('node:vm')
 
 const dist = process.argv[2] ? resolve(process.argv[2]) : resolve(__dirname, '..', '..', 'dist')
 const tags = new WeakMap()
@@ -37,18 +37,24 @@ const native = {
     owners.get(value).closed = true
   },
 }
-const facadeModule = { exports: {} }
-runInNewContext(readFileSync(join(dist, 'win32-internal.js'), 'utf8'), {
-  module: facadeModule,
-  require(name) {
-    assert.equal(name, './index.js')
-    return native
-  },
-  Error,
-  TypeError,
-  AggregateError,
-})
-const { DynWin32CallError, DynWin32Function, DynWin32Resource } = facadeModule.exports
+function loadFacade(overrides = {}) {
+  const module = { exports: {} }
+  const context = createContext({
+    module,
+    require(name) {
+      assert.equal(name, './index.js')
+      return native
+    },
+    Error,
+    TypeError,
+    AggregateError,
+    ...overrides,
+  })
+  runInContext(readFileSync(join(dist, 'win32-internal.js'), 'utf8'), context)
+  return { runtime: module.exports, context }
+}
+const loaded = loadFacade()
+const { DynWin32CallError, DynWin32Function, DynWin32Resource } = loaded.runtime
 const fn = DynWin32Function.bind({})
 const invokeModes = [() => fn.invoke([]), () => fn.invokeWithSubsystem({}, 'winsock', [])]
 function capture(call) {
@@ -114,6 +120,67 @@ for (const invoke of invokeModes) {
   assert.equal(recovery.closed, true)
 }
 
+const descriptorPrototype = runInContext('Object.prototype', loaded.context)
+for (const name of ['get', 'set', 'value', 'writable']) {
+  const original = Object.getOwnPropertyDescriptor(descriptorPrototype, name)
+  const error = failure()
+  Object.preventExtensions(error)
+  throwFromNative(error)
+  let received
+  try {
+    Object.defineProperty(descriptorPrototype, name, { __proto__: null, value: undefined, configurable: true })
+    received = capture(invokeModes[0])
+  } finally {
+    Reflect.deleteProperty(descriptorPrototype, name)
+    if (original) Object.defineProperty(descriptorPrototype, name, { __proto__: null, ...original })
+  }
+  assert.ok(received instanceof AggregateError, `inherited descriptor ${name} must not break recovery`)
+  assert.equal(received.cause, error)
+  assert.equal(received.errors[0], error)
+  received.retryCleanup()
+  assert.equal(received.cleanupFailures[0].resource.closed, true)
+}
+
+for (const stage of ['construct', 'decorate']) {
+  const failureInRecovery = new Error(`${stage} recovery failed`)
+  const overrides =
+    stage === 'construct'
+      ? {
+          AggregateError: function () {
+            throw failureInRecovery
+          },
+        }
+      : {
+          Object: new Proxy(Object, {
+            get(target, name) {
+              if (name === 'defineProperties')
+                return () => {
+                  throw failureInRecovery
+                }
+              return Reflect.get(target, name)
+            },
+          }),
+        }
+  const runtime = loadFacade(overrides).runtime
+  const failing = runtime.DynWin32Function.bind({})
+  for (const mode of ['invoke', 'records']) {
+    const error = failure()
+    throwFromNative(error)
+    if (mode === 'invoke') Object.preventExtensions(error)
+    let received = capture(() => failing.invoke([]))
+    if (mode === 'records') {
+      Object.preventExtensions(diagnostics.get(error)[0].resource)
+      received = capture(() => received.cleanupFailures)
+    }
+    assert.equal(received, error, `${stage}/${mode} must preserve the owning native error`)
+    runtime.DynWin32CallError.retryCleanup(received)
+    assert.equal(owners.get(diagnostics.get(error)[0].resource).closed, true)
+    if (mode === 'invoke') {
+      assert.equal(runtime.DynWin32CallError.getCleanupFailures(received)[0].resource.closed, true)
+    }
+  }
+}
+
 const recordError = failure()
 Object.preventExtensions(diagnostics.get(recordError)[0].resource)
 throwFromNative(recordError)
@@ -177,6 +244,8 @@ for (const forged of [hostile, Object.create(DynWin32CallError.prototype), tagge
 const declaration = readFileSync(join(dist, 'index.d.ts'), 'utf8')
 assert.match(declaration, /export declare class DynWin32CallError extends Error \{/)
 assert.match(declaration, /readonly cleanupFailures: readonly DynWin32CleanupFailure\[\]/)
+assert.match(declaration, /static getCleanupFailures\(error: unknown\): readonly DynWin32CleanupFailure\[\]/)
+assert.match(declaration, /static retryCleanup\(error: unknown\): void/)
 assert.match(declaration, /readonly kind: 'aggregate-field'; readonly parameter: number; readonly field: number/)
 for (const facade of ['win32', 'win32-unsafe']) {
   const text = readFileSync(join(dist, `${facade}.d.ts`), 'utf8')
