@@ -29,7 +29,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DllGetActivationFactory(
     if (!result)
         return E_POINTER;
     *result = nullptr;
-    if (wcscmp(WindowsGetStringRawBuffer(name, nullptr), L"Microsoft.UI.Xaml.DynWinRTFixture"))
+    const auto className = WindowsGetStringRawBuffer(name, nullptr);
+    if (wcscmp(className, L"Microsoft.UI.Xaml.DynWinRTFixture") &&
+        wcscmp(className, L"Microsoft.UI.Xaml.Controls.DynWinRTFixture"))
         return CLASS_E_CLASSNOTAVAILABLE;
 
     wchar_t mode[32]{};

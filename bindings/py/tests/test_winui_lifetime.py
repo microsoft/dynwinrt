@@ -136,6 +136,79 @@ def test_winui_fallback_failure_retry_and_deduplicated_ownership(failure):
     """, cwd=fixture_dir, env={"DYNWINRT_WINUI_FIXTURE_MODE": failure})
 
 
+@pytest.mark.parametrize("spelling", ["canonical", "lowercase", "uppercase", "directory-case"])
+def test_controls_factory_accepts_same_xaml_module_path_spelling(spelling):
+    fixture_dir = os.environ.get("DYNWINRT_WINUI_FIXTURE_DIR")
+    if not fixture_dir:
+        pytest.skip("requires the SDK-ABI WinUI activation DLL fixture")
+    for name in ("Microsoft.UI.Xaml.dll", "Microsoft.UI.Xaml.Controls.dll"):
+        assert (Path(fixture_dir) / name).is_file()
+    run_child("""
+        import ctypes
+        import os
+        from pathlib import Path
+        import dynwinrt as dw
+        from dynwinrt.dynwinrt import _test_winui_module_paths, _test_winui_owned_references
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.LoadLibraryW.argtypes = [ctypes.c_wchar_p]
+        kernel.LoadLibraryW.restype = ctypes.c_void_p
+        kernel.FreeLibrary.argtypes = [ctypes.c_void_p]
+        kernel.FreeLibrary.restype = ctypes.c_int
+        kernel.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+        kernel.SetDllDirectoryW.restype = ctypes.c_int
+        kernel.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+        kernel.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        kernel.GetModuleFileNameW.restype = ctypes.c_uint32
+        kernel.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        kernel.GetProcAddress.restype = ctypes.c_void_p
+
+        canonical = Path.cwd() / "Microsoft.UI.Xaml.dll"
+        spelling = os.environ["DYNWINRT_WINUI_PATH_SPELLING"]
+        path = {
+            "canonical": str(canonical),
+            "lowercase": str(canonical.with_name("microsoft.ui.xaml.dll")),
+            "uppercase": str(canonical.with_name("MICROSOFT.UI.XAML.DLL")),
+            "directory-case": str(canonical.parent).swapcase() + "\\\\" + canonical.name,
+        }[spelling]
+        assert kernel.SetDllDirectoryW(os.getcwd())
+        xaml = kernel.LoadLibraryW(path)
+        assert xaml, ctypes.WinError(ctypes.get_last_error())
+        try:
+            assert kernel.GetModuleHandleW(str(canonical)) == xaml
+            reported = ctypes.create_unicode_buffer(32768)
+            assert kernel.GetModuleFileNameW(xaml, reported, len(reported))
+            assert reported.value == path
+            assert _test_winui_owned_references() == 0
+            with dw.RoApartment(1):
+                factory = dw.DynWinRTValue.activation_factory("Microsoft.UI.Xaml.DynWinRTFixture")
+                factory.release()
+                assert _test_winui_owned_references() == 1
+                assert _test_winui_module_paths() == [reported.value]
+                for _ in range(4):
+                    factory = dw.DynWinRTValue.activation_factory(
+                        "Microsoft.UI.Xaml.Controls.DynWinRTFixture"
+                    )
+                    factory.release()
+                    assert kernel.GetModuleHandleW(str(canonical)) == xaml
+                    assert _test_winui_owned_references() == 2
+                paths = _test_winui_module_paths()
+                assert len(paths) == 2 and paths[0] == reported.value
+                for name in ("Microsoft.UI.Xaml.dll", "Microsoft.UI.Xaml.Controls.dll"):
+                    handle = kernel.GetModuleHandleW(name)
+                    assert handle
+                    address = kernel.GetProcAddress(handle, b"FixtureObjectCount")
+                    assert address
+                    assert ctypes.WINFUNCTYPE(ctypes.c_ulong)(address)() == 0
+        finally:
+            assert kernel.FreeLibrary(xaml)
+            assert kernel.SetDllDirectoryW(None)
+        assert kernel.GetModuleHandleW(str(canonical)) == xaml
+        assert _test_winui_owned_references() == 2
+    """, cwd=fixture_dir, env={"DYNWINRT_WINUI_PATH_SPELLING": spelling})
+
+
 @pytest.mark.parametrize(
     "mode", ["plain", "managed", "external", "tokio", "default-async", "body-error", "provider-error"]
 )

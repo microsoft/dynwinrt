@@ -108,9 +108,11 @@ impl WinUiProcessModules {
                     Err(error) => return Err(error.into()),
                 };
                 let module = VerifiedModule::from_reference(reference)?;
-                if module.identity.kind != ModuleKind::Xaml || module.identity.path != path {
+                // The loader resolved the full sibling path; its reported
+                // spelling need not match the spelling used for lookup.
+                if module.identity.kind != ModuleKind::Xaml {
                     return Err(invalid_module(
-                        "WinUI's loaded XAML dependency has a different path",
+                        "WinUI's loaded dependency is not Microsoft.UI.Xaml.dll",
                     )
                     .into());
                 }
@@ -228,7 +230,7 @@ impl ModuleKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct ModuleIdentity {
     kind: ModuleKind,
     path: PathBuf,
@@ -267,9 +269,9 @@ impl Modules {
 
     fn validate(&mut self, candidate: &VerifiedModule) -> windows_core::Result<()> {
         if let Some(existing) = self.slot(candidate.identity.kind) {
-            if existing.identity != candidate.identity
-                || existing.reference.handle != candidate.reference.handle
-            {
+            // Owned references prevent HMODULE reuse. Paths are diagnostic,
+            // not identity: the same module can have different path spellings.
+            if existing.reference.handle != candidate.reference.handle {
                 return Err(invalid_module(format!(
                     "WinUI implementation cannot change within a process: {} -> {}",
                     existing.identity.path.display(),
@@ -501,6 +503,28 @@ mod tests {
     }
 
     #[test]
+    fn same_module_path_spellings_keep_one_reference() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let owner = WinUiProcessModules::new();
+        for path in [
+            r"C:\runtime\Microsoft.UI.Xaml.dll",
+            r"c:\RUNTIME\microsoft.ui.xaml.dll",
+            r"\\?\C:\runtime\Microsoft.UI.Xaml.dll",
+        ] {
+            let mut candidate = module(ModuleKind::Xaml, &released);
+            candidate.identity.path = PathBuf::from(path);
+            owner.publish(candidate, None, &mut None).unwrap();
+        }
+        assert_eq!(
+            owner.retained_module_paths().unwrap(),
+            [PathBuf::from(r"C:\runtime\Microsoft.UI.Xaml.dll")]
+        );
+        assert_eq!(released.load(Ordering::SeqCst), 2);
+        drop(owner);
+        assert_eq!(released.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn fallback_reference_is_transferred_and_duplicate_loads_are_released() {
         let released = Arc::new(AtomicUsize::new(0));
         let owner = WinUiProcessModules::new();
@@ -585,20 +609,33 @@ mod tests {
         owner
             .publish(module(ModuleKind::Xaml, &released), None, &mut None)
             .unwrap();
-        let mut replacement = module(ModuleKind::Xaml, &released);
-        replacement.identity.path = PathBuf::from(r"C:\other\Microsoft.UI.Xaml.dll");
-        let mut fallback = Some(reference(2, &released));
-        assert!(
-            owner
-                .publish(
-                    module(ModuleKind::Controls, &released),
-                    Some(replacement),
-                    &mut fallback
-                )
-                .is_err()
-        );
-        assert!(fallback.is_some());
-        assert_eq!(owner.retained_module_paths().unwrap().len(), 1);
+        for path in [
+            r"C:\runtime\Microsoft.UI.Xaml.dll",
+            r"C:\other\microsoft.ui.xaml.dll",
+        ] {
+            let replacement = VerifiedModule {
+                identity: ModuleIdentity {
+                    kind: ModuleKind::Xaml,
+                    path: PathBuf::from(path),
+                },
+                reference: reference(3, &released),
+            };
+            let mut fallback = Some(reference(2, &released));
+            assert!(
+                owner
+                    .publish(
+                        module(ModuleKind::Controls, &released),
+                        Some(replacement),
+                        &mut fallback
+                    )
+                    .is_err()
+            );
+            assert!(fallback.is_some());
+            assert_eq!(
+                owner.retained_module_paths().unwrap(),
+                [PathBuf::from(r"C:\runtime\Microsoft.UI.Xaml.dll")]
+            );
+        }
     }
 
     #[test]

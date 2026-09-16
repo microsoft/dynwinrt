@@ -326,7 +326,9 @@ application supplies its own provider.
 Python retains the validated WinUI implementation DLL after its first actual
 WinUI activation until the process terminates. One named native owner keeps
 one ordinary loader reference to `Microsoft.UI.Xaml.dll`; repeated activation
-does not accumulate references. If WinUI activation requires the DLL-probing
+does not accumulate references. Retained native module handles determine
+identity, so legal differences in path spelling or casing do not imply a
+different runtime. If WinUI activation requires the DLL-probing
 fallback, its successful loader reference is transferred to the same owner
 (one reference per required implementation DLL), rather than leaked per call.
 Imports, ordinary WinRT activation, and COM apartment initialization do not
@@ -456,6 +458,8 @@ From a matching-architecture Visual Studio developer shell, build
 `tests\e2e\fixtures\winui_activation.cpp` with
 `cl /LD /EHsc /std:c++17 winui_activation.cpp /link runtimeobject.lib /OUT:Microsoft.UI.Xaml.dll`
 in a private output directory and set `DYNWINRT_WINUI_FIXTURE_DIR` to it.
+Copy that fixture DLL as `Microsoft.UI.Xaml.Controls.dll` in the same directory
+for the dependency path-spelling regressions.
 That SDK-typed factory tests actual loader-reference transfer, concurrent
 fallback activation, failed/null factories, identity mismatch, and retry
 without requiring WinUI installation. Do not use this fixture DLL in the real
