@@ -1232,10 +1232,21 @@ pub fn create_xaml_application(
     metadata_provider: &IUnknown,
     launched_callback: Option<&IUnknown>,
 ) -> Result<WinRTValue> {
+    create_xaml_application_with_factory(
+        metadata_provider,
+        launched_callback,
+        crate::ro_get_activation_factory_2,
+    )
+}
+
+pub(crate) fn create_xaml_application_with_factory(
+    metadata_provider: &IUnknown,
+    launched_callback: Option<&IUnknown>,
+    activation_factory: impl FnOnce(&HSTRING) -> Result<WinRTValue>,
+) -> Result<WinRTValue> {
     enable_per_monitor_v2()?;
     let provider = query_interface(metadata_provider, &IID_IXAML_METADATA_PROVIDER)?;
-    let activation_factory =
-        crate::ro_get_activation_factory_2(&HSTRING::from("Microsoft.UI.Xaml.Application"))?;
+    let activation_factory = activation_factory(&HSTRING::from("Microsoft.UI.Xaml.Application"))?;
     let factory = activation_factory
         .as_object()
         .expect("activation factory must be an object");

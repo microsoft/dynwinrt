@@ -9,6 +9,8 @@ mod errors;
 mod implementation;
 mod runtime;
 mod values;
+#[cfg(feature = "test-hooks")]
+mod winui_test_hooks;
 
 #[pymodule]
 mod dynwinrt {
@@ -594,6 +596,21 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
             m
         )?)?;
         m.add_function(wrap_pyfunction!(super::runtime::get_computer_name, m)?)?;
+        #[cfg(feature = "test-hooks")]
+        {
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_owned_references,
+                m
+            )?)?;
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_module_paths,
+                m
+            )?)?;
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_with_mta_runtime,
+                m
+            )?)?;
+        }
         m.py().run(
             c"
 __all__ = [name for name in __all__ if not name.startswith('_')]

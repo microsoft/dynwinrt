@@ -15,6 +15,9 @@ use crate::errors::{map_dynwinrt_error, map_dynwinrt_error_with_context, map_win
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
     std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
 
+pub(crate) static WINUI_MODULES: dynwinrt::WinUiProcessModules =
+    dynwinrt::WinUiProcessModules::new();
+
 pub(crate) fn wrap_python_callback_context(
     py: Python<'_>,
     callback: Py<PyAny>,
@@ -1181,7 +1184,8 @@ pub struct DynWinRTValue(pub(crate) dynwinrt::WinRTValue);
 impl DynWinRTValue {
     #[staticmethod]
     fn activation_factory(name: String) -> PyResult<DynWinRTValue> {
-        dynwinrt::ro_get_activation_factory_2(&HSTRING::from(name))
+        WINUI_MODULES
+            .activation_factory(&HSTRING::from(name))
             .map(DynWinRTValue)
             .map_err(map_dynwinrt_error)
     }
@@ -1225,7 +1229,8 @@ impl DynWinRTValue {
                 })
             })
             .transpose()?;
-        dynwinrt::create_xaml_application(&provider, callback.as_ref())
+        WINUI_MODULES
+            .create_xaml_application(&provider, callback.as_ref())
             .map(DynWinRTValue)
             .map_err(map_dynwinrt_error)
     }

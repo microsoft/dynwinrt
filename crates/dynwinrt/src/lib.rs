@@ -19,6 +19,7 @@ mod value;
 pub mod win32;
 mod winapp;
 mod winrt_implementation;
+mod winui_module;
 mod xaml_application;
 
 mod array;
@@ -65,6 +66,7 @@ pub use crate::winrt_implementation::{
     WinRtImplementation, WinRtImplementationCallback, WinRtImplementationPlan,
     WinRtInterfaceDefinition, WinRtMethodDefinition, WinRtThreadingPolicy,
 };
+pub use crate::winui_module::WinUiProcessModules;
 pub use crate::xaml_application::{
     XamlRuntimeClassActivator, XamlRuntimeClassRegistration, create_xaml_application,
     register_xaml_runtime_class,

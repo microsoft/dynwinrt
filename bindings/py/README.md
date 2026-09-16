@@ -323,6 +323,36 @@ When the required WinUI metadata is generated, `Application.create()` installs
 `Application.create_with_metadata_provider(...)` is available when the
 application supplies its own provider.
 
+Python retains the validated WinUI implementation DLL after its first actual
+WinUI activation until the process terminates. One named native owner keeps
+one ordinary loader reference to `Microsoft.UI.Xaml.dll`; repeated activation
+does not accumulate references. If WinUI activation requires the DLL-probing
+fallback, its successful loader reference is transferred to the same owner
+(one reference per required implementation DLL), rather than leaked per call.
+Imports, ordinary WinRT activation, and COM apartment initialization do not
+load or retain WinUI or CoreMessaging.
+When a WinUI metadata provider loads Controls before XAML, the runtime resolves
+the actual `Application` activation factory to establish this lifetime before
+returning the provider's factory; it does not create an Application or start
+its message loop.
+
+This is a process-lifetime module policy, not an object cache. Continue to
+close windows, unsubscribe events, release projected/native objects, and
+balance COM initialization on each thread as shown below. WinUI module-level
+static state can remain after those application-owned resources are released.
+The retained XAML mapping keeps its code valid when Controls static destruction
+runs during COM cleanup, even when another MTA exits after the UI STA.
+
+No new context manager or async executor is required. The Python runtime does
+not release the published module reference from `RoApartment.close()`, Python
+`atexit`, or wrapper finalizers: the operating system reclaims it at process
+termination. Consequently, in-process unloading/hot replacement of that WinUI
+implementation is not supported. This does not prohibit WinUI's documented
+thread-level XAML/DispatcherQueue shutdown, guarantee repeated
+`Application.start()` in one process, or imply that all SDK static resources
+are gone when a window closes. The JavaScript and independent WinRT/COM
+lifetime policies are unchanged.
+
 Python subclasses of public composable controls preserve one COM identity for
 inherited properties and methods. Metadata-supported
 `measure_override`, `arrange_override`, and `on_apply_template` callbacks run
@@ -410,6 +440,26 @@ python -m pip install "maturin>=1.11,<2" "pytest>=8.3.5" "mypy>=1.13,<2"
 python -m maturin develop
 python -m pytest
 ```
+
+The focused WinUI lifetime regressions are in `tests\test_winui_lifetime.py`.
+Without optional inputs they check ordinary WinRT imports and cleanup. Set
+`DYNWINRT_WINUI_SAMPLE_ROOT` to a prepared Hello World directory (unchanged
+`app.py`, `generated`, and `.runtime`) to exercise real STA, managed/external
+MTA, exception, and default-async process teardown. Run each case in its own
+process; process exit status is part of the assertion.
+
+For native ownership inspection and the test-only shutdownable Tokio fixture,
+build a separate test environment with `maturin develop --features test-hooks`.
+This adds private test helpers only, not a production executor or public API.
+`DYNWINRT_WINUI_REQUIRE_OWNER_HOOK=1` additionally checks the retained owner.
+From a matching-architecture Visual Studio developer shell, build
+`tests\e2e\fixtures\winui_activation.cpp` with
+`cl /LD /EHsc /std:c++17 winui_activation.cpp /link runtimeobject.lib /OUT:Microsoft.UI.Xaml.dll`
+in a private output directory and set `DYNWINRT_WINUI_FIXTURE_DIR` to it.
+That SDK-typed factory tests actual loader-reference transfer, concurrent
+fallback activation, failed/null factories, identity mismatch, and retry
+without requiring WinUI installation. Do not use this fixture DLL in the real
+sample directory.
 
 ## Release process
 
