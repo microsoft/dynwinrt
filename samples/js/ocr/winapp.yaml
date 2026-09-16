@@ -1,0 +1,9 @@
+packages:
+  - name: Microsoft.Windows.SDK.CPP
+    version: 10.0.26100.6901
+  - name: Microsoft.WindowsAppSDK.Foundation
+    version: 1.8.251104000
+  - name: Microsoft.WindowsAppSDK.InteractiveExperiences
+    version: 1.8.251104001
+  - name: Microsoft.WindowsAppSDK.AI
+    version: 1.8.39

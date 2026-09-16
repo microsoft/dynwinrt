@@ -1,0 +1,66 @@
+{
+  "name": "dynwinrt-windows-ai-ocr-sample",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows AI TextRecognizer OCR with generated WinRT bindings",
+  "scripts": {
+    "restore": "winapp restore",
+    "generate": "winapp node generate-bindings",
+    "check": "tsc --noEmit",
+    "test": "node --import ./tests/no-native.mjs --test tests/*.test.ts",
+    "start": "node launch.ts",
+    "start:generated": "node launch-generated.ts",
+    "start:direct": "node main.ts"
+  },
+  "imports": {
+    "#winapp/bindings": {
+      "types": "./.winapp/bindings/index.d.ts",
+      "import": "./.winapp/bindings/index.mjs",
+      "require": "./.winapp/bindings/index.js",
+      "default": "./.winapp/bindings/index.js"
+    },
+    "#winapp/bindings/*": {
+      "types": "./.winapp/bindings/*.d.ts",
+      "default": "./.winapp/bindings/*.js"
+    }
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  },
+  "devDependencies": {
+    "@microsoft/dynwinrt-codegen": "file:../../../tools/dynwinrt-codegen/npm",
+    "@microsoft/winappcli": "0.6.2",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "winapp": {
+    "jsBindings": {
+      "additionalWinmds": [
+        {
+          "namespace": "Windows.Storage",
+          "classes": ["StorageFile"]
+        },
+        {
+          "namespace": "Windows.Graphics.Imaging",
+          "classes": ["BitmapDecoder"]
+        },
+        {
+          "namespace": "Microsoft.Windows.Storage.Pickers",
+          "classes": ["FileOpenPicker"]
+        },
+        {
+          "namespace": "Microsoft.Graphics.Imaging",
+          "classes": ["ImageBuffer"]
+        },
+        {
+          "namespace": "Microsoft.Windows.AI.Imaging",
+          "classes": ["TextRecognizer"]
+        }
+      ]
+    }
+  }
+}

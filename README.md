@@ -272,6 +272,9 @@ JavaScript samples include:
   — a programmatic WinUI application without XAML.
 - [Windows Hello](samples/js/windows-hello/README.md) — WinRT async APIs and
   HWND-bound Classic COM interop.
+- [Windows AI OCR](samples/js/ocr/README.md) — a standalone Node.js sample with
+  generated TextRecognizer bindings, image picker or `--image`, and private
+  WinApp CLI identity.
 - [Aion Instruct chat](samples/js/electron-aion-chat/README.md) — local
   Snapdragon NPU inference with streaming progress, cancellation, and
   multi-turn context in Electron.
