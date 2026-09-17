@@ -34,6 +34,13 @@ pub fn generate_class(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
+    let context = context.with_local_types(
+        used_structs
+            .iter()
+            .filter(|_| !context.is_packaged())
+            .map(TypeMeta::type_identity),
+    );
+    let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
     let known_full_names = context.known_full_names();

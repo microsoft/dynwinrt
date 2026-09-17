@@ -106,6 +106,14 @@ Common Python reverse-conversion helpers live once in each generated package's
 generated code, not excluded coverage support. Method-specific ABI plans and
 typed conversions remain with their interface.
 
+Python handler, delegate, and result annotations share the enclosing module's
+type-name mapping with ordinary projected members. Self-interface references use
+the locally declared class name; imported structs use the same collision alias
+in `.py` and `.pyi`. Types with identical short names in other namespaces remain
+distinct imports, including references nested in arrays or delegate signatures.
+Standalone interface and runtime-class modules use local names for embedded
+struct helpers; standalone struct modules retain aliases for imported fields.
+
 Language bindings additionally gate dispatch on their environment/interpreter
 lifetime. Callback roots belong to the native object, not merely the original
 language wrapper. Shutdown disconnects language callback state before its

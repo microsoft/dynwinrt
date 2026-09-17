@@ -77,6 +77,17 @@ pub fn generate_enum(_context: &PythonProjectionContext, en: &TypeMeta) -> Optio
 
 /// Generate a Python file for a WinRT interface (non-exclusive).
 pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
+    let used_structs = collect_used_structs_from_iface(iface);
+    let type_imports = collect_iface_type_imports_by_identity(iface);
+    let context = context.with_local_types(
+        std::iter::once(iface.type_identity()).chain(
+            used_structs
+                .iter()
+                .filter(|_| !context.is_packaged())
+                .map(TypeMeta::type_identity),
+        ),
+    );
+    let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
     let iface = &projected_iface;
@@ -85,8 +96,6 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         return generate_delegate(iface);
     }
     let implementation = super::super::implementation::project(context, iface);
-
-    let used_structs = collect_used_structs_from_iface(iface);
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -195,7 +204,6 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
 
     // Type imports for referenced types
-    let type_imports = collect_iface_type_imports(iface);
     let mut sorted_type_imports: Vec<_> = type_imports.iter().collect();
     sorted_type_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));

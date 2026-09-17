@@ -138,7 +138,7 @@ pub(crate) fn py_struct_field_read_type(
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
-        TypeMeta::Struct { name, .. } => format!("'{}'", name),
+        TypeMeta::Struct { .. } => format!("'{}'", context.reference_name_for_type(typ)),
         _ => "'DynWinRTValue'".to_string(),
     }
 }

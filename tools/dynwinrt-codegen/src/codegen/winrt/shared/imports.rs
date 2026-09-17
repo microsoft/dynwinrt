@@ -186,12 +186,27 @@ fn collect_methods_type_imports(
 
 /// Collect type references from an interface for import generation.
 pub(crate) fn collect_iface_type_imports(iface: &InterfaceMeta) -> HashSet<TypeRef> {
+    collect_iface_type_imports_except(iface, &iface.name)
+}
+
+/// Python aliases distinguish same-named interfaces from different namespaces.
+pub(crate) fn collect_iface_type_imports_by_identity(iface: &InterfaceMeta) -> HashSet<TypeRef> {
+    let mut imports = collect_iface_type_imports_except(iface, "");
+    imports.retain(|reference| {
+        reference.kind != TypeKind::Interface
+            || reference.namespace != iface.namespace
+            || reference.name != iface.name
+    });
+    imports
+}
+
+fn collect_iface_type_imports_except(iface: &InterfaceMeta, self_name: &str) -> HashSet<TypeRef> {
     let mut imports = HashSet::new();
-    collect_methods_type_imports(&iface.methods, &iface.name, false, &mut imports);
+    collect_methods_type_imports(&iface.methods, self_name, false, &mut imports);
     for delegate in &iface.implementation_metadata.delegates {
         collect_methods_type_imports(
             std::slice::from_ref(&delegate.invoke),
-            &iface.name,
+            self_name,
             false,
             &mut imports,
         );

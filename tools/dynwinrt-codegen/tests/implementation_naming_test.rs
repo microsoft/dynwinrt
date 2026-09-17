@@ -7,6 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use dynwinrt_codegen::codegen::{python, python_stub};
+use dynwinrt_codegen::meta::{
+    ClassMeta, ImplementationDelegateMeta, InterfaceImplementationMetadata, InterfaceMeta,
+    MethodMeta, ParamDirection, ParamMeta,
+};
+use dynwinrt_codegen::types::{FieldMeta, TypeIdentityKind, TypeMeta};
 use windows_metadata::{
     MethodAttributes, MethodCallAttributes, MethodImplAttributes, ParamAttributes, Signature, Type,
     TypeAttributes, Value, writer,
@@ -457,6 +463,372 @@ fn python_inventory(directory: &Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
+    let fixture = Fixture::new();
+    let package = fixture.0.join("pyviews");
+    fs::create_dir_all(&package).unwrap();
+    let interface_type = |namespace: &str| TypeMeta::Interface {
+        namespace: namespace.into(),
+        name: "IValue".into(),
+        iid: format!(
+            "31d44731-6281-4900-b782-04030201091{}",
+            if namespace == "Alpha" { 0 } else { 1 }
+        ),
+    };
+    let payload = |namespace: &str| TypeMeta::Struct {
+        namespace: namespace.into(),
+        name: "Payload".into(),
+        fields: vec![FieldMeta {
+            name: "Value".into(),
+            typ: TypeMeta::I32,
+        }],
+    };
+    let array = |typ| TypeMeta::Array(Box::new(typ));
+    let mut structs = Vec::new();
+    let mut interfaces = Vec::new();
+    for (namespace, peer_namespace) in [("Alpha", "Beta"), ("Beta", "Alpha")] {
+        let this = interface_type(namespace);
+        let peer = interface_type(peer_namespace);
+        let structure = payload(namespace);
+        let envelope = TypeMeta::Struct {
+            namespace: namespace.into(),
+            name: "Envelope".into(),
+            fields: vec![FieldMeta {
+                name: "Item".into(),
+                typ: structure.clone(),
+            }],
+        };
+        let callback = TypeMeta::Delegate {
+            namespace: namespace.into(),
+            name: "Callback".into(),
+            iid: format!("31d44731-6281-4900-b782-04030201092{}", interfaces.len()),
+        };
+        let mut methods = Vec::new();
+        for (name, typ) in [
+            ("EchoStruct", structure.clone()),
+            ("EchoSelf", this.clone()),
+            ("EchoPeer", peer),
+            ("EchoArray", array(structure.clone())),
+            ("EchoEnvelope", envelope.clone()),
+        ] {
+            methods.push(MethodMeta {
+                name: name.into(),
+                vtable_index: 6 + methods.len(),
+                params: vec![ParamMeta {
+                    name: "value".into(),
+                    typ: typ.clone(),
+                    direction: ParamDirection::In,
+                }],
+                return_type: Some(typ),
+                ..Default::default()
+            });
+        }
+        methods.push(MethodMeta {
+            name: "UseCallback".into(),
+            vtable_index: 6 + methods.len(),
+            params: vec![ParamMeta {
+                name: "callback".into(),
+                typ: callback.clone(),
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        });
+        let TypeMeta::Interface { iid, .. } = this.clone() else {
+            unreachable!()
+        };
+        interfaces.push(InterfaceMeta {
+            namespace: namespace.into(),
+            name: "IValue".into(),
+            iid,
+            methods,
+            implementation_metadata: InterfaceImplementationMetadata {
+                delegates: vec![ImplementationDelegateMeta {
+                    typ: callback,
+                    invoke: MethodMeta {
+                        name: "Invoke".into(),
+                        vtable_index: 3,
+                        params: vec![
+                            ParamMeta {
+                                name: "value".into(),
+                                typ: this.clone(),
+                                direction: ParamDirection::In,
+                            },
+                            ParamMeta {
+                                name: "owner".into(),
+                                typ: this,
+                                direction: ParamDirection::Out,
+                            },
+                        ],
+                        return_type: Some(array(structure.clone())),
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        structs.extend([structure, envelope]);
+    }
+    let identities = interfaces
+        .iter()
+        .map(InterfaceMeta::type_identity)
+        .chain(structs.iter().map(TypeMeta::type_identity))
+        .chain(interfaces.iter().flat_map(|interface| {
+            interface
+                .implementation_metadata
+                .delegates
+                .iter()
+                .map(|delegate| delegate.typ.type_identity())
+        }))
+        .collect::<Vec<_>>();
+    let context = python::PythonProjectionContext::packaged(identities.clone()).unwrap();
+    let mut modules = Vec::new();
+    let mut consumer = "from typing import assert_type\n".to_string();
+    for interface in &interfaces {
+        let namespace = &interface.namespace;
+        let module = context.implementation_module_for_interface(interface);
+        for delegate in &interface.implementation_metadata.delegates {
+            let TypeMeta::Delegate {
+                namespace,
+                name,
+                iid,
+            } = &delegate.typ
+            else {
+                unreachable!()
+            };
+            let metadata = InterfaceMeta {
+                namespace: namespace.clone(),
+                name: name.clone(),
+                iid: iid.clone(),
+                methods: vec![
+                    MethodMeta {
+                        name: ".ctor".into(),
+                        ..Default::default()
+                    },
+                    delegate.invoke.clone(),
+                ],
+                ..Default::default()
+            };
+            let module = context.implementation_module_for_interface(&metadata);
+            fs::write(
+                package.join(format!("{module}.py")),
+                python::generate_interface(&context, &metadata),
+            )
+            .unwrap();
+            fs::write(
+                package.join(format!("{module}.pyi")),
+                python_stub::generate_interface_stub(&context, &metadata),
+            )
+            .unwrap();
+        }
+        let helpers = python::implementation_helper_records(&context, interface);
+        let helper = |key| {
+            helpers
+                .iter()
+                .find(|helper| helper.key == key)
+                .unwrap()
+                .name
+                .as_str()
+        };
+        for (extension, source) in [
+            ("py", python::generate_interface(&context, interface)),
+            (
+                "pyi",
+                python_stub::generate_interface_stub(&context, interface),
+            ),
+        ] {
+            assert!(source.contains(&format!("Payload as {namespace}_Payload_struct")));
+            assert!(source.contains(&format!(
+                "def echo_struct(self, value: {namespace}_Payload_struct) -> {namespace}_Payload_struct: ..."
+            )));
+            assert!(
+                source.contains("def echo_self(self, value: IValue | None) -> IValue | None: ...")
+            );
+            assert!(source.contains(&format!(
+                "def echo_array(self, value: list[{namespace}_Payload_struct]) -> list[{namespace}_Payload_struct]: ..."
+            )));
+            assert!(source.contains("def __call__(self, value: IValue | None, /)"));
+            assert!(source.contains("    owner: IValue | None\n"));
+            assert!(source.contains(&format!("    result: list[{namespace}_Payload_struct]\n")));
+            assert!(!source.contains(&format!("{namespace}_IValue_interface")));
+            fs::write(package.join(format!("{module}.{extension}")), source).unwrap();
+        }
+        let peer = if namespace == "Alpha" {
+            "Beta"
+        } else {
+            "Alpha"
+        };
+        consumer.push_str(&format!(
+            "from pyviews.{module} import IValue as {namespace}, {handlers} as {namespace}Handlers, {delegate} as {namespace}Callback\n\
+             from pyviews.{payload_module} import Payload as {namespace}Payload\n\
+             from pyviews.{envelope_module} import Envelope as {namespace}Envelope\n\
+             def check_{namespace}(handlers: {namespace}Handlers, value: {namespace}, peer: {peer}, payload: {namespace}Payload, callback: {namespace}Callback) -> None:\n\
+             \x20   assert_type(handlers.echo_struct(payload), {namespace}Payload)\n\
+             \x20   assert_type(handlers.echo_self(value), {namespace} | None)\n\
+             \x20   assert_type(handlers.echo_peer(peer), {peer} | None)\n\
+             \x20   assert_type(handlers.echo_array([payload]), list[{namespace}Payload])\n\
+             \x20   assert_type(handlers.echo_envelope({namespace}Envelope(payload)).item, {namespace}Payload)\n\
+             \x20   assert_type(callback(value)['owner'], {namespace} | None)\n\
+             \x20   assert_type(callback(value)['result'], list[{namespace}Payload])\n",
+            handlers = helper("handlers"),
+            delegate = helper("delegate:0"),
+            payload_module = context.implementation_module_for_type(&payload(namespace)),
+            envelope_module = format!("{}__envelope", namespace.to_lowercase()),
+        ));
+        modules.push(module);
+    }
+    for structure in &structs {
+        let module = context.implementation_module_for_type(structure);
+        fs::write(
+            package.join(format!("{module}.py")),
+            python::generate_struct(&context, structure).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            package.join(format!("{module}.pyi")),
+            python_stub::generate_struct_stub(&context, structure).unwrap(),
+        )
+        .unwrap();
+    }
+    let standalone =
+        python::PythonProjectionContext::standalone(identities.into_iter().filter(|identity| {
+            identity.kind() != Some(TypeIdentityKind::Delegate)
+                || identity.namespace() == Some("Alpha")
+        }))
+        .unwrap();
+    let class = ClassMeta {
+        namespace: "Alpha".into(),
+        name: "Host".into(),
+        full_name: "Alpha.Host".into(),
+        static_interfaces: vec![InterfaceMeta {
+            namespace: "Alpha".into(),
+            name: "IHostStatics".into(),
+            iid: "31d44731-6281-4900-b782-040302010930".into(),
+            methods: vec![MethodMeta {
+                name: "EchoEnvelope".into(),
+                vtable_index: 6,
+                params: vec![ParamMeta {
+                    name: "value".into(),
+                    typ: structs[1].clone(),
+                    direction: ParamDirection::In,
+                }],
+                return_type: Some(structs[1].clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for (extension, source) in [
+        (
+            "py",
+            python::generate_class(&standalone, &class, &Default::default()),
+        ),
+        (
+            "pyi",
+            python_stub::generate_class_stub(&standalone, &class, &Default::default()),
+        ),
+    ] {
+        assert!(source.contains("class Payload:"));
+        assert!(source.contains("class Envelope:"));
+        assert!(!source.contains("Alpha_Payload_struct"));
+        assert!(!source.contains("Alpha_Envelope_struct"));
+        fs::write(package.join(format!("alpha__host.{extension}")), source).unwrap();
+    }
+    for (extension, source) in [
+        (
+            "py",
+            python::generate_struct(&standalone, &structs[1]).unwrap(),
+        ),
+        (
+            "pyi",
+            python_stub::generate_struct_stub(&standalone, &structs[1]).unwrap(),
+        ),
+    ] {
+        assert!(!source.contains("class Payload:"));
+        assert!(source.contains("from .alpha__payload import Payload as Alpha_Payload_struct"));
+        fs::write(
+            package.join(format!("alpha__standalone_envelope.{extension}")),
+            source,
+        )
+        .unwrap();
+    }
+    consumer.push_str(
+        "from pyviews.alpha__host import Host, Envelope as InlineEnvelope, Payload as InlinePayload\n\
+         from pyviews.alpha__standalone_envelope import Envelope as StandaloneEnvelope\n\
+         assert_type(Host.echo_envelope(InlineEnvelope()), InlineEnvelope)\n\
+         assert_type(InlineEnvelope().item, InlinePayload)\n\
+         assert_type(StandaloneEnvelope().item, AlphaPayload)\n"
+    );
+    for (name, source) in [
+        ("__init__.py", String::new()),
+        ("_runtime.py", python::generate_runtime_support_module()),
+        ("_runtime.pyi", python_stub::generate_runtime_support_stub()),
+        ("_typing.pyi", python_stub::generate_typing_support_module()),
+        (
+            "_implementation_types.pyi",
+            python_stub::generate_implementation_pair_types(&modules),
+        ),
+    ] {
+        fs::write(package.join(name), source).unwrap();
+    }
+    typecheck_py(&fixture.0, &consumer);
+
+    // Imported stubs are otherwise silenced by the consumer harness.
+    if Command::new(python())
+        .args(["-m", "mypy", "--version"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        success(
+            Command::new(python())
+                .args([
+                    "-m",
+                    "mypy",
+                    "--no-incremental",
+                    "--follow-imports=silent",
+                    "pyviews",
+                ])
+                .current_dir(&fixture.0)
+                .env("MYPYPATH", root().join("bindings").join("py"))
+                .output()
+                .unwrap(),
+        );
+    }
+    if runtime_available() {
+        success(Command::new(python()).args(["-B", "-c", r#"
+import ast, importlib, pathlib, typing
+for path in pathlib.Path('pyviews').glob('*__*.py'):
+    module = importlib.import_module('pyviews.' + path.stem)
+    for statement in ast.parse(path.read_text(encoding='utf-8')).body:
+        if isinstance(statement, ast.If) and ast.unparse(statement.test) == 'TYPE_CHECKING':
+            exec(compile(ast.Module(body=statement.body, type_ignores=[]), str(path), 'exec'), vars(module))
+    for value in list(vars(module).values()):
+        if isinstance(value, type) and value.__module__ == module.__name__:
+            typing.get_type_hints(value)
+            for name, method in vars(value).items():
+                if value.__name__ == 'IValue' and not name.startswith('echo_'):
+                    continue
+                if callable(method) and hasattr(method, '__annotations__'):
+                    typing.get_type_hints(method, vars(module))
+    if hasattr(module, 'Envelope'):
+        assert type(module.Envelope().item).__name__ == 'Payload'
+    if path.stem == 'alpha__host':
+        assert type(module.Envelope().item) is module.Payload
+"#]).current_dir(&fixture.0).output().unwrap());
+    }
+
+    for source in [
+        python::generate_interface(&standalone, &interfaces[0]),
+        python_stub::generate_interface_stub(&standalone, &interfaces[0]),
+    ] {
+        assert!(source.contains("def echo_struct(self, value: Payload) -> Payload: ..."));
+        assert!(source.contains("def echo_self(self, value: IValue | None) -> IValue | None: ..."));
+        assert!(!source.contains("Alpha_Payload_struct"));
+    }
 }
 
 fn snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {

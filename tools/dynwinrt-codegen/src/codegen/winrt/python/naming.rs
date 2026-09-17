@@ -3,6 +3,7 @@
 
 //! Python naming and identifier helpers.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::super::shared::implementation_symbols::{
@@ -550,6 +551,32 @@ impl PythonProjectionContext {
 
     pub fn is_packaged(&self) -> bool {
         self.packaged
+    }
+
+    /// Locally declared types use their exported names, not cross-module aliases.
+    pub(super) fn with_local_types(
+        &self,
+        identities: impl IntoIterator<Item = PythonTypeIdentity>,
+    ) -> Cow<'_, Self> {
+        let mut context = Cow::Borrowed(self);
+        for identity in identities {
+            let identity = self.normalize_identity(&identity);
+            if self.reference_name(&identity) != self.projected_name(&identity)
+                && let Some(projection) = context.to_mut().projections.get_mut(&identity)
+            {
+                projection.reference_name = projection.projected_name.clone();
+            }
+        }
+        context
+    }
+
+    pub(super) fn struct_type_import(&self, typ: &TypeMeta, name: &str) -> String {
+        let reference = self.reference_name_for_type(typ);
+        if reference == name {
+            name.into()
+        } else {
+            format!("{name} as {reference}")
+        }
     }
 
     pub fn configure_implementation_helpers(

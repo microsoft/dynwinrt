@@ -91,13 +91,23 @@ pub(super) fn generate_struct_stub_imports(
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct { .. } = typ else {
+            let TypeMeta::Struct { name, .. } = typ else {
                 return None;
             };
+            let names = py_struct_export_names(typ)
+                .into_iter()
+                .map(|export| {
+                    if export == *name {
+                        context.struct_type_import(typ, &export)
+                    } else {
+                        export
+                    }
+                })
+                .collect::<Vec<_>>();
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
                 context.implementation_module_for_type(typ),
-                py_struct_export_names(typ).join(", ")
+                names.join(", ")
             ))
         })
         .collect::<Vec<_>>();
@@ -243,7 +253,7 @@ pub(super) fn py_struct_field_stub_type(
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
-        TypeMeta::Struct { name, .. } => format!("'{}'", name),
+        TypeMeta::Struct { .. } => format!("'{}'", context.reference_name_for_type(typ)),
         _ => "object".to_string(),
     }
 }
