@@ -111,8 +111,11 @@ type-name mapping with ordinary projected members. Self-interface references use
 the locally declared class name; imported structs use the same collision alias
 in `.py` and `.pyi`. Types with identical short names in other namespaces remain
 distinct imports, including references nested in arrays or delegate signatures.
-Standalone interface and runtime-class modules use local names for embedded
-struct helpers; standalone struct modules retain aliases for imported fields.
+Self-import filtering compares canonical identities, so a closed generic such
+as `IBox<String>` cannot hide a distinct named `IBox_String` in the same namespace.
+Standalone interface and runtime-class modules use the actual declared metadata
+names for embedded struct helpers, even when their cross-module projected names
+are disambiguated; standalone struct modules retain aliases for imported fields.
 
 Language bindings additionally gate dispatch on their environment/interpreter
 lifetime. Callback roots belong to the native object, not merely the original

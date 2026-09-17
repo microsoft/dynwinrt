@@ -553,18 +553,33 @@ impl PythonProjectionContext {
         self.packaged
     }
 
-    /// Locally declared types use their exported names, not cross-module aliases.
+    /// Interfaces declare projected names; embedded structs retain metadata names.
     pub(super) fn with_local_types(
         &self,
-        identities: impl IntoIterator<Item = PythonTypeIdentity>,
+        interface: Option<&InterfaceMeta>,
+        structs: &[TypeMeta],
     ) -> Cow<'_, Self> {
+        let declarations = interface
+            .into_iter()
+            .map(|interface| {
+                (
+                    interface.type_identity(),
+                    self.projected_name_for_interface(interface),
+                )
+            })
+            .chain(structs.iter().filter_map(|typ| match typ {
+                TypeMeta::Struct { name, .. } if !self.is_packaged() => {
+                    Some((typ.type_identity(), name.clone()))
+                }
+                _ => None,
+            }));
         let mut context = Cow::Borrowed(self);
-        for identity in identities {
+        for (identity, declaration_name) in declarations {
             let identity = self.normalize_identity(&identity);
-            if self.reference_name(&identity) != self.projected_name(&identity)
+            if self.reference_name(&identity) != declaration_name
                 && let Some(projection) = context.to_mut().projections.get_mut(&identity)
             {
-                projection.reference_name = projection.projected_name.clone();
+                projection.reference_name = declaration_name;
             }
         }
         context

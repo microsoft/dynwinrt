@@ -457,6 +457,49 @@ fn runtime_available() -> bool {
     available
 }
 
+fn typecheck_py_package(directory: &Path) {
+    if Command::new(python())
+        .args(["-m", "mypy", "--version"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        success(
+            Command::new(python())
+                .args([
+                    "-m",
+                    "mypy",
+                    "--no-incremental",
+                    "--follow-imports=silent",
+                    "pyviews",
+                ])
+                .current_dir(directory)
+                .env("MYPYPATH", root().join("bindings").join("py"))
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+fn write_python_module(package: &Path, module: &str, source: String, stub: String) {
+    fs::write(package.join(format!("{module}.py")), source).unwrap();
+    fs::write(package.join(format!("{module}.pyi")), stub).unwrap();
+}
+
+fn write_python_support(package: &Path, implementation_modules: &[String]) {
+    for (name, source) in [
+        ("__init__.py", String::new()),
+        ("_runtime.py", python::generate_runtime_support_module()),
+        ("_runtime.pyi", python_stub::generate_runtime_support_stub()),
+        ("_typing.pyi", python_stub::generate_typing_support_module()),
+        (
+            "_implementation_types.pyi",
+            python_stub::generate_implementation_pair_types(implementation_modules),
+        ),
+    ] {
+        fs::write(package.join(name), source).unwrap();
+    }
+}
+
 fn python_inventory(directory: &Path) -> Vec<serde_json::Value> {
     fs::read_to_string(directory.join(".dynwinrt-generated-types"))
         .unwrap()
@@ -763,41 +806,11 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
          assert_type(InlineEnvelope().item, InlinePayload)\n\
          assert_type(StandaloneEnvelope().item, AlphaPayload)\n"
     );
-    for (name, source) in [
-        ("__init__.py", String::new()),
-        ("_runtime.py", python::generate_runtime_support_module()),
-        ("_runtime.pyi", python_stub::generate_runtime_support_stub()),
-        ("_typing.pyi", python_stub::generate_typing_support_module()),
-        (
-            "_implementation_types.pyi",
-            python_stub::generate_implementation_pair_types(&modules),
-        ),
-    ] {
-        fs::write(package.join(name), source).unwrap();
-    }
+    write_python_support(&package, &modules);
     typecheck_py(&fixture.0, &consumer);
 
     // Imported stubs are otherwise silenced by the consumer harness.
-    if Command::new(python())
-        .args(["-m", "mypy", "--version"])
-        .output()
-        .is_ok_and(|output| output.status.success())
-    {
-        success(
-            Command::new(python())
-                .args([
-                    "-m",
-                    "mypy",
-                    "--no-incremental",
-                    "--follow-imports=silent",
-                    "pyviews",
-                ])
-                .current_dir(&fixture.0)
-                .env("MYPYPATH", root().join("bindings").join("py"))
-                .output()
-                .unwrap(),
-        );
-    }
+    typecheck_py_package(&fixture.0);
     if runtime_available() {
         success(Command::new(python()).args(["-B", "-c", r#"
 import ast, importlib, pathlib, typing
@@ -828,6 +841,304 @@ for path in pathlib.Path('pyviews').glob('*__*.py'):
         assert!(source.contains("def echo_struct(self, value: Payload) -> Payload: ..."));
         assert!(source.contains("def echo_self(self, value: IValue | None) -> IValue | None: ..."));
         assert!(!source.contains("Alpha_Payload_struct"));
+    }
+}
+
+fn collision_box_type() -> TypeMeta {
+    TypeMeta::Parameterized {
+        namespace: "Contoso".into(),
+        name: "IBox`1".into(),
+        piid: "31d44731-6281-4900-b782-040302010910".into(),
+        args: vec![TypeMeta::String],
+    }
+}
+
+fn collision_box_interface(methods: Vec<MethodMeta>) -> InterfaceMeta {
+    let TypeMeta::Parameterized { piid, args, .. } = collision_box_type() else {
+        unreachable!()
+    };
+    InterfaceMeta {
+        namespace: "Contoso".into(),
+        name: "IBox_String".into(),
+        generic_piid: Some(piid),
+        generic_name: Some("IBox`1".into()),
+        generic_args: args,
+        methods,
+        ..Default::default()
+    }
+}
+
+fn echo_type(name: &str, typ: TypeMeta, vtable_index: usize) -> MethodMeta {
+    MethodMeta {
+        name: name.into(),
+        vtable_index,
+        params: vec![ParamMeta {
+            name: "value".into(),
+            typ: typ.clone(),
+            direction: ParamDirection::In,
+        }],
+        return_type: Some(typ),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn python_full_identity_collision_preserves_local_struct_declarations() {
+    for packaged in [false, true] {
+        let fixture = Fixture::new();
+        let package = fixture.0.join("pyviews");
+        fs::create_dir_all(&package).unwrap();
+        let structure = TypeMeta::Struct {
+            namespace: "Contoso".into(),
+            name: "IBox_String".into(),
+            fields: vec![FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::I32,
+            }],
+        };
+        let envelope = TypeMeta::Struct {
+            namespace: "Contoso".into(),
+            name: "Envelope".into(),
+            fields: vec![FieldMeta {
+                name: "Item".into(),
+                typ: structure.clone(),
+            }],
+        };
+        let generic = collision_box_interface(vec![echo_type("EchoSelf", collision_box_type(), 6)]);
+        let host = InterfaceMeta {
+            namespace: "Contoso".into(),
+            name: "IHost".into(),
+            iid: "31d44731-6281-4900-b782-040302010912".into(),
+            methods: vec![
+                echo_type("EchoEnvelope", envelope.clone(), 6),
+                echo_type("EchoBox", collision_box_type(), 7),
+            ],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            namespace: "Contoso".into(),
+            name: "Host".into(),
+            full_name: "Contoso.Host".into(),
+            static_interfaces: vec![host.clone()],
+            ..Default::default()
+        };
+        let context = python::PythonProjectionContext::new(
+            [
+                generic.type_identity(),
+                host.type_identity(),
+                structure.type_identity(),
+                envelope.type_identity(),
+            ],
+            packaged,
+        )
+        .unwrap();
+        let struct_alias = context.reference_name_for_type(&structure);
+        assert_eq!(struct_alias, "IBox_String_Contoso_IBox_String_struct");
+        for (module, source, stub) in [
+            (
+                context.implementation_module_for_interface(&host),
+                python::generate_interface(&context, &host),
+                python_stub::generate_interface_stub(&context, &host),
+            ),
+            (
+                "contoso__host".into(),
+                python::generate_class(&context, &class, &Default::default()),
+                python_stub::generate_class_stub(&context, &class, &Default::default()),
+            ),
+        ] {
+            for text in [&source, &stub] {
+                if packaged {
+                    assert!(text.contains(&format!("IBox_String as {struct_alias}")));
+                } else {
+                    assert!(text.contains("class IBox_String:"));
+                    assert!(text.contains("class Envelope:"));
+                    assert!(!text.contains(&struct_alias), "{module}: {text}");
+                }
+            }
+            if !packaged {
+                assert!(source.contains("self.item = IBox_String() if item is None else item"));
+                assert!(stub.contains("    item: 'IBox_String'\n"));
+            }
+            write_python_module(&package, &module, source, stub);
+        }
+        write_python_module(
+            &package,
+            &context.implementation_module_for_interface(&generic),
+            python::generate_interface(&context, &generic),
+            python_stub::generate_interface_stub(&context, &generic),
+        );
+        if packaged {
+            for typ in [&structure, &envelope] {
+                write_python_module(
+                    &package,
+                    &context.implementation_module_for_type(typ),
+                    python::generate_struct(&context, typ).unwrap(),
+                    python_stub::generate_struct_stub(&context, typ).unwrap(),
+                );
+            }
+        }
+        let modules = if packaged {
+            vec![context.implementation_module_for_interface(&host)]
+        } else {
+            vec![]
+        };
+        write_python_support(&package, &modules);
+        let (class_payload, interface_payload) = if packaged {
+            let module = context.implementation_module_for_type(&structure);
+            (module.clone(), module)
+        } else {
+            ("contoso__host".into(), "contoso__i_host".into())
+        };
+        let (class_envelope, interface_envelope) = if packaged {
+            let module = context.implementation_module_for_type(&envelope);
+            (module.clone(), module)
+        } else {
+            ("contoso__host".into(), "contoso__i_host".into())
+        };
+        typecheck_py(
+            &fixture.0,
+            &format!(
+                "from typing import assert_type\n\
+                 from pyviews.contoso__host import Host\n\
+                 from pyviews.contoso__i_host import IHost\n\
+                 from pyviews.{class_envelope} import Envelope as ClassEnvelope\n\
+                 from pyviews.{interface_envelope} import Envelope as InterfaceEnvelope\n\
+                 from pyviews.{class_payload} import IBox_String as ClassPayload\n\
+                 from pyviews.{interface_payload} import IBox_String as InterfacePayload\n\
+                 assert_type(ClassEnvelope().item, ClassPayload)\n\
+                 assert_type(InterfaceEnvelope().item, InterfacePayload)\n\
+                 def check(interface: IHost) -> None:\n\
+                 \x20   assert_type(Host.echo_envelope(ClassEnvelope()), ClassEnvelope)\n\
+                 \x20   assert_type(interface.echo_envelope(InterfaceEnvelope()), InterfaceEnvelope)\n"
+            ),
+        );
+        typecheck_py_package(&fixture.0);
+        if runtime_available() {
+            success(
+                Command::new(python())
+                    .args([
+                        "-B",
+                        "-c",
+                        r#"
+import importlib, typing
+for name in ('contoso__host', 'contoso__i_host'):
+    module = importlib.import_module('pyviews.' + name)
+    envelope = module.Envelope()
+    assert type(envelope.item).__name__ == 'IBox_String'
+    assert typing.get_type_hints(module.Envelope.__init__)['item'] == type(envelope.item) | None
+    if hasattr(module, 'IBox_String'):
+        assert type(envelope.item) is module.IBox_String
+"#,
+                    ])
+                    .current_dir(&fixture.0)
+                    .output()
+                    .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+fn python_full_identity_collision_imports_named_peer_not_generic_self() {
+    for packaged in [false, true] {
+        let fixture = Fixture::new();
+        let package = fixture.0.join("pyviews");
+        fs::create_dir_all(&package).unwrap();
+        let mut peers = Vec::new();
+        let mut methods = vec![echo_type("EchoSelf", collision_box_type(), 6)];
+        for (namespace, method, iid) in [
+            (
+                "Contoso",
+                "EchoPeer",
+                "31d44731-6281-4900-b782-040302010911",
+            ),
+            (
+                "Fabrikam",
+                "EchoForeign",
+                "31d44731-6281-4900-b782-040302010913",
+            ),
+        ] {
+            let typ = TypeMeta::Interface {
+                namespace: namespace.into(),
+                name: "IBox_String".into(),
+                iid: iid.into(),
+            };
+            methods.push(echo_type(method, typ.clone(), 6 + methods.len()));
+            peers.push(InterfaceMeta {
+                namespace: namespace.into(),
+                name: "IBox_String".into(),
+                iid: iid.into(),
+                methods: vec![echo_type("EchoSelf", typ, 6)],
+                ..Default::default()
+            });
+        }
+        let generic = collision_box_interface(methods);
+        let context = python::PythonProjectionContext::new(
+            std::iter::once(generic.type_identity())
+                .chain(peers.iter().map(InterfaceMeta::type_identity)),
+            packaged,
+        )
+        .unwrap();
+        let mut implementation_modules = Vec::new();
+        for interface in std::iter::once(&generic).chain(&peers) {
+            let module = context.implementation_module_for_interface(interface);
+            let source = python::generate_interface(&context, interface);
+            let stub = python_stub::generate_interface_stub(&context, interface);
+            for text in [&source, &stub] {
+                assert!(!text.contains(&format!("from .{module} import ")));
+                if interface.generic_piid.is_some() {
+                    for peer in &peers {
+                        let peer_module = context.implementation_module_for_interface(peer);
+                        assert!(
+                            text.contains(&format!("from .{peer_module} import ")),
+                            "missing named peer import: {text}"
+                        );
+                    }
+                }
+            }
+            write_python_module(&package, &module, source, stub);
+            if packaged && interface.generic_piid.is_none() {
+                implementation_modules.push(module);
+            }
+        }
+        write_python_support(&package, &implementation_modules);
+        let generic_module = context.implementation_module_for_interface(&generic);
+        let generic_name = context.projected_name_for_interface(&generic);
+        let peer_module = context.implementation_module_for_interface(&peers[0]);
+        let peer_name = context.projected_name_for_interface(&peers[0]);
+        let foreign_module = context.implementation_module_for_interface(&peers[1]);
+        let foreign_name = context.projected_name_for_interface(&peers[1]);
+        typecheck_py(
+            &fixture.0,
+            &format!(
+                "from typing import assert_type\n\
+                 from pyviews.{generic_module} import {generic_name} as Box\n\
+                 from pyviews.{peer_module} import {peer_name} as Peer\n\
+                 from pyviews.{foreign_module} import {foreign_name} as Foreign\n\
+                 def check(box: Box, peer: Peer, foreign: Foreign) -> None:\n\
+                 \x20   assert_type(box.echo_self(box), Box | None)\n\
+                 \x20   assert_type(box.echo_peer(peer), Peer | None)\n\
+                 \x20   assert_type(box.echo_foreign(foreign), Foreign | None)\n\
+                 \x20   assert_type(peer.echo_self(peer), Peer | None)\n"
+            ),
+        );
+        typecheck_py_package(&fixture.0);
+        if runtime_available() {
+            success(Command::new(python()).args(["-B", "-c", &format!(r#"
+import ast, importlib, pathlib, typing
+module = importlib.import_module('pyviews.{generic_module}')
+for statement in ast.parse(pathlib.Path(module.__file__).read_text(encoding='utf-8')).body:
+    if isinstance(statement, ast.If) and ast.unparse(statement.test) == 'TYPE_CHECKING':
+        exec(compile(ast.Module(body=statement.body, type_ignores=[]), module.__file__, 'exec'), vars(module))
+box = module.{generic_name}
+peer = importlib.import_module('pyviews.{peer_module}').{peer_name}
+foreign = importlib.import_module('pyviews.{foreign_module}').{foreign_name}
+for method, expected in ((box.echo_self, box), (box.echo_peer, peer), (box.echo_foreign, foreign), (peer.echo_self, peer)):
+    hints = typing.get_type_hints(method)
+    assert hints['value'] is expected
+    assert hints['return'] == expected | None
+"#)]).current_dir(&fixture.0).output().unwrap());
+        }
     }
 }
 

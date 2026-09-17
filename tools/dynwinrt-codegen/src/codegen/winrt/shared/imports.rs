@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
-use crate::types::{TypeIdentity, TypeKind, TypeMeta, TypeRef};
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
 /// Empty set passed as `deferred` for codegen (no circular dep handling needed).
 pub(crate) static NO_DEFERRED: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
@@ -189,13 +189,17 @@ pub(crate) fn collect_iface_type_imports(iface: &InterfaceMeta) -> HashSet<TypeR
     collect_iface_type_imports_except(iface, &iface.name)
 }
 
-/// Python aliases distinguish same-named interfaces from different namespaces.
+/// Python imports exclude only the owning canonical interface identity.
 pub(crate) fn collect_iface_type_imports_by_identity(iface: &InterfaceMeta) -> HashSet<TypeRef> {
+    let self_identity = iface.type_identity();
     let mut imports = collect_iface_type_imports_except(iface, "");
     imports.retain(|reference| {
-        reference.kind != TypeKind::Interface
-            || reference.namespace != iface.namespace
-            || reference.name != iface.name
+        let kind = match reference.kind {
+            TypeKind::Class => TypeIdentityKind::Class,
+            TypeKind::Enum => TypeIdentityKind::Enum,
+            TypeKind::Interface => TypeIdentityKind::Interface,
+        };
+        TypeIdentity::named(kind, &reference.namespace, &reference.name) != self_identity
     });
     imports
 }
