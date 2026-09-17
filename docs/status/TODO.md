@@ -8,6 +8,13 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P1 — Correctness / quality (near-term)
 
+- [x] **WinRT collection bulk element layout**. `IVector`, live and snapshot
+      `IVectorView`, and `IIterator.GetMany` use the native element stride, not
+      the internal pointer-sized storage stride. `ReplaceAll` reads packed
+      value elements at the same native stride. Regression coverage includes
+      small integers, enums, structs, HSTRING ownership, and nullable object
+      references on x64 and i686.
+
 - [ ] **Panic-free WinRT collection entrypoints**. Several internal
   `extern "system"` implementations still assume Windows supplied valid
   pointers:
