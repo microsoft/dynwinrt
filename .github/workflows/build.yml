@@ -67,6 +67,11 @@ jobs:
         run: |
           .\eng\release\validate_release_notes.ps1
           .\eng\release\test_validate_release_notes.ps1
+      - name: Validate Python package source metadata
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python eng\release\python\verify_python_release.py source
 
   # Rust test programs are independent builds, not reusable runtime packages.
   test-rust:

@@ -13,7 +13,7 @@ import unittest
 
 import yaml
 
-from classify_changes import DOCUMENTATION, classify, documentation_diff
+from classify_changes import classify, documentation_diff
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,31 +35,44 @@ def powershell(script, *arguments, env=None):
 
 
 class ClassificationTests(unittest.TestCase):
-    def test_conservative_document_allowlist(self):
-        for path in DOCUMENTATION:
-            with self.subTest(path=path):
-                self.assertTrue(documentation_diff(f"M\0{path}\0".encode()))
+    def test_markdown_paths_default_to_lightweight(self):
+        for path in (
+            "README.md", "new/directory/new.md", "docs/guides/new-guide.md",
+            "samples/new/README.md", "bindings/js/README.md", "bindings/py/README.md",
+            "tools/dynwinrt-codegen/npm/README.md", "tools/dynwinrt-codegen/python/README.md",
+            "eng/release/RELEASE_NOTES.md", "docs/status/TODO.md",
+            "docs/status/generated/classic-com-named-types.md", "docs/status/future-report.md",
+            "docs/UPPER.MD", "docs/Mixed.mD", "docs/with spaces.md", "docs/with\nnewline.md",
+        ):
+            for status in ("A", "M", "D"):
+                with self.subTest(path=path, status=status):
+                    self.assertTrue(documentation_diff(f"{status}\0{path}\0".encode()))
+        self.assertTrue(documentation_diff(b"M\0README.md\0A\0future/new.md\0"))
+
+    def test_non_markdown_and_mixed_changes_need_full_validation(self):
         for path in (
             "docs/status/generated/classic-com-capability-summary.json",
             "docs/status/generated/classic-com-interface-support.csv",
-            "docs/status/generated/classic-com-named-types.md",
-            "docs/status/TODO.md", "docs/unknown.md",
             "contracts/schema/contract.schema.json", "tests/e2e/e2e_specs.schema.json",
             "eng/ci/classify_changes.py", ".github/workflows/build.yml",
-            "bindings/js/README.md", "bindings/py/README.md",
-            "tools/dynwinrt-codegen/npm/README.md", "tools/dynwinrt-codegen/python/README.md",
             "samples/js/ocr/main.ts", "samples/js/ocr/package.json", "crates/dynwinrt/src/lib.rs",
+            "future/unknown.data", "docs/guide.markdown", "docs/guide.mdx", "README.md.bak",
+            "notesmd", "",
         ):
             with self.subTest(path=path):
+                self.assertFalse(documentation_diff(f"A\0{path}\0".encode()))
                 self.assertFalse(documentation_diff(f"M\0README.md\0M\0{path}\0".encode()))
 
     def test_deletions_renames_unknown_status_and_empty_diff(self):
         self.assertTrue(documentation_diff(b"D\0README.md\0"))
         self.assertTrue(documentation_diff(b"R100\0README.md\0samples/js/README.md\0"))
+        self.assertTrue(documentation_diff(b"R075\0old/guide.MD\0new/guide.md\0"))
         self.assertFalse(documentation_diff(b"R100\0src/main.rs\0README.md\0"))
         self.assertFalse(documentation_diff(b"R100\0README.md\0src/main.rs\0"))
         self.assertFalse(documentation_diff(b"D\0src/main.rs\0A\0README.md\0"))
-        self.assertFalse(documentation_diff(b"T\0README.md\0"))
+        for status in ("T", "U", "X", "C100", "R", "R101", "R1000", "R-1"):
+            with self.subTest(status=status):
+                self.assertFalse(documentation_diff(f"{status}\0README.md\0new.md\0".encode()))
         self.assertFalse(documentation_diff(b""))
         for malformed in (b"M\0README.md", b"R100\0README.md\0", b"M\0"):
             with self.subTest(diff=malformed), self.assertRaises(ValueError):
@@ -89,6 +102,14 @@ class ClassificationTests(unittest.TestCase):
             # The latest commit alone is docs-only, but the full PR above is not.
             event["pull_request"]["base"]["sha"] = git("rev-parse", "HEAD~1")
             self.assertTrue(classify("pull_request", event, repo))
+            (repo / "new").mkdir()
+            (repo / "new" / "guide.MD").write_text("new Markdown\n")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "new Markdown directory")
+            event["pull_request"]["head"]["sha"] = git("rev-parse", "HEAD")
+            self.assertTrue(classify("pull_request", event, repo))
+            event["pull_request"]["base"]["sha"] = base
+            self.assertFalse(classify("pull_request", event, repo))
             self.assertFalse(classify("push", event, repo))
             self.assertFalse(classify("workflow_dispatch", event, repo))
             event["pull_request"]["head"]["sha"] = "f" * 40
@@ -97,6 +118,77 @@ class ClassificationTests(unittest.TestCase):
             event["pull_request"]["head"]["sha"] = "--help"
             with self.assertRaises(ValueError):
                 classify("pull_request", event, repo)
+
+
+class PackageSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="dynwinrt-ci-source-")
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        for relative in (
+            "bindings/py/Cargo.toml", "bindings/py/pyproject.toml", "bindings/py/README.md",
+            "tools/dynwinrt-codegen/Cargo.toml", "tools/dynwinrt-codegen/pyproject.toml",
+            "tools/dynwinrt-codegen/python/README.md",
+            "tools/dynwinrt-codegen/src/codegen/package.rs",
+            "eng/release/python/verify_python_release.py",
+        ):
+            target = self.repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, target)
+        steps = [
+            step for step in JOBS["format"]["steps"]
+            if step.get("name") == "Validate Python package source metadata"
+        ]
+        self.assertEqual(len(steps), 1)
+        self.assertNotIn("if", JOBS["format"])
+        self.assertNotIn("if", steps[0])
+        self.assertEqual(steps[0]["shell"], "pwsh")
+        script = self.repo / "step.ps1"
+        script.write_text(
+            "$ErrorActionPreference = 'Stop'\n"
+            + steps[0]["run"]
+            + "\nif (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }\n",
+            encoding="utf-8",
+        )
+        quoted_script = str(script).replace("'", "''")
+        self.command = f". '{quoted_script}'"
+
+    def run_step(self):
+        return subprocess.run(
+            ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", self.command],
+            cwd=self.repo, text=True, encoding="utf-8", capture_output=True,
+        )
+
+    def test_source_step_succeeds_in_github_wrapper(self):
+        result = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("source metadata OK:", result.stdout)
+
+    def test_metadata_failure_reaches_github_wrapper(self):
+        manifest = self.repo / "bindings" / "py" / "Cargo.toml"
+        original = manifest.read_text(encoding="utf-8")
+        version = next(line for line in original.splitlines() if line.startswith("version = "))
+        manifest.write_text(original.replace(version, 'version = "999.0.0"', 1), encoding="utf-8")
+        result = self.run_step()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Runtime and codegen Cargo versions must match", result.stdout + result.stderr)
+
+    def test_missing_empty_and_invalid_readmes_fail_in_github_wrapper(self):
+        for relative in ("bindings/py/README.md", "tools/dynwinrt-codegen/python/README.md"):
+            readme = self.repo / relative
+            original = readme.read_bytes()
+            for contents in (None, "", "# Unrelated package\n"):
+                with self.subTest(readme=relative, contents=contents):
+                    try:
+                        if contents is None:
+                            readme.unlink()
+                        else:
+                            readme.write_text(contents, encoding="utf-8")
+                        result = self.run_step()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("Package README", result.stdout + result.stderr)
+                    finally:
+                        readme.write_bytes(original)
 
 
 class WorkflowTests(unittest.TestCase):

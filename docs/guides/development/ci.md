@@ -44,23 +44,41 @@ packaging configurations are not shared with production.
 
 ## Documentation-only pull requests
 
-Only pull requests proven to change explanatory documents in the exact allowlist
-in `eng/ci/classify_changes.py` take the lightweight path. The list includes the
-root README, reviewed usage/architecture guides, and existing sample READMEs.
-It does not include packaged READMEs, `docs/status`, generated reports, schemas,
-tests, scripts, workflows, sample code/configuration, or unknown paths.
+Pull requests that change only `.md` files take the lightweight path. The suffix
+match is case-insensitive (`.MD` and `.mD` qualify), but does not include
+`.markdown`, `.mdx`, or other file types. New Markdown files in any directory
+qualify without editing a path list, including guides, sample and packaged
+READMEs, release notes, and `docs/status` Markdown reports.
+
+There are currently no Markdown exclusions: the repository's Markdown is not
+used as generator or native-test behavior input. Package READMEs and release
+notes affect published descriptions, not native APIs, so they receive source
+metadata and release-note checks rather than native rebuilds. A future
+behavior-input exception must identify its exact file and actual consumer;
+ordinary documentation must not acquire a directory-wide exclusion.
 
 Classification compares the PR merge base to its head using complete Git
 history, not just the latest commit. Both old and new rename paths must qualify;
-allowlisted deletions are documentation changes too. An empty diff uses full
-validation. Invalid or unavailable history fails classification rather than
-guessing that the change is documentation-only.
+renaming code to Markdown or Markdown to code requires full validation.
+Markdown additions, modifications and deletions qualify. Any non-Markdown
+change, including JSON/CSV baselines, schemas, scripts, workflow files, sample
+code/configuration, and unknown non-Markdown paths, requires full validation.
+An empty diff uses full validation. Invalid statuses never select the
+lightweight path; malformed or unavailable history fails classification
+rather than guessing that the change is documentation-only.
 
 The lightweight path runs the scheduling, artifact, prebuilt-selection and
-release-note configuration regressions without compiling native code. Stable
-check names still run and validate the explicitly expected heavy-job skips;
-no package artifact is created. Pushes to `main` and version tags always use
-full validation. The workflow is not hidden behind a top-level path filter.
+release-note configuration regressions, plus Python package source metadata
+validation, without compiling native code. The metadata check validates README
+declarations, presence and the same description headings checked in wheels;
+it does not build wheels. Stable check names still run and validate the
+explicitly expected heavy-job skips; no package artifact is created. Pushes
+to `main` and version tags always use full validation. The workflow is not
+hidden behind a top-level path filter.
+
+This policy selects jobs in `Build` only. The independent Coverage and Python
+release workflows retain their own path filters and can still run for matching
+Markdown paths.
 
 ## Using a prebuilt generator locally
 
@@ -98,6 +116,7 @@ node --test bindings\js\scripts\run-codegen.test.mjs
 .\tests\e2e\prebuilt_codegen.tests.ps1
 .\eng\release\validate_release_notes.ps1
 .\eng\release\test_validate_release_notes.ps1
+python eng\release\python\verify_python_release.py source
 ```
 
 Parallelism removes the old Rust-test barrier and duplicate release builds;

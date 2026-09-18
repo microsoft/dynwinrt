@@ -1,59 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Conservative, PR-only scheduling of explanatory documentation changes."""
+"""PR-only lightweight scheduling for Markdown changes."""
 
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
-
-
-# Exact paths, not docs/** or *.md: packaged READMEs, generated capability
-# reports, schemas, test data, and new/unknown documents still need full CI.
-DOCUMENTATION = frozenset(
-    """
-README.md
-docs/architecture/classic-com-contract-evidence-registry.md
-docs/architecture/classic-com-generated-unsafe.md
-docs/architecture/classic-com-raw-unsafe.md
-docs/architecture/classic-com-support.md
-docs/architecture/flat-win32-contracts.md
-docs/architecture/javascript-binding-internals.md
-docs/architecture/winrt-interface-implementations.md
-docs/guides/development/ci.md
-docs/guides/node/dev-mode.md
-docs/guides/python/python-ui-ecosystem.md
-docs/guides/windows/classic-com-usage.md
-docs/guides/windows/msix-packaging.md
-docs/guides/windows/winrt-interface-implementations.md
-samples/js/README.md
-samples/js/electron-aion-chat/README.md
-samples/js/electron-share-ui/README.md
-samples/js/electron-smtc/README.md
-samples/js/interface-implementation/README.md
-samples/js/low-level/README.md
-samples/js/ocr/README.md
-samples/js/win32/README.md
-samples/js/windows-hello/README.md
-samples/js/winui-tic-tac-toe-code-only/README.md
-samples/js/winui-tic-tac-toe/README.md
-samples/python/README.md
-samples/python/app-lifecycle-single-instance/README.md
-samples/python/app-notification/README.md
-samples/python/async-file-io/README.md
-samples/python/cryptography/README.md
-samples/python/custom-winmd-codegen/README.md
-samples/python/device-watcher/README.md
-samples/python/interface-implementation/README.md
-samples/python/ocr-image/README.md
-samples/python/text-to-speech/README.md
-samples/python/winui-hello-world/README.md
-samples/python/winui-tic-tac-toe-code-only/README.md
-samples/python/winui-tic-tac-toe/README.md
-""".split()
-)
 
 
 def documentation_diff(diff: bytes) -> bool:
@@ -65,13 +19,14 @@ def documentation_diff(diff: bytes) -> bool:
     index = 0
     while index < len(fields):
         status = fields[index]
-        count = 2 if re.fullmatch(r"R\d+", status) else 1
+        rename = re.fullmatch(r"R[0-9]{1,3}", status) is not None and int(status[1:]) <= 100
+        count = 2 if rename else 1
         paths = fields[index + 1 : index + 1 + count]
         if len(paths) != count:
             raise ValueError("Incomplete Git name-status record")
-        if status not in {"A", "M", "D"} and count != 2:
+        if status not in {"A", "M", "D"} and not rename:
             return False
-        if any(path not in DOCUMENTATION for path in paths):
+        if any(not path.lower().endswith(".md") for path in paths):
             return False
         index += 1 + count
     return True

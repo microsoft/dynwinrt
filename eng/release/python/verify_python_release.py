@@ -70,6 +70,16 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
     )
     assert runtime_project["readme"] == README_SPECS["dynwinrt"]
     assert codegen_project["readme"] == README_SPECS["dynwinrt-codegen"]
+    for package, directory in (
+        ("dynwinrt", ROOT / "bindings" / "py"),
+        ("dynwinrt-codegen", ROOT / "tools" / "dynwinrt-codegen"),
+    ):
+        readme = directory / README_SPECS[package]["file"]
+        assert readme.is_file(), f"Package README is missing: {readme}"
+        expected_heading = README_HEADINGS[package]
+        assert readme.read_text(encoding="utf-8").strip().startswith(expected_heading), (
+            f"Package README {readme} must start with {expected_heading!r}"
+        )
 
     generated_manifest = (
         ROOT / "tools" / "dynwinrt-codegen" / "src" / "codegen" / "package.rs"
