@@ -32,7 +32,7 @@ and asyncio-compatible operations. Both support async progress and cancellation.
 | --- | --- | --- |
 | **WinRT (preview)** | JS/TS, Python | Typed bindings for Windows SDK, Windows App SDK, and custom WinRT APIs. |
 | **Classic COM (experimental)** | JS/TS | A validated subset of interfaces from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/com`. |
-| **Win32 DLL exports (experimental)** | JS/TS | Partial support for DLL exports from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/win32`. |
+| **Flat Win32 APIs (experimental)** | JS/TS | Partial support for native functions and associated types from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/win32`. |
 
 WinUI 3 application and window hosting is **experimental** and requires
 application-managed UI threads and lifecycle.
@@ -145,7 +145,7 @@ releases generated wrappers before the apartment closes.
 | Local AI inference | [Aion Instruct chat in Electron](samples/js/electron-aion-chat/README.md) |
 | WinRT and Classic COM interop | [Windows Hello in Electron](samples/js/windows-hello/README.md) |
 | Async file operations | [Python file I/O](samples/python/async-file-io/README.md) |
-| Win32 DLL exports (experimental) | [System information, Registry, and async file I/O](samples/js/win32/README.md) |
+| Flat Win32 APIs (experimental) | [System information, Registry, and async file I/O](samples/js/win32/README.md) |
 
 Each sample documents its Windows version, SDK, package identity, and hardware
 requirements. Browse all [JavaScript/Electron samples](samples/js/README.md) or
@@ -167,7 +167,7 @@ for notifications, file pickers, Phi Silica, and WinML provider integration.
 | Use the runtime and manage object lifetimes | [JavaScript](bindings/js/README.md), [Python](bindings/py/README.md) |
 | Implement WinRT interfaces in JavaScript or Python | [Interface implementations](docs/guides/windows/winrt-interface-implementations.md) |
 | Use Classic COM APIs | [Usage guide](docs/guides/windows/classic-com-usage.md) |
-| Use Win32 functions | [Capabilities and contract boundaries](docs/architecture/flat-win32-contracts.md) |
+| Use flat Win32 APIs | [Capabilities and contract boundaries](docs/architecture/flat-win32-contracts.md) |
 | Configure package identity and deployment | [Node.js development](docs/guides/node/dev-mode.md), [MSIX packaging](docs/guides/windows/msix-packaging.md) |
 
 ## Development
