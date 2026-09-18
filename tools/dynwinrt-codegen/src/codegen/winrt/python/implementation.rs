@@ -743,16 +743,13 @@ fn project_validated(
             projector.prefix
         ));
         if let Some(kind) = foundation_type(&typ.metadata) {
-            let TypeMeta::Struct { name, .. } = &typ.metadata else {
-                unreachable!()
-            };
             let annotation = match kind {
                 FoundationType::DateTime => "datetime",
                 FoundationType::TimeSpan => "timedelta",
             };
             support.push_str(&format!(
-                "    _implementation_check(value, isinstance(value, {annotation}), label)\n    return _pack_{}(value).to_value()\n\n",
-                to_snake_case(name)
+                "    _implementation_check(value, isinstance(value, {annotation}), label)\n    return {}(value).to_value()\n\n",
+                context.struct_symbol(&typ.metadata, super::naming::PythonSymbol::PrivatePack)
             ));
             continue;
         }
@@ -782,6 +779,7 @@ fn project_validated(
                     projector.write(typ, &value, &field_name, None)
                 ),
                 _ => super::structs::py_struct_field_setter(
+                    context,
                     &typ.metadata,
                     index,
                     &projector.check_scalar(typ, &value, &field_name),

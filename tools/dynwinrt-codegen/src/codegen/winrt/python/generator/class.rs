@@ -34,7 +34,8 @@ pub fn generate_class(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
-    let context = context.with_local_types(None, &used_structs);
+    let identity = TypeIdentity::named(TypeIdentityKind::Class, &class.namespace, &class.name);
+    let context = context.with_local_types(Some(identity), &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
@@ -190,7 +191,8 @@ pub fn generate_class(
     }
 
     // Type imports
-    let imports = collect_type_imports(class);
+    let imports =
+        crate::codegen::winrt::shared::imports::collect_class_type_imports_by_identity(class);
     let mut sorted_imports: Vec<_> = imports.iter().collect();
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
@@ -332,9 +334,12 @@ pub fn generate_class(
 
     // Class declaration
     if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
-        out.push_str(&format!("\nclass {}({mixin}):\n", class.name));
+        out.push_str(&format!(
+            "\nclass {}({mixin}):\n",
+            context.class_name(class)
+        ));
     } else {
-        out.push_str(&format!("\nclass {}:\n", class.name));
+        out.push_str(&format!("\nclass {}:\n", context.class_name(class)));
     }
     {
         let doc = crate::codegen::winrt::shared::docs::DocText {
@@ -414,10 +419,14 @@ pub fn generate_class(
         });
         let ctor_name = default_constructor_name(has_create_factory);
         out.push_str("    @staticmethod\n");
-        out.push_str(&format!("    def {}() -> '{}':\n", ctor_name, class.name));
+        out.push_str(&format!(
+            "    def {}() -> '{}':\n",
+            ctor_name,
+            context.class_name(class)
+        ));
         out.push_str(&format!(
             "        return {}._from_native(_IActivationFactory.method(6).invoke(DynWinRTValue.activation_factory('{}'), []))\n",
-            class.name, class.full_name
+            context.class_name(class), class.full_name
         ));
         out.push('\n');
     }
@@ -501,14 +510,17 @@ pub fn generate_class(
         if create_instance_no_args {
             out.push('\n');
             out.push_str("    @staticmethod\n");
-            out.push_str(&format!("    def create() -> '{}':\n", class.name));
+            out.push_str(&format!(
+                "    def create() -> '{}':\n",
+                context.class_name(class)
+            ));
             out.push_str(&format!(
                 "        \"\"\"Create a new `{}` instance. Alias for `create_instance()`.\"\"\"\n",
-                class.name
+                context.class_name(class)
             ));
             out.push_str(&format!(
                 "        return {}.create_instance()\n",
-                class.name
+                context.class_name(class)
             ));
         }
     }
@@ -542,7 +554,7 @@ pub fn generate_class(
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
             "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = None) -> '{}':\n",
-            class.name,
+            context.class_name(class),
         ));
         out.push_str(
             "        \"\"\"Compose a WinUI `Application` that exposes the supplied XAML metadata provider.\n\
@@ -558,14 +570,14 @@ pub fn generate_class(
         ));
         out.push_str(&format!(
             "        return {}._from_native(DynWinRTValue.create_xaml_application(getattr(metadata_provider, '_obj', metadata_provider), _launched))\n",
-            class.name
+            context.class_name(class)
         ));
 
         out.push('\n');
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
             "    def create(on_launched: Callable[[], object] | None = None) -> '{}':\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(
             "        \"\"\"Compose a WinUI `Application`, install WinUI's default Fluent resources,\n\
@@ -578,7 +590,7 @@ pub fn generate_class(
         out.push_str("        def _on_launched_wrapped(_args):\n");
         out.push_str(&format!(
             "            _app = {}.get_current()\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str("            if _app is None:\n");
         out.push_str(
@@ -597,7 +609,7 @@ pub fn generate_class(
         ));
         out.push_str(&format!(
             "        _app = {}._from_native(DynWinRTValue.create_xaml_application(getattr(_provider, '_obj', _provider), _launched))\n",
-            class.name
+            context.class_name(class)
         ));
         if bootstrap.supports_unpackaged_resources {
             out.push_str(
@@ -1121,7 +1133,7 @@ fn build_ctor_candidates<'a>(
                     let composed_call_expr = format!(
                         "_{factory}.method({vtable}).invoke_composed_with_overrides({class}._get_f_{factory}(), [{wrapped_args}], {outer_index}, {inner_output_index}, {instance_output_index}, {agile}, _override_interfaces)",
                         factory = interface_symbol(context, factory),
-                        class = class.name,
+                        class = context.class_name(class),
                         vtable = method.vtable_index,
                         agile = if class.is_agile { "True" } else { "False" },
                     );
@@ -1338,7 +1350,10 @@ fn generate_python_constructor(
         );
     }
     if !candidates.is_empty() {
-        out.push_str(&format!("        if cls is {}:\n", class.name));
+        out.push_str(&format!(
+            "        if cls is {}:\n",
+            context.class_name(class)
+        ));
         for candidate in &candidates {
             let parameter_names = candidate
                 .public_params
@@ -1383,10 +1398,13 @@ fn generate_python_constructor(
         out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
     }
     if let Some(native_override_names) = &native_override_names {
-        out.push_str(&format!("        if type(self) is not {}:\n", class.name));
+        out.push_str(&format!(
+            "        if type(self) is not {}:\n",
+            context.class_name(class)
+        ));
         out.push_str(&format!(
             "            _native_members = set().union(*(set(_type.__dict__) for _type in type(self).__mro__ if _type is not {}))\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(&format!(
             "            _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
@@ -1394,7 +1412,7 @@ fn generate_python_constructor(
         out.push_str("            if _native_overrides:\n");
         out.push_str(&format!(
             "                if _allow_native_overrides:\n                    pass\n                else:\n                    raise TypeError(\"{} native overrides require public composable construction: \" + \", \".join(_native_overrides))\n",
-            class.name
+            context.class_name(class)
         ));
     }
     if let Some(default_iface) = &class.default_interface {
@@ -1441,19 +1459,19 @@ fn generate_python_constructor(
         );
         out.push_str(&format!(
             "        \"\"\"Register a Python `{}` subclass for process-local XAML markup activation.\"\"\"\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(&format!(
             "        if not isinstance(control_type, type) or control_type is {} or not issubclass(control_type, {}):\n",
-            class.name, class.name
+            context.class_name(class), context.class_name(class)
         ));
         out.push_str(&format!(
             "            raise TypeError(\"control_type must be a Python subclass of {}\")\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(&format!(
             "        _native_members = set().union(*(set(_type.__dict__) for _type in control_type.__mro__ if _type is not {}))\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(&format!(
             "        _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
@@ -1464,7 +1482,7 @@ fn generate_python_constructor(
         out.push_str("        if _unsupported_native_overrides:\n");
         out.push_str(&format!(
             "            raise TypeError(\"{} native override ABI is unsupported: \" + \", \".join(_unsupported_native_overrides))\n",
-            class.name
+            context.class_name(class)
         ));
         let default_iid = class
             .default_interface
@@ -1495,12 +1513,12 @@ fn generate_python_constructor(
             .expect("public composition override names");
         out.push_str(&format!(
             "        _is_python_subclass = type(self) is not {}\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str("        if _is_python_subclass:\n");
         out.push_str(&format!(
             "            _native_members = set().union(*(set(_type.__dict__) for _type in type(self).__mro__ if _type is not {}))\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(&format!(
             "            _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
@@ -1511,7 +1529,7 @@ fn generate_python_constructor(
         out.push_str("            if _unsupported_native_overrides:\n");
         out.push_str(&format!(
             "                raise TypeError(\"{} native override ABI is unsupported: \" + \", \".join(_unsupported_native_overrides))\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str("            _override_interfaces = []\n");
         out.push_str("            _override_target_ref = _weakref_ref(self)\n");
@@ -1590,7 +1608,7 @@ fn generate_python_constructor(
             out.push_str("            if _is_python_subclass:\n");
             out.push_str(&format!(
                 "                raise TypeError(\"{} does not support Python subclass construction for this constructor\")\n",
-                class.name
+                context.class_name(class)
             ));
         }
         out.push_str(&format!(
@@ -1602,12 +1620,12 @@ fn generate_python_constructor(
     if candidates.is_empty() {
         out.push_str(&format!(
             "        raise TypeError(\"{} cannot be constructed directly\")\n\n",
-            class.name
+            context.class_name(class)
         ));
     } else {
         out.push_str(&format!(
             "        raise TypeError(\"No matching constructor for {}\")\n\n",
-            class.name
+            context.class_name(class)
         ));
     }
     out

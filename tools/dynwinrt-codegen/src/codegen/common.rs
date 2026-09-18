@@ -597,30 +597,32 @@ mod tests {
 
     #[test]
     fn py_wrap_arg_types() {
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_wrap_arg("s", &TypeMeta::String),
+            py_wrap_arg("s", &TypeMeta::String, &context),
             "DynWinRTValue.from_hstring(s)"
         );
         assert_eq!(
-            py_wrap_arg("b", &TypeMeta::Bool),
+            py_wrap_arg("b", &TypeMeta::Bool, &context),
             "DynWinRTValue.from_bool(b)"
         );
         assert_eq!(
-            py_wrap_arg("n", &TypeMeta::I32),
+            py_wrap_arg("n", &TypeMeta::I32, &context),
             "DynWinRTValue.from_i32(n)"
         );
         assert_eq!(
-            py_wrap_arg("n", &TypeMeta::I64),
+            py_wrap_arg("n", &TypeMeta::I64, &context),
             "DynWinRTValue.from_i64(n)"
         );
         assert_eq!(
-            py_wrap_arg("f", &TypeMeta::F64),
+            py_wrap_arg("f", &TypeMeta::F64, &context),
             "DynWinRTValue.from_f64(f)"
         );
     }
 
     #[test]
     fn wraps_python_ireference_inputs() {
+        let context = PythonProjectionContext::default();
         let reference = |inner| TypeMeta::Parameterized {
             namespace: "Windows.Foundation".into(),
             name: "IReference".into(),
@@ -629,7 +631,7 @@ mod tests {
         };
 
         assert!(
-            py_wrap_arg("value", &reference(TypeMeta::String))
+            py_wrap_arg("value", &reference(TypeMeta::String), &context)
                 .contains("lambda value: DynWinRTValue.from_hstring(value)")
         );
         assert!(
@@ -639,7 +641,8 @@ mod tests {
                     namespace: "Windows.Foundation".into(),
                     name: "Point".into(),
                     fields: vec![],
-                })
+                }),
+                &context
             )
             .contains("lambda value: _pack_point(value).to_value()")
         );
@@ -654,7 +657,8 @@ mod tests {
                     is_flags: false,
                     doc: None,
                     deprecated: None,
-                })
+                }),
+                &context
             )
             .contains("lambda value: DynWinRTValue.enum_value(")
         );
@@ -792,16 +796,17 @@ mod tests {
 
     #[test]
     fn py_struct_field_setter_expressions() {
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_struct_field_setter(&TypeMeta::Bool, 0, "v"),
+            py_struct_field_setter(&context, &TypeMeta::Bool, 0, "v"),
             "s.set_u8(0, 1 if v else 0)"
         );
         assert_eq!(
-            py_struct_field_setter(&TypeMeta::I32, 1, "x"),
+            py_struct_field_setter(&context, &TypeMeta::I32, 1, "x"),
             "s.set_i32(1, x)"
         );
         assert_eq!(
-            py_struct_field_setter(&TypeMeta::String, 2, "s_"),
+            py_struct_field_setter(&context, &TypeMeta::String, 2, "s_"),
             "s.set_hstring(2, s_)"
         );
     }

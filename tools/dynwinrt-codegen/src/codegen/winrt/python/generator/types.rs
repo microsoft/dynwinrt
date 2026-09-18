@@ -13,24 +13,18 @@ use crate::codegen::winrt::python::collections::{
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
-pub fn generate_enum(_context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
-    let (name, members, is_flags, enum_doc, enum_dep) = match en {
+pub fn generate_enum(context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
+    let (members, is_flags, enum_doc, enum_dep) = match en {
         TypeMeta::Enum {
-            name,
             members,
             is_flags,
             doc,
             deprecated,
             ..
-        } => (
-            name,
-            members,
-            *is_flags,
-            doc.as_deref(),
-            deprecated.as_deref(),
-        ),
+        } => (members, *is_flags, doc.as_deref(), deprecated.as_deref()),
         _ => return None,
     };
+    let name = context.projected_name_for_type(en);
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -79,7 +73,7 @@ pub fn generate_enum(_context: &PythonProjectionContext, en: &TypeMeta) -> Optio
 pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
     let used_structs = collect_used_structs_from_iface(iface);
     let type_imports = collect_iface_type_imports_by_identity(iface);
-    let context = context.with_local_types(Some(iface), &used_structs);
+    let context = context.with_local_types(Some(iface.type_identity()), &used_structs);
     let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
@@ -365,7 +359,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                 &iface.generic_args[0],
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
+            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             let vector_identity = observable_vector
                 .as_ref()
                 .expect("observable vector companion");
@@ -390,7 +384,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                 &iface.generic_args[0],
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
+            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Iterable[{}]) -> '{}':\n",
@@ -412,8 +406,8 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                 &iface.generic_args[1],
                 context,
             );
-            let wrap_key = py_wrap_native_value("item", &iface.generic_args[0]);
-            let wrap_value = py_wrap_native_value("item", &iface.generic_args[1]);
+            let wrap_key = py_wrap_native_value("item", &iface.generic_args[0], context);
+            let wrap_value = py_wrap_native_value("item", &iface.generic_args[1], context);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Mapping[{}, {}]) -> '{}':\n",
@@ -440,26 +434,40 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
 
     if is_element_factory {
+        let class_name = |name| {
+            context.projected_name(&TypeIdentity::named(
+                TypeIdentityKind::Class,
+                "Microsoft.UI.Xaml",
+                name,
+            ))
+        };
         let get_args = py_runtime_named_symbol(
             context,
             TypeIdentityKind::Class,
             "Microsoft.UI.Xaml",
             "ElementFactoryGetArgs",
-            "ElementFactoryGetArgs",
+            &class_name("ElementFactoryGetArgs"),
         );
         let recycle_args = py_runtime_named_symbol(
             context,
             TypeIdentityKind::Class,
             "Microsoft.UI.Xaml",
             "ElementFactoryRecycleArgs",
-            "ElementFactoryRecycleArgs",
+            &class_name("ElementFactoryRecycleArgs"),
         );
         let ui_element_iid = py_runtime_named_symbol(
             context,
             TypeIdentityKind::Class,
             "Microsoft.UI.Xaml",
             "UIElement",
-            "IID_IUIElement",
+            &format!(
+                "IID_{}",
+                context.reference_name(&TypeIdentity::named(
+                    TypeIdentityKind::Interface,
+                    "Microsoft.UI.Xaml",
+                    "IUIElement",
+                ))
+            ),
         );
         out.push_str(
             r#"    @staticmethod

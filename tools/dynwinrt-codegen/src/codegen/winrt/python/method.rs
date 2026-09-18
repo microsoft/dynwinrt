@@ -132,7 +132,7 @@ pub(crate) fn py_wrap_method_arg(
             py_runtime_symbol(context, &delegate, &format!("{projected_name}_PARAM_TYPES"))
         );
     }
-    py_wrap_arg(name, typ)
+    py_wrap_arg(name, typ, context)
 }
 
 fn py_build_method_args_expr(
@@ -281,7 +281,7 @@ fn generate_factory_method_invoke_named(
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, context);
 
-    let return_py_type = py_factory_return_type(&class.name, method, context);
+    let return_py_type = py_factory_return_type(&context.class_name(class), method, context);
 
     let mut out = String::new();
     let method_name = name_override
@@ -307,7 +307,7 @@ fn generate_factory_method_invoke_named(
     let call_expr = method_call_expr(
         &format!("_{iface_symbol}"),
         method,
-        &format!("{}._get_f_{iface_symbol}()", class.name),
+        &format!("{}._get_f_{iface_symbol}()", context.class_name(class)),
         &args_expr,
     );
     let result_expr = if py_method_abi_output_count(method) > 1 {
@@ -320,13 +320,20 @@ fn generate_factory_method_invoke_named(
         if let Some(async_type) = method.return_type.as_ref().filter(|typ| typ.is_async()) {
             let result_converter = match async_type {
                 TypeMeta::AsyncOperation(_) | TypeMeta::AsyncOperationWithProgress(_, _) => {
-                    Some(format!("lambda value: {}._from_native(value)", class.name))
+                    Some(format!(
+                        "lambda value: {}._from_native(value)",
+                        context.class_name(class)
+                    ))
                 }
                 _ => None,
             };
             py_wrap_async(&result_expr, async_type, result_converter, context)
         } else {
-            format!("{}._from_native({})", class.name, result_expr)
+            format!(
+                "{}._from_native({})",
+                context.class_name(class),
+                result_expr
+            )
         };
     out.push_str(&format!("        return {}\n", result_expr));
     out
@@ -358,7 +365,7 @@ fn generate_static_method_invoke_named(
 
     let statics_call = format!(
         "{cls}._get_s_{iface}()",
-        cls = class.name,
+        cls = context.class_name(class),
         iface = iface_symbol
     );
 
@@ -622,7 +629,7 @@ pub(crate) fn generate_static_method_group(
         };
         out.push_str(&format!(
             "        if {condition}:\n            return {}.{private_name}(*_bound)\n",
-            overload.class.name
+            context.class_name(overload.class)
         ));
     }
     out.push_str(&format!(

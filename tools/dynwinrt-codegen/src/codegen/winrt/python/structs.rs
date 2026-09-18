@@ -5,7 +5,7 @@
 
 use crate::types::TypeMeta;
 
-use super::naming::{PythonProjectionContext, to_snake_case};
+use super::naming::{PythonProjectionContext, PythonSymbol};
 use super::native_types::{FoundationType, foundation_type};
 use super::signature::{py_runtime_symbol, py_wrap_arg};
 use super::type_helpers::py_optional_type;
@@ -45,18 +45,16 @@ pub(crate) fn py_struct_field_getter(
         TypeMeta::F64 => format!("s.get_f64({})", index),
         TypeMeta::String => format!("s.get_hstring({})", index),
         TypeMeta::Guid => format!("_dynwinrt_uuid(s.get_guid({}))", index),
-        TypeMeta::Enum {
-            name, underlying, ..
-        } => format!(
+        TypeMeta::Enum { underlying, .. } => format!(
             "_dynwinrt_enum('{}', '{}', {})",
             context.implementation_module_for_type(typ),
-            name,
+            context.projected_name_for_type(typ),
             py_struct_field_getter(context, underlying, index)
         ),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("s.get_i32({})", index),
-        TypeMeta::Struct { name, .. } => format!(
-            "_unpack_{}(s.get_struct({}).to_value())",
-            to_snake_case(name),
+        TypeMeta::Struct { .. } => format!(
+            "{}(s.get_struct({}).to_value())",
+            context.struct_symbol(typ, PythonSymbol::PrivateUnpack),
             index
         ),
         _ => format!("s.get_object({})", index),
@@ -64,9 +62,18 @@ pub(crate) fn py_struct_field_getter(
 }
 
 /// Python struct field setter expression.
-pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &str) -> String {
+pub(crate) fn py_struct_field_setter(
+    context: &PythonProjectionContext,
+    typ: &TypeMeta,
+    index: usize,
+    value_expr: &str,
+) -> String {
     if ireference_inner_type(typ).is_some() {
-        return format!("s.set_object({}, {})", index, py_wrap_arg(value_expr, typ));
+        return format!(
+            "s.set_object({}, {})",
+            index,
+            py_wrap_arg(value_expr, typ, context)
+        );
     }
 
     match typ {
@@ -85,15 +92,15 @@ pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &
         TypeMeta::String => format!("s.set_hstring({}, {})", index, value_expr),
         TypeMeta::Guid => format!("s.set_guid({}, _dynwinrt_guid({}))", index, value_expr),
         TypeMeta::Enum { underlying, .. } => {
-            py_struct_field_setter(underlying, index, &format!("int({value_expr})"))
+            py_struct_field_setter(context, underlying, index, &format!("int({value_expr})"))
         }
         TypeMeta::Struct { name, .. } if name == "HResult" => {
             format!("s.set_i32({}, {})", index, value_expr)
         }
-        TypeMeta::Struct { name, .. } => format!(
-            "s.set_struct({}, _pack_{}({}))",
+        TypeMeta::Struct { .. } => format!(
+            "s.set_struct({}, {}({}))",
             index,
-            to_snake_case(name),
+            context.struct_symbol(typ, PythonSymbol::PrivatePack),
             value_expr
         ),
         _ => format!("s.set_object({}, {})", index, value_expr),

@@ -6,7 +6,7 @@
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
-use super::naming::{PythonProjectionContext, to_snake_case};
+use super::naming::{PythonProjectionContext, PythonSymbol};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
@@ -346,17 +346,17 @@ pub(crate) fn py_build_method_sig(method: &MethodMeta) -> String {
 }
 
 /// Wrap a Python variable name into a DynWinRTValue expression.
-pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
+pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
         let value_type = py_dynwinrt_type(inner);
-        let wrapped = py_wrap_reference_value("value", inner);
+        let wrapped = py_wrap_native_value("value", inner, context);
         return format!(
             "_dynwinrt_box_reference({}, {}, lambda value: {})",
             name, value_type, wrapped
         );
     }
 
-    if let Some(wrapped) = py_wrap_collection(name, typ) {
+    if let Some(wrapped) = py_wrap_collection(name, typ, context) {
         return wrapped;
     }
 
@@ -388,7 +388,7 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Array(inner) => format!(
             "_dynwinrt_array({}, lambda item: {}, {}, {})",
             name,
-            py_wrap_native_value("item", inner),
+            py_wrap_native_value("item", inner, context),
             py_dynwinrt_type(inner),
             if matches!(inner.as_ref(), TypeMeta::U8) {
                 "True"
@@ -401,20 +401,22 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         } if struct_name == "HResult" => {
             format!("DynWinRTValue.from_hresult({})", name)
         }
-        TypeMeta::Struct {
-            name: struct_name, ..
-        } => {
-            format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name)
+        TypeMeta::Struct { .. } => {
+            format!(
+                "{}({}).to_value()",
+                context.struct_symbol(typ, PythonSymbol::PrivatePack),
+                name
+            )
         }
         _ => name.to_string(),
     }
 }
 
-fn py_wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
-    py_wrap_native_value(name, typ)
-}
-
-pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
+pub(crate) fn py_wrap_native_value(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
     match typ {
         TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
         TypeMeta::I8 => format!("DynWinRTValue.from_i8({})", name),
@@ -440,9 +442,11 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
         } if struct_name == "HResult" => {
             format!("DynWinRTValue.from_hresult({})", name)
         }
-        TypeMeta::Struct {
-            name: struct_name, ..
-        } => format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name),
+        TypeMeta::Struct { .. } => format!(
+            "{}({}).to_value()",
+            context.struct_symbol(typ, PythonSymbol::PrivatePack),
+            name
+        ),
         TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
         TypeMeta::Object
         | TypeMeta::Interface { .. }
@@ -451,7 +455,7 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Array(inner) => format!(
             "_dynwinrt_array({}, lambda item: {}, {}, {})",
             name,
-            py_wrap_native_value("item", inner),
+            py_wrap_native_value("item", inner, context),
             py_dynwinrt_type(inner),
             if matches!(inner.as_ref(), TypeMeta::U8) {
                 "True"
@@ -463,7 +467,11 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
     }
 }
 
-fn py_wrap_collection(name: &str, typ: &TypeMeta) -> Option<String> {
+fn py_wrap_collection(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> Option<String> {
     let TypeMeta::Parameterized { args, .. } = typ else {
         return None;
     };
@@ -485,8 +493,8 @@ fn py_wrap_collection(name: &str, typ: &TypeMeta) -> Option<String> {
         return Some(format!(
             "_dynwinrt_map({}, lambda item: {}, lambda item: {}, {}, {})",
             name,
-            py_wrap_native_value("item", key),
-            py_wrap_native_value("item", value),
+            py_wrap_native_value("item", key, context),
+            py_wrap_native_value("item", value, context),
             py_dynwinrt_type(key),
             py_dynwinrt_type(value)
         ));
@@ -499,7 +507,7 @@ fn py_wrap_collection(name: &str, typ: &TypeMeta) -> Option<String> {
         return Some(format!(
             "_dynwinrt_vector({}, lambda item: {}, {})",
             name,
-            py_wrap_native_value("item", element),
+            py_wrap_native_value("item", element, context),
             py_dynwinrt_type(element)
         ));
     }
@@ -558,7 +566,7 @@ pub(crate) fn py_type_guard(
                 TypeIdentityKind::Enum,
                 namespace,
                 type_name,
-                type_name
+                &context.projected_name_for_type(typ)
             )
         ),
         TypeMeta::Enum { .. } => py_exact_int_guard(name),
@@ -590,7 +598,7 @@ pub(crate) fn py_type_guard(
                 TypeIdentityKind::Class,
                 namespace,
                 type_name,
-                type_name
+                &context.projected_name_for_type(typ)
             )
         ),
         TypeMeta::Interface {
@@ -604,7 +612,7 @@ pub(crate) fn py_type_guard(
                 TypeIdentityKind::Interface,
                 namespace,
                 type_name,
-                type_name
+                &context.projected_name_for_type(typ)
             )
         ),
         TypeMeta::Object
@@ -645,14 +653,11 @@ pub(crate) fn py_convert_return(
         Some(TypeMeta::U64) => format!("{}.to_u64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
-        Some(typ @ TypeMeta::Enum { name, .. }) if context.is_known_type(typ) => {
-            let TypeMeta::Enum { name, .. } = typ else {
-                unreachable!()
-            };
+        Some(typ @ TypeMeta::Enum { .. }) if context.is_known_type(typ) => {
             format!(
                 "_dynwinrt_enum('{}', '{}', {}.to_number())",
                 context.implementation_module_for_type(typ),
-                name,
+                context.projected_name_for_type(typ),
                 expr
             )
         }
@@ -666,18 +671,20 @@ pub(crate) fn py_convert_return(
                 wrapper, expr
             )
         }
-        Some(typ @ TypeMeta::RuntimeClass { name, .. }) if context.is_known_type(typ) => {
-            let TypeMeta::RuntimeClass { name, .. } = typ else {
-                unreachable!()
-            };
-            let wrapper = py_runtime_type_symbol(context, typ, name);
+        Some(typ @ TypeMeta::RuntimeClass { .. }) if context.is_known_type(typ) => {
+            let wrapper =
+                py_runtime_type_symbol(context, typ, &context.projected_name_for_type(typ));
             format!(
                 "(lambda value: None if value.is_null() else {}._from_native(value))({})",
                 wrapper, expr
             )
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.to_number()", expr),
-        Some(TypeMeta::Struct { name, .. }) => format!("_unpack_{}({})", to_snake_case(name), expr),
+        Some(typ @ TypeMeta::Struct { .. }) => format!(
+            "{}({})",
+            context.struct_symbol(typ, PythonSymbol::PrivateUnpack),
+            expr
+        ),
         Some(TypeMeta::Delegate { .. }) => {
             format!(
                 "(lambda value: None if value.is_null() else value)({})",
@@ -784,10 +791,10 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::U16 => format!("{}.to_u16_list()", arr_expr),
         TypeMeta::Char16 => format!("[chr(value) for value in {}.to_u16_list()]", arr_expr),
         TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
-        typ @ TypeMeta::Enum { name, .. } if context.is_known_type(typ) => format!(
+        typ @ TypeMeta::Enum { .. } if context.is_known_type(typ) => format!(
             "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",
             context.implementation_module_for_type(typ),
-            name,
+            context.projected_name_for_type(typ),
             arr_expr
         ),
         TypeMeta::Enum { .. } => format!("{}.to_i32_list()", arr_expr),
@@ -803,16 +810,16 @@ pub(crate) fn py_convert_array_return(
             arr_expr
         ),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.to_i32_list()", arr_expr),
-        TypeMeta::Struct { name, .. } => format!(
-            "[_unpack_{}(v) for v in {}.to_values()]",
-            to_snake_case(name),
+        TypeMeta::Struct { .. } => format!(
+            "[{}(v) for v in {}.to_values()]",
+            context.struct_symbol(inner, PythonSymbol::PrivateUnpack),
             arr_expr
         ),
-        typ @ TypeMeta::RuntimeClass { name, .. } if context.is_known_type(typ) => {
+        typ @ TypeMeta::RuntimeClass { .. } if context.is_known_type(typ) => {
             format!(
                 "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
                 context.implementation_module_for_type(typ),
-                name,
+                context.projected_name_for_type(typ),
                 arr_expr
             )
         }
@@ -913,7 +920,7 @@ mod tests {
             "_dynwinrt_can_cast(value, IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"
         );
         assert_eq!(
-            py_wrap_native_value("value", &geometry),
+            py_wrap_native_value("value", &geometry, &PythonProjectionContext::default()),
             "getattr(value, '_obj', value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"
         );
         let mut constants = Vec::new();

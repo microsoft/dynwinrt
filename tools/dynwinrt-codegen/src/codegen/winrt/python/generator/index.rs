@@ -20,7 +20,7 @@ pub fn generate_index(
     let mut sorted_classes: Vec<_> = classes.iter().collect();
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
-        if seen.insert(class.name.clone()) {
+        if seen.insert(context.class_name(class)) {
             let identity = crate::types::TypeIdentity::named(
                 crate::types::TypeIdentityKind::Class,
                 class.namespace.clone(),
@@ -34,7 +34,7 @@ pub fn generate_index(
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
     sorted_ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     for iface in sorted_ifaces {
-        if !seen.insert(iface.name.clone()) {
+        if !seen.insert(context.projected_name_for_interface(iface)) {
             continue;
         }
         let is_delegate = iface.is_delegate();
@@ -71,8 +71,8 @@ pub fn generate_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
-            if seen.insert(name.clone()) {
+        if let TypeMeta::Enum { .. } = en {
+            if seen.insert(context.projected_name_for_type(en)) {
                 let identity = en.type_identity();
                 let module = context.implementation_module(&identity);
                 let name = context.projected_name(&identity);
@@ -95,7 +95,7 @@ pub fn generate_public_index(
     let mut classes = classes.iter().collect::<Vec<_>>();
     classes.sort_by(|left, right| left.name.cmp(&right.name));
     for class in classes {
-        if seen.insert(class.name.clone()) {
+        if seen.insert(context.class_name(class)) {
             let identity = crate::types::TypeIdentity::named(
                 crate::types::TypeIdentityKind::Class,
                 class.namespace.clone(),
@@ -114,7 +114,7 @@ pub fn generate_public_index(
     interfaces.sort_by(|left, right| left.name.cmp(&right.name));
     for interface in interfaces {
         let is_delegate = interface.is_delegate();
-        if !is_delegate && seen.insert(interface.name.clone()) {
+        if !is_delegate && seen.insert(context.projected_name_for_interface(interface)) {
             let identity = interface.type_identity();
             let name = context.projected_name(&identity);
             out.push_str(&format!(
@@ -137,10 +137,10 @@ pub fn generate_public_index(
         _ => "",
     });
     for typ in enums {
-        let TypeMeta::Enum { name, .. } = typ else {
+        let TypeMeta::Enum { .. } = typ else {
             continue;
         };
-        if seen.insert(name.clone()) {
+        if seen.insert(context.projected_name_for_type(typ)) {
             let identity = typ.type_identity();
             let name = context.projected_name(&identity);
             out.push_str(&format!(
@@ -267,7 +267,7 @@ pub fn append_to_index(
         );
         let module = context.implementation_module(&identity);
         let name = context.projected_name(&identity);
-        if !exported_modules.contains(&module) && seen.insert(class.name.clone()) {
+        if !exported_modules.contains(&module) && seen.insert(name.clone()) {
             out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
         }
     }
@@ -278,7 +278,7 @@ pub fn append_to_index(
         let identity = iface.type_identity();
         let module = context.implementation_module(&identity);
         let name = context.projected_name(&identity);
-        if exported_modules.contains(&module) || !seen.insert(iface.name.clone()) {
+        if exported_modules.contains(&module) || !seen.insert(name.clone()) {
             continue;
         }
         let is_delegate = iface.is_delegate();
@@ -310,11 +310,11 @@ pub fn append_to_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
+        if let TypeMeta::Enum { .. } = en {
             let identity = en.type_identity();
             let module = context.implementation_module(&identity);
             let projected_name = context.projected_name(&identity);
-            if !exported_modules.contains(&module) && seen.insert(name.clone()) {
+            if !exported_modules.contains(&module) && seen.insert(projected_name.clone()) {
                 out.push_str(&format!(
                     "from .{} import {}  # noqa: F401\n",
                     module, projected_name
