@@ -28,18 +28,16 @@ delegates, and events. JavaScript gets camelCase APIs, TypeScript declarations,
 and Promise-based async operations; Python gets snake_case APIs, type stubs,
 and asyncio-compatible operations. Both support async progress and cancellation.
 
-| API family | Languages | Scope |
+| API surface | Languages | Scope |
 | --- | --- | --- |
-| **WinRT** | JS/TS, Python | Typed bindings for Windows SDK, Windows App SDK, and custom WinRT APIs. |
-| **Classic COM (preview)** | JS/TS | A validated subset of interfaces from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/com`. |
-| **Win32 (unreleased, experimental)** | JS/TS | Selected DLL exports from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/win32`. |
+| **WinRT (preview)** | JS/TS, Python | Typed bindings for Windows SDK, Windows App SDK, and custom WinRT APIs. |
+| **Classic COM (experimental)** | JS/TS | A validated subset of interfaces from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/com`. |
+| **Win32 DLL exports (experimental)** | JS/TS | Partial support for DLL exports from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/win32`. |
 
-Win32 support is available on `main` but is not yet included in published
-packages. To try it, build the JavaScript runtime and code generator
-[from source](CONTRIBUTING.md#development-setup).
+WinUI 3 application and window hosting is **experimental** and requires
+application-managed UI threads and lifecycle.
 
-WinUI 3 application and window hosting is also available, with application-managed
-UI threads and lifecycle. You can also implement supported WinRT interfaces in
+You can also implement supported WinRT interfaces in
 JavaScript or Python and pass them to native consumers.
 
 COM and Win32 are not complete projections of every Windows API: safe generation
@@ -142,12 +140,12 @@ releases generated wrappers before the apartment closes.
 
 | Build something with | Example |
 | --- | --- |
-| WinUI 3 controls and events | [JavaScript Tic-Tac-Toe](samples/js/winui-tic-tac-toe/README.md), [Python Hello World](samples/python/winui-hello-world/README.md) |
+| WinUI 3 controls and events (experimental) | [JavaScript Tic-Tac-Toe](samples/js/winui-tic-tac-toe/README.md), [Python Hello World](samples/python/winui-hello-world/README.md) |
 | Image OCR | [Windows AI in Node.js](samples/js/ocr/README.md), [Windows OCR in Python](samples/python/ocr-image/README.md) |
 | Local AI inference | [Aion Instruct chat in Electron](samples/js/electron-aion-chat/README.md) |
 | WinRT and Classic COM interop | [Windows Hello in Electron](samples/js/windows-hello/README.md) |
 | Async file operations | [Python file I/O](samples/python/async-file-io/README.md) |
-| Win32 DLL exports (unreleased) | [System information, Registry, and async file I/O](samples/js/win32/README.md) |
+| Win32 DLL exports (experimental) | [System information, Registry, and async file I/O](samples/js/win32/README.md) |
 
 Each sample documents its Windows version, SDK, package identity, and hardware
 requirements. Browse all [JavaScript/Electron samples](samples/js/README.md) or
