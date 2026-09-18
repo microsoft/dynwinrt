@@ -1918,10 +1918,374 @@ test('create empty vectors for large struct element types', (t) => {
     DynWinRtType.i32(),
     DynWinRtType.i32(),
   ])
+  if (process.arch !== 'x64') {
+    t.throws(() => DynWinRtValue.createVector([], rectType))
+    return
+  }
   const vector = DynWinRtValue.createVector([], rectType)
   const vectorIid = DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [rectType]).iid()
 
   t.notThrows(() => vector.cast(vectorIid))
+})
+
+function collectionProducerCases(elementType: DynWinRtType, items: DynWinRtValue[]) {
+  const indexes = items.map((_, index) => DynWinRtValue.i32(index))
+  return [
+    { name: 'vector', create: () => DynWinRtValue.createVector(items, elementType) },
+    {
+      name: 'map key',
+      create: () => DynWinRtValue.createMap(items, indexes, elementType, DynWinRtType.i32()),
+    },
+    {
+      name: 'map value',
+      create: () => DynWinRtValue.createMap(indexes, items, DynWinRtType.i32(), elementType),
+    },
+  ]
+}
+
+function collectionVectorReader(elementType: DynWinRtType) {
+  const iid = DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [elementType]).iid()
+  return DynWinRtType.registerInterface(`CollectionBoundary.Vector.${iid.toString()}`, iid)
+    .addMethod('GetAt', new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOut(elementType))
+    .addMethod('get_Size', new DynWinRtMethodSig().addOut(DynWinRtType.u32()))
+}
+
+function collectionMapReader(keyType: DynWinRtType, valueType: DynWinRtType) {
+  const iid = DynWinRtType.parameterized(WinGuid.parse('3c2925fe-8519-45c1-aa79-197b6718c1c1'), [
+    keyType,
+    valueType,
+  ]).iid()
+  return DynWinRtType.registerInterface(`CollectionBoundary.Map.${iid.toString()}`, iid)
+    .addMethod('Lookup', new DynWinRtMethodSig().addIn(keyType).addOut(valueType))
+    .addMethod('get_Size', new DynWinRtMethodSig().addOut(DynWinRtType.u32()))
+}
+
+function invokeCollectionReader(reader: DynWinRtType, collection: DynWinRtValue, slot: number, args: DynWinRtValue[]) {
+  const typed = collection.cast(reader.iid())
+  try {
+    return reader.method(slot).invoke(typed, args)
+  } finally {
+    typed.release()
+  }
+}
+
+function collectionProducerRoundTrips(elementType: DynWinRtType, item: DynWinRtValue, lookupKey = item) {
+  const [vector, keyMap, valueMap] = collectionProducerCases(elementType, [item]).map(({ create }) => create())
+  try {
+    return [
+      invokeCollectionReader(collectionVectorReader(elementType), vector, 6, [DynWinRtValue.u32(0)]),
+      invokeCollectionReader(collectionMapReader(DynWinRtType.i32(), elementType), valueMap, 6, [DynWinRtValue.i32(0)]),
+      invokeCollectionReader(collectionMapReader(elementType, DynWinRtType.i32()), keyMap, 6, [lookupKey]),
+    ]
+  } finally {
+    vector.release()
+    keyMap.release()
+    valueMap.release()
+  }
+}
+
+test('collection producers reject recursively owned structs even when empty', (t) => {
+  const referenceType = DynWinRtType.parameterized(WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'), [
+    DynWinRtType.u32(),
+  ])
+  for (const [name, fieldType] of [
+    ['String', DynWinRtType.hstring()],
+    ['Reference', referenceType],
+  ] as const) {
+    const inner = DynWinRtType.structType(`CollectionBoundary.Owned${name}`, [fieldType])
+    const outer = DynWinRtType.structType(`CollectionBoundary.NestedOwned${name}`, [inner])
+    for (const type of [inner, outer]) {
+      for (const items of [[], [DynWinRtStruct.create(type).toValue()]]) {
+        for (const producer of collectionProducerCases(type, items)) {
+          t.throws(producer.create, undefined, producer.name)
+        }
+      }
+    }
+  }
+})
+
+test('collection producers require exact struct and enum identities', (t) => {
+  const expected = DynWinRtType.structType('CollectionBoundary.Expected', [DynWinRtType.i32()])
+  const wrongStructs = [
+    DynWinRtType.structType('CollectionBoundary.SameShape', [DynWinRtType.i32()]),
+    DynWinRtType.structType('CollectionBoundary.Smaller', [DynWinRtType.u8()]),
+    DynWinRtType.structType('CollectionBoundary.CrossType', [DynWinRtType.u32()]),
+  ]
+  const enumType = DynWinRtType.enumType('CollectionBoundary.Enum', ['One'], [1])
+  const otherEnum = DynWinRtType.enumType('CollectionBoundary.OtherEnum', ['One'], [1])
+  const cases: [DynWinRtType, DynWinRtValue][] = [
+    ...wrongStructs.map((type): [DynWinRtType, DynWinRtValue] => [expected, DynWinRtStruct.create(type).toValue()]),
+    [expected, DynWinRtValue.i32(1)],
+    [DynWinRtType.i32(), DynWinRtStruct.create(expected).toValue()],
+    [enumType, DynWinRtValue.enumValue(otherEnum, 1)],
+    [DynWinRtType.i32(), DynWinRtValue.u32(1)],
+    [DynWinRtType.boolType(), DynWinRtValue.u8Value(1)],
+  ]
+  for (const [type, value] of cases) {
+    for (const producer of collectionProducerCases(type, [value])) {
+      t.throws(producer.create, undefined, producer.name)
+    }
+  }
+})
+
+test('collection producers preserve exact scalars and checked projection aliases', (t) => {
+  const enumType = DynWinRtType.enumType('CollectionBoundary.ScalarEnum', ['One'], [1])
+  const cases: [DynWinRtType, DynWinRtValue, number, DynWinRtValue?][] = [
+    [DynWinRtType.boolType(), DynWinRtValue.boolValue(true), 1],
+    [DynWinRtType.i8Type(), DynWinRtValue.i8Value(-128), -128],
+    [DynWinRtType.u8(), DynWinRtValue.u8Value(255), 255],
+    [DynWinRtType.i16(), DynWinRtValue.i16(-32768), -32768],
+    [DynWinRtType.u16(), DynWinRtValue.u16(65535), 65535],
+    [DynWinRtType.i32(), DynWinRtValue.i32(-123), -123],
+    [DynWinRtType.u32(), DynWinRtValue.u32(0xffffffff), 0xffffffff],
+    [DynWinRtType.char16(), DynWinRtValue.u16(0x03bb), 0x03bb],
+    [enumType, DynWinRtValue.enumValue(enumType, 1), 1],
+    [enumType, DynWinRtValue.i32(1), 1],
+    // HRESULT and I32 share collection IIDs; Lookup uses the common I32 projection.
+    [DynWinRtType.hresult(), DynWinRtValue.hresult(-1), -1, DynWinRtValue.i32(-1)],
+    [DynWinRtType.hresult(), DynWinRtValue.i32(-1), -1],
+    [DynWinRtType.i8Type(), DynWinRtValue.i32(-128), -128],
+    [DynWinRtType.i8Type(), DynWinRtValue.i32(127), 127],
+    [DynWinRtType.u8(), DynWinRtValue.i32(0), 0],
+    [DynWinRtType.u8(), DynWinRtValue.i32(255), 255],
+    [DynWinRtType.char16(), DynWinRtValue.i32(65535), 65535],
+  ]
+  for (const [type, value, expected, lookupKey] of cases) {
+    const [fromVector, fromMap, keyLookup] = collectionProducerRoundTrips(type, value, lookupKey)
+    t.is(fromVector.toNumber(), expected)
+    t.is(fromMap.toNumber(), expected)
+    t.is(keyLookup.toNumber(), 0)
+  }
+  for (const [type, values] of [
+    [DynWinRtType.i8Type(), [-129, 128]],
+    [DynWinRtType.u8(), [-1, 256, 257]],
+    [DynWinRtType.char16(), [-1, 65536]],
+  ] as const) {
+    for (const value of values) {
+      for (const producer of collectionProducerCases(type, [DynWinRtValue.i32(value)])) {
+        t.throws(producer.create, undefined, producer.name)
+      }
+    }
+  }
+})
+
+test('collection producers retain direct strings and nullable references with the expected IID', (t) => {
+  roInitialize(1)
+  const [stringVector, stringMap, stringKey] = collectionProducerRoundTrips(
+    DynWinRtType.hstring(),
+    DynWinRtValue.hstring('owned \u03bb'),
+  )
+  t.is(stringVector.toString(), 'owned \u03bb')
+  t.is(stringMap.toString(), 'owned \u03bb')
+  t.is(stringKey.toNumber(), 0)
+
+  const referenceType = DynWinRtType.parameterized(WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'), [
+    DynWinRtType.u32(),
+  ])
+  const reference = DynWinRtType.registerInterface('CollectionBoundary.Reference', referenceType.iid()).addMethod(
+    'get_Value',
+    new DynWinRtMethodSig().addOut(DynWinRtType.u32()),
+  )
+  for (const type of [referenceType, DynWinRtType.interface(referenceType.iid()), DynWinRtType.object()]) {
+    const source = DynWinRtValue.boxReference(DynWinRtValue.u32(17), DynWinRtType.u32())
+    const items = [source, DynWinRtValue.nullValue()]
+    const vector = DynWinRtValue.createVector(items, type)
+    const mapping = DynWinRtValue.createMap(
+      [DynWinRtValue.i32(0), DynWinRtValue.i32(1)],
+      items,
+      DynWinRtType.i32(),
+      type,
+    )
+    source.release()
+    try {
+      const vectorReader = collectionVectorReader(type)
+      const mapReader = collectionMapReader(DynWinRtType.i32(), type)
+      for (const value of [
+        invokeCollectionReader(vectorReader, vector, 6, [DynWinRtValue.u32(0)]),
+        invokeCollectionReader(mapReader, mapping, 6, [DynWinRtValue.i32(0)]),
+      ]) {
+        const typed = value.cast(referenceType.iid())
+        t.is(reference.method(6).invoke(typed, []).toNumber(), 17)
+        typed.release()
+        value.release()
+      }
+      t.true(invokeCollectionReader(vectorReader, vector, 6, [DynWinRtValue.u32(1)]).isNull())
+      t.true(invokeCollectionReader(mapReader, mapping, 6, [DynWinRtValue.i32(1)]).isNull())
+    } finally {
+      vector.release()
+      mapping.release()
+    }
+  }
+  const incompatible = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  try {
+    for (const value of [incompatible, DynWinRtValue.i32(17)]) {
+      for (const producer of collectionProducerCases(referenceType, [value])) {
+        t.throws(producer.create, undefined, producer.name)
+      }
+    }
+  } finally {
+    incompatible.release()
+  }
+})
+
+test('collection producers enforce the architecture-specific small POD boundary', (t) => {
+  const cases = [
+    {
+      name: 'CollectionBoundary.Byte',
+      fields: [DynWinRtType.u8()],
+      size: 1,
+      hfa: false,
+      write: (s: DynWinRtStruct) => s.setU8(0, 201),
+      read: (s: DynWinRtStruct) => s.getU8(0),
+      expected: 201,
+    },
+    {
+      name: 'CollectionBoundary.Short',
+      fields: [DynWinRtType.i16()],
+      size: 2,
+      hfa: false,
+      write: (s: DynWinRtStruct) => s.setI16(0, -1234),
+      read: (s: DynWinRtStruct) => s.getI16(0),
+      expected: -1234,
+    },
+    {
+      name: 'CollectionBoundary.Int',
+      fields: [DynWinRtType.i32()],
+      size: 4,
+      hfa: false,
+      write: (s: DynWinRtStruct) => s.setI32(0, 123456),
+      read: (s: DynWinRtStruct) => s.getI32(0),
+      expected: 123456,
+    },
+    {
+      name: 'Windows.Graphics.PointInt32',
+      fields: [DynWinRtType.i32(), DynWinRtType.i32()],
+      size: 8,
+      hfa: false,
+      write: (s: DynWinRtStruct) => s.setI32(1, -42),
+      read: (s: DynWinRtStruct) => s.getI32(1),
+      expected: -42,
+    },
+    ...['Point', 'Size'].map((name) => ({
+      name: `Windows.Foundation.${name}`,
+      fields: [DynWinRtType.f32(), DynWinRtType.f32()],
+      size: 8,
+      hfa: true,
+      write: (s: DynWinRtStruct) => s.setF32(1, 2.5),
+      read: (s: DynWinRtStruct) => s.getF32(1),
+      expected: 2.5,
+    })),
+  ]
+  for (const entry of cases) {
+    const type = DynWinRtType.structType(entry.name, entry.fields)
+    const value = DynWinRtStruct.create(type)
+    entry.write(value)
+    const supported =
+      process.arch === 'x64' || (process.arch === 'arm64' && !entry.hfa) || (process.arch === 'ia32' && entry.size <= 4)
+    for (const producer of collectionProducerCases(type, [])) {
+      if (supported) {
+        t.false(producer.create().isNull())
+      } else {
+        t.throws(producer.create, undefined, entry.name)
+      }
+    }
+    if (supported) {
+      const [fromVector, fromMap, keyLookup] = collectionProducerRoundTrips(type, value.toValue())
+      t.is(entry.read(fromVector.asStruct()), entry.expected)
+      t.is(entry.read(fromMap.asStruct()), entry.expected)
+      t.is(keyLookup.toNumber(), 0)
+    } else {
+      for (const producer of collectionProducerCases(type, [value.toValue()])) {
+        t.throws(producer.create, undefined, entry.name)
+      }
+    }
+  }
+})
+
+test('collection producers restrict large POD to ABI-compatible empty vectors', (t) => {
+  const cases = [
+    {
+      name: 'Windows.Graphics.RectInt32',
+      fields: Array.from({ length: 4 }, () => DynWinRtType.i32()),
+      hfa: false,
+      size: 16,
+    },
+    {
+      name: 'Windows.Foundation.Rect',
+      fields: Array.from({ length: 4 }, () => DynWinRtType.f32()),
+      hfa: true,
+      size: 16,
+    },
+    {
+      name: 'Windows.Devices.Geolocation.BasicGeoposition',
+      fields: Array.from({ length: 3 }, () => DynWinRtType.f64()),
+      hfa: true,
+      size: 24,
+    },
+    {
+      name: 'Windows.UI.Input.ManipulationDelta',
+      fields: [
+        DynWinRtType.structType('Windows.Foundation.Point', [DynWinRtType.f32(), DynWinRtType.f32()]),
+        DynWinRtType.f32(),
+        DynWinRtType.f32(),
+        DynWinRtType.f32(),
+      ],
+      hfa: false,
+      size: 20,
+    },
+  ]
+  for (const entry of cases) {
+    const type = DynWinRtType.structType(entry.name, entry.fields)
+    const emptySupported = process.arch === 'x64' || (process.arch === 'arm64' && entry.size > 16 && !entry.hfa)
+    if (emptySupported) {
+      const vector = DynWinRtValue.createVector([], type)
+      t.is(invokeCollectionReader(collectionVectorReader(type), vector, 7, []).toNumber(), 0)
+      vector.release()
+    } else {
+      t.throws(() => DynWinRtValue.createVector([], type))
+    }
+    for (const producer of collectionProducerCases(type, []).slice(1)) {
+      t.throws(producer.create, undefined, producer.name)
+    }
+    for (const producer of collectionProducerCases(type, [DynWinRtStruct.create(type).toValue()])) {
+      t.throws(producer.create, undefined, producer.name)
+    }
+  }
+})
+
+test('collection producers reject floating scalars and GUIDs even when empty', (t) => {
+  const cases: [DynWinRtType, DynWinRtValue][] = [
+    [DynWinRtType.f32(), DynWinRtValue.f32(1.5)],
+    [DynWinRtType.f64(), DynWinRtValue.f64(1.5)],
+    [DynWinRtType.guidType(), DynWinRtValue.guid(WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))],
+  ]
+  for (const [type, value] of cases) {
+    for (const items of [[], [value]]) {
+      for (const producer of collectionProducerCases(type, items)) {
+        t.throws(producer.create, undefined, producer.name)
+      }
+    }
+  }
+})
+
+test('collection producers reject 64-bit scalars on i686 even when empty', (t) => {
+  for (const [type, value, read] of [
+    [DynWinRtType.i64(), DynWinRtValue.i64(-123n), (value: DynWinRtValue) => value.toI64Bigint()],
+    [DynWinRtType.u64(), DynWinRtValue.u64(123n), (value: DynWinRtValue) => value.toU64Bigint()],
+  ] as const) {
+    if (process.arch === 'ia32') {
+      for (const items of [[], [value]]) {
+        for (const producer of collectionProducerCases(type, items)) {
+          t.throws(producer.create, undefined, producer.name)
+        }
+      }
+    } else {
+      const [fromVector, fromMap, keyLookup] = collectionProducerRoundTrips(type, value)
+      t.is(read(fromVector), read(value))
+      t.is(read(fromMap), read(value))
+      t.is(keyLookup.toNumber(), 0)
+    }
+  }
 })
 
 test('parse GUIDs', (t) => {

@@ -11,14 +11,13 @@ use core::ffi::c_void;
 use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
+use crate::collection_element::{CollectionElementPlan, CollectionStorage};
 use crate::com_helpers::{E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK};
 #[allow(unused_imports)]
 use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
 use crate::vector::SingleThreadedIterator;
 use crate::vector::{
-    CollectionStorage, clone_stored_item, collection_storage, pack_validated_collection_item,
-    release_stored_item, store_abi_item, stored_items_equal, validate_collection_item,
-    write_item_out,
+    clone_stored_item, release_stored_item, store_abi_item, stored_items_equal, write_item_out,
 };
 
 // ======================================================================
@@ -26,7 +25,7 @@ use crate::vector::{
 // ======================================================================
 
 /// All IIDs needed for an IMap<K,V> collection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapIids {
     pub iterable: GUID, // IIterable<IKeyValuePair<K,V>>
     pub map: GUID,      // IMap<K,V>
@@ -87,8 +86,8 @@ unsafe fn find_key_index(
     storage: CollectionStorage,
 ) -> Option<usize> {
     let key = key as usize;
-    if !storage.is_hstring
-        && !storage.is_value_type
+    if !storage.is_hstring()
+        && !storage.is_value_type()
         && let Some(search) = boxed_hstring(key)
     {
         return entries
@@ -111,11 +110,7 @@ unsafe fn boxed_hstring(raw: usize) -> Option<windows_core::HSTRING> {
 }
 
 const fn object_storage() -> CollectionStorage {
-    CollectionStorage {
-        is_value_type: false,
-        is_hstring: false,
-        elem_size: std::mem::size_of::<*mut c_void>(),
-    }
+    CollectionStorage::Object
 }
 
 // ======================================================================
@@ -558,49 +553,57 @@ impl Drop for SingleThreadedKeyValuePair {
 ///
 /// The returned IUnknown supports QI for IMap<K,V>, IIterable<IKeyValuePair<K,V>>,
 /// IMapView<K,V> (via GetView), IKeyValuePair<K,V> (via iteration), and IIterator (via First).
-pub fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> IUnknown {
+///
+/// Prefer [`create_map_from_values`] for checked construction.
+///
+/// # Safety
+///
+/// All IIDs must form one coherent collection set whose key and value types
+/// both have COM-reference ABI and ownership, never HSTRING/scalar/struct types.
+/// Each key/value pointer must already be adjusted to its declared element
+/// interface (IInspectable for Object). Owned references are transferred.
+pub unsafe fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> IUnknown {
     let entries = entries
         .into_iter()
         .map(|(key, value)| (key.into_raw() as usize, value.into_raw() as usize))
         .collect();
-    let storage = CollectionStorage {
-        is_value_type: false,
-        is_hstring: false,
-        elem_size: std::mem::size_of::<*mut c_void>(),
-    };
+    let storage = CollectionStorage::Object;
     new_map(entries, storage, storage, iids)
 }
 
+/// Create a checked map, validating element types, layouts, ownership and all IIDs.
+///
+/// Keys and values must use the same metadata table. Large values are unsupported
+/// even in an empty map; reference values are queried for the declared interface.
 pub fn create_map_from_values(
     entries: &[(crate::WinRTValue, crate::WinRTValue)],
     key_type: &crate::TypeHandle,
     value_type: &crate::TypeHandle,
     iids: MapIids,
 ) -> crate::Result<IUnknown> {
-    let key_storage = collection_storage(key_type)?;
-    let value_storage = collection_storage(value_type)?;
-    if key_storage.is_large_value_type() {
-        return Err(crate::Error::UnsupportedCollectionElement(key_type.kind()));
-    }
-    if value_storage.is_large_value_type() {
-        return Err(crate::Error::UnsupportedCollectionElement(
-            value_type.kind(),
+    let key_plan = CollectionElementPlan::new(key_type, false)?;
+    let value_plan = CollectionElementPlan::new(value_type, false)?;
+    if !std::sync::Arc::ptr_eq(key_type.table(), value_type.table()) {
+        return Err(crate::Error::InvalidCollectionValue(
+            "map key and value types from the same metadata table",
         ));
     }
-    for (key, value) in entries {
-        validate_collection_item(key, key_storage)?;
-        validate_collection_item(value, value_storage)?;
+    if iids != key_type.table().map_iids(key_type, value_type) {
+        return Err(crate::Error::InvalidCollectionValue(
+            "collection IIDs matching the declared key and value types",
+        ));
     }
-    let entries = entries
+    let prepared = entries
         .iter()
-        .map(|(key, value)| {
-            (
-                pack_validated_collection_item(key, key_storage),
-                pack_validated_collection_item(value, value_storage),
-            )
+        .map(|(key, value)| -> crate::Result<_> {
+            Ok((key_plan.prepare(key)?, value_plan.prepare(value)?))
         })
+        .collect::<crate::Result<Vec<_>>>()?;
+    let entries = prepared
+        .into_iter()
+        .map(|(key, value)| (key.into_raw(), value.into_raw()))
         .collect();
-    Ok(new_map(entries, key_storage, value_storage, iids))
+    Ok(new_map(entries, key_plan.storage, value_plan.storage, iids))
 }
 
 fn new_map(
@@ -640,7 +643,8 @@ mod tests {
         let iids = table.map_iids(&table.hstring(), &table.object());
 
         // Create empty map
-        let map = create_map(Vec::new(), iids.clone());
+        let map =
+            create_map_from_values(&[], &table.hstring(), &table.object(), iids.clone()).unwrap();
 
         // QI to IMap
         let mut map_ptr = std::ptr::null_mut();
@@ -700,8 +704,8 @@ mod tests {
 
         let table = MetadataTable::new();
         let iids = table.map_iids(&table.hstring(), &table.object());
-        let key_storage = collection_storage(&table.hstring()).unwrap();
-        let value_storage = collection_storage(&table.object()).unwrap();
+        let key_storage = CollectionStorage::HString;
+        let value_storage = CollectionStorage::Object;
 
         let uri =
             windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();

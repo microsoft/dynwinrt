@@ -15,6 +15,7 @@ use std::sync::{
 };
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
+use crate::collection_element::{CollectionElementPlan, CollectionStorage, PreparedCollectionItem};
 use crate::com_helpers::{
     E_BOUNDS, E_FAIL, E_NOTIMPL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out,
     com_usize_release,
@@ -27,7 +28,7 @@ use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vta
 // ======================================================================
 
 /// All IIDs needed for an IVector<T> collection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorIids {
     pub iterable: GUID,
     pub vector: GUID,
@@ -171,59 +172,6 @@ impl VectorChangedEventArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CollectionStorage {
-    pub(crate) is_value_type: bool,
-    pub(crate) is_hstring: bool,
-    pub(crate) elem_size: usize,
-}
-
-impl CollectionStorage {
-    pub(crate) fn is_large_value_type(self) -> bool {
-        self.is_value_type && self.elem_size > std::mem::size_of::<usize>()
-    }
-
-    fn array_stride(self) -> usize {
-        if self.is_value_type {
-            self.elem_size
-        } else {
-            std::mem::size_of::<*mut c_void>()
-        }
-    }
-}
-
-pub(crate) fn collection_storage(
-    element_type: &crate::TypeHandle,
-) -> crate::Result<CollectionStorage> {
-    use crate::TypeKind;
-
-    let kind = element_type.kind();
-    let elem_size = element_type.size_of();
-    if matches!(kind, TypeKind::F32 | TypeKind::F64 | TypeKind::Guid) {
-        return Err(crate::Error::UnsupportedCollectionElement(kind));
-    }
-    Ok(CollectionStorage {
-        is_hstring: kind == TypeKind::HString,
-        is_value_type: matches!(
-            kind,
-            TypeKind::Bool
-                | TypeKind::I8
-                | TypeKind::U8
-                | TypeKind::I16
-                | TypeKind::U16
-                | TypeKind::Char16
-                | TypeKind::I32
-                | TypeKind::U32
-                | TypeKind::I64
-                | TypeKind::U64
-                | TypeKind::Enum(_)
-                | TypeKind::HResult
-                | TypeKind::Struct(_)
-        ),
-        elem_size,
-    })
-}
-
 /// Write a raw usize item to an output pointer, AddRef'ing if it's a COM reference type.
 /// For value types, only writes `elem_size` bytes to avoid overwriting adjacent memory.
 #[inline(always)]
@@ -232,11 +180,11 @@ pub(crate) unsafe fn write_item_out(
     raw: usize,
     result: *mut *mut c_void,
 ) {
-    if storage.is_hstring {
+    if storage.is_hstring() {
         *result = clone_hstring_raw(raw) as *mut c_void;
-    } else if storage.is_value_type {
-        // Write only elem_size bytes, clamped to usize width for safety.
-        let write_size = storage.elem_size.min(std::mem::size_of::<usize>());
+    } else if storage.is_value_type() {
+        let write_size = storage.element_size();
+        debug_assert!(!storage.is_empty_only());
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &raw as *const usize as *const u8,
@@ -265,12 +213,13 @@ unsafe fn store_array_item(
     index: usize,
 ) -> usize {
     let slot = values.cast::<u8>().add(index * storage.array_stride());
-    let raw = if storage.is_value_type {
+    let raw = if storage.is_value_type() {
+        debug_assert!(!storage.is_empty_only());
         let mut word = 0usize;
         std::ptr::copy_nonoverlapping(
             slot,
             (&mut word as *mut usize).cast::<u8>(),
-            storage.elem_size,
+            storage.element_size(),
         );
         word as *mut c_void
     } else {
@@ -296,9 +245,9 @@ unsafe fn release_hstring_raw(raw: usize) {
 }
 
 pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -> usize {
-    if storage.is_hstring {
+    if storage.is_hstring() {
         clone_hstring_raw(raw)
-    } else if storage.is_value_type {
+    } else if storage.is_value_type() {
         raw
     } else {
         com_to_usize(raw as *mut c_void)
@@ -306,19 +255,19 @@ pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -
 }
 
 pub(crate) unsafe fn store_abi_item(storage: CollectionStorage, raw: *mut c_void) -> usize {
-    if storage.is_hstring {
+    if storage.is_hstring() {
         clone_hstring_raw(raw as usize)
-    } else if storage.is_value_type {
-        normalize_value_word(raw as usize, storage.elem_size)
+    } else if storage.is_value_type() {
+        normalize_value_word(raw as usize, storage.element_size())
     } else {
         com_to_usize(raw)
     }
 }
 
 pub(crate) unsafe fn release_stored_item(storage: CollectionStorage, raw: usize) {
-    if storage.is_hstring {
+    if storage.is_hstring() {
         release_hstring_raw(raw);
-    } else if !storage.is_value_type {
+    } else if !storage.is_value_type() {
         com_usize_release(raw);
     }
 }
@@ -328,10 +277,10 @@ pub(crate) unsafe fn stored_items_equal(
     left: usize,
     right: usize,
 ) -> bool {
-    if !storage.is_hstring {
-        return if storage.is_value_type {
-            normalize_value_word(left, storage.elem_size)
-                == normalize_value_word(right, storage.elem_size)
+    if !storage.is_hstring() {
+        return if storage.is_value_type() {
+            normalize_value_word(left, storage.element_size())
+                == normalize_value_word(right, storage.element_size())
         } else {
             left == right
         };
@@ -596,10 +545,8 @@ impl SingleThreadedVector {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        // Large structs use a wider by-value ABI on ARM64, so the arguments
-        // following `value` do not match this pointer-sized vtable thunk.
-        // Only inspect `this` before returning.
-        if me.storage.is_large_value_type() {
+        // Empty-only aggregates lower to one pointer, but have no value storage.
+        if me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let items = lock_or!(me.items, E_FAIL);
@@ -623,7 +570,7 @@ impl SingleThreadedVector {
             if (index as usize) >= items.len() {
                 return E_BOUNDS;
             }
-            if me.storage.is_large_value_type() {
+            if me.storage.is_empty_only() {
                 return E_NOTIMPL;
             }
             let old = items[index as usize];
@@ -644,7 +591,7 @@ impl SingleThreadedVector {
             if (index as usize) > items.len() {
                 return E_BOUNDS;
             }
-            if me.storage.is_large_value_type() {
+            if me.storage.is_empty_only() {
                 return E_NOTIMPL;
             }
             let val = store_abi_item(me.storage, value);
@@ -668,7 +615,7 @@ impl SingleThreadedVector {
 
     unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        if me.storage.is_large_value_type() {
+        if me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let val = store_abi_item(me.storage, value);
@@ -734,7 +681,7 @@ impl SingleThreadedVector {
         values: *const *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        if count > 0 && me.storage.is_large_value_type() {
+        if count > 0 && me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
@@ -781,7 +728,7 @@ impl SingleThreadedVector {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        if me.storage.is_large_value_type() {
+        if me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let items = lock_or!(me.items, E_FAIL);
@@ -938,7 +885,7 @@ impl SingleThreadedVectorView {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        if me.storage.is_large_value_type() {
+        if me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let needle = value as usize;
@@ -1100,147 +1047,75 @@ impl Drop for SingleThreadedIterator {
 
 /// Create an IVector<T> COM object from WinRTValue items.
 ///
-/// Automatically handles both reference types (COM objects → AddRef/Release)
-/// and value types (structs ≤ pointer size → raw bytes, no refcounting).
+/// Validates the complete IID set, exact element types, native argument ABI,
+/// and ownership before publication. Only word-sized POD values are stored.
+/// Some indirectly passed large POD types support empty-only vectors.
 pub fn create_vector_from_values(
     items: &[crate::WinRTValue],
     element_type: &crate::TypeHandle,
     iids: VectorIids,
 ) -> crate::Result<IUnknown> {
-    let storage = collection_storage(element_type)?;
-    if !items.is_empty() && storage.is_large_value_type() {
-        return Err(crate::Error::UnsupportedCollectionElement(
-            element_type.kind(),
+    let plan = CollectionElementPlan::new(element_type, items.is_empty())?;
+    if iids != element_type.table().vector_iids(element_type) {
+        return Err(crate::Error::InvalidCollectionValue(
+            "collection IIDs matching the declared element type",
         ));
     }
-    for item in items {
-        validate_collection_item(item, storage)?;
-    }
-    let packed = items
+    let prepared = items
         .iter()
-        .map(|item| pack_validated_collection_item(item, storage))
+        .map(|item| plan.prepare(item))
+        .collect::<crate::Result<Vec<_>>>()?;
+    let packed = prepared
+        .into_iter()
+        .map(PreparedCollectionItem::into_raw)
         .collect();
-    Ok(new_vector(packed, storage, iids))
-}
-
-pub(crate) fn validate_collection_item(
-    item: &crate::WinRTValue,
-    storage: CollectionStorage,
-) -> crate::Result<()> {
-    let valid = if storage.is_hstring {
-        matches!(item, crate::WinRTValue::HString(_))
-    } else if !storage.is_value_type {
-        matches!(
-            item,
-            crate::WinRTValue::Object(_) | crate::WinRTValue::Async(_) | crate::WinRTValue::Null
-        )
-    } else {
-        matches!(
-            item,
-            crate::WinRTValue::Bool(_)
-                | crate::WinRTValue::I8(_)
-                | crate::WinRTValue::U8(_)
-                | crate::WinRTValue::I16(_)
-                | crate::WinRTValue::U16(_)
-                | crate::WinRTValue::I32(_)
-                | crate::WinRTValue::U32(_)
-                | crate::WinRTValue::I64(_)
-                | crate::WinRTValue::U64(_)
-                | crate::WinRTValue::Enum { .. }
-                | crate::WinRTValue::HResult(_)
-                | crate::WinRTValue::Struct(_)
-        )
-    };
-    if valid {
-        Ok(())
-    } else {
-        let expected = if storage.is_hstring {
-            "HSTRING"
-        } else if storage.is_value_type {
-            "a pointer-sized scalar or struct"
-        } else {
-            "a COM object or null"
-        };
-        Err(crate::Error::InvalidCollectionValue(expected))
-    }
-}
-
-pub(crate) fn pack_validated_collection_item(
-    item: &crate::WinRTValue,
-    storage: CollectionStorage,
-) -> usize {
-    if storage.is_hstring {
-        return match item {
-            crate::WinRTValue::HString(value) => {
-                let cloned: *mut c_void = unsafe { std::mem::transmute(value.clone()) };
-                cloned as usize
-            }
-            _ => unreachable!("collection item was validated"),
-        };
-    }
-    if !storage.is_value_type {
-        return match item {
-            crate::WinRTValue::Null => 0,
-            _ => {
-                let object = item.as_object().expect("collection item was validated");
-                unsafe { com_to_usize(object.as_raw()) }
-            }
-        };
-    }
-
-    match item {
-        crate::WinRTValue::Bool(value) => usize::from(*value),
-        crate::WinRTValue::I8(value) => *value as usize,
-        crate::WinRTValue::U8(value) => *value as usize,
-        crate::WinRTValue::I16(value) => *value as usize,
-        crate::WinRTValue::U16(value) => *value as usize,
-        crate::WinRTValue::I32(value) => *value as usize,
-        crate::WinRTValue::U32(value) => *value as usize,
-        crate::WinRTValue::I64(value) => *value as usize,
-        crate::WinRTValue::U64(value) => *value as usize,
-        crate::WinRTValue::Enum { value, .. } => *value as usize,
-        crate::WinRTValue::HResult(value) => value.0 as usize,
-        crate::WinRTValue::Struct(data) => {
-            let mut value = 0usize;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr(),
-                    &mut value as *mut usize as *mut u8,
-                    storage.elem_size,
-                );
-            }
-            value
-        }
-        _ => unreachable!("collection item was validated"),
-    }
+    Ok(new_vector(packed, plan.storage, iids))
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
-pub fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
+///
+/// Prefer [`create_vector_from_values`] for checked construction.
+///
+/// # Safety
+///
+/// All IIDs must be the complete collection IID set for the same COM-reference
+/// element type, never a scalar, HSTRING, or struct. Each item must already be
+/// adjusted to that element's interface (IInspectable for Object). The collection
+/// transfers these owned references and returns that same interface view.
+pub unsafe fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
     let raw_items: Vec<usize> = items
         .into_iter()
         .map(|obj| obj.into_raw() as usize)
         .collect();
-    new_vector(
-        raw_items,
-        CollectionStorage {
-            is_value_type: false,
-            is_hstring: false,
-            elem_size: std::mem::size_of::<*mut c_void>(),
-        },
-        iids,
-    )
+    new_vector(raw_items, CollectionStorage::Object, iids)
 }
 
-/// Create an IVector<T> COM object for value types (structs ≤ pointer size).
-pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIids) -> IUnknown {
-    if !items.is_empty() {
-        assert!(
-            elem_size <= std::mem::size_of::<usize>(),
-            "create_value_vector: elem_size {} exceeds pointer size; not yet supported",
-            elem_size
-        );
-    }
+/// Create an IVector<T> COM object from raw POD value bytes.
+///
+/// Prefer [`create_vector_from_values`] for checked construction.
+///
+/// # Safety
+///
+/// All IIDs, `elem_size`, and bytes must describe exactly the same native POD
+/// type. Bytes must contain valid initialized values, with no owned fields.
+/// By-value arguments must lower to one integer word on this target (never an
+/// ARM64 HFA). Empty large values are allowed only when by-value T lowers to a
+/// single indirect pointer: x64 aggregates, or ARM64 non-HFA aggregates >16 bytes.
+/// No large values may subsequently be stored; their value-taking methods reject.
+///
+/// # Panics
+///
+/// Panics for unsupported sizes or any item whose length differs from `elem_size`.
+pub unsafe fn create_value_vector(
+    items: Vec<Vec<u8>>,
+    elem_size: usize,
+    iids: VectorIids,
+) -> IUnknown {
+    let storage = CollectionStorage::raw_value(elem_size, items.is_empty());
+    assert!(
+        items.iter().all(|bytes| bytes.len() == elem_size),
+        "create_value_vector: every item must match the declared element size"
+    );
     let packed: Vec<usize> = items
         .iter()
         .map(|bytes| {
@@ -1249,21 +1124,13 @@ pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIi
                 std::ptr::copy_nonoverlapping(
                     bytes.as_ptr(),
                     &mut val as *mut usize as *mut u8,
-                    bytes.len().min(std::mem::size_of::<usize>()),
+                    elem_size,
                 );
             }
             val
         })
         .collect();
-    new_vector(
-        packed,
-        CollectionStorage {
-            is_value_type: true,
-            is_hstring: false,
-            elem_size,
-        },
-        iids,
-    )
+    new_vector(packed, storage, iids)
 }
 
 fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
@@ -1291,9 +1158,21 @@ fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -
 mod bulk_tests;
 
 #[cfg(test)]
+#[path = "vector_abi_tests.rs"]
+mod abi_tests;
+
+#[cfg(test)]
 #[allow(unused_must_use)]
 mod tests {
     use super::*;
+    fn checked_object_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
+        let table = crate::MetadataTable::new();
+        let values = items
+            .into_iter()
+            .map(crate::WinRTValue::Object)
+            .collect::<Vec<_>>();
+        create_vector_from_values(&values, &table.object(), iids).unwrap()
+    }
     use crate::metadata_table::MetadataTable;
 
     #[test]
@@ -1319,7 +1198,7 @@ mod tests {
             uri3.cast().unwrap(),
         ];
 
-        let vector = create_vector(items, iids.clone());
+        let vector = checked_object_vector(items, iids.clone());
 
         // Test QI for IVector
         let mut vec_ptr = std::ptr::null_mut();
@@ -1371,7 +1250,7 @@ mod tests {
         let table = MetadataTable::new();
         let object_type = table.object();
         let iids = table.vector_iids(&object_type);
-        let vector = create_vector(Vec::new(), iids.clone());
+        let vector = checked_object_vector(Vec::new(), iids.clone());
         let changes = Arc::new(Mutex::new(Vec::<(i32, u32)>::new()));
         let callback_changes = changes.clone();
         let args_type = table.interface(IID_IVECTOR_CHANGED_EVENT_ARGS);
@@ -1498,7 +1377,7 @@ mod tests {
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
-        let vector = create_vector(Vec::new(), iids.clone());
+        let vector = checked_object_vector(Vec::new(), iids.clone());
         let mut observable_ptr = std::ptr::null_mut();
         let mut vector_ptr = std::ptr::null_mut();
         unsafe {
@@ -1601,102 +1480,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_large_struct_vector_is_supported_but_not_mutable() {
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        struct RectInt32Abi {
-            x: i32,
-            y: i32,
-            width: i32,
-            height: i32,
-        }
-
-        let table = MetadataTable::new();
-        let rect = table.struct_type(
-            "Windows.Graphics.RectInt32",
-            &[
-                table.i32_type(),
-                table.i32_type(),
-                table.i32_type(),
-                table.i32_type(),
-            ],
-        );
-        let iids = table.vector_iids(&rect);
-        let vector = create_vector_from_values(&[], &rect, iids.clone()).unwrap();
-        let mut vector_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vector_ptr) }
-            .ok()
-            .unwrap();
-        let vtable = unsafe { *(vector_ptr as *const *const VectorVtbl) };
-        let mut size = u32::MAX;
-
-        assert_eq!(unsafe { ((*vtable).get_size)(vector_ptr, &mut size) }, S_OK);
-        assert_eq!(size, 0);
-        assert_eq!(
-            unsafe { ((*vtable).append)(vector_ptr, std::ptr::null_mut()) },
-            E_NOTIMPL
-        );
-
-        let rect = RectInt32Abi {
-            x: 1,
-            y: 2,
-            width: 3,
-            height: 4,
-        };
-        let vector_index_of: unsafe extern "system" fn(
-            *mut c_void,
-            RectInt32Abi,
-            *mut u32,
-            *mut bool,
-        ) -> HRESULT = unsafe { std::mem::transmute((*vtable).index_of) };
-        let mut index = u32::MAX;
-        let mut found = true;
-        assert_eq!(
-            unsafe { vector_index_of(vector_ptr, rect, &mut index, &mut found) },
-            E_NOTIMPL
-        );
-        assert_eq!(index, u32::MAX);
-        assert!(found);
-
-        let mut live_view_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector_view, &mut live_view_ptr) }
-            .ok()
-            .unwrap();
-        let live_view_vtable = unsafe { *(live_view_ptr as *const *const VectorViewVtbl) };
-        let live_view_index_of: unsafe extern "system" fn(
-            *mut c_void,
-            RectInt32Abi,
-            *mut u32,
-            *mut bool,
-        ) -> HRESULT = unsafe { std::mem::transmute((*live_view_vtable).index_of) };
-        assert_eq!(
-            unsafe { live_view_index_of(live_view_ptr, rect, &mut index, &mut found) },
-            E_NOTIMPL
-        );
-
-        let mut snapshot_view_ptr = std::ptr::null_mut();
-        assert_eq!(
-            unsafe { ((*vtable).get_view)(vector_ptr, &mut snapshot_view_ptr) },
-            S_OK
-        );
-        let snapshot_view_vtable = unsafe { *(snapshot_view_ptr as *const *const VectorViewVtbl) };
-        let snapshot_view_index_of: unsafe extern "system" fn(
-            *mut c_void,
-            RectInt32Abi,
-            *mut u32,
-            *mut bool,
-        ) -> HRESULT = unsafe { std::mem::transmute((*snapshot_view_vtable).index_of) };
-        assert_eq!(
-            unsafe { snapshot_view_index_of(snapshot_view_ptr, rect, &mut index, &mut found) },
-            E_NOTIMPL
-        );
-
-        drop(unsafe { IUnknown::from_raw(snapshot_view_ptr) });
-        drop(unsafe { IUnknown::from_raw(live_view_ptr) });
-        drop(unsafe { IUnknown::from_raw(vector_ptr) });
-    }
-
-    #[test]
     fn test_nonempty_large_struct_vector_remains_unsupported() {
         let table = MetadataTable::new();
         let rect = table.struct_type(
@@ -1757,7 +1540,7 @@ mod tests {
         let iids = table.vector_iids(&table.object());
 
         // Start with empty vector
-        let vector = create_vector(Vec::new(), iids.clone());
+        let vector = checked_object_vector(Vec::new(), iids.clone());
 
         // QI to IVector
         let mut vec_ptr = std::ptr::null_mut();
@@ -1805,7 +1588,7 @@ mod tests {
 
         let items: Vec<IUnknown> = vec![uri1.cast().unwrap(), uri2.cast().unwrap()];
 
-        let vector = create_vector(items, iids.clone());
+        let vector = checked_object_vector(items, iids.clone());
 
         // QI to IIterable
         let mut iter_iface_ptr = std::ptr::null_mut();
@@ -1850,7 +1633,7 @@ mod tests {
         let uri =
             windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
-        let vector = create_vector(items, iids.clone());
+        let vector = checked_object_vector(items, iids.clone());
 
         // QI for IVectorView should succeed
         let mut view_ptr = std::ptr::null_mut();
@@ -1889,7 +1672,7 @@ mod tests {
         let uri =
             windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
-        let vector = create_vector(items, iids.clone());
+        let vector = checked_object_vector(items, iids.clone());
 
         // QI to IVector to call get_view
         let mut vec_ptr = std::ptr::null_mut();
@@ -1933,7 +1716,7 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
 
-        let vector = create_vector(Vec::new(), iids.clone());
+        let vector = checked_object_vector(Vec::new(), iids.clone());
 
         let mut vec_ptr = std::ptr::null_mut();
         unsafe { vector.query(&iids.vector, &mut vec_ptr) }
@@ -1979,7 +1762,8 @@ mod tests {
         // Pack i32 values into usize slots
         let items: Vec<Vec<u8>> = vec![42i32.to_ne_bytes().to_vec(), 99i32.to_ne_bytes().to_vec()];
 
-        let vector = create_value_vector(items, 4, iids.clone());
+        // Initialized i32 bytes and the complete matching IID set have word ABI on all targets.
+        let vector = unsafe { create_value_vector(items, 4, iids.clone()) };
 
         // QI to IVector
         let mut vec_ptr = std::ptr::null_mut();
@@ -2028,7 +1812,7 @@ mod tests {
         let uri =
             windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
-        let vector = create_vector(items, iids.clone());
+        let vector = checked_object_vector(items, iids.clone());
 
         // QI to IVector from main thread
         let mut vec_ptr = std::ptr::null_mut();

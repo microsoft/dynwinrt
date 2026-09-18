@@ -350,6 +350,46 @@ the standard `VectorChanged` collection-change notifications. Generated
 `IObservableVector<T>` projections expose `asVector()` for mutating collection
 properties, and codegen emits the paired `IVector<T>` binding automatically.
 
+### Creating WinRT collections
+
+`DynWinRtValue.createVector(items, elementType)` and
+`DynWinRtValue.createMap(keys, values, keyType, valueType)` keep their public
+signatures. They validate element identity, native layout, ownership, and the
+complete set of closed collection IIDs before creating a native object.
+These limits apply to **producing** collections, including generated input
+conversions, not to consuming collections returned by Windows.
+
+| Element / key / value | x64 | ARM64 | i686 |
+|---|---|---|---|
+| Boolean, integers, Char16, enum, HRESULT | Supported | Supported | Up to 4 bytes; I64/U64 rejected |
+| HSTRING; owned nullable interface/object references | Supported | Supported | Supported |
+| POD structs in populated vectors or maps | Sizes 1, 2, 4, 8 | Up to 8 bytes, non-HFA only | Up to 4 bytes |
+| Additional POD structs in **empty vectors only** | Larger than 8 bytes | Larger than 16 bytes, non-HFA only | None |
+| Top-level F32/F64/GUID; structs recursively containing HSTRING or references | Rejected, even empty | Rejected, even empty | Rejected, even empty |
+
+POD means a validated, reference-free native layout. HFA means an aggregate of
+one to four same-width floating-point values, including nested aggregates.
+Thus `Point`/`Size` work on x64 but are rejected on ARM64 even when empty;
+`PointInt32` works on x64 and ARM64. ARM64 also rejects empty `RectInt32`,
+`Rect`, and `BasicGeoposition` vectors. `ManipulationDelta` (20 bytes, five floats,
+non-HFA) supports empty
+vectors on x64 and ARM64. Large map keys/values are rejected even for empty maps.
+
+Structs and typed enums require exact type identity, not a matching byte size
+or shape. Scalars require the matching value variant, except U16 inputs for
+Char16, I32 inputs for enum/HRESULT, and range-checked I32 inputs for
+I8/U8/Char16. For example, I32 `255` is accepted for U8; I32 `257` throws instead
+of wrapping. Reference inputs are retained and queried for the declared IID;
+an incompatible interface throws, while a null reference remains null.
+
+The JavaScript helpers use validated typed core factories. Rust callers can use
+the safe `create_vector_from_values` / `create_map_from_values` factories for
+the same checks. The metadata-free Rust `create_value_vector`, `create_vector`,
+and `create_map` constructors require `unsafe`: callers must prove the native
+ABI, ownership, element types, and complete IID set themselves.
+Complete native struct collection support is tracked in
+[microsoft/dynwinrt#161](https://github.com/microsoft/dynwinrt/issues/161).
+
 ## Platform support
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use super::*;
-use crate::{MetadataTable, TypeHandle, WinRTValue};
+use crate::{MetadataTable, TypeHandle, TypeKind, WinRTValue};
 use windows_collections::IVector;
 use windows_core::IInspectable;
 
@@ -54,7 +54,43 @@ fn iterator(object: &IUnknown, iids: &VectorIids) -> IUnknown {
 
 fn check_value_bulk(element: TypeHandle, items: Vec<Vec<u8>>) {
     let iids = element.table().vector_iids(&element);
-    let vector = create_value_vector(items.clone(), element.size_of(), iids.clone());
+    let values = items
+        .iter()
+        .map(|bytes| {
+            assert_eq!(bytes.len(), element.size_of());
+            match element.kind() {
+                TypeKind::Bool => WinRTValue::Bool(bytes[0] != 0),
+                TypeKind::I8 => WinRTValue::I8(bytes[0] as i8),
+                TypeKind::U8 => WinRTValue::U8(bytes[0]),
+                TypeKind::I16 => {
+                    WinRTValue::I16(i16::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::U16 | TypeKind::Char16 => {
+                    WinRTValue::U16(u16::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::I32 | TypeKind::Enum(_) | TypeKind::HResult => {
+                    WinRTValue::I32(i32::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::U32 => {
+                    WinRTValue::U32(u32::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::I64 => {
+                    WinRTValue::I64(i64::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::U64 => {
+                    WinRTValue::U64(u64::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+                }
+                TypeKind::Struct(_) => {
+                    let mut data = element.default_value();
+                    data.set_field(0, bytes[0]);
+                    data.set_field(1, bytes[1]);
+                    WinRTValue::Struct(data)
+                }
+                kind => panic!("unexpected bulk test type: {kind:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    let vector = create_vector_from_values(&values, &element, iids.clone()).unwrap();
     let mutable = query(&vector, &iids.vector);
     let vtable = unsafe { &**(mutable.as_raw() as *const *const VectorVtbl) };
     let live = query(&vector, &iids.vector_view);

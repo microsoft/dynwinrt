@@ -1078,7 +1078,7 @@ fn expected_object_iid(typ: &TypeHandle) -> Option<GUID> {
     }
 }
 
-fn coerce_input_object(
+pub(crate) fn coerce_input_object(
     expected: &TypeHandle,
     value: &WinRTValue,
 ) -> windows_core::Result<Option<WinRTValue>> {

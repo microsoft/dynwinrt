@@ -5,6 +5,7 @@ use windows::core::*;
 
 mod abi;
 mod call;
+mod collection_element;
 pub mod com;
 mod composition;
 mod ibuffer;
