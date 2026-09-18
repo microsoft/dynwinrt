@@ -5,6 +5,7 @@ import test from 'ava'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { runCodegen } from '../scripts/run-codegen.mjs'
 
 const packageRoot = resolve(process.cwd())
 const repositoryRoot = resolve(packageRoot, '..', '..')
@@ -15,11 +16,6 @@ test.before((t) => {
   t.truthy(winmd, 'Pinned DYNWINRT_WIN32_WINMD is required')
   rmSync(output, { recursive: true, force: true })
   const args = [
-    'run',
-    '--quiet',
-    '-p',
-    'dynwinrt-codegen',
-    '--',
     'generate',
     '--winmd',
     winmd!,
@@ -29,7 +25,7 @@ test.before((t) => {
     output,
   ]
   for (const extra of [['--dry-run'], []]) {
-    const generated = spawnSync('cargo', [...args, ...extra], {
+    const generated = runCodegen([...args, ...extra], {
       cwd: repositoryRoot,
       encoding: 'utf8',
       windowsHide: true,

@@ -3,29 +3,34 @@
 # Licensed under the MIT License.
 
 $ErrorActionPreference = "Stop"
+# Child failures are deliberate assertions, including when CI enables native errors.
+$PSNativeCommandUseErrorActionPreference = $false
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $scratch = Join-Path $root "target\e2e-preparation-$PID-$([Guid]::NewGuid().ToString('N'))"
 $scripts = Join-Path $scratch "tests\e2e"
 $trace = Join-Path $scratch "trace.json"
 $venv = Join-Path $scratch "bindings\py\.venv\Scripts\python.exe"
 $explicit = Join-Path $scratch "explicit-python.exe"
+$codegen = Join-Path $scratch "prebuilt-codegen.exe"
 $standard = Join-Path $scripts "e2e_generated\retained.json"
 $shell = (Get-Process -Id $PID).Path
 
 try {
     New-Item -ItemType Directory -Path $scripts, (Split-Path $venv), (Split-Path $standard) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "e2e_test.ps1") -Destination $scripts
-    New-Item -ItemType File -Path $venv, $explicit | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "codegen.ps1") -Destination $scripts
+    New-Item -ItemType File -Path $venv, $explicit, $codegen | Out-Null
     Set-Content -LiteralPath $standard -Value '{"retained": true}' -NoNewline
 
     # Execute the real entrypoint, intercepting only expensive external work.
     # Both boundaries deliberately fail: tests cannot mistake a stub runner or
     # stub build for successful generation/native E2E, and check exit propagation.
     @'
-param([string[]]$Lang, [string]$Python, [string]$CargoProfile, [string]$CargoTarget, [switch]$KeepGenerated)
+param([string[]]$Lang, [string]$Python, [string]$CargoProfile, [string]$CargoTarget, [string]$Codegen, [switch]$KeepGenerated)
 @{
     stage = "runner"; languages = @($Lang); python = $Python
     profile = $CargoProfile; target = $CargoTarget; keep = $KeepGenerated.IsPresent
+    codegen = $Codegen
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot "..\..\trace.json")
 exit 23
 '@ | Set-Content -LiteralPath (Join-Path $scripts "implementation_test.ps1")
@@ -39,6 +44,11 @@ function cargo {
 }
 function node { throw "Node must not run before the focused runner" }
 $parameters = Get-Content -LiteralPath $CaseFile -Raw | ConvertFrom-Json -AsHashtable
+$env:DYNWINRT_CODEGEN = $null
+if ($parameters.ContainsKey("EnvironmentCodegen")) {
+    $env:DYNWINRT_CODEGEN = $parameters.EnvironmentCodegen
+    $parameters.Remove("EnvironmentCodegen")
+}
 if ($parameters.ContainsKey("HideGlobalTools")) {
     $parameters.Remove("HideGlobalTools")
     Remove-Item Function:\node
@@ -92,6 +102,23 @@ exit $LASTEXITCODE
         Suite = "implementations"; Lang = @("py"); SkipBuild = $true; Python = $explicit
     } 23 "runner"
     if ($selected.python -ne $explicit -or $selected.keep) { throw "Explicit -Python did not override the existing venv" }
+    foreach ($option in @("Codegen", "EnvironmentCodegen")) {
+        $parameters = @{ Suite = "implementations"; Lang = @("py", "ts"); SkipBuild = $true }
+        $parameters[$option] = $codegen
+        $selected = Invoke-PreparationCase $parameters 23 "runner"
+        if ($selected.codegen -ne $codegen) { throw "Prebuilt codegen was not forwarded through $option" }
+    }
+    $selected = Invoke-PreparationCase @{
+        Suite = "implementations"; Lang = @("py"); SkipBuild = $true
+        Codegen = $codegen; EnvironmentCodegen = "$scratch\absent.exe"
+    } 23 "runner"
+    if ($selected.codegen -ne $codegen) { throw "Explicit -Codegen did not override the environment" }
+    Invoke-PreparationCase @{
+        Suite = "implementations"; Lang = @("py"); SkipBuild = $true; Codegen = "$scratch\absent.exe"
+    } 1 "" "Prebuilt dynwinrt-codegen does not exist"
+    Invoke-PreparationCase @{
+        Suite = "implementations"; Lang = @("py"); SkipBuild = $true; Codegen = $scratch
+    } 1 "" "Prebuilt dynwinrt-codegen does not exist"
     $selected = Invoke-PreparationCase @{
         Suite = "implementations"; Lang = @("ts"); SkipBuild = $true
     } 23 "runner"

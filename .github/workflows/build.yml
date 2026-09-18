@@ -10,15 +10,36 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  changes:
+    runs-on: windows-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Classify the entire PR diff
+        id: classify
+        run: python eng\ci\classify_changes.py
+
   format:
+    needs: changes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.docs_only == 'false'
         with:
           components: rustfmt
       - name: Check Rust formatting
+        if: needs.changes.outputs.docs_only == 'false'
         shell: pwsh
         run: |
           cargo fmt --all -- --check
@@ -26,10 +47,26 @@ jobs:
             Write-Error "Rust formatting failed. Run 'cargo fmt --all' and commit the changes."
             exit 1
           }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test CI scheduling and artifact contracts
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r eng\ci\requirements.txt --quiet
+          python -m unittest discover -s eng\ci -p "test_*.py" -v
+          node --test bindings\js\scripts\run-codegen.test.mjs
+          .\tests\e2e\e2e_preparation.tests.ps1
+          .\tests\e2e\prebuilt_codegen.tests.ps1
 
-  # Tests
-  test:
-    needs: format
+  # Rust test programs are independent builds, not reusable runtime packages.
+  test-rust:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -247,9 +284,33 @@ jobs:
       - name: Check x86 Classic COM runtime
         run: cargo check -p jswinrt_rs --target i686-pc-windows-msvc
 
-  # E2E tests: winmd → generate → call real WinRT APIs
-  e2e:
-    needs: test
+  # Producers start beside Rust tests. Only current-run, configuration-specific
+  # payloads are reusable; neither a Cargo target tree nor a test program is shared.
+  build-codegen-x64:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build x64 codegen
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build -p dynwinrt-codegen --release --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory artifacts\codegen-x64\payload -Force | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\dynwinrt-codegen.exe artifacts\codegen-x64\payload
+          .\eng\ci\artifact.ps1 -Mode Write -Path artifacts\codegen-x64 -Kind codegen -Architecture x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-codegen-x64
+          path: artifacts\codegen-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  build-bindings-x64:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -260,6 +321,164 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          architecture: x64
+      - name: Build production JS binding
+        working-directory: bindings/js
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm install
+          npx napi build --no-const-enum --platform --release --target x86_64-pc-windows-msvc -o dist
+          npm run build:entrypoints --silent
+          node scripts\verify-runtime-artifact.mjs dist
+      - name: Stage production JS artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory artifacts\js-x64 -Force | Out-Null
+          Copy-Item bindings\js\dist artifacts\js-x64\payload -Recurse
+          .\eng\ci\artifact.ps1 -Mode Write -Path artifacts\js-x64 -Kind js -Architecture x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-js-x64
+          path: artifacts\js-x64
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build Python binding
+        working-directory: bindings/py
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install "maturin>=1.11,<2" --quiet
+          python -m maturin build --quiet --interpreter python --target x86_64-pc-windows-msvc `
+            --out ..\..\artifacts\python-x64\payload
+          ..\..\eng\ci\artifact.ps1 -Mode Write -Path ..\..\artifacts\python-x64 `
+            -Kind python -Architecture x64 -Profile dev -PythonAbi cp312
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-python-x64
+          path: artifacts\python-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  build-js-test-hooks:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build isolated JS native fixtures
+        working-directory: bindings/js
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm install
+          npx napi build --no-const-enum --platform --release --target x86_64-pc-windows-msvc --features test-hooks -o dist
+          npm run build:entrypoints --silent
+          node scripts\verify-runtime-artifact.mjs dist --test-hooks
+      - name: Stage test-hooks artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory artifacts\js-test-hooks-x64 -Force | Out-Null
+          Copy-Item bindings\js\dist artifacts\js-test-hooks-x64\payload -Recurse
+          .\eng\ci\artifact.ps1 -Mode Write -Path artifacts\js-test-hooks-x64 `
+            -Kind js -Architecture x64 -Features test-hooks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-js-test-hooks-x64
+          path: artifacts\js-test-hooks-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  build-arm64:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build ARM64 codegen
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
+          New-Item -ItemType Directory artifacts\codegen-arm64\payload -Force | Out-Null
+          Copy-Item target\aarch64-pc-windows-msvc\release\dynwinrt-codegen.exe artifacts\codegen-arm64\payload
+          .\eng\ci\artifact.ps1 -Mode Write -Path artifacts\codegen-arm64 -Kind codegen -Architecture arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-codegen-arm64
+          path: artifacts\codegen-arm64
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build production ARM64 JS binding
+        working-directory: bindings/js
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm install
+          npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+          npm run build:entrypoints --silent
+      - name: Stage ARM64 JS artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory artifacts\js-arm64 -Force | Out-Null
+          Copy-Item bindings\js\dist artifacts\js-arm64\payload -Recurse
+          .\eng\ci\artifact.ps1 -Mode Write -Path artifacts\js-arm64 -Kind js -Architecture arm64
+      - name: Compile raw union MSVC C oracle for ARM64
+        run: cargo test -p jswinrt_rs --features test-hooks --target aarch64-pc-windows-msvc --no-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-js-arm64
+          path: artifacts\js-arm64
+          if-no-files-found: error
+          retention-days: 7
+
+  # Production E2E never waits for the ARM64 lane or the Rust test job.
+  e2e-runtime:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, build-codegen-x64, build-bindings-x64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-codegen-x64
+          path: artifacts\codegen-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-js-x64
+          path: artifacts\js-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-python-x64
+          path: artifacts\python-x64
+      - name: Verify production input artifacts
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\codegen-x64 -Kind codegen -Architecture x64
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\js-x64 -Kind js -Architecture x64
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\python-x64 -Kind python -Architecture x64 -Profile dev -PythonAbi cp312
+          Copy-Item artifacts\js-x64\payload bindings\js\dist -Recurse
+          node bindings\js\scripts\verify-runtime-artifact.mjs bindings\js\dist
+          "DYNWINRT_CODEGEN=$((Resolve-Path artifacts\codegen-x64\payload\dynwinrt-codegen.exe).Path)" >> $env:GITHUB_ENV
       - uses: NuGet/setup-nuget@v2
       - name: Install Win32 metadata
         shell: pwsh
@@ -277,36 +496,32 @@ jobs:
           }
           "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
           "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
-      - name: Build dynwinrt-codegen
-        run: cargo build -p dynwinrt-codegen --release
-      - name: Build JS binding
+      - name: Install JS test dependencies
         working-directory: bindings/js
-        run: |
-          npm install
-          npx napi build --no-const-enum --platform --release -o dist
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:entrypoints --silent
-          npm install --no-save tsx
+        run: npm install
       - name: Test JS binding
         working-directory: bindings/js
         run: npm test
-      - name: Build Python binding
+      - name: Install prebuilt Python binding
+        shell: pwsh
         run: |
-          cd bindings/py
-          python -m venv .venv
-          .venv/Scripts/Activate.ps1
-          pip install pytest maturin "mypy>=1.13,<2" "coverage>=7.15,<8" --quiet
-          maturin build --quiet
-          pip install (Get-ChildItem ../../target/wheels/*.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName --force-reinstall --quiet
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv bindings\py\.venv
+          $python = '.\bindings\py\.venv\Scripts\python.exe'
+          & $python -m pip install pytest "mypy>=1.13,<2" "coverage>=7.15,<8" --quiet
+          $wheels = @(Get-ChildItem artifacts\python-x64\payload -Filter *.whl -File)
+          if ($wheels.Count -ne 1) { throw 'Expected exactly the verified CPython 3.12 x64 wheel' }
+          & $python -m pip install $wheels[0].FullName --no-deps --no-index --quiet
       - name: Test Python binding
         run: |
           .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
       - name: Test generated Python long paths
         run: |
           .\eng\release\python\test_generated_python_long_paths.ps1 `
             -Python .\bindings\py\.venv\Scripts\python.exe `
-            -Codegen .\target\release\dynwinrt-codegen.exe
+            -Codegen $env:DYNWINRT_CODEGEN
       - name: Test generated implementation symbol identities
         shell: pwsh
         run: |
@@ -314,7 +529,7 @@ jobs:
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
           cargo test -p dynwinrt-codegen --test implementation_naming_test
       - name: Run E2E tests
-        run: .\tests\e2e\e2e_test.ps1 -SkipBuild
+        run: .\tests\e2e\e2e_test.ps1 -SkipBuild -Codegen $env:DYNWINRT_CODEGEN
       # This optional-SDK behavioral smoke is separate from generated coverage
       # totals. The receiver/GIL regressions also run in instrumented core and
       # binding tests; no WinAppSDK runtime bootstrap or UI loop is needed here.
@@ -340,93 +555,244 @@ jobs:
             -Filter Windows.winmd -File -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $windows) { throw 'Windows SDK metadata is required for the dispatcher smoke' }
           $output = Join-Path $PWD 'artifacts\dispatcher-implementation-smoke'
-          .\target\release\dynwinrt-codegen.exe generate `
+          & $env:DYNWINRT_CODEGEN generate `
             --winmd (Join-Path $metadata 'Microsoft.UI.winmd') --ref $windows.FullName `
             --namespace Microsoft.UI.Dispatching --class-name DispatcherQueue `
             --lang py --output $output
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bindings\py\.venv\Scripts\python.exe .\tests\e2e\runners\dispatcher_implementation_py.py --generated $output
+
+  e2e-native:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, build-codegen-x64, build-js-test-hooks]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-codegen-x64
+          path: artifacts\codegen-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-js-test-hooks-x64
+          path: artifacts\js-test-hooks-x64
+      - name: Verify isolated native fixture artifacts
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\codegen-x64 -Kind codegen -Architecture x64
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\js-test-hooks-x64 -Kind js -Architecture x64 -Features test-hooks
+          Copy-Item artifacts\js-test-hooks-x64\payload bindings\js\dist -Recurse
+          node bindings\js\scripts\verify-runtime-artifact.mjs bindings\js\dist --test-hooks
+          "DYNWINRT_CODEGEN=$((Resolve-Path artifacts\codegen-x64\payload\dynwinrt-codegen.exe).Path)" >> $env:GITHUB_ENV
+      - name: Install JS test dependencies
+        working-directory: bindings/js
+        run: npm install
+      - uses: NuGet/setup-nuget@v2
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 71.0.14-preview -OutputDirectory $root -DirectDownload -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse | Select-Object -First 1
+          if (-not $winmd) { throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd' }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
+      # These execute the same tests as the developer npm scripts, but must not
+      # run their build:test-hooks prefixes over the downloaded immutable inputs.
       - name: Test JS TSFN lifecycle and queue handling
         working-directory: bindings/js
-        run: npm run test:tsfn
+        run: npx --no-install ava __test__/tsfn.spec.ts
       - name: Test actual generated unsafe COM companion
         working-directory: bindings/js
-        run: npm run test:generated-unsafe
+        run: npx --no-install ava __test__/generated-unsafe-companion.e2e.ts
       - name: Test metadata-driven native COM one-shot completion
         working-directory: bindings/js
-        run: npm run test:native-completion
+        run: npx --no-install ava __test__/native-completion.e2e.ts
       - name: Test metadata-driven COM borrowed copies
         working-directory: bindings/js
-        run: npm run test:borrowed-copy
+        run: npx --no-install ava __test__/borrowed-copy.e2e.ts
       - name: Test Win32 failed-cleanup recovery
         working-directory: bindings/js
         run: node --expose-gc __test__\fixtures\win32-cleanup-errors.cjs
 
-  # dynwinrt-codegen (x64 + arm64)
-  dynwinrt-codegen:
-    needs: test
+  # Stable check identities also complete on intentional documentation-only skips.
+  test:
+    if: ${{ always() }}
+    needs: [changes, format, test-rust]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Require Rust validation
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: changes,format,test-rust
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_SKIPPABLE_JOBS: test-rust
+        run: |
+          .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
+            -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
+
+  e2e:
+    if: ${{ always() }}
+    needs:
+      [
+        changes,
+        format,
+        test,
+        build-codegen-x64,
+        build-bindings-x64,
+        build-js-test-hooks,
+        e2e-runtime,
+        e2e-native,
+      ]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require all E2E lanes
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: changes,format,test,build-codegen-x64,build-bindings-x64,build-js-test-hooks,e2e-runtime,e2e-native
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_SKIPPABLE_JOBS: build-codegen-x64,build-bindings-x64,build-js-test-hooks,e2e-runtime,e2e-native
+        run: |
+          .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
+            -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
+
+  # Only these gated assembly jobs publish the existing release-ready names.
+  dynwinrt-codegen:
+    if: ${{ always() }}
+    needs: [changes, test, e2e, build-codegen-x64, build-arm64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require all validation
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: changes,test,e2e,build-codegen-x64,build-arm64
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_SKIPPABLE_JOBS: build-codegen-x64,build-arm64
+        run: |
+          .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
+            -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
         with:
-          targets: aarch64-pc-windows-msvc
-      - name: Build x64
+          name: ci-codegen-x64
+          path: artifacts\codegen-x64
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
+        with:
+          name: ci-codegen-arm64
+          path: artifacts\codegen-arm64
+      - name: Assemble verified codegen package
+        if: needs.changes.outputs.docs_only == 'false'
+        shell: pwsh
         run: |
-          cargo build -p dynwinrt-codegen --release
-          mkdir -p tools/dynwinrt-codegen/npm/bin/x64
-          cp target/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/x64/
-      - name: Build arm64
-        run: |
-          cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
-          mkdir -p tools/dynwinrt-codegen/npm/bin/arm64
-          cp target/aarch64-pc-windows-msvc/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/arm64/
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\codegen-x64 -Kind codegen -Architecture x64
+          .\eng\ci\artifact.ps1 -Mode Verify -Path artifacts\codegen-arm64 -Kind codegen -Architecture arm64
+          foreach ($arch in @('x64', 'arm64')) {
+            New-Item -ItemType Directory "tools\dynwinrt-codegen\npm\bin\$arch" -Force | Out-Null
+            Copy-Item "artifacts\codegen-$arch\payload\dynwinrt-codegen.exe" "tools\dynwinrt-codegen\npm\bin\$arch"
+          }
       - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
         with:
           name: dynwinrt-codegen
           path: tools/dynwinrt-codegen/npm/
+          if-no-files-found: error
 
-  # dynwinrt (x64 + arm64 in one job)
   dynwinrt:
-    needs: test
+    if: ${{ always() }}
+    needs: [changes, test, e2e, build-bindings-x64, build-arm64]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-pc-windows-msvc
+      - name: Require all validation
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: changes,test,e2e,build-bindings-x64,build-arm64
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_SKIPPABLE_JOBS: build-bindings-x64,build-arm64
+        run: |
+          .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
+            -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.docs_only == 'false'
         with:
           node-version: 24
-      - name: Install dependencies
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
+        with:
+          name: ci-js-x64
+          path: artifacts\js-x64
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
+        with:
+          name: ci-js-arm64
+          path: artifacts\js-arm64
+      - name: Assemble matching production runtime sidecars
+        if: needs.changes.outputs.docs_only == 'false'
+        run: .\eng\ci\merge-runtime-artifacts.ps1 -X64 artifacts\js-x64 -Arm64 artifacts\js-arm64 -Output bindings\js\dist
+      - name: Install import test dependencies
+        if: needs.changes.outputs.docs_only == 'false'
         working-directory: bindings/js
         run: npm install
-      - name: Compile raw union MSVC C oracle for ARM64
-        run: cargo test -p jswinrt_rs --features test-hooks --target aarch64-pc-windows-msvc --no-run
-      - name: Build x64
-        working-directory: bindings/js
-        run: |
-          npx napi build --no-const-enum --platform --release -o dist
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:entrypoints --silent
-      - name: Build arm64
-        working-directory: bindings/js
-        run: |
-          npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:entrypoints --silent
       - name: Check production native imports
+        if: needs.changes.outputs.docs_only == 'false'
         working-directory: bindings/js
         run: npm run test:imports
+      - name: Verify assembled JS runtime artifact
+        if: needs.changes.outputs.docs_only == 'false'
+        run: node .\bindings\js\scripts\verify-runtime-artifact.mjs .\bindings\js\dist
       - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
         with:
           name: dynwinrt
           path: bindings/js/dist/
           if-no-files-found: error
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.docs_only == 'false'
         with:
           name: dynwinrt
           path: ${{ runner.temp }}\dynwinrt-artifact
       - name: Verify downloaded JS runtime artifact
+        if: needs.changes.outputs.docs_only == 'false'
         shell: pwsh
         run: node .\bindings\js\scripts\verify-runtime-artifact.mjs "$env:RUNNER_TEMP\dynwinrt-artifact"
+
+  ci-success:
+    if: ${{ always() }}
+    needs:
+      [
+        changes,
+        format,
+        test-rust,
+        test,
+        build-codegen-x64,
+        build-bindings-x64,
+        build-js-test-hooks,
+        build-arm64,
+        e2e-runtime,
+        e2e-native,
+        e2e,
+        dynwinrt,
+        dynwinrt-codegen,
+      ]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every Build job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: changes,format,test-rust,test,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native,e2e,dynwinrt,dynwinrt-codegen
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_SKIPPABLE_JOBS: test-rust,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native
+        run: |
+          .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
+            -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')

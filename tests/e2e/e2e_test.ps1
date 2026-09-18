@@ -9,6 +9,7 @@
 # Usage:
 #   .\tests\e2e\e2e_test.ps1                    # Full (build + generate + test)
 #   .\tests\e2e\e2e_test.ps1 -SkipBuild         # Skip build step
+#   .\tests\e2e\e2e_test.ps1 -SkipBuild -Codegen C:\artifacts\dynwinrt-codegen.exe
 #   .\tests\e2e\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e\e2e_test.ps1 -Lang ts           # TypeScript only
 #   .\tests\e2e\e2e_test.ps1 -Lang com          # Classic COM only
@@ -21,6 +22,8 @@ param(
     [switch]$KeepGenerated,
     [string]$CargoProfile = "release",
     [string]$CargoTarget,
+    [ValidateNotNullOrEmpty()]
+    [string]$Codegen = $env:DYNWINRT_CODEGEN,
     [string]$Python,
     [ValidateSet("all", "standard", "implementations")]
     [string]$Suite = "all",
@@ -29,6 +32,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "codegen.ps1")
+$codegenInvocation = Get-CodegenInvocation -Codegen $Codegen -CargoProfile $CargoProfile -CargoTarget $CargoTarget
+$codegenCommand = $codegenInvocation.Command
+$codegenArguments = $codegenInvocation.Arguments
+$codegenOptions = if ($Codegen) { @{ Codegen = $codegenCommand } } else { @{} }
 $langWasExplicit = $PSBoundParameters.ContainsKey("Lang")
 if ($Suite -eq "implementations") {
     $Lang = @($Lang | Where-Object { $_ -in @("py", "ts") })
@@ -151,8 +159,10 @@ function Invoke-NodeRunner([string]$runnerPath, [string[]]$runnerArguments = @()
 if (-not $SkipBuild) {
     Write-Host "`n--- Build ---" -ForegroundColor Yellow
 
-    & cargo build -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs
-    if ($LASTEXITCODE -ne 0) { Write-Error "dynwinrt-codegen build failed"; exit 1 }
+    if (-not $Codegen) {
+        & cargo build -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs
+        if ($LASTEXITCODE -ne 0) { Write-Error "dynwinrt-codegen build failed"; exit 1 }
+    }
 
     if ("py" -in $Lang) {
         Push-Location (Join-Path $root "bindings\py")
@@ -210,7 +220,7 @@ if (-not $SkipBuild) {
 if ($Suite -eq "implementations") {
     & (Join-Path $PSScriptRoot "implementation_test.ps1") `
         -Lang $Lang -Python $pythonExe -CargoProfile $CargoProfile -CargoTarget $CargoTarget `
-        -KeepGenerated:$KeepGenerated
+        @codegenOptions -KeepGenerated:$KeepGenerated
     exit $LASTEXITCODE
 }
 
@@ -246,7 +256,7 @@ function Generate($lang, $outDir) {
     foreach ($ns in ($byNs.Keys | Sort-Object)) {
         $classes = ($byNs[$ns] | Select-Object -Unique) -join ","
         Write-Host "  $lang`: $ns [$classes]"
-        & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        & $codegenCommand @codegenArguments generate `
             --namespace $ns `
             --class-name $classes `
             --lang $codegenLang `
@@ -266,7 +276,7 @@ if ("com" -in $Lang) {
     $comRuntimeImport = "../../../../../../bindings/js/dist/com-unsafe.js"
     $winrtRuntimeImport = "../../../../../bindings/js/dist/winrt.js"
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
         --class-name "TaskbarList,IShellLinkW,IDataTransferManagerInterop,FileOperation,FileOpenDialog,IFileDialogEvents" `
@@ -274,7 +284,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
         --class-name IPersistFile `
@@ -282,7 +292,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM persistence generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell.PropertiesSystem `
         --class-name IPropertyStore `
@@ -290,7 +300,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM property store generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.WinRT `
         --class-name ISystemMediaTransportControlsInterop `
@@ -298,7 +308,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM interop generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.Graphics.Imaging `
         --class-name IWICImagingFactory `
@@ -306,7 +316,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM WIC generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
         --class-name IStream `
@@ -314,14 +324,14 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM stream generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --class-name "Windows.Win32.System.Com.IDispatch,Windows.Win32.System.Ole.IEnumVARIANT" `
         --output $comAutomationDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Automation generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
         --class-name "IMalloc,IClassFactory,IErrorInfo" `
@@ -329,7 +339,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM infrastructure generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Ole `
         --class-name ICreateErrorInfo `
@@ -337,7 +347,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM error-info generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Ole `
         --class-name IDropTarget `
@@ -345,7 +355,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM callback generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --namespace Windows.Media `
         --class-name SystemMediaTransportControls `
         --output $comSmtcDir `
@@ -371,7 +381,7 @@ if ("win32" -in $Lang) {
         "Windows.Win32.System.Pipes",
         "Windows.Win32.Storage.FileSystem"
     ) | ForEach-Object { "$_.Apis" }
-    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $win32Winmd `
         --class-name ($win32Classes -join ",") `
         --output $win32BindingsDir `
@@ -501,7 +511,7 @@ if ($Suite -eq "all" -and ("py" -in $Lang -or "ts" -in $Lang)) {
     $implementationLangs = @($Lang | Where-Object { $_ -in @("py", "ts") })
     & (Join-Path $PSScriptRoot "implementation_test.ps1") `
         -Lang $implementationLangs -Python $pythonExe `
-        -CargoProfile $CargoProfile -CargoTarget $CargoTarget -KeepGenerated
+        -CargoProfile $CargoProfile -CargoTarget $CargoTarget @codegenOptions -KeepGenerated
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     foreach ($l in $implementationLangs) {
         $resultPath = Join-Path $e2eDir "implementations\results_$l.json"

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { lstatSync, readFileSync, readlinkSync, rmSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { runCodegen } from '../scripts/run-codegen.mjs'
 
 test.serial('generated IUIAutomation unsafe companion parses and registers without native calls', (t) => {
   const winmd = process.env.DYNWINRT_WIN32_WINMD
@@ -17,14 +18,8 @@ test.serial('generated IUIAutomation unsafe companion parses and registers witho
   )
 
   try {
-    const generation = spawnSync(
-      'cargo',
+    const generation = runCodegen(
       [
-        'run',
-        '--quiet',
-        '-p',
-        'dynwinrt-codegen',
-        '--',
         'generate',
         '--winmd',
         winmd!,
@@ -141,11 +136,6 @@ test.serial('generated safe COM and unsafe WinML companions preserve exact contr
 
   try {
     const generationArgs = [
-        'run',
-        '--quiet',
-        '-p',
-        'dynwinrt-codegen',
-        '--',
         'generate',
         '--winmd',
         winmd!,
@@ -155,7 +145,7 @@ test.serial('generated safe COM and unsafe WinML companions preserve exact contr
         output,
       ]
     const runGeneration = (extraEnv: NodeJS.ProcessEnv = {}) =>
-      spawnSync('cargo', generationArgs, {
+      runCodegen(generationArgs, {
         cwd: repositoryRoot,
         encoding: 'utf8',
         env: { ...process.env, DYNWINRT_CODEGEN_TEST_STRATEGY_RUNTIME: '1', ...extraEnv },
