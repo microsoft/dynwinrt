@@ -8,6 +8,21 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P1 — Correctness / quality (near-term)
 
+- [ ] **Complete native struct collection producers**
+      ([#161](https://github.com/microsoft/dynwinrt/issues/161)). Typed vector/map
+      factories validate exact types, native layout, recursive ownership, and
+      complete closed IID sets. Non-POD structs, top-level F32/F64/GUID, ARM64
+      HFAs, and i686 values wider than 4 bytes are rejected even when empty.
+      Large POD structs remain empty-vector-only where the ABI passes them
+      indirectly: x64 >8 bytes; ARM64 non-HFA >16 bytes. Maps reject large
+      keys/values even when empty. Full native struct ABI/ownership support is
+      future work; see the [JS](../../bindings/js/README.md#creating-winrt-collections)
+      and [Python](../../bindings/py/README.md#creating-winrt-collections) matrices.
+      These are producer limits, not restrictions on OS-returned collections.
+      Metadata-free Rust `create_value_vector`, `create_vector`, and `create_map`
+      require `unsafe`; safe `create_vector_from_values` / `create_map_from_values`
+      remain the validated typed alternative used by JS/Python.
+
 - [x] **WinRT collection bulk element layout**. `IVector`, live and snapshot
       `IVectorView`, and `IIterator.GetMany` use the native element stride, not
       the internal pointer-sized storage stride. `ReplaceAll` reads packed

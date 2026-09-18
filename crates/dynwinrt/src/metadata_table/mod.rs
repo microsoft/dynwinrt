@@ -5,6 +5,8 @@ mod append_only_arena;
 mod arena;
 mod iid;
 mod method_handle;
+#[cfg(test)]
+mod registration_tests;
 mod type_handle;
 mod type_kind;
 mod value_data;
@@ -279,16 +281,14 @@ impl MetadataTable {
     // Registration API (single entry point for each type)
     // -----------------------------------------------------------------------
 
-    /// Register a named interface. Creates an IID → method table.
-    /// Returns a TypeHandle for chaining `.add_method()`.
-    pub fn register_interface(self: &Arc<Self>, name: &str, iid: GUID) -> TypeHandle {
-        if let Some(kind) = self.get_named_type(name) {
-            return self.make(kind);
-        }
+    /// Register an interface by IID, returning a handle for chaining `.add_method()`.
+    ///
+    /// The name is descriptive and retained for API compatibility, not used as
+    /// an identity or entered into the struct/enum/runtime-class name index.
+    /// Different IIDs may share a name; aliases for one IID share its method table.
+    pub fn register_interface(self: &Arc<Self>, _name: &str, iid: GUID) -> TypeHandle {
         self.create_interface_method_table(iid);
-        let kind = TypeKind::Interface(iid);
-        self.insert_named_type(name, kind);
-        self.make(kind)
+        self.interface(iid)
     }
 
     /// Register a named struct with dedup. If already registered, returns

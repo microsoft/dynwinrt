@@ -574,15 +574,39 @@ def test_observable_vector_reports_mutations_and_unsubscribes():
             "IVector_HString_Test",
             vector_type.iid(),
         )
-        for index in range(7):
-            vector_interface.add_method(
-                f"unused_{index}",
-                DynWinRTMethodSig(),
-            )
-        vector_interface.add_method(
-            "Append",
-            DynWinRTMethodSig().add_in(element_type),
+        vector_view_type = DynWinRTType.parameterized(
+            WinGUID.parse("BBE1FA4C-B0E3-4583-BAEF-1F1B2E483E56"),
+            [element_type],
         )
+        u32_type = DynWinRTType.u32_type()
+        # This real IID shares metadata with other projections, including readers.
+        # Register its actual ABI prefix rather than padding up to Append's slot.
+        for name, signature in [
+            (
+                "GetAt",
+                DynWinRTMethodSig().add_in(u32_type).add_out(element_type),
+            ),
+            ("get_Size", DynWinRTMethodSig().add_out(u32_type)),
+            ("GetView", DynWinRTMethodSig().add_out(vector_view_type)),
+            (
+                "IndexOf",
+                DynWinRTMethodSig()
+                .add_in(element_type)
+                .add_out(u32_type)
+                .add_out(DynWinRTType.bool_type()),
+            ),
+            (
+                "SetAt",
+                DynWinRTMethodSig().add_in(u32_type).add_in(element_type),
+            ),
+            (
+                "InsertAt",
+                DynWinRTMethodSig().add_in(u32_type).add_in(element_type),
+            ),
+            ("RemoveAt", DynWinRTMethodSig().add_in(u32_type)),
+            ("Append", DynWinRTMethodSig().add_in(element_type)),
+        ]:
+            vector_interface.add_method(name, signature)
 
         event_args_interface = DynWinRTType.register_interface(
             "IVectorChangedEventArgs_Test",
@@ -612,6 +636,10 @@ def test_observable_vector_reports_mutations_and_unsubscribes():
             )
             observable_value = vector_value.cast(observable_type.iid())
             mutable_value = vector_value.cast(vector_type.iid())
+            assert vector_interface.method(6).invoke(
+                mutable_value, [DynWinRTValue.from_u32(0)]
+            ).to_string() == "first"
+            assert vector_interface.method(7).invoke(mutable_value, []).to_u32() == 1
             delegate = DynWinRtDelegate.create(
                 handler_type.iid(),
                 [observable_type, event_args_type],
@@ -634,6 +662,10 @@ def test_observable_vector_reports_mutations_and_unsubscribes():
                 [DynWinRTValue.from_hstring("third")],
             )
             assert notifications == [(1, 1)]
+            assert vector_interface.method(7).invoke(mutable_value, []).to_u32() == 3
+            assert vector_interface.method(6).invoke(
+                mutable_value, [DynWinRTValue.from_u32(2)]
+            ).to_string() == "third"
 
             mutable_value.release()
             observable_value.release()

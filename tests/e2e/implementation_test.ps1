@@ -12,21 +12,22 @@ param(
     [string]$Python = "python",
     [string]$CargoProfile = "release",
     [string]$CargoTarget,
+    [ValidateNotNullOrEmpty()]
+    [string]$Codegen = $env:DYNWINRT_CODEGEN,
     [switch]$KeepGenerated
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "codegen.ps1")
+$codegenInvocation = Get-CodegenInvocation -Codegen $Codegen -CargoProfile $CargoProfile -CargoTarget $CargoTarget
+$codegenCommand = $codegenInvocation.Command
+$codegenArguments = $codegenInvocation.Arguments
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $out = Join-Path $PSScriptRoot "e2e_generated\implementations"
 $runtime = Join-Path $root "bindings\js\dist\winrt.js"
 $failed = 0
 $generationResults = @{}
 $typecheckResults = @{}
-[string[]]$cargoArgs = @(
-    if ($CargoProfile -eq "release") { "--release" }
-    else { "--profile"; $CargoProfile }
-    if ($CargoTarget) { "--target"; $CargoTarget }
-)
 $winmd = if ($env:DYNWINRT_WINDOWS_WINMD) {
     $env:DYNWINRT_WINDOWS_WINMD
 } else {
@@ -65,7 +66,7 @@ foreach ($language in $Lang) {
     $codegenLanguage = if ($language -eq "py") { "py" } else { "js" }
     $runtimeImport = [IO.Path]::GetRelativePath($directory, $runtime).Replace("\", "/")
     $generatedModules = 0
-    & cargo run -p dynwinrt-codegen @cargoArgs --quiet -- generate `
+    & $codegenCommand @codegenArguments generate `
         --winmd $winmd --class-name $classes --lang $codegenLanguage `
         --output $directory --import-name $runtimeImport |
         ForEach-Object {

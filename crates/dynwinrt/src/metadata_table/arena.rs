@@ -115,7 +115,7 @@ impl MetadataTable {
     // Interface method table writes
     // -----------------------------------------------------------------------
 
-    /// Create an interface method table. Called only when dedup already checked by caller.
+    /// Atomically get or create an interface method table, deduplicated by IID.
     pub(super) fn create_interface_method_table(&self, iid: GUID) {
         self.interface_methods
             .write()
@@ -149,7 +149,7 @@ impl MetadataTable {
     }
 
     // -----------------------------------------------------------------------
-    // Named type index (unified dedup for struct, enum, runtime_class, interface)
+    // Named type index (struct, enum, runtime_class; interfaces use IID identity)
     // -----------------------------------------------------------------------
 
     pub(super) fn get_named_type(&self, name: &str) -> Option<TypeKind> {

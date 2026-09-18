@@ -1,6 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import sys
+import sysconfig
+
 import dynwinrt
 import pytest
 from dynwinrt import (
@@ -631,3 +634,348 @@ def test_struct_indexed_accessors_raise_runtime_error_for_wrong_field_shape():
         value.set_object(0, DynWinRTValue.null_value())
     with pytest.raises(RuntimeError):
         DynWinRTStruct.create(DynWinRTType.i32_type()).get_i32(0)
+
+
+def _collection_producer_cases(element_type, items):
+    indexes = [DynWinRTValue.from_i32(index) for index in range(len(items))]
+    return [
+        lambda: DynWinRTValue.create_vector(items, element_type),
+        lambda: DynWinRTValue.create_map(
+            items, indexes, element_type, DynWinRTType.i32_type()
+        ),
+        lambda: DynWinRTValue.create_map(
+            indexes, items, DynWinRTType.i32_type(), element_type
+        ),
+    ]
+
+
+def _collection_vector_reader(element_type):
+    iid = DynWinRTType.parameterized(
+        WinGUID.parse("913337e9-11a1-4345-a3a2-4e7f956e222d"), [element_type]
+    ).iid()
+    return (
+        DynWinRTType.register_interface(
+            f"CollectionBoundary.Vector.{iid.to_string()}", iid
+        )
+        .add_method(
+            "GetAt",
+            DynWinRTMethodSig().add_in(DynWinRTType.u32_type()).add_out(element_type),
+        )
+        .add_method("get_Size", DynWinRTMethodSig().add_out(DynWinRTType.u32_type()))
+    )
+
+
+def _collection_map_reader(key_type, value_type):
+    iid = DynWinRTType.parameterized(
+        WinGUID.parse("3c2925fe-8519-45c1-aa79-197b6718c1c1"),
+        [key_type, value_type],
+    ).iid()
+    return (
+        DynWinRTType.register_interface(
+            f"CollectionBoundary.Map.{iid.to_string()}", iid
+        )
+        .add_method("Lookup", DynWinRTMethodSig().add_in(key_type).add_out(value_type))
+        .add_method("get_Size", DynWinRTMethodSig().add_out(DynWinRTType.u32_type()))
+    )
+
+
+def _invoke_collection_reader(reader, collection, slot, args):
+    typed = collection.cast(reader.iid())
+    try:
+        return reader.method(slot).invoke(typed, args)
+    finally:
+        typed.release()
+
+
+def _collection_producer_round_trips(element_type, item, lookup_key=None):
+    if lookup_key is None:
+        lookup_key = item
+    vector, key_map, value_map = [
+        create() for create in _collection_producer_cases(element_type, [item])
+    ]
+    try:
+        return [
+            _invoke_collection_reader(
+                _collection_vector_reader(element_type), vector, 6,
+                [DynWinRTValue.from_u32(0)],
+            ),
+            _invoke_collection_reader(
+                _collection_map_reader(DynWinRTType.i32_type(), element_type),
+                value_map, 6, [DynWinRTValue.from_i32(0)],
+            ),
+            _invoke_collection_reader(
+                _collection_map_reader(element_type, DynWinRTType.i32_type()),
+                key_map, 6, [lookup_key],
+            ),
+        ]
+    finally:
+        vector.release()
+        key_map.release()
+        value_map.release()
+
+
+def test_collection_producers_reject_recursively_owned_structs_even_when_empty():
+    reference_type = DynWinRTType.parameterized(
+        WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"),
+        [DynWinRTType.u32_type()],
+    )
+    for name, field_type in [
+        ("String", DynWinRTType.hstring()),
+        ("Reference", reference_type),
+    ]:
+        inner = DynWinRTType.struct_type(
+            f"CollectionBoundary.Owned{name}", [field_type]
+        )
+        outer = DynWinRTType.struct_type(
+            f"CollectionBoundary.NestedOwned{name}", [inner]
+        )
+        for typ in [inner, outer]:
+            for items in [[], [DynWinRTStruct.create(typ).to_value()]]:
+                for create in _collection_producer_cases(typ, items):
+                    with pytest.raises(RuntimeError):
+                        create()
+
+
+def test_collection_producers_require_exact_struct_and_enum_identities():
+    expected = DynWinRTType.struct_type(
+        "CollectionBoundary.Expected", [DynWinRTType.i32_type()]
+    )
+    wrong_structs = [
+        DynWinRTType.struct_type(
+            "CollectionBoundary.SameShape", [DynWinRTType.i32_type()]
+        ),
+        DynWinRTType.struct_type(
+            "CollectionBoundary.Smaller", [DynWinRTType.u8_type()]
+        ),
+        DynWinRTType.struct_type(
+            "CollectionBoundary.CrossType", [DynWinRTType.u32_type()]
+        ),
+    ]
+    enum_type = DynWinRTType.enum_type("CollectionBoundary.Enum", ["One"], [1])
+    other_enum = DynWinRTType.enum_type("CollectionBoundary.OtherEnum", ["One"], [1])
+    cases = [
+        *[(expected, DynWinRTStruct.create(typ).to_value()) for typ in wrong_structs],
+        (expected, DynWinRTValue.from_i32(1)),
+        (DynWinRTType.i32_type(), DynWinRTStruct.create(expected).to_value()),
+        (enum_type, DynWinRTValue.enum_value(other_enum, 1)),
+        (DynWinRTType.i32_type(), DynWinRTValue.from_u32(1)),
+        (DynWinRTType.bool_type(), DynWinRTValue.from_u8(1)),
+    ]
+    for typ, value in cases:
+        for create in _collection_producer_cases(typ, [value]):
+            with pytest.raises(OSError):
+                create()
+
+
+def test_collection_producers_preserve_exact_scalars_and_checked_projection_aliases():
+    enum_type = DynWinRTType.enum_type("CollectionBoundary.ScalarEnum", ["One"], [1])
+    cases = [
+        (DynWinRTType.bool_type(), DynWinRTValue.from_bool(True), 1),
+        (DynWinRTType.i8_type(), DynWinRTValue.from_i8(-128), -128),
+        (DynWinRTType.u8_type(), DynWinRTValue.from_u8(255), 255),
+        (DynWinRTType.i16_type(), DynWinRTValue.from_i16(-32768), -32768),
+        (DynWinRTType.u16_type(), DynWinRTValue.from_u16(65535), 65535),
+        (DynWinRTType.i32_type(), DynWinRTValue.from_i32(-123), -123),
+        (DynWinRTType.u32_type(), DynWinRTValue.from_u32(0xFFFFFFFF), 0xFFFFFFFF),
+        (DynWinRTType.char16(), DynWinRTValue.from_u16(0x03BB), 0x03BB),
+        (enum_type, DynWinRTValue.enum_value(enum_type, 1), 1),
+        (enum_type, DynWinRTValue.from_i32(1), 1),
+        # HRESULT and I32 share collection IIDs; Lookup uses the common I32 projection.
+        (DynWinRTType.hresult(), DynWinRTValue.from_hresult(-1), -1,
+         DynWinRTValue.from_i32(-1)),
+        (DynWinRTType.hresult(), DynWinRTValue.from_i32(-1), -1),
+        (DynWinRTType.i8_type(), DynWinRTValue.from_i32(-128), -128),
+        (DynWinRTType.i8_type(), DynWinRTValue.from_i32(127), 127),
+        (DynWinRTType.u8_type(), DynWinRTValue.from_i32(0), 0),
+        (DynWinRTType.u8_type(), DynWinRTValue.from_i32(255), 255),
+        (DynWinRTType.char16(), DynWinRTValue.from_i32(65535), 65535),
+    ]
+    for typ, value, expected, *lookup_keys in cases:
+        from_vector, from_map, key_lookup = _collection_producer_round_trips(
+            typ, value, lookup_keys[0] if lookup_keys else value
+        )
+        assert from_vector.to_number() == expected
+        assert from_map.to_number() == expected
+        assert key_lookup.to_number() == 0
+
+    for typ, values in [
+        (DynWinRTType.i8_type(), [-129, 128]),
+        (DynWinRTType.u8_type(), [-1, 256, 257]),
+        (DynWinRTType.char16(), [-1, 65536]),
+    ]:
+        for value in values:
+            for create in _collection_producer_cases(typ, [DynWinRTValue.from_i32(value)]):
+                with pytest.raises(OSError):
+                    create()
+
+
+def test_collection_producers_retain_direct_strings_and_nullable_references_with_expected_iid():
+    ro_initialize(1)
+    from_vector, from_map, key_lookup = _collection_producer_round_trips(
+        DynWinRTType.hstring(), DynWinRTValue.from_hstring("owned \u03bb")
+    )
+    assert from_vector.to_string() == "owned \u03bb"
+    assert from_map.to_string() == "owned \u03bb"
+    assert key_lookup.to_number() == 0
+
+    reference_type = DynWinRTType.parameterized(
+        WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"),
+        [DynWinRTType.u32_type()],
+    )
+    reference = DynWinRTType.register_interface(
+        "CollectionBoundary.Reference", reference_type.iid()
+    ).add_method("get_Value", DynWinRTMethodSig().add_out(DynWinRTType.u32_type()))
+    for typ in [
+        reference_type,
+        DynWinRTType.interface(reference_type.iid()),
+        DynWinRTType.object(),
+    ]:
+        source = DynWinRTValue.box_reference(
+            DynWinRTValue.from_u32(17), DynWinRTType.u32_type()
+        )
+        items = [source, DynWinRTValue.null_value()]
+        vector = DynWinRTValue.create_vector(items, typ)
+        mapping = DynWinRTValue.create_map(
+            [DynWinRTValue.from_i32(0), DynWinRTValue.from_i32(1)],
+            items, DynWinRTType.i32_type(), typ,
+        )
+        source.release()
+        try:
+            vector_reader = _collection_vector_reader(typ)
+            map_reader = _collection_map_reader(DynWinRTType.i32_type(), typ)
+            for value in [
+                _invoke_collection_reader(
+                    vector_reader, vector, 6, [DynWinRTValue.from_u32(0)]
+                ),
+                _invoke_collection_reader(
+                    map_reader, mapping, 6, [DynWinRTValue.from_i32(0)]
+                ),
+            ]:
+                typed = value.cast(reference_type.iid())
+                assert reference.method(6).invoke(typed, []).to_number() == 17
+                typed.release()
+                value.release()
+            assert _invoke_collection_reader(
+                vector_reader, vector, 6, [DynWinRTValue.from_u32(1)]
+            ).is_null()
+            assert _invoke_collection_reader(
+                map_reader, mapping, 6, [DynWinRTValue.from_i32(1)]
+            ).is_null()
+        finally:
+            vector.release()
+            mapping.release()
+
+    incompatible = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+    try:
+        for value in [incompatible, DynWinRTValue.from_i32(17)]:
+            for create in _collection_producer_cases(reference_type, [value]):
+                with pytest.raises(OSError):
+                    create()
+    finally:
+        incompatible.release()
+
+
+def test_collection_producers_enforce_architecture_specific_small_pod_boundary():
+    is_x86 = sys.maxsize == 2**31 - 1
+    is_arm64 = sysconfig.get_platform() == "win-arm64"
+    cases = [
+        ("CollectionBoundary.Byte", [DynWinRTType.u8_type()], 1, False,
+         "set_u8", "get_u8", 0, 201),
+        ("CollectionBoundary.Short", [DynWinRTType.i16_type()], 2, False,
+         "set_i16", "get_i16", 0, -1234),
+        ("CollectionBoundary.Int", [DynWinRTType.i32_type()], 4, False,
+         "set_i32", "get_i32", 0, 123456),
+        ("Windows.Graphics.PointInt32", [DynWinRTType.i32_type()] * 2, 8, False,
+         "set_i32", "get_i32", 1, -42),
+        *[(f"Windows.Foundation.{name}", [DynWinRTType.f32_type()] * 2, 8, True,
+           "set_f32", "get_f32", 1, 2.5) for name in ["Point", "Size"]],
+    ]
+    for name, fields, size, hfa, setter, getter, index, expected in cases:
+        typ = DynWinRTType.struct_type(name, fields)
+        value = DynWinRTStruct.create(typ)
+        getattr(value, setter)(index, expected)
+        supported = not ((is_x86 and size > 4) or (is_arm64 and hfa))
+        for create in _collection_producer_cases(typ, []):
+            if supported:
+                assert not create().is_null()
+            else:
+                with pytest.raises(RuntimeError):
+                    create()
+        if supported:
+            from_vector, from_map, key_lookup = _collection_producer_round_trips(
+                typ, value.to_value()
+            )
+            assert getattr(from_vector.as_struct(), getter)(index) == expected
+            assert getattr(from_map.as_struct(), getter)(index) == expected
+            assert key_lookup.to_number() == 0
+        else:
+            for create in _collection_producer_cases(typ, [value.to_value()]):
+                with pytest.raises(RuntimeError):
+                    create()
+
+
+def test_collection_producers_restrict_large_pod_to_abi_compatible_empty_vectors():
+    is_x86 = sys.maxsize == 2**31 - 1
+    is_arm64 = sysconfig.get_platform() == "win-arm64"
+    cases = [
+        ("Windows.Graphics.RectInt32", [DynWinRTType.i32_type()] * 4, False, 16),
+        ("Windows.Foundation.Rect", [DynWinRTType.f32_type()] * 4, True, 16),
+        ("Windows.Devices.Geolocation.BasicGeoposition",
+         [DynWinRTType.f64_type()] * 3, True, 24),
+        ("Windows.UI.Input.ManipulationDelta", [
+            DynWinRTType.struct_type(
+                "Windows.Foundation.Point", [DynWinRTType.f32_type()] * 2
+            ),
+            DynWinRTType.f32_type(), DynWinRTType.f32_type(), DynWinRTType.f32_type(),
+        ], False, 20),
+    ]
+    for name, fields, hfa, size in cases:
+        typ = DynWinRTType.struct_type(name, fields)
+        empty_supported = not is_x86 and (not is_arm64 or (size > 16 and not hfa))
+        if empty_supported:
+            vector = DynWinRTValue.create_vector([], typ)
+            assert _invoke_collection_reader(
+                _collection_vector_reader(typ), vector, 7, []
+            ).to_number() == 0
+            vector.release()
+        else:
+            with pytest.raises(RuntimeError):
+                DynWinRTValue.create_vector([], typ)
+        for create in _collection_producer_cases(typ, [])[1:]:
+            with pytest.raises(RuntimeError):
+                create()
+        for create in _collection_producer_cases(typ, [DynWinRTStruct.create(typ).to_value()]):
+            with pytest.raises(RuntimeError):
+                create()
+
+
+def test_collection_producers_reject_floating_scalars_and_guids_even_when_empty():
+    cases = [
+        (DynWinRTType.f32_type(), DynWinRTValue.from_f32(1.5)),
+        (DynWinRTType.f64_type(), DynWinRTValue.from_f64(1.5)),
+        (DynWinRTType.guid_type(), DynWinRTValue.from_guid(
+            WinGUID.parse("9e365e57-48b2-4160-956f-c7385120bbfc")
+        )),
+    ]
+    for typ, value in cases:
+        for items in [[], [value]]:
+            for create in _collection_producer_cases(typ, items):
+                with pytest.raises(RuntimeError):
+                    create()
+
+
+def test_collection_producers_reject_64_bit_scalars_on_i686_even_when_empty():
+    for typ, value in [
+        (DynWinRTType.i64_type(), DynWinRTValue.from_i64(-123)),
+        (DynWinRTType.u64_type(), DynWinRTValue.from_u64(123)),
+    ]:
+        if sys.maxsize == 2**31 - 1:
+            for items in [[], [value]]:
+                for create in _collection_producer_cases(typ, items):
+                    with pytest.raises(RuntimeError):
+                        create()
+        else:
+            from_vector, from_map, key_lookup = _collection_producer_round_trips(typ, value)
+            assert from_vector.to_int() == value.to_int()
+            assert from_map.to_int() == value.to_int()
+            assert key_lookup.to_number() == 0

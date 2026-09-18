@@ -5,6 +5,7 @@ import test from 'ava'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { runCodegen } from '../scripts/run-codegen.mjs'
 
 const packageRoot = resolve(process.cwd())
 const repositoryRoot = resolve(packageRoot, '..', '..')
@@ -17,11 +18,6 @@ test.before((t) => {
   t.truthy(winmd, 'DYNWINRT_WIN32_WINMD is required for exact native-completion generation')
   rmSync(output, { recursive: true, force: true })
   const args = [
-    'run',
-    '--quiet',
-    '-p',
-    'dynwinrt-codegen',
-    '--',
     'generate',
     '--winmd',
     winmd!,
@@ -30,28 +26,22 @@ test.before((t) => {
     '--output',
     output,
   ]
-  const dryRun = spawnSync('cargo', [...args, '--dry-run'], {
+  const dryRun = runCodegen([...args, '--dry-run'], {
     cwd: repositoryRoot,
     encoding: 'utf8',
     windowsHide: true,
   })
   t.is(dryRun.status, 0, dryRun.stderr)
   t.regex(dryRun.stdout, /Would generate ActivateAudioInterfaceAsync/)
-  const generation = spawnSync('cargo', args, {
+  const generation = runCodegen(args, {
     cwd: repositoryRoot,
     encoding: 'utf8',
     windowsHide: true,
   })
   t.is(generation.status, 0, generation.stderr)
   if (process.env.DYNWINRT_TEST_AUDIO_RENDER === '1') {
-    const renderDevice = spawnSync(
-      'cargo',
+    const renderDevice = runCodegen(
       [
-        'run',
-        '--quiet',
-        '-p',
-        'dynwinrt-codegen',
-        '--',
         'generate',
         '--namespace',
         'Windows.Media.Devices',
