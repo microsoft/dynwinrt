@@ -151,6 +151,20 @@ class WorkflowTests(unittest.TestCase):
         runtime = "\n".join(step.get("run", "") for step in JOBS["e2e-runtime"]["steps"])
         self.assertIn("cargo test -p dynwinrt-codegen --test implementation_naming_test", runtime)
 
+    def test_release_notes_validated_in_lightweight_lane(self):
+        steps = [
+            step for step in JOBS["format"]["steps"]
+            if step.get("name") == "Validate checked-in release notes"
+        ]
+        self.assertEqual(len(steps), 1)
+        self.assertNotIn("if", JOBS["format"])
+        self.assertNotIn("if", steps[0])
+        self.assertEqual(steps[0]["shell"], "pwsh")
+        self.assertEqual(steps[0]["run"].splitlines(), [
+            r".\eng\release\validate_release_notes.ps1",
+            r".\eng\release\test_validate_release_notes.ps1",
+        ])
+
     def test_gate_truth_tables_execute_the_real_gate(self):
         # Run the entire matrix in one PowerShell process, not hundreds of shells.
         cases = []

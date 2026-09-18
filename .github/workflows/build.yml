@@ -62,6 +62,11 @@ jobs:
           node --test bindings\js\scripts\run-codegen.test.mjs
           .\tests\e2e\e2e_preparation.tests.ps1
           .\tests\e2e\prebuilt_codegen.tests.ps1
+      - name: Validate checked-in release notes
+        shell: pwsh
+        run: |
+          .\eng\release\validate_release_notes.ps1
+          .\eng\release\test_validate_release_notes.ps1
 
   # Rust test programs are independent builds, not reusable runtime packages.
   test-rust:

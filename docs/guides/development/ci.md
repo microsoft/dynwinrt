@@ -56,11 +56,11 @@ allowlisted deletions are documentation changes too. An empty diff uses full
 validation. Invalid or unavailable history fails classification rather than
 guessing that the change is documentation-only.
 
-The lightweight path runs the scheduling, artifact and prebuilt-selection
-regressions without compiling native code. Stable check names still run and
-validate the explicitly expected heavy-job skips; no package artifact is
-created. Pushes to `main` and version tags always use full validation. The
-workflow is not hidden behind a top-level path filter.
+The lightweight path runs the scheduling, artifact, prebuilt-selection and
+release-note configuration regressions without compiling native code. Stable
+check names still run and validate the explicitly expected heavy-job skips;
+no package artifact is created. Pushes to `main` and version tags always use
+full validation. The workflow is not hidden behind a top-level path filter.
 
 ## Using a prebuilt generator locally
 
@@ -96,6 +96,8 @@ python -m unittest discover -s eng\ci -p "test_*.py" -v
 node --test bindings\js\scripts\run-codegen.test.mjs
 .\tests\e2e\e2e_preparation.tests.ps1
 .\tests\e2e\prebuilt_codegen.tests.ps1
+.\eng\release\validate_release_notes.ps1
+.\eng\release\test_validate_release_notes.ps1
 ```
 
 Parallelism removes the old Rust-test barrier and duplicate release builds;

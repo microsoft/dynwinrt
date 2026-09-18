@@ -15,3 +15,7 @@ Do not edit `.pipelines/release.yml` for each release. The Azure DevOps release
 job explicitly checks out the tagged commit before `GitHubRelease@1` reads the
 notes, so the contents are snapshotted from the tag commit. Its automatic
 changelog remains enabled and is appended after the curated notes.
+
+Build CI and the release pipeline both run `validate_release_notes.ps1` and
+`test_validate_release_notes.ps1` to check the notes file, release task inputs,
+and source checkout. These checks do not create a tag or publish a release.
