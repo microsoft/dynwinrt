@@ -122,10 +122,16 @@ impl TsfnLifecycle {
 }
 
 type Mapper<T> = dyn Fn(T, sys::napi_env) -> napi::Result<Vec<sys::napi_value>> + Send + Sync;
+type NativeDispatch<T> = dyn Fn(T, sys::napi_env) -> napi::Result<()> + Send + Sync;
 pub(crate) type TsfnFinalizer = dyn FnOnce(sys::napi_env);
 
+enum Dispatch<T> {
+  JavaScript(Box<Mapper<T>>),
+  Native(Box<NativeDispatch<T>>),
+}
+
 struct TsfnContext<T> {
-  mapper: Box<Mapper<T>>,
+  dispatch: Dispatch<T>,
   finalizer: Option<Box<TsfnFinalizer>>,
   fallback_env: sys::napi_env,
 }
@@ -215,6 +221,41 @@ impl<T: Send + 'static> ManagedTsfn<T> {
     mapper: impl Fn(T, sys::napi_env) -> napi::Result<Vec<sys::napi_value>> + Send + Sync + 'static,
     finalizer: Option<Box<TsfnFinalizer>>,
   ) -> napi::Result<Self> {
+    Self::create_with_dispatch(
+      env,
+      callback,
+      max_queue_size,
+      weak,
+      Dispatch::JavaScript(Box::new(mapper)),
+      finalizer,
+    )
+  }
+
+  // No napi_value callback and no arbitrary JS execution on the producer.
+  // The payload is a token; apartment-bound state lives only in the consumer.
+  pub(crate) fn create_native_dispatch(
+    env: sys::napi_env,
+    dispatch: impl Fn(T, sys::napi_env) -> napi::Result<()> + Send + Sync + 'static,
+    finalizer: Option<Box<TsfnFinalizer>>,
+  ) -> napi::Result<Self> {
+    Self::create_with_dispatch(
+      env,
+      ptr::null_mut(),
+      1,
+      false,
+      Dispatch::Native(Box::new(dispatch)),
+      finalizer,
+    )
+  }
+
+  fn create_with_dispatch(
+    env: sys::napi_env,
+    callback: sys::napi_value,
+    max_queue_size: usize,
+    weak: bool,
+    dispatch: Dispatch<T>,
+    finalizer: Option<Box<TsfnFinalizer>>,
+  ) -> napi::Result<Self> {
     let lifecycle = TsfnLifecycle::get_or_create(Env::from_raw(env))?;
     let open = lifecycle
       .open
@@ -227,7 +268,7 @@ impl<T: Send + 'static> ManagedTsfn<T> {
     }
 
     let context = Box::new(TsfnContext {
-      mapper: Box::new(mapper),
+      dispatch,
       finalizer,
       fallback_env: env,
     });
@@ -421,12 +462,25 @@ unsafe extern "C" fn call_js<T: Send + 'static>(
     return;
   }
   let value = unsafe { *Box::<T>::from_raw(data.cast()) };
-  if env.is_null() || callback.is_null() {
+  if env.is_null() {
     return;
   }
 
   let context = unsafe { &*context.cast::<TsfnContext<T>>() };
-  let args = match (context.mapper)(value, env) {
+  let mapper = match &context.dispatch {
+    Dispatch::Native(dispatch) => {
+      if let Err(error) = dispatch(value, env) {
+        let error = unsafe { JsError::from(error).into_value(env) };
+        unsafe {
+          sys::napi_fatal_exception(env, error);
+        }
+      }
+      return;
+    }
+    Dispatch::JavaScript(mapper) if !callback.is_null() => mapper,
+    Dispatch::JavaScript(_) => return,
+  };
+  let args = match mapper(value, env) {
     Ok(args) => args,
     Err(error) => {
       let error = unsafe { JsError::from(error).into_value(env) };

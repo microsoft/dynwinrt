@@ -8,6 +8,13 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P1 — Correctness / quality (near-term)
 
+- [x] **WinRT collection bulk element layout**. `IVector`, live and snapshot
+      `IVectorView`, and `IIterator.GetMany` use the native element stride, not
+      the internal pointer-sized storage stride. `ReplaceAll` reads packed
+      value elements at the same native stride. Regression coverage includes
+      small integers, enums, structs, HSTRING ownership, and nullable object
+      references on x64 and i686.
+
 - [ ] **Panic-free WinRT collection entrypoints**. Several internal
   `extern "system"` implementations still assume Windows supplied valid
   pointers:
@@ -71,6 +78,12 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
       `napi_async_context`, preserving `async_hooks` and `AsyncLocalStorage`.
 
 ## P2 — Feature completeness
+
+- [x] **Contract-driven flat Win32 bindings**.
+      JavaScript/TypeScript generation, validated native ABI plans, managed
+      resource cleanup, namespace packaging, and asynchronous file I/O are
+      implemented with contract, runtime, and end-to-end regression coverage.
+      See [Win32 architecture and tests](../architecture/flat-win32-contracts.md).
 
 - [ ] **Struct auto-marshaling**. Users still need `DynWinRtStruct.create()` + `setF64(...)` per field. Codegen generates `_packXxx` helpers for known structs already; the gap is user-defined / ad-hoc structs. Consider generic `pack(schema, obj)`.
 

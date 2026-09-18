@@ -23,20 +23,35 @@ thread_local! {
     static TOKIO_RO_INITIALIZED: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "test-hooks")]
+pub(crate) static MTA_THREAD_EVENTS: Mutex<Vec<(bool, u32)>> = Mutex::new(Vec::new());
+
 pub(crate) fn init_async_runtime() {
+    pyo3_async_runtimes::tokio::init(runtime_builder());
+}
+
+pub(crate) fn runtime_builder() -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all();
     builder.on_thread_start(|| {
         unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
             .expect("failed to initialize a dynwinrt asyncio worker as MTA");
         TOKIO_RO_INITIALIZED.set(true);
+        #[cfg(feature = "test-hooks")]
+        MTA_THREAD_EVENTS.lock().unwrap().push((true, unsafe {
+            windows::Win32::System::Threading::GetCurrentThreadId()
+        }));
     });
     builder.on_thread_stop(|| {
         if TOKIO_RO_INITIALIZED.replace(false) {
             unsafe { RoUninitialize() };
+            #[cfg(feature = "test-hooks")]
+            MTA_THREAD_EVENTS.lock().unwrap().push((false, unsafe {
+                windows::Win32::System::Threading::GetCurrentThreadId()
+            }));
         }
     });
-    pyo3_async_runtimes::tokio::init(builder);
+    builder
 }
 
 fn ensure_async(value: &dynwinrt::WinRTValue) -> PyResult<()> {

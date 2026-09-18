@@ -228,7 +228,7 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
         common::generate_interface(with_content_type, &known_interfaces, &HashSet::new());
     assert!(
         with_content_stub
-            .contains("class IRandomAccessStreamWithContentType(_IRandomAccessStreamWithContentTypeIdentity, Protocol):"),
+            .contains("class IRandomAccessStreamWithContentType(_IRandomAccessStreamWithContentTypeIdentity, Protocol, metaclass=_IRandomAccessStreamWithContentTypeImplementationFactory):"),
         "{with_content_stub}"
     );
     assert!(

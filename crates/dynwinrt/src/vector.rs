@@ -182,6 +182,14 @@ impl CollectionStorage {
     pub(crate) fn is_large_value_type(self) -> bool {
         self.is_value_type && self.elem_size > std::mem::size_of::<usize>()
     }
+
+    fn array_stride(self) -> usize {
+        if self.is_value_type {
+            self.elem_size
+        } else {
+            std::mem::size_of::<*mut c_void>()
+        }
+    }
 }
 
 pub(crate) fn collection_storage(
@@ -239,6 +247,36 @@ pub(crate) unsafe fn write_item_out(
     } else {
         *result = com_usize_addref_out(raw);
     }
+}
+
+unsafe fn write_array_items(storage: CollectionStorage, items: &[usize], result: *mut *mut c_void) {
+    for (index, &raw) in items.iter().enumerate() {
+        let slot = result
+            .cast::<u8>()
+            .add(index * storage.array_stride())
+            .cast();
+        write_item_out(storage, raw, slot);
+    }
+}
+
+unsafe fn store_array_item(
+    storage: CollectionStorage,
+    values: *const *mut c_void,
+    index: usize,
+) -> usize {
+    let slot = values.cast::<u8>().add(index * storage.array_stride());
+    let raw = if storage.is_value_type {
+        let mut word = 0usize;
+        std::ptr::copy_nonoverlapping(
+            slot,
+            (&mut word as *mut usize).cast::<u8>(),
+            storage.elem_size,
+        );
+        word as *mut c_void
+    } else {
+        slot.cast::<*mut c_void>().read()
+    };
+    store_abi_item(storage, raw)
 }
 
 unsafe fn clone_hstring_raw(raw: usize) -> usize {
@@ -685,10 +723,7 @@ impl SingleThreadedVector {
             return S_OK;
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
-        for i in 0..count {
-            let raw = items[start + i];
-            write_item_out(me.storage, raw, items_out.add(i));
-        }
+        write_array_items(me.storage, &items[start..start + count], items_out);
         *actual = count as u32;
         S_OK
     }
@@ -708,8 +743,7 @@ impl SingleThreadedVector {
         }
         let mut items = lock_or!(me.items, E_FAIL);
         for i in 0..count as usize {
-            let raw = *values.add(i);
-            let val = store_abi_item(me.storage, raw);
+            let val = store_array_item(me.storage, values, i);
             items.push(val);
         }
         drop(items);
@@ -779,9 +813,7 @@ impl SingleThreadedVector {
             return S_OK;
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
-        for i in 0..count {
-            write_item_out(me.storage, items[start + i], items_out.add(i));
-        }
+        write_array_items(me.storage, &items[start..start + count], items_out);
         *actual = count as u32;
         S_OK
     }
@@ -936,10 +968,7 @@ impl SingleThreadedVectorView {
             return S_OK;
         }
         let count = std::cmp::min(capacity as usize, me.items.len() - start);
-        for i in 0..count {
-            let raw = me.items[start + i];
-            write_item_out(me.storage, raw, items_out.add(i));
-        }
+        write_array_items(me.storage, &me.items[start..start + count], items_out);
         *actual = count as u32;
         S_OK
     }
@@ -1046,9 +1075,8 @@ impl SingleThreadedIterator {
         let mut cursor = lock_or!(me.cursor, E_FAIL);
         let remaining = me.items.len().saturating_sub(*cursor);
         let count = std::cmp::min(capacity as usize, remaining);
-        for i in 0..count {
-            let raw = me.items[*cursor + i];
-            write_item_out(me.storage, raw, items_out.add(i));
+        if count > 0 {
+            write_array_items(me.storage, &me.items[*cursor..*cursor + count], items_out);
         }
         *cursor += count;
         *actual = count as u32;
@@ -1257,6 +1285,10 @@ fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -
 // ======================================================================
 // Tests
 // ======================================================================
+
+#[cfg(test)]
+#[path = "vector_bulk_tests.rs"]
+mod bulk_tests;
 
 #[cfg(test)]
 #[allow(unused_must_use)]

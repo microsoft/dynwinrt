@@ -34,13 +34,23 @@ pub(super) fn generate_struct_imports(
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct { .. } = typ else {
+            let TypeMeta::Struct { name, .. } = typ else {
                 return None;
             };
+            let names = struct_runtime_import_names(typ)
+                .into_iter()
+                .map(|export| {
+                    if export == *name {
+                        context.struct_type_import(typ, &export)
+                    } else {
+                        export
+                    }
+                })
+                .collect::<Vec<_>>();
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
                 context.implementation_module_for_type(typ),
-                struct_runtime_import_names(typ).join(", ")
+                names.join(", ")
             ))
         })
         .collect::<Vec<_>>();
@@ -149,6 +159,7 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
                 && foundation_type(&f.typ).is_none()
                 && name != "HResult"
             {
+                let name = context.reference_name_for_type(&f.typ);
                 out.push_str(&format!(
                     "        self.{snake} = {name}() if {snake} is None else {snake}\n"
                 ));

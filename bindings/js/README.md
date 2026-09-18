@@ -21,6 +21,24 @@ metadata revisions without rebuilding a native addon.
 
 The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers can initialize the runtime with `initWinappsdk()`; the helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
 
+### System DispatcherQueue loading
+
+The system DispatcherQueue helper resolves
+`CoreMessaging.dll!CreateDispatcherQueueController` only when it needs to create
+a current-thread queue, loading the DLL from the Windows system directory.
+Capturing an existing queue skips that resolution. A successful resolution
+retains the module for the process lifetime so controllers and callbacks remain
+valid; DLL or export failures are reported at queue creation and can be retried.
+Importing the root or `/com` entrypoint does not load CoreMessaging for this
+helper. Apartment, message-pumping, and shutdown requirements are unchanged.
+This is not a general older-Windows compatibility or addon feature-isolation
+guarantee.
+
+`npm run test:imports` checks every built addon's PE imports and measures root
+and `/com` imports in separate fresh processes with a 10-second limit. Loaded-DLL
+reports omit network enumeration and DNS on Node versions that support
+`process.report.excludeNetwork`; failures include report/import phase timings.
+
 ## Quick start
 
 `@microsoft/dynwinrt` is the **runtime**. You generate the typed bindings ahead of time with [`@microsoft/dynwinrt-codegen`](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen), then import them at runtime:
@@ -69,6 +87,112 @@ contains duplicate short names, each canonical module keeps its native symbol
 name while the root barrel uses a namespace-qualified name, such as
 `AIFoundationEmbeddingVector` or `SemanticSearchEmbeddingVector`.
 
+### Standalone WinRT interface implementations
+
+Metadata-generated standalone WinRT interfaces expose `implementation(handlers)`
+and `implement(handlers, ...additionalDescriptors)`. The latter creates a native
+instance and returns `DynWinRtImplementationHandle<GeneratedInterface>`:
+
+```js
+const impl = IBackgroundTask.implement(taskHandlers, {
+  interfaces: [[IStringable, textHandlers]],
+})
+try {
+  impl.value.run(instanceView)
+} finally {
+  impl.dispose()
+}
+```
+
+`.value` is a stable, lazily created typed primary view, managed by the handle.
+`release()` releases its primary view and owner without disconnecting other
+native references; `dispose()` additionally disconnects the object. Neither
+allows `.value` to recreate a view afterward. The common pattern does not need
+`releaseProjected(impl.value)`.
+`GeneratedInterface.fromImplementation(impl)` remains the advanced,
+independently owned view path; positional descriptors and raw native owners
+remain supported. Low-level users must select an interface with
+`value.cast(iid)` before invoking that interface's method handles: `toValue()`
+returns the canonical `IInspectable`, not an arbitrary interface's vtable.
+These are local, synchronous, non-agile WinRT objects, not COM class
+registrations or OS background-task registrations.
+
+The npm root also exports the low-level primitives for metadata-driven callers:
+
+```ts
+DynWinRtInterfacePlan.create(name, interfaceType, [
+  { name: 'ToString', vtableIndex: 6, signature },
+], requiredIids)
+
+DynWinRtImplementation.create(plans, (interfaceIndex, vtableIndex, args) => {
+  return [DynWinRtValue.hstring('implemented in JavaScript')]
+}, runtimeClassName)
+```
+
+Plans must describe each complete interface, including every contiguous native
+slot starting at 6. Required interfaces need separate plans. The dispatcher
+receives `DynWinRtValue[]` and must return an array of **all** outputs in signature
+order (`[]` for void). Fill-array inputs are capacities; their returned arrays
+must have exactly that length. Async functions, promises, and thenable results
+are unsupported. Dispatch errors fail the native call; `takeError()` returns and
+clears the latest diagnostic, or `null` when there is none.
+
+In this low-level callback API, incoming reference values own retained native
+references. A callback that rejects an input without retaining it should release
+that `DynWinRtValue`, including on a throwing path. Waiting for garbage collection
+can keep a delegate's event-loop resource alive. Conversely, a value deliberately
+retained before throwing stays valid until explicitly released or collected.
+This is not a requirement to release hidden arguments of generated typed
+handlers: the generated adapters retain their own conversion/lifetime contract.
+
+Low-level owner `release()` and garbage collection drop only its native reference.
+Separately retained native values keep their callbacks alive. `disconnect()`
+closes every view while retaining the owner reference; `dispose()` disconnects
+and releases it, and both are idempotent. Disposing during a callback allows that
+active invocation to finish safely. `isClosed` describes object-wide callback
+disconnection, not merely whether this owner was released.
+
+**Always dispose deterministically when handlers capture their owner or a native
+view.** Such cross-runtime cycles cannot be collected by JavaScript alone.
+Disposal breaks native callback roots; final reference cleanup runs on a later
+event-loop turn. Cleanup TSFNs do not keep Node alive. Environment shutdown
+disconnects all live implementations before releasing handler references, and
+callbacks from other threads fail rather than touching the JS environment.
+
+Native delegates received by an implementation can be invoked with
+`value.invokeDelegate(iid, signature, args)`. For repeated calls, cache a
+`DynWinRtDelegateMethod.create(iid, signature)` and use its `invoke(value, args)`
+method instead. Both query the metadata's concrete delegate IID, retain the
+managed values for the call, and return all outputs in signature order (`[]` for void). Delegate
+`Invoke` occupies `IUnknown` slot 3; do not register it as an ordinary slot-6
+WinRT interface method. The IID and full signature must come from delegate
+metadata, including concrete type arguments for generic delegates. This helper
+uses only the WinRT call planner and performs no COM registration.
+Its arguments follow the existing outbound `invokeAll()` contract: a fill-array
+input is a preallocated, correctly typed `DynWinRtArray.toValue()`, not a U32
+capacity value. Only reverse-entry implementation handlers receive capacities.
+Generated callable delegate bridges must allocate this outbound storage before
+invoking the helper.
+
+`DynWinRtDelegate.release()` deterministically drops the creator's native
+reference, without disconnecting references retained by a native event source.
+Event registration code must release its temporary `toValue()` result and the
+creator in `finally` after the add call, on success and failure. A successful
+event source owns the delegate independently until removal. Retaining a creator
+in the same closure context as its native callback can otherwise form a
+cross-runtime cycle and keep the delegate's referenced TSFN alive after
+unsubscribe. Releasing the creator twice is harmless; `toValue()` after release
+throws. This does not unref active event callbacks or force process exit.
+
+For metadata whose native type is HRESULT, use `DynWinRtValue.fromHResult(code)`
+(also available as `hresult(code)`)
+or `DynWinRtArray.fromHresultValues(codes)` to preserve its semantic type,
+especially for array parameters. Codes must be signed 32-bit integers (for
+example, `0x80004005 | 0`). These factories do not change the existing `i32()`
+or `fromI32Values()` behavior. Read results with `toNumber()` or `toI32Vec()`.
+
+### Classic COM
+
 Classic COM is a preview under active development. It uses a separate subpath
 from the same package, keeping the WinRT root API unchanged:
 
@@ -90,6 +214,53 @@ See the repository's
 [Classic COM JavaScript usage guide](../../docs/guides/windows/classic-com-usage.md) for
 codegen, current coverage and limitations, GUID/IID/CLSID, lifetime, Automation,
 and `/com/unsafe` examples.
+
+### Flat Win32 DLL exports
+
+Generated Win32 wrappers use `@microsoft/dynwinrt/win32` to invoke DLL exports
+described by `Windows.Win32.winmd`. They support validated native structures,
+counted buffers, managed handle cleanup, and IOCP-backed asynchronous file I/O.
+Manual raw ABI operations remain isolated under
+`@microsoft/dynwinrt/win32/unsafe`; the package root stays WinRT-only.
+
+Winsock, GDI+, and Media Foundation functions that require initialization take
+an explicit subsystem context. Keep that context for the required native
+lifetime and call `close()` when finished. Lifecycle DLLs load on initialization,
+not package import; missing components fail the requested initialization without
+adding an eager dependency to ordinary WinRT/COM imports. MAPI utility
+initialization is available only on the unsafe subpath and requires a configured
+provider.
+
+When a failed call cannot close an owned result, both Win32 entrypoints throw
+`DynWin32CallError`, an `Error` with the original invocation message.
+Its read-only `cleanupFailures` array contains each native `target`, the original
+cleanup `error` (`code`, a signed HRESULT, and `message`), and a managed
+`DynWin32Resource`. Keep the error or a resource alias until cleanup succeeds.
+After correcting the native condition, call `error.retryCleanup()` or close the
+individual resources. Retry does not invoke the original function again.
+Failed retries retain the owners; successful retries and `close()` are
+idempotent, and the original records remain available with `resource.closed`
+set to `true`. Aliases share that close state.
+
+If projecting a recoverable error or its records fails, the runtime attempts
+to create an `AggregateError` retaining the native error in `cause` and
+`errors[0]`, alongside the projection failure in `errors[1]`.
+It also exposes `cleanupFailures` and `retryCleanup()`
+for recovery without discarding the native owner. Recovery property descriptors
+have no prototype, so inherited descriptor fields cannot break decoration.
+If constructing or decorating that aggregate also fails, the original native
+error is rethrown unchanged. It can remain unprojected or non-extensible and
+need not satisfy `instanceof DynWin32CallError`; use
+`DynWin32CallError.getCleanupFailures(error)` and
+`DynWin32CallError.retryCleanup(error)` to recover without modifying its
+prototype. These static methods validate the native carrier, not `instanceof`.
+Errors without cleanup failures retain their existing behavior.
+
+See the [Win32 generation guide](../../tools/dynwinrt-codegen/README.md#contract-driven-flat-win32),
+[JavaScript samples](../../samples/js/win32/README.md), and
+[supported capabilities and ownership rules](../../docs/architecture/flat-win32-contracts.md).
+
+### Generated WinRT values
 
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as

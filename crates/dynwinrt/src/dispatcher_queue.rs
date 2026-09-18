@@ -6,9 +6,12 @@ use windows::System::{
     DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler,
     DispatcherQueueShutdownStartingEventArgs,
 };
-use windows::Win32::System::WinRT::{
-    CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
-};
+use windows::Win32::System::WinRT::{DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions};
+
+mod core_messaging;
+
+#[cfg(test)]
+mod tests;
 
 /// A cloneable handle that can enqueue work from any thread onto a captured
 /// Windows system dispatcher queue.
@@ -39,7 +42,19 @@ pub struct SystemDispatcherQueue {
 
 impl SystemDispatcherQueue {
     pub fn ensure_for_current_thread() -> windows_core::Result<Self> {
-        match DispatcherQueue::GetForCurrentThread() {
+        Self::ensure_for_current_thread_with(
+            DispatcherQueue::GetForCurrentThread,
+            core_messaging::create_controller,
+        )
+    }
+
+    fn ensure_for_current_thread_with(
+        get_queue: impl FnOnce() -> windows_core::Result<DispatcherQueue>,
+        create_controller: impl FnOnce(
+            DispatcherQueueOptions,
+        ) -> windows_core::Result<DispatcherQueueController>,
+    ) -> windows_core::Result<Self> {
+        match get_queue() {
             Ok(queue) => return Ok(Self::new(queue, None)),
             // A successful ABI call with a null queue becomes Error::empty().
             Err(error) if error.code().is_ok() => {}
@@ -51,7 +66,7 @@ impl SystemDispatcherQueue {
             threadType: DQTYPE_THREAD_CURRENT,
             apartmentType: DQTAT_COM_STA,
         };
-        let controller = unsafe { CreateDispatcherQueueController(options)? };
+        let controller = create_controller(options)?;
         let queue = controller.DispatcherQueue()?;
         Ok(Self::new(queue, Some(controller)))
     }

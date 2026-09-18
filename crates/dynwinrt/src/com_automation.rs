@@ -674,6 +674,21 @@ impl DispatchParamsValue {
         self.inner.arguments.len()
     }
 
+    #[doc(hidden)]
+    pub fn arguments(&self) -> result::Result<Vec<VariantValue>> {
+        self.inner
+            .arguments
+            .iter()
+            .rev()
+            .map(|argument| {
+                let copy = VariantValue::empty();
+                unsafe { VariantCopy(copy.raw_mut(), argument) }.map_err(windows_error)?;
+                copy.validate_supported()?;
+                Ok(copy)
+            })
+            .collect()
+    }
+
     pub fn named_dispids(&self) -> Vec<i32> {
         self.inner.named_dispids.iter().rev().copied().collect()
     }

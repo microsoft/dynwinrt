@@ -1,0 +1,995 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/microsoft/dynwinrt/contracts/win32/schema.json",
+  "title": "Win32 native semantic evidence, version 2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/functionEntry"
+          },
+          {
+            "$ref": "#/$defs/typeEntry"
+          },
+          {
+            "$ref": "#/$defs/domain"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "functionSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "container",
+        "name",
+        "dll",
+        "entryPoint",
+        "callingConvention",
+        "architectures",
+        "sourceFingerprint"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^Windows\\.Win32\\.[A-Za-z0-9_.]+$"
+        },
+        "container": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "dll": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\.([dD][lL][lL]|[dD][rR][vV])$"
+        },
+        "entryPoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "callingConvention": {
+          "enum": [
+            "system",
+            "cdecl",
+            "unsupported"
+          ]
+        },
+        "architectures": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        }
+      }
+    },
+    "typeSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "name",
+        "sourceFingerprint"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^Windows\\.Win32\\.[A-Za-z0-9_.]+$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        }
+      }
+    },
+    "citation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "url"
+          ],
+          "properties": {
+            "kind": {
+              "const": "microsoft-learn"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https://learn\\.microsoft\\.com/[^\\s]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "file"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sdk-header"
+            },
+            "file": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+\\.h$"
+            }
+          }
+        }
+      ]
+    },
+    "nativeParameter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1023
+    },
+    "callContract": {
+      "$ref": "call-contract.schema.json"
+    },
+    "resultContract": {
+      "$ref": "call-contract.schema.json#/$defs/ResultContract"
+    },
+    "effect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "countParameter",
+            "nullable"
+          ],
+          "properties": {
+            "kind": {
+              "const": "counted-buffer"
+            },
+            "parameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "countParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "nullable": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unsupported-count-unit"
+            },
+            "parameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cleanup"
+          ],
+          "properties": {
+            "kind": {
+              "const": "owned-return"
+            },
+            "cleanup": {
+              "enum": [
+                "none",
+                "close-handle",
+                "reg-close-key",
+                "local-free",
+                "global-free",
+                "free-library",
+                "close-service-handle",
+                "co-task-mem-free",
+                "cred-free"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "borrowed-return"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "cleanup"
+          ],
+          "properties": {
+            "kind": {
+              "const": "owned-output"
+            },
+            "parameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "cleanup": {
+              "enum": [
+                "none",
+                "close-handle",
+                "reg-close-key",
+                "local-free",
+                "global-free",
+                "free-library",
+                "close-service-handle",
+                "co-task-mem-free",
+                "cred-free"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter",
+            "cleanup"
+          ],
+          "properties": {
+            "kind": {
+              "const": "consumed-input"
+            },
+            "parameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "cleanup": {
+              "enum": [
+                "none",
+                "close-handle",
+                "reg-close-key",
+                "local-free",
+                "global-free",
+                "free-library",
+                "close-service-handle",
+                "co-task-mem-free",
+                "cred-free"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "parameter"
+          ],
+          "properties": {
+            "kind": {
+              "const": "mutable-string"
+            },
+            "parameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contract"
+          ],
+          "properties": {
+            "kind": {
+              "const": "call-contract"
+            },
+            "contract": {
+              "$ref": "#/$defs/callContract"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "contract"
+          ],
+          "properties": {
+            "kind": {
+              "const": "result-contract"
+            },
+            "contract": {
+              "$ref": "#/$defs/resultContract"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation",
+            "fileParameter",
+            "bufferParameter",
+            "countParameter",
+            "transferredParameter",
+            "overlappedParameter"
+          ],
+          "properties": {
+            "kind": {
+              "const": "overlapped-io"
+            },
+            "operation": {
+              "enum": [
+                "read",
+                "write"
+              ]
+            },
+            "fileParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "bufferParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "countParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "transferredParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            },
+            "overlappedParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1023
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "subsystem"
+          ],
+          "properties": {
+            "kind": {
+              "const": "subsystem"
+            },
+            "subsystem": {
+              "enum": [
+                "winsock",
+                "gdi-plus",
+                "media-foundation"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "subsystem-exempt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "subsystem"
+          ],
+          "properties": {
+            "kind": {
+              "const": "managed-lifecycle"
+            },
+            "subsystem": {
+              "enum": [
+                "winsock",
+                "gdi-plus",
+                "media-foundation"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "typeMeaning": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "scalar"
+          ],
+          "properties": {
+            "kind": {
+              "const": "scalar"
+            },
+            "scalar": {
+              "enum": [
+                "bool8",
+                "i8",
+                "u8",
+                "i16",
+                "u16",
+                "i32",
+                "u32",
+                "i64",
+                "u64",
+                "f32",
+                "f64",
+                "char16",
+                "bool32",
+                "native-isize",
+                "native-usize"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "handle"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "data-pointer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "function-pointer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unsupported"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "encoding",
+            "isConst"
+          ],
+          "properties": {
+            "kind": {
+              "const": "string-pointer"
+            },
+            "encoding": {
+              "enum": [
+                "utf16",
+                "ansi"
+              ]
+            },
+            "isConst": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "fieldContract": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "nullable",
+            "optional"
+          ],
+          "properties": {
+            "kind": {
+              "const": "retained-pointer"
+            },
+            "nullable": {
+              "type": "boolean"
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "null-pointer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "borrowed-handle"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cleanup"
+          ],
+          "properties": {
+            "kind": {
+              "const": "owned-handle"
+            },
+            "cleanup": {
+              "enum": [
+                "none",
+                "close-handle",
+                "reg-close-key",
+                "local-free",
+                "global-free",
+                "free-library",
+                "close-service-handle",
+                "co-task-mem-free",
+                "cred-free"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "optional"
+          ],
+          "properties": {
+            "kind": {
+              "const": "boolean-input"
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "output-u32"
+            }
+          }
+        }
+      ]
+    },
+    "fieldPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "contract"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "contract": {
+          "$ref": "#/$defs/fieldContract"
+        }
+      }
+    },
+    "recipeType": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "scalar"
+          ],
+          "properties": {
+            "kind": {
+              "const": "scalar"
+            },
+            "scalar": {
+              "enum": [
+                "bool8",
+                "i8",
+                "u8",
+                "i16",
+                "u16",
+                "i32",
+                "u32",
+                "i64",
+                "u64",
+                "f32",
+                "f64",
+                "char16",
+                "bool32",
+                "native-isize",
+                "native-usize"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "const": "named"
+            },
+            "namespace": {
+              "type": "string",
+              "pattern": "^Windows\\.Win32\\.[A-Za-z0-9_.]+$"
+            },
+            "name": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "layout"
+          ],
+          "properties": {
+            "kind": {
+              "const": "record"
+            },
+            "layout": {
+              "$ref": "#/$defs/layoutRecipe"
+            }
+          }
+        }
+      ]
+    },
+    "recipeField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "typ"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "typ": {
+          "$ref": "#/$defs/recipeType"
+        }
+      }
+    },
+    "layoutRecipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "fields"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "kind": {
+          "enum": [
+            "struct",
+            "union"
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/recipeField"
+          }
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "builder",
+        "sizeField",
+        "fields",
+        "anonymousLayouts"
+      ],
+      "properties": {
+        "builder": {
+          "anyOf": [
+            {
+              "enum": [
+                "security-attributes",
+                "startup-info-ansi",
+                "startup-info-wide",
+                "process-information"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sizeField": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldPolicy"
+          }
+        },
+        "anonymousLayouts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/layoutRecipe"
+          }
+        }
+      }
+    },
+    "functionEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "evidence",
+        "selector",
+        "contracts"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "selector": {
+          "$ref": "#/$defs/functionSelector"
+        },
+        "contracts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/effect"
+          }
+        }
+      }
+    },
+    "typeEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "evidence",
+        "selector",
+        "meaning",
+        "status",
+        "aggregate"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/citation"
+          }
+        },
+        "selector": {
+          "$ref": "#/$defs/typeSelector"
+        },
+        "meaning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/typeMeaning"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "zero",
+                "signed-nonnegative"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aggregate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/aggregate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "domain": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "subsystem"
+          ],
+          "properties": {
+            "kind": {
+              "const": "subsystem"
+            },
+            "namespace": {
+              "type": "string",
+              "pattern": "^Windows\\.Win32\\.[A-Za-z0-9_.]+$"
+            },
+            "subsystem": {
+              "enum": [
+                "winsock",
+                "gdi-plus",
+                "media-foundation"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "dll"
+          ],
+          "properties": {
+            "kind": {
+              "const": "provider-lifecycle"
+            },
+            "dll": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+\\.dll$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -2127,6 +2127,350 @@ fn thumbnail_provider_returns_a_delete_object_owned_handle() {
 }
 
 #[test]
+fn data_object_projects_hglobal_format_and_medium_values() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IDataObject",
+    )
+    .expect("IDataObject must exist");
+    let set_data_contract = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "SetData")
+        .and_then(|method| method.exact_contract.as_ref())
+        .expect("SetData must carry exact ownership evidence");
+    assert_eq!(
+        set_data_contract.kind,
+        com_metadata::RawExactMethodContractKind::BorrowedStgMediumInput
+    );
+    assert_eq!(set_data_contract.ownership_transfer_param_index, Some(2));
+    assert!(
+        set_data_contract
+            .citation
+            .ends_with("nf-objidl-idataobject-setdata")
+    );
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IDataObject: {error}"));
+    assert!(
+        output
+            .dts
+            .contains("getData(pformatetcIn: DynComFormatEtc): DynComStgMedium;")
+    );
+    assert!(output.dts.contains(
+        "getDataHere(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): DynComStgMedium;"
+    ));
+    assert!(
+        output
+            .dts
+            .contains("setData(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): void;")
+    );
+    assert!(!output.dts.contains("fRelease"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.stgMedium(pmedium), DynCom.i32(0)")
+    );
+    assert!(output.js.contains(".canonicalFormatEtcResult(0, 1)"));
+    let mut missing_canonical = interface.clone();
+    missing_canonical
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "GetCanonicalFormatEtc")
+        .unwrap()
+        .exact_contract = None;
+    assert!(com::generate_com_interface_files(&missing_canonical, &win32_winmd()).is_err());
+
+    let advise_sink = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IAdviseSink",
+    )
+    .expect("IAdviseSink must exist");
+    let advise_output = com::generate_com_interface_files(&advise_sink, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IAdviseSink: {error}"));
+    assert!(!advise_output.js.contains("static implementation(handlers)"));
+    assert!(!advise_output.dts.contains("IAdviseSinkImplementation"));
+}
+
+#[test]
+fn endpoint_activation_projects_a_typed_null_parameter_factory() {
+    if !win32_available() {
+        return;
+    }
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.Media.Audio", "IMMDevice")
+            .unwrap();
+    let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+    assert!(output.dts.contains("activate<T>(InterfaceClass:"));
+    assert!(!output.dts.contains("pActivationParams:"));
+    assert!(!output.dts.contains("dwClsCtx:"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.u32(1), DynCom.exactNullPointer(null)")
+    );
+    assert!(output.js.contains("DynCom.ownedComPointerType()"));
+    assert!(output.js.contains("projectAs(_owned, InterfaceClass)"));
+    assert!(
+        output
+            .js
+            .contains("__registerComProjection(IMMDevice, IID_IMMDevice)")
+    );
+    for mutation in 0..6 {
+        let mut drift = interface.clone();
+        let raw = &mut drift.raw_methods.as_mut().unwrap()[0];
+        match mutation {
+            0 => raw.exact_contract = None,
+            1 => raw.params[0].const_attribute = false,
+            2 => raw.params[2].typ.pointer_depth = 2,
+            3 => raw.params[3].optional = true,
+            4 => raw.vtable_index += 1,
+            5 => raw.params[2].direction = com_metadata::RawParamDirection::InOut,
+            _ => unreachable!(),
+        }
+        assert!(com::generate_com_interface_files(&drift, &win32_winmd()).is_err());
+    }
+}
+
+#[test]
+fn device_control_record_projects_exact_nullable_audio_formats() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    for name in ["IMDSPDeviceControl", "IWMDMDeviceControl"] {
+        let interface = com_metadata::parse_com_interface(
+            &win32_winmd(),
+            "Windows.Win32.Media.DeviceManager",
+            name,
+        )
+        .unwrap();
+        let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+        assert!(
+            output
+                .dts
+                .contains("record(pFormat: DynComAudioFormat | null): void;")
+        );
+        assert!(
+            output
+                .js
+                .contains(".addNullableIn(DynCom.audioFormatType())")
+        );
+        assert!(
+            output.js.contains(
+                "pFormat === null ? DynCom.nullAudioFormat() : DynCom.audioFormat(pFormat)"
+            )
+        );
+        let index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "Record")
+            .unwrap();
+        let raw = &interface.raw_methods.as_ref().unwrap()[index];
+        assert!(!raw.params[0].optional);
+        assert_eq!(
+            raw.exact_contract.as_ref().unwrap().kind,
+            com_metadata::RawExactMethodContractKind::NullableAudioFormatInput
+        );
+        for mutation in 0..7 {
+            let mut drift = interface.clone();
+            let raw = &mut drift.raw_methods.as_mut().unwrap()[index];
+            match mutation {
+                0 => raw.exact_contract = None,
+                1 => raw.vtable_index += 1,
+                2 => raw.params[0].typ.pointer_depth = 2,
+                3 => raw.params[0].direction = com_metadata::RawParamDirection::Out,
+                4 => raw.params[0].optional = true,
+                5 => raw.params[0].const_attribute = true,
+                6 => raw.exact_contract.as_mut().unwrap().buffer_param_index = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+                "{name}.Record admitted mutation {mutation}"
+            );
+        }
+    }
+}
+
+#[test]
+fn audio_clients_project_variable_wave_formats_and_exact_ownership() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    for name in ["IAudioClient", "IAudioClient2", "IAudioClient3"] {
+        let interface =
+            com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.Media.Audio", name)
+                .unwrap_or_else(|| panic!("{name} must exist"));
+        let output = com::generate_com_interface_files(&interface, &win32_winmd())
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(output.dts.contains("DynComAudioFormat"));
+        assert!(!output.js.contains("UnsafePointee"));
+        assert!(!output.js.contains("UnsafePointerOutput"));
+        assert!(output.js.contains("DynCom.audioFormatType()"));
+        assert!(output.js.contains("DynCom.takeAudioFormat"));
+        assert!(!output.js.contains("static implementation(handlers)"));
+        assert!(output.dts.contains(
+            "isFormatSupported(shareMode: AUDCLNT_SHAREMODE, pFormat: DynComAudioFormat): readonly [number, DynComAudioFormat | null];"
+        ));
+        assert!(output.js.contains("DynCom.boolValue(_requestClosest)"));
+        assert!(output.js.contains("DynCom.takeNullableAudioFormat(_r[1])"));
+        if name == "IAudioClient3" {
+            assert!(
+                output
+                    .dts
+                    .contains("getCurrentSharedModeEnginePeriod(): [DynComAudioFormat, number];")
+            );
+        }
+    }
+}
+
+#[test]
+fn storage_medium_in_out_requires_exact_preservation_evidence() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IDataObject",
+    )
+    .unwrap();
+    let index = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetDataHere")
+        .unwrap();
+    let contract = interface.raw_methods.as_ref().unwrap()[index]
+        .exact_contract
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        contract.kind,
+        com_metadata::RawExactMethodContractKind::PreservedStgMediumInOut
+    );
+    assert_eq!(contract.buffer_param_index, 1);
+    assert_eq!(contract.vtable_index, 4);
+    for mutation in 0..6 {
+        let mut drift = interface.clone();
+        let method = &mut drift.raw_methods.as_mut().unwrap()[index];
+        match mutation {
+            0 => method.exact_contract = None,
+            1 => {
+                method.exact_contract = None;
+                method.metadata_name = "FillMedium".into();
+                method.projected_name = "FillMedium".into();
+            }
+            2 => method.params[1].direction = com_metadata::RawParamDirection::Out,
+            3 => method.params[1].typ.pointer_depth = 2,
+            4 => method.params[1].optional = true,
+            5 => method.exact_contract.as_mut().unwrap().buffer_param_index = 0,
+            _ => unreachable!(),
+        }
+        assert!(
+            com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+            "GetDataHere admitted mutation {mutation}"
+        );
+    }
+    let wia = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Devices.ImageAcquisition",
+        "IWiaDataTransfer",
+    )
+    .unwrap();
+    let method = wia
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "idtGetData")
+        .unwrap();
+    assert_eq!(
+        method.params[0].direction,
+        com_metadata::RawParamDirection::InOut
+    );
+    assert_eq!(method.params[0].typ.pointer_depth, 1);
+    assert!(method.exact_contract.is_none());
+    let error = com::generate_com_interface_files(&wia, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains(
+            "STGMEDIUM in/out requires exact contract evidence for caller-allocated preservation"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn ole_cache_inherited_set_data_is_borrowed_and_fails_closed_on_drift() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    for name in ["IOleCache", "IOleCache2"] {
+        let interface =
+            com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Ole", name)
+                .unwrap();
+        let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+        assert!(
+            output
+                .dts
+                .contains("setData(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): void;")
+        );
+        assert!(!output.dts.contains("fRelease"));
+        assert!(
+            output
+                .js
+                .contains("DynCom.stgMedium(pmedium), DynCom.i32(0)")
+        );
+        let index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "SetData")
+            .unwrap();
+        let contract = interface.raw_methods.as_ref().unwrap()[index]
+            .exact_contract
+            .as_ref()
+            .unwrap();
+        assert_eq!(contract.declaring_interface, "IOleCache");
+        assert_eq!(
+            contract.declaring_iid,
+            "0000011e-0000-0000-c000-000000000046"
+        );
+        for mutation in 0..3 {
+            let mut drift = interface.clone();
+            let method = &mut drift.raw_methods.as_mut().unwrap()[index];
+            match mutation {
+                0 => method.exact_contract = None,
+                1 => method.params[2].typ.pointer_depth = 1,
+                2 => method.params[1].direction = com_metadata::RawParamDirection::InOut,
+                _ => unreachable!(),
+            }
+            assert!(
+                com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+                "{name}.SetData admitted mutation {mutation}"
+            );
+        }
+    }
+}
+
+#[test]
 fn high_value_exact_contracts_generate_complete_safe_interfaces() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
@@ -4933,9 +5277,9 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
             "--winmd",
             &win32_winmd(),
             "--namespace",
-            "Windows.Win32.Media.Audio",
+            "Windows.Win32.AI.MachineLearning.WinML",
             "--class-name",
-            "IAudioClient",
+            "IWinMLEvaluationContext",
             "--output",
             output.to_str().unwrap(),
         ]);
@@ -4955,13 +5299,15 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(String::from_utf8_lossy(&first.stdout).contains("Generated IAudioClientUnsafe"));
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("Generated IWinMLEvaluationContextUnsafe")
+    );
 
     let unsafe_dir = output_dir.join("com").join("unsafe");
-    let class_module = "windows/win32/media/audio/IAudioClientUnsafe";
+    let class_module = "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe";
     let retained = [
-        "windows/win32/media/audio/IAudioClientUnsafe.js",
-        "windows/win32/media/audio/IAudioClientUnsafe.d.ts",
+        "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe.js",
+        "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe.d.ts",
         "index.js",
         "index.mjs",
         "index.d.ts",
@@ -4979,8 +5325,8 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
 
     let js = fs::read_to_string(unsafe_dir.join(format!("{class_module}.js"))).unwrap();
     let dts = fs::read_to_string(unsafe_dir.join(format!("{class_module}.d.ts"))).unwrap();
-    assert!(js.contains("class IAudioClientUnsafe"));
-    assert!(js.contains("isFormatSupported("));
+    assert!(js.contains("class IWinMLEvaluationContextUnsafe"));
+    assert!(js.contains("getValueByName("));
     assert!(!js.contains("implement(") && !js.contains("implementation"));
     assert!(dts.contains("private constructor()"));
     assert!(dts.contains("static from(value: DynWinRtValue"));
@@ -4992,7 +5338,7 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
     assert_eq!(support["interfaces"][0]["modulePath"], class_module);
     let methods = support["interfaces"][0]["methods"].as_array().unwrap();
     assert!(methods.iter().any(|method| {
-        method["name"] == "IsFormatSupported" && method["status"] == "raw_manual_contract"
+        method["name"] == "GetValueByName" && method["status"] == "raw_manual_contract"
     }));
 
     assert!(!output_dir.join("index.js").exists());
@@ -5005,7 +5351,7 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         assert!(
             !fs::read_to_string(path)
                 .unwrap()
-                .contains("IAudioClientUnsafe")
+                .contains("IWinMLEvaluationContextUnsafe")
         );
     }
 
@@ -5053,10 +5399,10 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
     remove_com_generation_lock(&output);
     let cases = [
         (
-            "Windows.Win32.Media.Audio",
-            "IAudioClient",
-            "windows/win32/media/audio/IAudioClientUnsafe",
-            "isFormatSupported<T0>(ShareMode: number, pFormat: UnsafePointee, ppClosestMatch: UnsafePointerOutput<T0>): readonly [number, T0]",
+            "Windows.Win32.AI.MachineLearning.WinML",
+            "IWinMLEvaluationContext",
+            "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe",
+            "getValueByName<T0>(Name: DynComRawMemory | DynComRawPointer, pDescriptor: UnsafePointerOutput<T0>): T0",
         ),
         (
             "Windows.Win32.Graphics.Dxgi",
@@ -5113,21 +5459,24 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
     )
     .unwrap();
     assert_eq!(support["schemaVersion"], com::UNSAFE_SUPPORT_SCHEMA_VERSION);
-    let audio = support["interfaces"]
+    let evaluation = support["interfaces"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|interface| interface["interfaceName"] == "Windows.Win32.Media.Audio.IAudioClient")
+        .find(|interface| {
+            interface["interfaceName"]
+                == "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext"
+        })
         .unwrap();
-    let format = audio["methods"]
+    let output_method = evaluation["methods"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|method| method["name"] == "IsFormatSupported")
+        .find(|method| method["name"] == "GetValueByName")
         .unwrap();
-    assert_eq!(format["status"], "raw_manual_contract");
+    assert_eq!(output_method["status"], "raw_manual_contract");
     assert_eq!(
-        format["strategyRequirements"]
+        output_method["strategyRequirements"]
             .as_array()
             .unwrap()
             .iter()
@@ -5136,15 +5485,22 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
                 requirement["strategy"].as_str().unwrap()
             ))
             .collect::<Vec<_>>(),
-        vec![
-            ("pFormat", "UnsafePointee"),
-            ("ppClosestMatch", "UnsafePointerOutput")
-        ]
+        vec![("pDescriptor", "UnsafePointerOutput")]
     );
-    assert_eq!(format["strategyRequirements"][0]["direction"], "in");
-    assert_eq!(format["strategyRequirements"][0]["nullable"], false);
+    let input_method = evaluation["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["name"] == "BindValue")
+        .unwrap();
     assert_eq!(
-        format["strategyRequirements"][0]["pointeeLayouts"],
+        input_method["strategyRequirements"][0]["strategy"],
+        "UnsafePointee"
+    );
+    assert_eq!(input_method["strategyRequirements"][0]["direction"], "in");
+    assert_eq!(input_method["strategyRequirements"][0]["nullable"], false);
+    assert_eq!(
+        input_method["strategyRequirements"][0]["pointeeLayouts"],
         serde_json::json!({"arm64": null, "i686": null, "x64": null})
     );
     assert!(
@@ -5166,7 +5522,7 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
     )
     .unwrap();
     for root in [
-        "Windows.Win32.Media.Audio.IAudioClient",
+        "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
         "Windows.Win32.Graphics.Dxgi.IDXGIObject",
         "Windows.Win32.System.ClrHosting.IHostMalloc",
         "Windows.Win32.Devices.Fax.IStiDeviceControl",
@@ -5275,7 +5631,7 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     );
     let unsafe_dir = output_dir.join("com").join("unsafe");
     let mf_module = "windows/win32/media/media-foundation/MFASYNCRESULTUnsafe";
-    let unsafe_module = "windows/win32/media/audio/IAudioClientUnsafe";
+    let unsafe_module = "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe";
     assert!(unsafe_dir.join("support.json").is_file());
     assert!(!unsafe_dir.join(format!("{mf_module}.js")).exists());
     assert!(!unsafe_dir.join(format!("{mf_module}.d.ts")).exists());
@@ -5316,8 +5672,8 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
 
     let unsafe_success = run(
         &output_dir,
-        "Windows.Win32.Media.Audio",
-        "IAudioClient",
+        "Windows.Win32.AI.MachineLearning.WinML",
+        "IWinMLEvaluationContext",
         false,
     );
     assert!(
@@ -5337,7 +5693,7 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     assert_eq!(
         merged_names,
         std::collections::BTreeSet::from([
-            "Windows.Win32.Media.Audio.IAudioClient",
+            "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
             "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
         ])
     );
@@ -5429,7 +5785,10 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     };
 
     let safe = spawn("Windows.Win32.UI.Shell", "ITaskbarList3");
-    let unsafe_companion = spawn("Windows.Win32.Media.Audio", "IAudioClient");
+    let unsafe_companion = spawn(
+        "Windows.Win32.AI.MachineLearning.WinML",
+        "IWinMLEvaluationContext",
+    );
     let safe = safe.wait_with_output().unwrap();
     let unsafe_companion = unsafe_companion.wait_with_output().unwrap();
     assert!(
@@ -5445,7 +5804,7 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
 
     let com_dir = output_dir.join("com");
     let unsafe_dir = com_dir.join("unsafe");
-    let unsafe_module = "windows/win32/media/audio/IAudioClientUnsafe.js";
+    let unsafe_module = "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe.js";
     assert!(
         generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
             .is_file()
@@ -5454,14 +5813,17 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     let safe_barrel = fs::read_to_string(com_dir.join("index.js")).unwrap();
     let unsafe_barrel = fs::read_to_string(unsafe_dir.join("index.js")).unwrap();
     assert!(safe_barrel.contains("ITaskbarList3"));
-    assert!(!safe_barrel.contains("IAudioClientUnsafe"));
-    assert!(unsafe_barrel.contains("IAudioClientUnsafe"));
+    assert!(!safe_barrel.contains("IWinMLEvaluationContextUnsafe"));
+    assert!(unsafe_barrel.contains("IWinMLEvaluationContextUnsafe"));
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(com_dir.join(".dynwinrt-com-manifest.json")).unwrap(),
     )
     .unwrap();
     assert!(manifest["roots"]["Windows.Win32.UI.Shell.ITaskbarList3"].is_array());
-    assert!(manifest["roots"]["Windows.Win32.Media.Audio.IAudioClient"].is_array());
+    assert!(
+        manifest["roots"]["Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext"]
+            .is_array()
+    );
 
     let safe_second = spawn("Windows.Win32.UI.Shell", "IShellLinkW");
     let report_only = spawn("Windows.Win32.Media.MediaFoundation", "MFASYNCRESULT");
@@ -5492,7 +5854,7 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     for root in [
         "Windows.Win32.UI.Shell.ITaskbarList3",
         "Windows.Win32.UI.Shell.IShellLinkW",
-        "Windows.Win32.Media.Audio.IAudioClient",
+        "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
         "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
     ] {
         assert!(
@@ -5622,8 +5984,8 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
     let baseline_unsafe = spawn(
         &output,
         &win32_metadata,
-        "Windows.Win32.Media.Audio",
-        "IAudioClient",
+        "Windows.Win32.AI.MachineLearning.WinML",
+        "IWinMLEvaluationContext",
         None,
         None,
     )
@@ -5684,22 +6046,30 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
     );
     assert!(generated_com_module(&output, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file());
     assert!(
-        generated_unsafe_module(&output, "Windows.Win32.Media.Audio", "IAudioClient", "js")
-            .is_file()
+        generated_unsafe_module(
+            &output,
+            "Windows.Win32.AI.MachineLearning.WinML",
+            "IWinMLEvaluationContext",
+            "js"
+        )
+        .is_file()
     );
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(output.join("com").join(".dynwinrt-com-manifest.json")).unwrap(),
     )
     .unwrap();
     assert!(manifest["roots"]["Windows.Win32.UI.Shell.IShellLinkW"].is_array());
-    assert!(manifest["roots"]["Windows.Win32.Media.Audio.IAudioClient"].is_array());
+    assert!(
+        manifest["roots"]["Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext"]
+            .is_array()
+    );
     let root_barrel = fs::read_to_string(output.join("index.d.ts")).unwrap();
     let com_barrel = fs::read_to_string(output.join("com").join("index.d.ts")).unwrap();
     let unsafe_barrel =
         fs::read_to_string(output.join("com").join("unsafe").join("index.d.ts")).unwrap();
     assert!(root_barrel.contains("Uri") && !root_barrel.contains("Calendar"));
     assert!(com_barrel.contains("IShellLinkW"));
-    assert!(unsafe_barrel.contains("IAudioClientUnsafe"));
+    assert!(unsafe_barrel.contains("IWinMLEvaluationContextUnsafe"));
     let support: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
     )
@@ -5744,9 +6114,9 @@ fn generated_unsafe_fingerprint_includes_sibling_and_reference_metadata() {
             "--winmd",
             winmd.to_str().unwrap(),
             "--namespace",
-            "Windows.Win32.Media.Audio",
+            "Windows.Win32.AI.MachineLearning.WinML",
             "--class-name",
-            "IAudioClient",
+            "IWinMLEvaluationContext",
             "--output",
             output.to_str().unwrap(),
         ]);
@@ -5877,7 +6247,7 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
     );
     let before = snapshot_tree(&output_dir);
     let incremental_failure = run(
-        "Windows.Win32.Media.Audio.IAudioClient",
+        "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
         Some("after_backup_rename"),
     );
     assert!(!incremental_failure.status.success());
@@ -5899,7 +6269,7 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
             "--winmd",
             &metadata,
             "--class-name",
-            "Windows.Win32.Media.Audio.IAudioClient",
+            "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -5928,8 +6298,8 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
     assert!(
         generated_unsafe_module(
             &output_dir,
-            "Windows.Win32.Media.Audio",
-            "IAudioClient",
+            "Windows.Win32.AI.MachineLearning.WinML",
+            "IWinMLEvaluationContext",
             "js"
         )
         .is_file()
@@ -6175,17 +6545,19 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
         eprintln!("Skipping: Windows.winmd not available");
         return;
     };
-    let output = std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "dynwinrt-codegen-mixed-unsafe-only-{}",
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&output);
+    let output = root.join("node_modules").join("@winapp").join("bindings");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
     remove_com_generation_lock(&output);
 
     run_codegen_command(
         &win32_winmd(),
-        Some("Windows.Win32.Media.Audio"),
-        "IAudioClient",
+        Some("Windows.Win32.AI.MachineLearning.WinML"),
+        "IWinMLEvaluationContext",
         &output,
     );
     run_codegen_command(
@@ -6196,16 +6568,40 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
     );
 
     assert!(
-        generated_unsafe_module(&output, "Windows.Win32.Media.Audio", "IAudioClient", "js")
-            .is_file()
+        generated_unsafe_module(
+            &output,
+            "Windows.Win32.AI.MachineLearning.WinML",
+            "IWinMLEvaluationContext",
+            "js"
+        )
+        .is_file()
     );
     let package = fs::read_to_string(output.join("package.json")).unwrap();
     assert!(package.contains("\".\":"));
     assert!(package.contains("\"./com\":"));
     assert!(package.contains("\"./com/*\":"));
 
-    fs::remove_dir_all(&output).unwrap();
-    remove_com_generation_lock(&output);
+    let resolved = Command::new("node")
+        .args([
+            "-e",
+            "for (const id of [\
+             '@winapp/bindings',\
+             '@winapp/bindings/windows/foundation/Uri',\
+             '@winapp/bindings/com',\
+             '@winapp/bindings/com/unsafe/windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe'\
+             ]) console.log(require.resolve(id))",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("resolve mixed generated package exports");
+    assert!(
+        resolved.status.success(),
+        "generated package exports were not consumable:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+
+    fs::remove_dir_all(&root).unwrap();
 }
 
 /// Requirement 8: multi-interface COM generation must be atomic enough that

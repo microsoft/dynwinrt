@@ -30,10 +30,19 @@ Issues = "https://github.com/microsoft/dynwinrt/issues"
 
 [dependency-groups]
 dev = [
+    "coverage>=7.15,<8",
     "maturin>=1.11.5",
     "mypy>=1.13,<2",
     "pytest>=8.3.5",
 ]
+
+[tool.maturin]
+python-source = "python"
+module-name = "dynwinrt.dynwinrt"
+include = [
+    { path = "dynwinrt/__init__.pyi", format = "wheel" },
+]
+exclude = [{ path = "python/dynwinrt/.gitignore", format = "wheel" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1255,7 +1255,15 @@ pub fn project_interface(
     let mut imports = Vec::new();
     imports.push(build_runtime_import(context, has_structs));
 
-    let collection_names = collect_used_generics_from_methods(context, &iface.methods);
+    let mut collection_names = collect_used_generics_from_methods(context, &iface.methods);
+    for delegate in &iface.implementation_metadata.delegates {
+        collection_names.extend(collect_used_generics_from_methods(
+            context,
+            std::slice::from_ref(&delegate.invoke),
+        ));
+    }
+    collection_names.sort();
+    collection_names.dedup();
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             imports.push(ProjectedImport {
@@ -1451,6 +1459,25 @@ pub fn project_interface(
     let needs_unwrap = check_needs_unwrap_simple(&members);
 
     let doc = build_doc_info(iface.doc.as_deref(), iface.deprecated.as_deref(), None, &[]);
+    let implementation = super::implementation::project(context, iface, known_types);
+    if implementation.supported {
+        imports[0].symbols.extend([
+            "DynWinRtInterfacePlan".into(),
+            "DynWinRtImplementation".into(),
+            "DynWinRtImplementationHandle".into(),
+        ]);
+        imports.push(ProjectedImport {
+            symbols: vec![
+                "DynWinRtImplementationDescriptor".into(),
+                "DynWinRtImplementationOptions".into(),
+                "DynWinRtImplementationType".into(),
+            ],
+            from: context.runtime_import_name().into(),
+            runtime_only: false,
+            dts_only: true,
+            is_runtime_package: true,
+        });
+    }
 
     ProjectedFile {
         name: iface.name.clone(),
@@ -1468,6 +1495,7 @@ pub fn project_interface(
             has_parameterized_cast,
             members,
             is_delegate: false,
+            implementation,
         }],
         delegates: vec![],
         needs_unwrap_helper: needs_unwrap,

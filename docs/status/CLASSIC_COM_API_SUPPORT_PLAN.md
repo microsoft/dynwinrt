@@ -32,16 +32,27 @@ B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D
 | Result                                               | Interfaces | Percentage |
 | ---------------------------------------------------- | ---------: | ---------: |
 | Externally addressable Classic COM interfaces        |      7,929 |       100% |
-| Complete safe generation                             |      5,681 |     71.65% |
-| Rejected because at least one contract is incomplete |      2,248 |     28.35% |
+| Complete safe generation                             |      5,721 |     72.15% |
+| Rejected because at least one contract is incomplete |      2,208 |     27.85% |
 
 The denominator contains addressable COM interface identities, not flat Win32
 DLL exports. A complete interface means that its full inherited vtable can be
 generated without guessing ABI, layout, count relationships, ownership, or
 cleanup.
 
-The 5,681 figure is semantic codegen coverage, not a claim that every interface
+The 5,721 figure is semantic codegen coverage, not a claim that every interface
 has a dedicated live Windows test or can be activated on every machine.
+
+PR4 promotes **24** previously raw-metadata-complete interfaces by naming
+otherwise validated normal overloads explicitly. Every member of a formerly
+rejected same-shape/arity or projected-buffer group receives
+`<camelName>AtSlot<absoluteVtableSlot>`; the ambiguous unsuffixed method is not
+emitted. Existing distinguishable overload dispatch, native ABI/conversion/
+lifetime plans, and already-supported generated output remain unchanged.
+Alias collisions and synthesized/dynamic-IID/non-normal groups still fail
+closed. This needs no further manifest version change and does not turn the
+PR3 bounded-copy facades into complete native interface projections.
+See [overload usage and limits](../guides/windows/classic-com-usage.md#58-explicit-overload-names).
 
 Reproduce the census with:
 
@@ -105,7 +116,22 @@ modeled contracts.
 | Counted buffers      | Typed input buffers, caller-owned output buffers, capacity/actual-length patterns, exact bounded sizing, and known CoTaskMem outputs.       |
 | Automation values    | Defined subsets of VARIANT, SAFEARRAY, PROPVARIANT, DISPPARAMS, and EXCEPINFO.                                                              |
 | Return conventions   | Ordinary and semantic HRESULT, direct scalar, direct void, and exact registered direct-pointer contracts such as `IMalloc`.                 |
-| COM object semantics | Coclass activation, inherited interfaces, QI views, automatic release, and idempotent explicit release.                                     |
+| COM object semantics | Coclass activation, inherited interfaces, `projectAs` QI views of managed values or wrappers, automatic release, and idempotent explicit release. |
+
+The safe `/com` entrypoint exports `projectAs(value, InterfaceClass)`. It
+borrows a managed native value or generated wrapper and returns an independent
+QueryInterface owner of a registered generated safe COM interface. Raw
+pointers and unsafe target classes are rejected.
+
+`IMMDevice` is now safe-complete: `activate(InterfaceClass)` infers the returned
+wrapper, fixes `CLSCTX_INPROC_SERVER = 1`, and passes native NULL activation
+parameters. The supported targets are `IAudioClient`, `IAudioEndpointVolume`,
+`IAudioMeterInformation`, `IAudioSessionManager`, and `IAudioSessionManager2`.
+Other/custom targets, async activation, and loopback or other parameterized
+activation remain outside this subset. `getId()` returns a string with exact
+CoTaskMem cleanup. This uses generated semantic plans and shared runtime
+primitives, not per-interface native adapters; the WinRT root is unchanged.
+See the [audio endpoint example](../guides/windows/classic-com-usage.md#55-audio-endpoint-activation).
 
 ## JavaScript interface implementation
 
@@ -128,15 +154,14 @@ implementation, aggregation, or custom marshaling.
 
 | API or family                                              | Current blocker                                                                                      | Raw direction                                                                                     |
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `IDataObject` and clipboard/drag-and-drop                  | `FORMATETC` and `STGMEDIUM` combine unions, handles, interfaces, and release rules.                  | Opaque aligned storage and explicit `ReleaseStgMedium`, followed by a dedicated semantic wrapper. |
-| `IAudioClient` format negotiation                          | Variable audio-format layouts and untyped CoTaskMem output.                                          | Raw format memory plus pointer output; later add a typed audio-format value.                      |
+| Non-HGLOBAL/device-specific clipboard and drag-and-drop    | `DVTARGETDEVICE` and the remaining `STGMEDIUM` alternatives have distinct layout and release rules. | Opaque aligned storage and explicit type-specific cleanup until each semantic alternative exists. |
 | DXGI/D3D `GetPrivateData`                                  | The same payload may be bytes or an AddRef'd interface pointer.                                      | Caller-selected byte storage or pointer slot with explicit adoption.                              |
 | Generic typed interface `InOut`                            | Replacing an interface pointer requires explicit old/new reference transfer.                         | `UnsafeInterfaceReplacement` with one independent `+1` owner per slot.                            |
 | Advanced Automation                                        | BYREF VARIANTs, additional alternatives, replacement arrays, and nested ownership are incomplete.    | Raw storage can expose ABI reach; safe support still requires dedicated value and cleanup models. |
 | Custom allocators and resource handles                     | The runtime lacks the exact cleanup operation.                                                       | Raw pointer plus explicit cleanup primitive where one exists.                                     |
 | Cross-apartment callbacks                                  | JavaScript is tied to its V8 owner thread while COM callbacks can be synchronous on foreign threads. | Not solved by raw ABI; requires marshaling and dispatch architecture.                             |
 | COM aggregation, custom marshaling, and registered servers | These change object identity, activation, and process semantics rather than only method ABI.         | Separate architecture work.                                                                       |
-| Flat Win32 DLL exports                                     | They are not COM vtable methods.                                                                     | Separate Win32 raw function layer.                                                                |
+| Flat Win32 DLL exports                                     | They are not COM vtable methods.                                                                     | Use the separate [contract-driven Win32 layer](../architecture/flat-win32-contracts.md) for supported exports. |
 
 ## How users check a specific API
 
@@ -255,7 +280,7 @@ non-addressable identities block every method before companion selection.
 `MFASYNCRESULT` therefore produces no callable class.
 
 When an interface has no executable method, generation transactionally commits
-a schema-11 report containing every blocked/manual method and exact reasons,
+a schema-12 report containing every blocked/manual method and exact reasons,
 emits no class `.js`/`.d.ts`, and then exits nonzero. The metadata record is a
 sorted, deduplicated set of every loaded emission/reference/sibling winmd, with
 per-file hashes, a set hash, and an optional exact defining file; it contains no
@@ -279,10 +304,11 @@ conflicts, transaction-residue names, and unsupported reparse tags fail closed.
 
 Safe and unsafe modules use the canonical lowercase/kebab namespace layout, for
 example `com/windows/win32/ui/shell/ITaskbarList3.js` and
-`com/unsafe/windows/win32/media/audio/IAudioClientUnsafe.js`. The short class
-name remains `IAudioClientUnsafe`. A short barrel export is emitted only when
-globally unique; ambiguous names are available only through deep modules, and
-incremental order does not affect the resulting barrel.
+`com/unsafe/windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe.js`.
+The short class name remains `IWinMLEvaluationContextUnsafe`. A short barrel
+export is emitted only when globally unique; ambiguous names are available only
+through deep modules, and incremental order does not affect the resulting
+barrel.
 
 Generated and retained paths share an ASCII case-folded Windows identity.
 Traversal, rooted/drive paths, trailing dots/spaces, reserved device names, and
@@ -290,12 +316,14 @@ case-only namespace/type collisions fail closed. Existing cross-root shared
 ownership additionally requires the staged file to exist and exactly match the
 planned bytes before overwrite.
 
-CI also generates the real official safe `IWbemServices` wrapper and
-`IAudioClientUnsafe` companion, then invokes `queryObjectSink` at absolute slot
-5 against a test-hook IUnknown implementation with measured
-QueryInterface/AddRef/Release and pointer-slot mutation. This avoids requiring
-a live WMI service while testing the actual generated CJS, ESM, and declaration
-artifacts.
+CI also generates real official safe `IWbemServices`, `IDataObject`, and
+`IAudioClient` wrappers plus an `IWinMLEvaluationContextUnsafe` companion. The
+WMI test object uses the official `IWbemServices_Vtbl` through slot 25 and
+ABI-correct `IWbemClassObject` and `IWbemCallResult` tear-offs with one
+canonical IUnknown and shared reference counting. The test hooks also validate
+conditional output selection, data/audio storage cleanup, raw pointer-slot
+mutation, CJS, ESM, and declarations without requiring live WMI or audio
+hardware.
 
 Generated companions are outbound only. They do not infer output ownership,
 provide callbacks or `implement()`, solve acquisition or apartment transfer, or
@@ -306,7 +334,7 @@ generated `runtime.js`/`.d.ts` provides closed pointee, pointer-output, handle,
 interface-replacement, counted-buffer, owned-pointer, and raw-fallback
 strategies. Generated methods validate strategy types before dispatch, clean
 dirty HRESULT failure outputs according to the selected strategy, and report
-exact per-parameter requirements in support schema 11.
+exact per-parameter requirements in support schema 12.
 
 Strategy capabilities are unforgeable frozen objects backed by private
 WeakMaps. Private generated helpers perform prepare, writable-span overlap
@@ -341,46 +369,81 @@ versus 16 (`WBEM_FLAG_RETURN_IMMEDIATELY`), adopt the requested non-null `+1`, a
 release dirty failure output. Generic interface InOut parameters remain manual
 replacement contracts.
 
-**1,442 of 1,446** x64 manual-contract interfaces now have at least one portable
-executable generated high-level method. **1,441** have an executable manual
+**1,427 of 1,431** x64 manual-contract interfaces now have at least one portable
+executable generated high-level method. **1,426** have an executable manual
 method, one retains only metadata-complete methods, and four have no portable
 executable method because every candidate is blocked on another generated
-target. Across the portable generated surface there are **6,083 executable
+target. Across the portable generated surface there are **6,046 executable
 manual methods**, **0 remaining portable manual-classified methods omitted**,
-and **1,163 runtime-blocked methods** still omitted.
+and **1,161 runtime-blocked methods** still omitted.
 
 ### Safe contract evidence census
 
 Stage 1 of the
 [Classic COM contract evidence registry](../architecture/classic-com-contract-evidence-registry.md)
-classifies all 5,681 safe-complete interfaces exactly once:
+classifies all 5,721 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
-| `standard_derived` | 5,326 |
-| `exact_registry_dependent` | 355 |
+| `standard_derived` | 5,355 |
+| `exact_registry_dependent` | 366 |
 
-The registry declares 495 selector-specific entries; all 495 match pinned
-metadata, 404 distinct entries are safe-consumed, and safe plans contain 655
-entry/interface plus 404 family/interface dependencies. They also consume
-5,974 metadata-attribute and 26,076 universal COM-rule dependency sets.
+The registry declares 532 selector-specific entries; all 532 match pinned
+metadata, 431 distinct entries are consumed by complete safe plans, which contain 694
+entry/interface plus 425 family/interface dependencies. They also consume
+6,012 metadata-attribute and 26,247 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
-borrowed-handle 54, ownership 172, parameter-direction 45, bounded-two-call 16,
-counted-buffer 16, conditional-output 7, flag-selected-buffer 3, null-input 2,
-semantic-HRESULT 2, and compound-dispatch 1. Complete per-entry status,
+borrowed-handle 54, ownership 183, parameter-direction 45, bounded-two-call 16,
+counted-buffer 16, conditional-output 10, flag-selected-buffer 3, null-input 4,
+semantic-HRESULT 3, compound-dispatch 1, borrowed-storage 15, and contextual-effect 7. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
 and interface CSV.
 These are dependency counts, not net contribution; no ablation claim is made.
+
+The 24 PR4 promotions comprise 23 standard-derived interfaces and one
+exact-registry-dependent interface, `IGenericDescriptor2`. Its inherited
+`GetBody` reuses an existing slot-6 ownership entry; no registry entries or
+distinct safe-consumed entries are added.
+
+Borrowed buffers now have synchronous **owned-copy** transactions for WASAPI
+render/capture, STA WIC BGRA8 locks, and linear `IMFMediaBuffer`. Audio requires
+observed successful initialization and GetService provenance; external
+initialization alone grants no copy capability. Render/capture and linear MF
+remain copy-only facades and do not increase the safe-complete census. WIC
+preserves its existing native methods and adds a read-copy operation.
+Exclusive event-driven render, native-backed JS views, writable external WIC
+locks, and general signed-pitch/plane `IMF2DBuffer`/`IMF2DBuffer2` access remain
+unsupported. See [the bounded copy contract](../architecture/classic-com-support.md#bounded-borrowed-buffer-copies).
 
 Generic scalar BSTR output/replacement and 24 `STANDARD_NEXT` enumerator
 entries remain typed COM standard rules. Twenty-five safe interfaces consume
 the generic enumerator rule because one contract is inherited.
 ISequentialStream `Read`/`Write` and IDispatch `Invoke` are distinct exact
 entries with full selectors, fingerprints, and citations.
+`IAudioClient::IsFormatSupported` adds an exact shared/exclusive conditional
+output contract, while `GetMixFormat` and
+`IAudioClient3::GetCurrentSharedModeEnginePeriod` add exact CoTaskMem-owned
+variable-format outputs.
+The two device-control `Record` methods have separate exact nullable-input
+contracts: `null` selects the device default format without allocating a
+placeholder WAVEFORMATEX. Other audio-format inputs remain required.
+`IMMDevice::Activate` adds an exact IID/slot-3/full-fingerprint activation
+contract, and `IMMDevice::GetId` adds a JSON-backed slot-5 CoTaskMem ownership
+entry. Both are consumed by the complete safe endpoint plan. The
+`com.ownership.v1` family now has 169 registered entries, 118 safe-used
+entries, and 124 family/interface dependencies.
+
+The storage-medium contracts also pin `IOleCache::SetData` (including inherited
+`IOleCache2` calls) to caller-retained ownership and describe the distinct
+`IDataObject::GetCanonicalFormatEtc` success/result semantics.
+STGMEDIUM InOut additionally requires the exact caller-allocation-preserving
+`IDataObject::GetDataHere` contract. `IWiaDataTransfer::idtGetData` is excluded
+from safe support until its distinct file-transfer and filename ownership
+semantics are modeled.
 
 The strict embedded registry lives in
 `tools/dynwinrt-codegen/contracts/classic-com/`. JSON is the sole source for
-seven selector-derived IWbemServices conditional-output contracts and 148
+seven selector-derived IWbemServices conditional-output contracts and 149
 documented output-ownership contracts. Each entry includes its selector,
 pre-contract fingerprint, evidence, and validated metadata hash.
 
@@ -393,18 +456,23 @@ allocator, or ownership declaration can corrupt memory or crash the process.
 For `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview
 (`Windows.Win32.winmd` SHA-256
 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`),
-the safe census is 5,681 of 7,929 interfaces. The separate outbound raw census
-classifies the 2,248 safe-incomplete interfaces as:
+the safe census is 5,721 of 7,929 interfaces. The separate outbound raw census
+classifies the 2,208 safe-incomplete interfaces as:
 
 | Target | Metadata-complete | Manual contract | Runtime-blocked |
 | ------ | ----------------: | --------------: | --------------: |
-| x64    |               412 |           1,446 |             390 |
-| i686   |               411 |           1,423 |             414 |
-| ARM64  |               412 |           1,446 |             390 |
+| x64    |               388 |           1,431 |             389 |
+| i686   |               387 |           1,408 |             413 |
+| ARM64  |               388 |           1,431 |             389 |
 
-Including safe-complete interfaces, x64 and ARM64 have 6,093
-metadata-complete, 1,446 manual, and 390 blocked interfaces. i686 has 6,092
-metadata-complete, 1,423 manual, and 414 blocked interfaces.
+Including safe-complete interfaces, x64 and ARM64 have 6,109
+metadata-complete, 1,431 manual, and 389 blocked interfaces. i686 has 6,108
+metadata-complete, 1,408 manual, and 413 blocked interfaces.
+
+These all-interface raw totals are unchanged by PR4: all 24 promotions come
+from the safe-incomplete raw-metadata-complete bucket. Manual/runtime-blocked
+classifications and the measured Stage 2 executable-method totals are
+unchanged.
 
 Pointer-shaped types are analyzed recursively. A missing pointee layout for an
 external input pointer is manual-contract; the same missing layout for a
@@ -414,14 +482,14 @@ writable/readable `T*` caller-storage contract is runtime-blocked. Thus
 layout is complete.
 
 Cleanup availability is no longer represented by ambiguous booleans. Per
-target, 2,251 interfaces require no cleanup, 4,536 use a Phase 1 standard
-cleanup, none use a known external cleanup, and 1,142 have unknown cleanup.
+target, 2,237 interfaces require no cleanup, 4,534 use a Phase 1 standard
+cleanup, none use a known external cleanup, and 1,158 have unknown cleanup.
 Every missing output ownership/allocator contract has `cleanup_unknown`.
 External pointer/callback requirements affect 1,089 x64/ARM64 interfaces and
 1,090 i686 interfaces; 6,804 require external acquisition and all 7,929 retain
 the current-apartment rule.
 
-For all 5,681 safe-complete interfaces, cleanup is derived from the validated
+For all 5,721 safe-complete interfaces, cleanup is derived from the validated
 projected result conversions rather than the raw analyzer. Pure values,
 borrowed handles, caller buffers, and plain arrays are `none_required`.
 Managed COM/dynamic-IID adoption, BSTR, HSTRING, CoTaskMem, VARIANT,
@@ -503,12 +571,13 @@ as ABI support. The legacy `com-census --json` output remains unchanged.
 
 - Expand Automation and native-layout semantic support.
 - Design apartment marshaling and agility independently from raw ABI.
-- Keep flat Win32 exports and COM server support as separate projects.
+- Keep DLL exports in the separate [Win32 contract layer](../architecture/flat-win32-contracts.md);
+  COM server support remains independent architecture work.
 
 ## Copyable user-facing statement
 
 > dynwinrt supports the Classic COM interface portion of Windows.Win32
-> metadata. With Win32Metadata 71.0.14-preview, 5,681 of 7,929 addressable COM
+> metadata. With Win32Metadata 71.0.14-preview, 5,721 of 7,929 addressable COM
 > interfaces pass complete safe generation. Safe symbols never fall back to an
 > unsafe implementation; ordinary generation may instead emit an explicitly
 > named `*Unsafe` outbound companion containing only metadata-complete methods.

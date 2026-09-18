@@ -53,6 +53,9 @@ pub fn generate_index(
                 module = module,
                 iname = name
             ));
+            for helper in super::super::implementation::exports(context, iface) {
+                out.push_str(&format!("from .{module} import {helper}  # noqa: F401\n"));
+            }
         }
     }
     let mut sorted_enums: Vec<_> = enums.iter().collect();
@@ -119,6 +122,12 @@ pub fn generate_public_index(
                 context.public_qualified_module(&identity),
                 name
             ));
+            for helper in super::super::implementation::exports(context, interface) {
+                out.push_str(&format!(
+                    "from .{} import {helper}  # noqa: F401\n",
+                    context.public_qualified_module(&identity),
+                ));
+            }
         }
     }
 

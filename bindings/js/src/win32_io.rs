@@ -1,0 +1,382 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Node-thread delivery for the native Win32 I/O engine. One adapter-owned
+//! relay consumes native records; its TSFN registrations never enter the core
+//! channel or operations. Only the owner thread retains and touches JS Buffers.
+
+use std::{
+  cell::RefCell,
+  collections::HashMap,
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::{channel, Sender},
+    Arc, LazyLock, Mutex,
+  },
+};
+
+use dynwinrt::win32::io::{IoCancellation, IoCompletion, IoKind, IocpRuntime, PreparedIo};
+use napi::{
+  bindgen_prelude::{Function, ToNapiValue, Unknown},
+  sys, JsValue,
+};
+
+use super::{boundary, storage, DynWin32Resource};
+use crate::js_storage::RetainedBuffer;
+use crate::managed_tsfn::ManagedTsfn;
+
+static NEXT_PENDING_ID: AtomicU64 = AtomicU64::new(1);
+static COMPLETIONS: LazyLock<Result<CompletionRelay, String>> = LazyLock::new(CompletionRelay::new);
+
+struct CompletionRelay {
+  sender: Sender<IoCompletion>,
+  notifications: Arc<Mutex<HashMap<u64, ManagedTsfn<IoCompletion>>>>,
+}
+
+impl CompletionRelay {
+  fn shared() -> napi::Result<&'static Self> {
+    COMPLETIONS
+      .as_ref()
+      .map_err(|error| napi::Error::from_reason(error.clone()))
+  }
+
+  fn new() -> Result<Self, String> {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::System::LibraryLoader::{
+      GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
+    };
+
+    // The shared relay, like the core IOCP workers, can outlive a Node env.
+    let mut module = HMODULE::default();
+    unsafe {
+      GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        windows::core::PCWSTR(Self::new as *const () as *const u16),
+        &mut module,
+      )
+    }
+    .map_err(|error| format!("Cannot pin the OVERLAPPED completion relay module: {error}"))?;
+
+    let (sender, receiver) = channel::<IoCompletion>();
+    let notifications = Arc::new(Mutex::new(HashMap::<u64, ManagedTsfn<IoCompletion>>::new()));
+    let registrations = Arc::clone(&notifications);
+    std::thread::Builder::new()
+      .name("dynwinrt-win32-io-relay".into())
+      .spawn(move || {
+        while let Ok(native) = receiver.recv() {
+          let token = native.token();
+          let notification = registrations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&token);
+          let Some(notification) = notification else {
+            // Environment teardown removed the adapter registration. This
+            // record is terminal and dropping it cannot touch a JS Buffer.
+            drop(native);
+            continue;
+          };
+          let status = notification.call(native);
+          if !matches!(status, napi::Status::Ok | napi::Status::Closing) {
+            eprintln!("[dynwinrt] OVERLAPPED completion {token} notification failed: {status}");
+          }
+          // Failed notifications retire native storage in ManagedTsfn::call;
+          // releasing the handle schedules owner-thread pending-state cleanup.
+        }
+      })
+      .map_err(|error| format!("Failed to create OVERLAPPED completion relay: {error}"))?;
+    Ok(Self {
+      sender,
+      notifications,
+    })
+  }
+
+  fn register(&self, token: u64, notification: ManagedTsfn<IoCompletion>) -> napi::Result<()> {
+    let mut registrations = self
+      .notifications
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    if registrations.contains_key(&token) {
+      return Err(napi::Error::from_reason(
+        "Duplicate OVERLAPPED completion registration",
+      ));
+    }
+    registrations
+      .try_reserve(1)
+      .map_err(|_| napi::Error::from_reason("Unable to retain OVERLAPPED notification state"))?;
+    registrations.insert(token, notification);
+    Ok(())
+  }
+
+  fn unregister(&self, token: u64) -> Option<ManagedTsfn<IoCompletion>> {
+    self
+      .notifications
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .remove(&token)
+  }
+}
+
+thread_local! {
+  static PENDING: RefCell<HashMap<u64, JsPendingIo>> = RefCell::new(HashMap::new());
+}
+
+struct JsPendingIo {
+  buffer: RetainedBuffer,
+}
+
+struct JsPreparedIo {
+  native: PreparedIo,
+  pending: JsPendingIo,
+}
+
+pub struct DynWin32OverlappedOperation {
+  task: Option<JsPreparedIo>,
+  cancellation: IoCancellation,
+}
+
+boundary::carrier!(
+  DynWin32OverlappedOperation,
+  7,
+  "DynWin32OverlappedOperation"
+);
+
+impl DynWin32OverlappedOperation {
+  pub fn cancel(&self) {
+    self.cancellation.cancel();
+  }
+
+  pub fn start(&mut self, callback: Function<'static, (), ()>) -> napi::Result<()> {
+    let task = self
+      .task
+      .take()
+      .ok_or_else(|| napi::Error::from_reason("OVERLAPPED operation was already started"))?;
+    let env = callback.value().env;
+    if task.pending.buffer.env() != env {
+      return Err(napi::Error::from_reason(
+        "OVERLAPPED operation belongs to a different Node environment",
+      ));
+    }
+    let id = NEXT_PENDING_ID
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+        next.checked_add(1)
+      })
+      .map_err(|_| napi::Error::from_reason("OVERLAPPED delivery identifiers were exhausted"))?;
+    let relay = CompletionRelay::shared()?;
+    let closing = self.cancellation.clone();
+    let completion = ManagedTsfn::create(
+      env,
+      callback.raw(),
+      1,
+      false,
+      completion_arguments,
+      Some(Box::new(move |_| {
+        // ManagedTsfn aborts on environment teardown even while the relay map
+        // holds a registration. Unregister before cancelling OS-owned work.
+        drop(relay.unregister(id));
+        closing.cancel();
+        // This finalizer runs on the owning environment thread. In particular,
+        // an IOCP worker never drops a Buffer or touches its backing store.
+        drop(take_pending(id));
+      })),
+    )?;
+    PENDING.with(|pending| {
+      let mut pending = pending.borrow_mut();
+      pending
+        .try_reserve(1)
+        .map_err(|_| napi::Error::from_reason("Unable to retain OVERLAPPED delivery state"))?;
+      pending.insert(id, task.pending);
+      Ok::<_, napi::Error>(())
+    })?;
+    if let Err(error) = relay.register(id, completion) {
+      drop(take_pending(id));
+      return Err(error);
+    }
+    let result = task.native.submit(id, relay.sender.clone());
+    if let Err(error) = result {
+      drop(relay.unregister(id));
+      drop(take_pending(id));
+      return Err(napi::Error::from_reason(error.to_string()));
+    }
+    Ok(())
+  }
+}
+
+pub(super) fn prepare(
+  kind: IoKind,
+  file: &DynWin32Resource,
+  buffer: Unknown,
+  offset: Option<Unknown>,
+) -> napi::Result<DynWin32OverlappedOperation> {
+  let env = buffer.value().env;
+  let buffer = storage::native_buffer(buffer)?;
+  let offset = offset
+    .as_ref()
+    .map(storage::unsigned64)
+    .transpose()?
+    .unwrap_or(0);
+  let runtime =
+    IocpRuntime::shared().map_err(|error| napi::Error::from_reason(error.to_string()))?;
+  let native = match kind {
+    IoKind::Read => runtime.prepare_read(&file.0, buffer.len(), offset),
+    IoKind::Write => runtime.prepare_write(&file.0, &buffer, offset),
+  }
+  .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+  let cancellation = native.cancellation();
+  Ok(DynWin32OverlappedOperation {
+    task: Some(JsPreparedIo {
+      native,
+      pending: JsPendingIo {
+        buffer: RetainedBuffer::new(buffer, env),
+      },
+    }),
+    cancellation,
+  })
+}
+
+fn take_pending(id: u64) -> Option<JsPendingIo> {
+  PENDING.with(|pending| pending.borrow_mut().remove(&id))
+}
+
+impl JsPendingIo {
+  fn resolve(
+    self,
+    kind: IoKind,
+    native: &[u8],
+    env: sys::napi_env,
+    output: u32,
+  ) -> napi::Result<u32> {
+    if self.buffer.env() != env {
+      return Err(napi::Error::from_reason(
+        "OVERLAPPED result belongs to a different Node environment",
+      ));
+    }
+    let transferred = usize::try_from(output)
+      .map_err(|_| napi::Error::from_reason("OVERLAPPED result exceeds usize"))?;
+    let original = self.buffer.original();
+    if transferred > original.length || transferred > native.len() {
+      return Err(napi::Error::from_reason(
+        "OVERLAPPED result exceeds the original Buffer length",
+      ));
+    }
+    if kind == IoKind::Read {
+      let raw = self.buffer.into_value()?;
+      let mut is_buffer = false;
+      napi::check_status!(
+        unsafe { sys::napi_is_buffer(env, raw, &mut is_buffer) },
+        "Failed to revalidate OVERLAPPED read Buffer"
+      )?;
+      if !is_buffer {
+        return Err(napi::Error::from_reason(
+          "OVERLAPPED read Buffer is no longer a Node Buffer",
+        ));
+      }
+      let info = storage::buffer_info(env, raw).map_err(|error| {
+        napi::Error::new(
+          error.status,
+          format!(
+            "OVERLAPPED read Buffer backing ArrayBuffer was detached or changed: {}",
+            error.reason
+          ),
+        )
+      })?;
+      if !original.same_storage(info) {
+        return Err(napi::Error::from_reason(
+          "OVERLAPPED read Buffer backing ArrayBuffer was detached or changed",
+        ));
+      }
+      if transferred != 0 {
+        unsafe {
+          std::ptr::copy_nonoverlapping(native.as_ptr(), info.pointer, transferred);
+        }
+      }
+    }
+    Ok(output)
+  }
+}
+
+fn completion_arguments(
+  native: IoCompletion,
+  env: sys::napi_env,
+) -> napi::Result<Vec<sys::napi_value>> {
+  let result = (|| {
+    let pending = take_pending(native.token())
+      .ok_or_else(|| napi::Error::from_reason("OVERLAPPED delivery state is unavailable"))?;
+    let output = native
+      .result()
+      .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+    pending.resolve(native.kind(), native.buffer(), env, output)
+  })();
+  match result {
+    Ok(output) => {
+      let mut null = std::ptr::null_mut();
+      napi::check_status!(
+        unsafe { sys::napi_get_null(env, &mut null) },
+        "Failed to create OVERLAPPED completion null"
+      )?;
+      let output = unsafe { u32::to_napi_value(env, output) }?;
+      Ok(vec![null, output])
+    }
+
+    Err(error) => {
+      let mut message = std::ptr::null_mut();
+      napi::check_status!(
+        unsafe {
+          sys::napi_create_string_utf8(
+            env,
+            error.reason.as_ptr().cast(),
+            error.reason.len() as isize,
+            &mut message,
+          )
+        },
+        "Failed to create OVERLAPPED completion error message"
+      )?;
+      let mut error = std::ptr::null_mut();
+      napi::check_status!(
+        unsafe { sys::napi_create_error(env, std::ptr::null_mut(), message, &mut error) },
+        "Failed to create OVERLAPPED completion error"
+      )?;
+      Ok(vec![error])
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use napi::bindgen_prelude::Buffer;
+
+  fn pending() -> JsPendingIo {
+    let buffer = Buffer::from(vec![1, 2, 3]);
+    JsPendingIo {
+      buffer: RetainedBuffer::new(buffer, std::ptr::null_mut()),
+    }
+  }
+
+  #[test]
+  fn completed_write_and_invalid_lengths_retire_without_native_buffer_access() {
+    assert_eq!(
+      pending()
+        .resolve(IoKind::Write, &[1, 2, 3], std::ptr::null_mut(), 2)
+        .unwrap(),
+      2
+    );
+    for kind in [IoKind::Read, IoKind::Write] {
+      assert!(pending()
+        .resolve(kind, &[1, 2, 3], std::ptr::null_mut(), 4)
+        .unwrap_err()
+        .reason
+        .contains("original Buffer"));
+      assert!(pending()
+        .resolve(kind, &[1], std::ptr::null_mut(), 2)
+        .is_err());
+    }
+  }
+
+  #[test]
+  fn owner_thread_pending_state_can_only_be_taken_once() {
+    let id = NEXT_PENDING_ID.fetch_add(1, Ordering::Relaxed);
+    PENDING.with(|entries| entries.borrow_mut().insert(id, pending()));
+    assert!(take_pending(id).is_some());
+    assert!(take_pending(id).is_none());
+  }
+}

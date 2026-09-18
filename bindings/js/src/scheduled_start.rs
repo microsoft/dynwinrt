@@ -14,7 +14,7 @@ use windows::{
   Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
 };
 
-use super::{async_promise, com::NativeInvocationLeases, set_winui_dispatcher_loop_active};
+use super::{async_promise, com_value::NativeInvocationLeases, set_winui_dispatcher_loop_active};
 
 #[repr(C)]
 struct UvAsyncHandle {

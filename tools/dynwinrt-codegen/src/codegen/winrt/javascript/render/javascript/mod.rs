@@ -305,6 +305,8 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
 }
 
 fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFile) {
+    out.push_str(&iface.implementation.support_code);
+    out.push('\n');
     if let Some(ref doc) = iface.doc {
         out.push_str(&render_jsdoc(doc, ""));
     }
@@ -333,6 +335,8 @@ fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFi
             iface.name, iface.name
         ));
     }
+    out.push('\n');
+    out.push_str(&iface.implementation.factory_body);
 
     // Members
     for member in &iface.members {
@@ -482,13 +486,15 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                         "        const handler = DynWinRtDelegate.create(DynWinRtType.object().iid(), [DynWinRtType.object(), DynWinRtType.object()], wrapped);\n"
                     );
                 }
+                out.push_str("        let __handlerValue;\n        let __token;\n        try {\n            __handlerValue = handler.toValue();\n");
                 out.push_str(&format!(
-                    "        const __token = {}.method({}).invoke({}, [handler.toValue()]);\n",
+                    "            __token = {}.method({}).invoke({}, [__handlerValue]);\n",
                     event.add_iface_var, event.add_vtable_index, event.add_obj_expr
                 ));
+                out.push_str("        } finally {\n            __handlerValue?.release();\n            handler.release();\n        }\n");
                 if let Some(idx) = event.remove_vtable_index {
                     out.push_str(&format!(
-                        "        return () => {{ void handler; {}.method({}).invoke({}, [__token]); }};\n",
+                        "        return () => {{ {}.method({}).invoke({}, [__token]); }};\n",
                         event.remove_iface_var, idx, event.remove_obj_expr
                     ));
                 } else {
@@ -497,7 +503,7 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                         .strip_prefix("on")
                         .unwrap_or(&event.subscribe_name);
                     out.push_str(&format!(
-                        "        return () => {{ void handler; this.off{}(__token); }};\n",
+                        "        return () => {{ this.off{}(__token); }};\n",
                         cap
                     ));
                 }

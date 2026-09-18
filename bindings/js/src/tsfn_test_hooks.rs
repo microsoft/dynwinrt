@@ -342,7 +342,7 @@ pub fn tsfn_test_release_retained_delegate() {
 #[napi]
 pub fn tsfn_test_retain_com_sink(value: &DynWinRTValue) -> napi::Result<()> {
   let object = value
-    .0
+    .winrt()
     .as_object()
     .ok_or_else(|| napi::Error::from_reason("COM sink test value is not a COM object"))?
     .clone();

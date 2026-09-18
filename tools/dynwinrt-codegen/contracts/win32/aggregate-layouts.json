@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "windows.win32.security.security_attributes.aggregate.v1",
+      "selector": {
+        "name": "SECURITY_ATTRIBUTES",
+        "namespace": "Windows.Win32.Security",
+        "sourceFingerprint": "0C8B0DFE8C63D2E716EF71F6E320E9CABF0C3B1C551CDEA5129D818E4481F1CD"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": "security-attributes",
+        "sizeField": "nLength",
+        "fields": [
+          {
+            "name": "lpSecurityDescriptor",
+            "contract": {
+              "kind": "retained-pointer",
+              "nullable": true,
+              "optional": true
+            }
+          },
+          {
+            "name": "bInheritHandle",
+            "contract": {
+              "kind": "boolean-input",
+              "optional": true
+            }
+          }
+        ],
+        "anonymousLayouts": []
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wtypesbase/ns-wtypesbase-security_attributes"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.systeminformation.system_info.aggregate.v1",
+      "selector": {
+        "name": "SYSTEM_INFO",
+        "namespace": "Windows.Win32.System.SystemInformation",
+        "sourceFingerprint": "D09B912AE8927F5812563C0D369B3CC911726F256FA5F032CE637EC0C0CF7AA9"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": null,
+        "sizeField": null,
+        "fields": [],
+        "anonymousLayouts": [
+          {
+            "name": "_Anonymous_e__Union",
+            "kind": "union",
+            "fields": [
+              {
+                "name": "dwOemId",
+                "typ": {
+                  "kind": "scalar",
+                  "scalar": "u32"
+                }
+              },
+              {
+                "name": "Anonymous",
+                "typ": {
+                  "kind": "record",
+                  "layout": {
+                    "name": "_Anonymous_e__Struct",
+                    "kind": "struct",
+                    "fields": [
+                      {
+                        "name": "wProcessorArchitecture",
+                        "typ": {
+                          "kind": "named",
+                          "namespace": "Windows.Win32.System.SystemInformation",
+                          "name": "PROCESSOR_ARCHITECTURE"
+                        }
+                      },
+                      {
+                        "name": "wReserved",
+                        "typ": {
+                          "kind": "scalar",
+                          "scalar": "u16"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.process_information.aggregate.v1",
+      "selector": {
+        "name": "PROCESS_INFORMATION",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "E7AF95290D9D7219964EBA8D741BA490EF6CB2CBE5EA142E037614358A9C2DCD"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": "process-information",
+        "sizeField": null,
+        "fields": [
+          {
+            "name": "hProcess",
+            "contract": {
+              "kind": "owned-handle",
+              "cleanup": "close-handle"
+            }
+          },
+          {
+            "name": "hThread",
+            "contract": {
+              "kind": "owned-handle",
+              "cleanup": "close-handle"
+            }
+          },
+          {
+            "name": "dwProcessId",
+            "contract": {
+              "kind": "output-u32"
+            }
+          },
+          {
+            "name": "dwThreadId",
+            "contract": {
+              "kind": "output-u32"
+            }
+          }
+        ],
+        "anonymousLayouts": []
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.startupinfoa.aggregate.v1",
+      "selector": {
+        "name": "STARTUPINFOA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "9B674C4E78BA214FF983509D5160DF065A790B7F345EB4844EA0FA07DB4D1916"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": "startup-info-ansi",
+        "sizeField": "cb",
+        "fields": [
+          {
+            "name": "lpReserved",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpDesktop",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpTitle",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpReserved2",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "hStdInput",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          },
+          {
+            "name": "hStdOutput",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          },
+          {
+            "name": "hStdError",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          }
+        ],
+        "anonymousLayouts": []
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.startupinfow.aggregate.v1",
+      "selector": {
+        "name": "STARTUPINFOW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "A73DE73910A1548283EF2EF21856412BDEC141ACC0CEFEFFC9E14013BF60219A"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": "startup-info-wide",
+        "sizeField": "cb",
+        "fields": [
+          {
+            "name": "lpReserved",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpDesktop",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpTitle",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "lpReserved2",
+            "contract": {
+              "kind": "null-pointer"
+            }
+          },
+          {
+            "name": "hStdInput",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          },
+          {
+            "name": "hStdOutput",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          },
+          {
+            "name": "hStdError",
+            "contract": {
+              "kind": "borrowed-handle"
+            }
+          }
+        ],
+        "anonymousLayouts": []
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.ui.input.keyboardandmouse.input.aggregate.v1",
+      "selector": {
+        "name": "INPUT",
+        "namespace": "Windows.Win32.UI.Input.KeyboardAndMouse",
+        "sourceFingerprint": "653DA3080AC93C9CA6CBF43F908E629485A6FB9EF5C7591BEA794165509A75BF"
+      },
+      "meaning": null,
+      "status": null,
+      "aggregate": {
+        "builder": null,
+        "sizeField": null,
+        "fields": [],
+        "anonymousLayouts": [
+          {
+            "name": "_Anonymous_e__Union",
+            "kind": "union",
+            "fields": [
+              {
+                "name": "mi",
+                "typ": {
+                  "kind": "named",
+                  "namespace": "Windows.Win32.UI.Input.KeyboardAndMouse",
+                  "name": "MOUSEINPUT"
+                }
+              },
+              {
+                "name": "ki",
+                "typ": {
+                  "kind": "named",
+                  "namespace": "Windows.Win32.UI.Input.KeyboardAndMouse",
+                  "name": "KEYBDINPUT"
+                }
+              },
+              {
+                "name": "hi",
+                "typ": {
+                  "kind": "named",
+                  "namespace": "Windows.Win32.UI.Input.KeyboardAndMouse",
+                  "name": "HARDWAREINPUT"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winuser/ns-winuser-input"
+        }
+      ]
+    }
+  ]
+}

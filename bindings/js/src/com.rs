@@ -4,310 +4,17 @@
 use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, Function, ToNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface as _, GUID};
+#[cfg(test)]
+use windows::core::GUID;
+use windows::core::{IUnknown, Interface as _};
 
 use super::{com_raw::DynComRaw, DynWinRTType, DynWinRTValue, WinGUID, TABLE};
+use crate::com_value::{NativePointerOwner, PointerProvenance};
+use crate::js_storage::{self, CallStorage, RetainedTypedBuffer, RetainedUint8Array};
 
-#[allow(dead_code)]
-pub(super) enum NativePointerOwner {
-  Uint8Array {
-    value: std::sync::Mutex<napi::bindgen_prelude::Uint8Array>,
-    env: napi::sys::napi_env,
-    pointer: usize,
-    length: usize,
-  },
-  TypedBuffer {
-    env: napi::sys::napi_env,
-    reference: napi::sys::napi_ref,
-    pointer: usize,
-    byte_length: usize,
-    typed_array_type: i32,
-  },
-  CoTaskMem(*mut std::ffi::c_void),
-  Guid(*mut GUID),
-  WideString(Box<[u16]>),
-  AnsiString(Box<[u8]>),
-  RawMemory(std::sync::Arc<super::com_raw::RawAllocation>),
-  RawCom(std::sync::Arc<super::com_raw::RawComReference>),
-}
-
-enum AutomationValueKind {
-  Bstr(dynwinrt::com::BstrValue),
-  NativeUnion(dynwinrt::com::NativeUnionValue),
-  Variant(dynwinrt::com::VariantValue),
-  SafeArray(dynwinrt::com::SafeArrayValue),
-  PropVariant(dynwinrt::com::PropVariantValue),
-  DispatchParams(dynwinrt::com::DispatchParamsValue),
-  ExcepInfo(dynwinrt::com::ExcepInfoValue),
-  StatStg(dynwinrt::com::StatStgValue),
-}
-
-pub(super) struct AutomationValue {
-  owner_thread: std::thread::ThreadId,
-  value: Option<AutomationValueKind>,
-}
-
-impl AutomationValue {
-  pub(super) fn new(value: dynwinrt::com::Value) -> Self {
-    let value = match value {
-      dynwinrt::com::Value::Bstr(value) => AutomationValueKind::Bstr(value),
-      dynwinrt::com::Value::NativeUnion(value) => AutomationValueKind::NativeUnion(value),
-      dynwinrt::com::Value::Variant(value) => AutomationValueKind::Variant(value),
-      dynwinrt::com::Value::SafeArray(value) => AutomationValueKind::SafeArray(value),
-      dynwinrt::com::Value::PropVariant(value) => AutomationValueKind::PropVariant(value),
-      dynwinrt::com::Value::DispatchParams(value) => AutomationValueKind::DispatchParams(value),
-      dynwinrt::com::Value::ExcepInfo(value) => AutomationValueKind::ExcepInfo(value),
-      dynwinrt::com::Value::StatStg(value) => AutomationValueKind::StatStg(value),
-      _ => unreachable!("AutomationValue requires an automation COM value"),
-    };
-    Self {
-      owner_thread: std::thread::current().id(),
-      value: Some(value),
-    }
-  }
-
-  fn ensure_owner_thread(&self) -> napi::Result<()> {
-    if matches!(self.value, Some(AutomationValueKind::Bstr(_)))
-      || std::thread::current().id() == self.owner_thread
-    {
-      Ok(())
-    } else {
-      Err(napi::Error::from_reason(
-        "Apartment-bound COM Automation value used from a different thread",
-      ))
-    }
-  }
-
-  pub(super) fn to_com_value(&self) -> napi::Result<dynwinrt::com::Value> {
-    self.ensure_owner_thread()?;
-    let value = self
-      .value
-      .as_ref()
-      .ok_or_else(|| napi::Error::from_reason("COM Automation value has been consumed"))?;
-    Ok(match value {
-      AutomationValueKind::Bstr(value) => dynwinrt::com::Value::Bstr(value.clone()),
-      AutomationValueKind::NativeUnion(value) => dynwinrt::com::Value::NativeUnion(value.clone()),
-      AutomationValueKind::Variant(value) => dynwinrt::com::Value::Variant(value.clone()),
-      AutomationValueKind::SafeArray(value) => dynwinrt::com::Value::SafeArray(value.clone()),
-      AutomationValueKind::PropVariant(value) => dynwinrt::com::Value::PropVariant(value.clone()),
-      AutomationValueKind::DispatchParams(value) => {
-        dynwinrt::com::Value::DispatchParams(value.clone())
-      }
-      AutomationValueKind::ExcepInfo(value) => dynwinrt::com::Value::ExcepInfo(value.clone()),
-      AutomationValueKind::StatStg(value) => dynwinrt::com::Value::StatStg(value.clone()),
-    })
-  }
-
-  pub(super) fn take_variant(&mut self) -> napi::Result<dynwinrt::com::VariantValue> {
-    self.ensure_owner_thread()?;
-    match self.value.take() {
-      Some(AutomationValueKind::Variant(value)) => Ok(value),
-      value => {
-        self.value = value;
-        Err(napi::Error::from_reason("Value is not a COM VARIANT"))
-      }
-    }
-  }
-
-  pub(super) fn take_safe_array(&mut self) -> napi::Result<dynwinrt::com::SafeArrayValue> {
-    self.ensure_owner_thread()?;
-    match self.value.take() {
-      Some(AutomationValueKind::SafeArray(value)) => Ok(value),
-      value => {
-        self.value = value;
-        Err(napi::Error::from_reason("Value is not a COM SAFEARRAY"))
-      }
-    }
-  }
-
-  pub(super) fn take_prop_variant(&mut self) -> napi::Result<dynwinrt::com::PropVariantValue> {
-    self.ensure_owner_thread()?;
-    match self.value.take() {
-      Some(AutomationValueKind::PropVariant(value)) => Ok(value),
-      value => {
-        self.value = value;
-        Err(napi::Error::from_reason("Value is not a COM PROPVARIANT"))
-      }
-    }
-  }
-
-  pub(super) fn take_excep_info(&mut self) -> napi::Result<dynwinrt::com::ExcepInfoValue> {
-    self.ensure_owner_thread()?;
-    match self.value.take() {
-      Some(AutomationValueKind::ExcepInfo(value)) => Ok(value),
-      value => {
-        self.value = value;
-        Err(napi::Error::from_reason("Value is not COM EXCEPINFO"))
-      }
-    }
-  }
-
-  pub(super) fn take_stat_stg(&mut self) -> napi::Result<dynwinrt::com::StatStgValue> {
-    self.ensure_owner_thread()?;
-    match self.value.take() {
-      Some(AutomationValueKind::StatStg(value)) => Ok(value),
-      value => {
-        self.value = value;
-        Err(napi::Error::from_reason("Value is not COM STATSTG"))
-      }
-    }
-  }
-
-  pub(super) fn leak_for_shutdown(&mut self) {
-    if let Some(value) = self.value.take() {
-      std::mem::forget(value);
-    }
-  }
-}
-
-impl Drop for AutomationValue {
-  fn drop(&mut self) {
-    if !matches!(self.value, Some(AutomationValueKind::Bstr(_)))
-      && (std::thread::current().id() != self.owner_thread || super::winui_dispatcher_loop_exited())
-    {
-      self.leak_for_shutdown();
-    }
-  }
-}
-
-// Safety: access is rejected off the creating apartment. Wrong-thread and
-// post-WinUI destruction drops leak the value instead of invoking native
-// cleanup on an invalid apartment.
-unsafe impl Send for AutomationValue {}
-unsafe impl Sync for AutomationValue {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PointerProvenance {
-  None,
-  Borrowed,
-  DetachedCom,
-  UnclassifiedOutput,
-  ComOutput,
-  CoTaskMemOutput,
-  BstrOutput,
-  OwnedHandleOutput(dynwinrt::com::OwnedHandleCleanup),
-}
-
-pub(super) struct NativeInvocationLeases {
-  _raw_memory: Vec<super::com_raw::RawInvocationLease>,
-  _raw_com: Vec<super::com_raw::RawComInvocationLease>,
-}
-
-impl NativePointerOwner {
-  pub(super) fn validate(&self) -> napi::Result<()> {
-    if let Self::RawMemory(allocation) = self {
-      return allocation.validate_live();
-    }
-    if let Self::RawCom(reference) = self {
-      return reference.validate_live();
-    }
-    if let Self::TypedBuffer {
-      env,
-      reference,
-      pointer,
-      byte_length,
-      typed_array_type,
-    } = self
-    {
-      let mut raw = std::ptr::null_mut();
-      napi::check_status!(
-        unsafe { napi::sys::napi_get_reference_value(*env, *reference, &mut raw) },
-        "Failed to revalidate COM buffer owner"
-      )?;
-      let info = typed_buffer_info(*env, raw)?;
-      if info.pointer != *pointer
-        || info.byte_length != *byte_length
-        || info.typed_array_type != *typed_array_type
-      {
-        return Err(napi::Error::from_reason(
-          "Cannot use a COM buffer whose TypedArray backing storage changed",
-        ));
-      }
-      return Ok(());
-    }
-    let Self::Uint8Array {
-      value,
-      env,
-      pointer,
-      length,
-    } = self
-    else {
-      return Ok(());
-    };
-    let mut value = value
-      .lock()
-      .map_err(|_| napi::Error::from_reason("TypedArray pointer owner lock is poisoned"))?;
-    let raw = unsafe {
-      <&mut napi::bindgen_prelude::Uint8Array as ToNapiValue>::to_napi_value(*env, &mut *value)
-    }?;
-    let mut typed_array_type = 0;
-    let mut current_length = 0usize;
-    let mut current_pointer = std::ptr::null_mut();
-    let mut array_buffer = std::ptr::null_mut();
-    let mut byte_offset = 0usize;
-    napi::check_status!(
-      unsafe {
-        napi::sys::napi_get_typedarray_info(
-          *env,
-          raw,
-          &mut typed_array_type,
-          &mut current_length,
-          &mut current_pointer,
-          &mut array_buffer,
-          &mut byte_offset,
-        )
-      },
-      "Failed to revalidate TypedArray backing storage"
-    )?;
-    let mut detached = false;
-    napi::check_status!(
-      unsafe { napi::sys::napi_is_detached_arraybuffer(*env, array_buffer, &mut detached) },
-      "Failed to inspect TypedArray backing storage"
-    )?;
-    if detached {
-      return Err(napi::Error::from_reason(
-        "Cannot use a pointer whose TypedArray backing ArrayBuffer is detached",
-      ));
-    }
-    let current_pointer = if current_length == 0 {
-      0
-    } else {
-      current_pointer as usize
-    };
-    if current_length != *length || current_pointer != *pointer {
-      return Err(napi::Error::from_reason(
-        "Cannot use a pointer whose TypedArray backing storage changed",
-      ));
-    }
-    Ok(())
-  }
-}
-
-impl Drop for NativePointerOwner {
-  fn drop(&mut self) {
-    match self {
-      Self::CoTaskMem(ptr) => {
-        if !ptr.is_null() {
-          unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(*ptr)) };
-          *ptr = std::ptr::null_mut();
-        }
-      }
-      Self::Guid(ptr) => {
-        if !ptr.is_null() {
-          drop(unsafe { Box::from_raw(*ptr) });
-          *ptr = std::ptr::null_mut();
-        }
-      }
-      Self::TypedBuffer { env, reference, .. } => {
-        if !reference.is_null() {
-          let _ = unsafe { napi::sys::napi_delete_reference(*env, *reference) };
-          *reference = std::ptr::null_mut();
-        }
-      }
-      _ => {}
-    }
-  }
-}
+#[cfg(all(test, feature = "test-hooks"))]
+#[path = "com_input_tests.rs"]
+mod input_tests;
 
 fn parse_clsid(clsid: &str) -> napi::Result<windows::core::GUID> {
   windows::core::GUID::try_from(clsid)
@@ -315,7 +22,7 @@ fn parse_clsid(clsid: &str) -> napi::Result<windows::core::GUID> {
 }
 
 fn callback_string_pointer(value: &DynWinRTValue) -> napi::Result<*const std::ffi::c_void> {
-  match &value.0 {
+  match value.winrt() {
     dynwinrt::WinRTValue::RawPtr(value) => Ok(value.cast_const()),
     dynwinrt::WinRTValue::Null => Ok(std::ptr::null()),
     _ => Err(napi::Error::from_reason(
@@ -565,7 +272,7 @@ fn set_error_info(value: Option<&DynWinRTValue>) -> napi::Result<()> {
   if let Some(value) = value {
     value.ensure_existing_com_apartment()?;
   }
-  dynwinrt::com::set_error_info(value.map(|value| &value.0)).map_err(com_error)
+  dynwinrt::com::set_error_info(value.map(|value| value.winrt())).map_err(com_error)
 }
 
 fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
@@ -579,11 +286,14 @@ fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
     .transpose()
 }
 
-fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
+pub(super) fn try_cast(
+  value: &DynWinRTValue,
+  iid: &WinGUID,
+) -> napi::Result<Option<DynWinRTValue>> {
   const E_NOINTERFACE: windows::core::HRESULT = windows::core::HRESULT(0x80004002u32 as i32);
 
   value.ensure_existing_com_apartment()?;
-  match value.0.cast(&iid.0) {
+  match value.winrt().cast(&iid.0) {
     Ok(value) => {
       let mut value = DynWinRTValue::new(value);
       value.bind_current_com_apartment()?;
@@ -633,147 +343,35 @@ fn create_test_hwnd() -> napi::Result<BigInt> {
   Ok(BigInt::from(bits as u64))
 }
 
-struct Uint8ArrayInfo {
-  data: *const u8,
-  length: usize,
-}
+const SHARED_STORAGE_ERROR: &str =
+  "SharedArrayBuffer-backed views cannot be passed to native COM calls";
 
-struct TypedBufferInfo {
-  pointer: usize,
-  byte_length: usize,
-  source_element_size: usize,
-  raw_bytes: bool,
-  typed_array_type: i32,
-}
+const BUFFER_MESSAGES: js_storage::TypedBufferMessages = js_storage::TypedBufferMessages {
+  inspect_value: "Failed to inspect COM buffer value",
+  expected: "DynCom.buffer(): expected Buffer or TypedArray",
+  inspect_backing: "Failed to inspect COM TypedArray backing storage",
+  shared: SHARED_STORAGE_ERROR,
+  detached: "Cannot use a COM buffer whose backing ArrayBuffer is detached",
+  element_type: "Unsupported TypedArray element type for a COM buffer",
+  overflow: "COM buffer byte length overflow",
+  retain: "Failed to retain COM buffer backing storage",
+  revalidate: "Failed to revalidate COM buffer owner",
+  changed: "Cannot use a COM buffer whose TypedArray backing storage changed",
+};
 
-fn reject_shared_array_buffer(
-  env: napi::sys::napi_env,
-  array_buffer: napi::sys::napi_value,
-) -> napi::Result<()> {
-  let mut is_array_buffer = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_arraybuffer(env, array_buffer, &mut is_array_buffer) },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  if !is_array_buffer {
-    return Err(napi::Error::from_reason(
-      "SharedArrayBuffer-backed views cannot be passed to native COM calls",
-    ));
-  }
-  Ok(())
-}
-
-fn typed_array_element_size(typed_array_type: i32) -> napi::Result<usize> {
-  use napi::sys::TypedarrayType;
-  match typed_array_type {
-    value
-      if value == TypedarrayType::int8_array as i32
-        || value == TypedarrayType::uint8_array as i32
-        || value == TypedarrayType::uint8_clamped_array as i32 =>
-    {
-      Ok(1)
-    }
-    value
-      if value == TypedarrayType::int16_array as i32
-        || value == TypedarrayType::uint16_array as i32 =>
-    {
-      Ok(2)
-    }
-    value
-      if value == TypedarrayType::int32_array as i32
-        || value == TypedarrayType::uint32_array as i32
-        || value == TypedarrayType::float32_array as i32 =>
-    {
-      Ok(4)
-    }
-    value
-      if value == TypedarrayType::float64_array as i32
-        || value == TypedarrayType::bigint64_array as i32
-        || value == TypedarrayType::biguint64_array as i32 =>
-    {
-      Ok(8)
-    }
-    _ => Err(napi::Error::from_reason(
-      "Unsupported TypedArray element type for a COM buffer",
-    )),
-  }
-}
-
-fn typed_buffer_info(
-  env: napi::sys::napi_env,
-  raw: napi::sys::napi_value,
-) -> napi::Result<TypedBufferInfo> {
-  let mut is_typed_array = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_typedarray(env, raw, &mut is_typed_array) },
-    "Failed to inspect COM buffer value"
-  )?;
-  if !is_typed_array {
-    return Err(napi::Error::from_reason(
-      "DynCom.buffer(): expected Buffer or TypedArray",
-    ));
-  }
-  let mut typed_array_type = 0;
-  let mut length = 0usize;
-  let mut data = std::ptr::null_mut();
-  let mut array_buffer = std::ptr::null_mut();
-  let mut byte_offset = 0usize;
-  napi::check_status!(
-    unsafe {
-      napi::sys::napi_get_typedarray_info(
-        env,
-        raw,
-        &mut typed_array_type,
-        &mut length,
-        &mut data,
-        &mut array_buffer,
-        &mut byte_offset,
-      )
-    },
-    "Failed to inspect COM TypedArray backing storage"
-  )?;
-  reject_shared_array_buffer(env, array_buffer)?;
-  let mut detached = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_detached_arraybuffer(env, array_buffer, &mut detached) },
-    "Failed to inspect COM TypedArray backing storage"
-  )?;
-  if detached {
-    return Err(napi::Error::from_reason(
-      "Cannot use a COM buffer whose backing ArrayBuffer is detached",
-    ));
-  }
-  let source_element_size = typed_array_element_size(typed_array_type)?;
-  let byte_length = length
-    .checked_mul(source_element_size)
-    .ok_or_else(|| napi::Error::from_reason("COM buffer byte length overflow"))?;
-  let mut is_buffer = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_buffer(env, raw, &mut is_buffer) },
-    "Failed to identify Node Buffer storage"
-  )?;
-  Ok(TypedBufferInfo {
-    pointer: if byte_length == 0 { 0 } else { data as usize },
-    byte_length,
-    source_element_size,
-    raw_bytes: is_buffer,
-    typed_array_type,
-  })
+pub(super) fn stage_copy_bytes(value: Unknown) -> napi::Result<Vec<u8>> {
+  js_storage::stage_copy_bytes(value, &BUFFER_MESSAGES)
 }
 
 fn com_buffer(value: Unknown) -> napi::Result<DynWinRTValue> {
   let env = value.value().env;
   let raw = value.value().value;
-  let info = typed_buffer_info(env, raw)?;
-  let mut reference = std::ptr::null_mut();
-  napi::check_status!(
-    unsafe { napi::sys::napi_create_reference(env, raw, 1, &mut reference) },
-    "Failed to retain COM buffer backing storage"
-  )?;
+  let storage = RetainedTypedBuffer::new(env, raw, &BUFFER_MESSAGES)?;
+  let info = storage.info();
   let buffer = unsafe {
     dynwinrt::com::ComBufferValue::borrowed(
-      info.pointer as *mut u8,
-      info.byte_length,
+      info.bytes.pointer,
+      info.bytes.length,
       info.source_element_size,
       info.raw_bytes,
       true,
@@ -782,20 +380,13 @@ fn com_buffer(value: Unknown) -> napi::Result<DynWinRTValue> {
   .map_err(|error| napi::Error::from_reason(error.message()))?;
   Ok(DynWinRTValue::with_com_buffer(
     buffer,
-    NativePointerOwner::TypedBuffer {
-      env,
-      reference,
-      pointer: info.pointer,
-      byte_length: info.byte_length,
-      typed_array_type: info.typed_array_type,
-    },
+    CallStorage::TypedBuffer(storage),
   ))
 }
 
 fn take_array_bytes(value: &mut DynWinRTValue, width: usize) -> napi::Result<Vec<u8>> {
   let buffer = value
-    .4
-    .as_ref()
+    .com_buffer()
     .ok_or_else(|| napi::Error::from_reason("Value is not an owned COM array result"))?;
   let bytes = buffer
     .snapshot_bytes()
@@ -806,7 +397,7 @@ fn take_array_bytes(value: &mut DynWinRTValue, width: usize) -> napi::Result<Vec
       "COM array result has an invalid scalar element width",
     ));
   }
-  value.4 = None;
+  drop(value.take_com_buffer());
   Ok(bytes)
 }
 
@@ -836,58 +427,11 @@ fn validate_ansi_string_bytes(bytes: &[u8]) -> napi::Result<()> {
 fn uint8_array_info(
   env: napi::sys::napi_env,
   raw: napi::sys::napi_value,
-) -> napi::Result<Option<Uint8ArrayInfo>> {
-  let mut is_typed_array = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_typedarray(env, raw, &mut is_typed_array) },
-    "Failed to inspect TypedArray value"
-  )?;
-  if !is_typed_array {
-    return Ok(None);
-  }
-
-  let mut typed_array_type = 0;
-  let mut length = 0usize;
-  let mut data = std::ptr::null_mut();
-  let mut array_buffer = std::ptr::null_mut();
-  let mut byte_offset = 0usize;
-  napi::check_status!(
-    unsafe {
-      napi::sys::napi_get_typedarray_info(
-        env,
-        raw,
-        &mut typed_array_type,
-        &mut length,
-        &mut data,
-        &mut array_buffer,
-        &mut byte_offset,
-      )
-    },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  reject_shared_array_buffer(env, array_buffer)?;
-  if typed_array_type != napi::sys::TypedarrayType::uint8_array as i32 {
-    return Ok(None);
-  }
-
-  let mut detached = false;
-  napi::check_status!(
-    unsafe { napi::sys::napi_is_detached_arraybuffer(env, array_buffer, &mut detached) },
-    "Failed to inspect TypedArray backing storage"
-  )?;
-  if detached {
-    return Err(napi::Error::from_reason(
-      "Cannot use a detached Buffer/Uint8Array",
-    ));
-  }
-
-  Ok(Some(Uint8ArrayInfo {
-    data: data.cast(),
-    length,
-  }))
+) -> napi::Result<Option<js_storage::ByteView>> {
+  js_storage::uint8_array_info(env, raw, SHARED_STORAGE_ERROR)
 }
 
-fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -918,36 +462,20 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   if value_type == sys::ValueType::napi_number {
     let mut number = 0.0;
     unsafe { sys::napi_get_value_double(env, raw, &mut number) };
-    if !number.is_finite()
-      || number < 0.0
-      || number.fract() != 0.0
-      || number > 9_007_199_254_740_991.0
-      || number as u64 as usize as u64 != number as u64
-    {
-      return Err(napi::Error::from_reason(
-        "pointer(): number must be a non-negative safe integer that fits in a pointer",
-      ));
-    }
+    let bits = crate::js_numbers::unsigned_size_number(
+      number,
+      "pointer(): number must be a non-negative safe integer that fits in a pointer",
+    )?;
     return Ok(DynWinRTValue::with_borrowed_pointer(
-      dynwinrt::WinRTValue::RawPtr(number as usize as *mut std::ffi::c_void),
+      dynwinrt::WinRTValue::RawPtr(bits as *mut std::ffi::c_void),
     ));
   }
   if uint8_array_info(env, raw)?.is_some() {
-    let array = unsafe { napi::bindgen_prelude::Uint8Array::from_napi_value(env, raw) }?;
-    let length = array.len();
-    let pointer = if length == 0 {
-      0
-    } else {
-      array.as_ref().as_ptr() as usize
-    };
-    return Ok(DynWinRTValue::with_pointer_owner(
-      dynwinrt::WinRTValue::RawPtr(pointer as *mut std::ffi::c_void),
-      NativePointerOwner::Uint8Array {
-        value: std::sync::Mutex::new(array),
-        env,
-        pointer,
-        length,
-      },
+    let storage = RetainedUint8Array::new(env, raw)?;
+    let pointer = storage.view().pointer;
+    return Ok(DynWinRTValue::with_call_storage(
+      dynwinrt::WinRTValue::RawPtr(pointer.cast()),
+      CallStorage::Uint8Array(storage),
     ));
   }
   // Reject existing DynWinRtValue inputs. Borrowing an Object's raw COM pointer
@@ -984,7 +512,7 @@ fn exact_null_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   ))
 }
 
-fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+pub(super) fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -1026,18 +554,18 @@ fn wide_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
       .collect::<Vec<_>>()
       .into_boxed_slice();
     let ptr = storage.as_mut_ptr().cast();
-    return Ok(DynWinRTValue::with_pointer_owner(
+    return Ok(DynWinRTValue::with_call_storage(
       dynwinrt::WinRTValue::RawPtr(ptr),
-      NativePointerOwner::WideString(storage),
+      CallStorage::Words(storage),
     ));
   }
   if let Some(array) = uint8_array_info(env, raw)? {
-    if !array.data.is_null() && (array.data as usize) % std::mem::align_of::<u16>() != 0 {
+    if !array.is_aligned(std::mem::align_of::<u16>()) {
       return Err(napi::Error::from_reason(
         "wideStringPointer(): Buffer/Uint8Array backing address must be aligned for UTF-16",
       ));
     }
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     validate_wide_string_bytes(bytes)?;
   }
   pointer(value)
@@ -1061,13 +589,13 @@ fn ansi_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
     storage.push(0);
     let mut storage = storage.into_boxed_slice();
     let ptr = storage.as_mut_ptr().cast();
-    return Ok(DynWinRTValue::with_pointer_owner(
+    return Ok(DynWinRTValue::with_call_storage(
       dynwinrt::WinRTValue::RawPtr(ptr),
-      NativePointerOwner::AnsiString(storage),
+      CallStorage::Bytes(storage),
     ));
   }
   if let Some(array) = uint8_array_info(env, raw)? {
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     validate_ansi_string_bytes(bytes)?;
   }
   pointer(value)
@@ -1151,12 +679,12 @@ fn handle_value(value: Unknown) -> napi::Result<BigInt> {
         "handleValue(): Buffer/Uint8Array must contain exactly {expected} bytes on this target",
       )));
     }
-    if array.data.is_null() {
+    if array.pointer.is_null() {
       return Err(napi::Error::from_reason(
         "handleValue(): Buffer/Uint8Array backing storage is null",
       ));
     }
-    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    let bytes = unsafe { array.bytes() };
     #[cfg(target_pointer_width = "64")]
     let bits = u64::from_le_bytes(bytes.try_into().expect("validated handle byte length"));
     #[cfg(target_pointer_width = "32")]
@@ -1172,7 +700,14 @@ fn adopt_com_pointer(
   value: &mut DynWinRTValue,
   iid: Option<&WinGUID>,
 ) -> napi::Result<DynWinRTValue> {
+  value.ensure_existing_com_apartment()?;
   let ptr = take_native_output_pointer(value, PointerProvenance::ComOutput, "COM interface")?;
+  let binding = value.take_com_binding();
+  if ptr.is_null() {
+    return Err(napi::Error::from_reason(
+      "Owned COM interface output was null",
+    ));
+  }
   let adopted = unsafe { dynwinrt::com::adopt_com_pointer(ptr) };
   match iid {
     Some(iid) => adopted
@@ -1181,11 +716,17 @@ fn adopt_com_pointer(
       .map_err(|error| napi::Error::from_reason(error.message()))
       .and_then(|mut value| {
         value.bind_current_com_apartment()?;
+        if binding.is_some() {
+          value.set_com_binding(binding);
+        }
         Ok(value)
       }),
     None => {
       let mut value = DynWinRTValue::new(adopted);
       value.bind_current_com_apartment()?;
+      if binding.is_some() {
+        value.set_com_binding(binding);
+      }
       Ok(value)
     }
   }
@@ -1195,7 +736,7 @@ fn project_winrt_async(
   value: &DynWinRTValue,
   async_type: &DynWinRTType,
 ) -> napi::Result<DynWinRTValue> {
-  dynwinrt::com::project_winrt_async(&value.0, async_type.type_handle())
+  dynwinrt::com::project_winrt_async(value.winrt(), async_type.type_handle())
     .map(DynWinRTValue::new)
     .map_err(|error| napi::Error::from_reason(error.message()))
 }
@@ -1205,13 +746,13 @@ fn explicit_raw_com_pointer(
   operation: &str,
 ) -> napi::Result<*mut std::ffi::c_void> {
   let value = pointer(value)?;
-  if value.1.is_some() {
+  if value.has_pointer_owner() {
     return Err(napi::Error::from_reason(format!(
       "{operation}(): Buffer and Uint8Array backing addresses are not accepted; pass explicit numeric pointer bits",
     )));
   }
-  match value.0 {
-    dynwinrt::WinRTValue::RawPtr(ptr) => Ok(ptr),
+  match value.winrt() {
+    dynwinrt::WinRTValue::RawPtr(ptr) => Ok(*ptr),
     dynwinrt::WinRTValue::Null => Ok(std::ptr::null_mut()),
     _ => Err(napi::Error::from_reason(format!(
       "{operation}(): expected bigint, number, null, or undefined",
@@ -1282,7 +823,7 @@ fn adopt_co_task_mem_pointer(value: &mut DynWinRTValue) -> napi::Result<DynWinRT
 
 fn as_pointer_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
   validate_pointer_owner(value)?;
-  let bits = match &value.0 {
+  let bits = match value.winrt() {
     dynwinrt::WinRTValue::Object(_) => {
       return Err(napi::Error::from_reason(
         "Managed COM objects cannot be exported as raw pointer addresses",
@@ -1355,49 +896,96 @@ fn copy_callback_bstr(value: &DynWinRTValue) -> napi::Result<Option<String>> {
   Ok(value.as_deref().map(str::to_owned))
 }
 
-fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
-  if let Some(owner) = &value.1 {
-    owner.validate()?;
-  }
-  Ok(())
+pub(super) fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
+  value.validate_pointer_owner()
 }
 
-pub(super) fn collect_native_invocation_leases(
-  args: &[&DynWinRTValue],
-) -> napi::Result<NativeInvocationLeases> {
-  let mut raw_memory = Vec::new();
-  let mut raw_com = Vec::new();
-  for arg in args {
-    if let Some(owner) = &arg.1 {
-      match owner {
-        NativePointerOwner::RawMemory(allocation) => {
-          raw_memory.push(allocation.acquire_invocation_lease()?);
-        }
-        NativePointerOwner::RawCom(reference) => {
-          raw_com.push(reference.acquire_invocation_lease()?);
-        }
-        _ => {
-          owner.validate()?;
-        }
-      }
-    }
-  }
-  Ok(NativeInvocationLeases {
-    _raw_memory: raw_memory,
-    _raw_com: raw_com,
-  })
-}
-
+#[cfg(test)]
 pub(super) fn with_com_invocation_args<T>(
   args: &[&DynWinRTValue],
   invoke: impl FnOnce(&[dynwinrt::com::Value]) -> napi::Result<T>,
 ) -> napi::Result<T> {
-  let _leases = collect_native_invocation_leases(args)?;
-  let args = args
+  with_com_invocation_args_guarded(args, |args, _| invoke(args))
+}
+
+struct ComInputGuard {
+  pins: Vec<super::com_input::InputBindings>,
+  bindings: Vec<crate::com_value::ComApartmentBinding>,
+}
+
+impl ComInputGuard {
+  fn pin(args: &[&DynWinRTValue]) -> napi::Result<Self> {
+    // Admit the whole batch before cloning even its first interface reference.
+    for arg in args {
+      arg.check_com_input_state()?;
+    }
+    Ok(Self {
+      pins: args
+        .iter()
+        .filter_map(|arg| arg.input_bindings())
+        .map(super::com_input::InputBindings::pin)
+        .collect::<napi::Result<Vec<_>>>()?,
+      bindings: args
+        .iter()
+        .filter_map(|arg| arg.com_binding().cloned())
+        .collect(),
+    })
+  }
+
+  fn check(&self) -> napi::Result<()> {
+    for pin in &self.pins {
+      pin.ensure_idle()?;
+    }
+    for binding in &self.bindings {
+      binding.ensure_idle()?;
+    }
+    Ok(())
+  }
+
+  fn check_native(&self) -> windows::core::Result<()> {
+    self.check().map_err(|error| {
+      windows::core::Error::new(
+        windows::core::HRESULT(0x80070057u32 as i32),
+        error.reason.as_str(),
+      )
+    })
+  }
+}
+
+fn admit_com_inputs(args: &[&DynWinRTValue]) -> napi::Result<ComInputGuard> {
+  let guard = ComInputGuard::pin(args)?;
+  for arg in args {
+    arg.admit_com_input()?;
+  }
+  guard.check()?;
+  Ok(guard)
+}
+
+pub(super) fn with_win32_input_leases<T>(
+  args: &[&DynWinRTValue],
+  invoke: impl FnOnce(&dyn Fn() -> napi::Result<()>) -> napi::Result<T>,
+) -> napi::Result<T> {
+  let guard = admit_com_inputs(args)?;
+  let _leases = crate::com_value::collect_invocation_leases(args)?;
+  guard.check()?;
+  invoke(&|| guard.check())
+}
+
+fn with_com_invocation_args_guarded<T>(
+  args: &[&DynWinRTValue],
+  invoke: impl FnOnce(
+    &[dynwinrt::com::Value],
+    &dyn Fn() -> windows::core::Result<()>,
+  ) -> napi::Result<T>,
+) -> napi::Result<T> {
+  let guard = admit_com_inputs(args)?;
+  let _leases = crate::com_value::collect_invocation_leases(args)?;
+  let converted = args
     .iter()
     .map(|arg| arg.to_com_value())
     .collect::<napi::Result<Vec<_>>>()?;
-  invoke(&args)
+  guard.check()?;
+  invoke(&converted, &|| guard.check_native())
 }
 
 pub(super) fn take_native_output_pointer(
@@ -1405,28 +993,28 @@ pub(super) fn take_native_output_pointer(
   expected: PointerProvenance,
   description: &str,
 ) -> napi::Result<*mut std::ffi::c_void> {
-  if value.1.is_some() {
+  if value.has_pointer_owner() {
     return Err(napi::Error::from_reason(format!(
       "Cannot consume an owner-backed {description} pointer"
     )));
   }
-  if value.2 != expected {
+  if value.pointer_provenance() != expected {
     return Err(napi::Error::from_reason(format!(
       "only owned native outputs may be consumed: cannot consume {description} pointer with {:?} provenance; expected {:?}",
-      value.2, expected
+      value.pointer_provenance(), expected
     )));
   }
-  match std::mem::replace(&mut value.0, dynwinrt::WinRTValue::Null) {
+  match std::mem::replace(value.winrt_mut(), dynwinrt::WinRTValue::Null) {
     dynwinrt::WinRTValue::RawPtr(ptr) => {
-      value.2 = PointerProvenance::None;
+      value.clear_pointer_provenance();
       Ok(ptr)
     }
     dynwinrt::WinRTValue::Null => {
-      value.2 = PointerProvenance::None;
+      value.clear_pointer_provenance();
       Ok(std::ptr::null_mut())
     }
     other => {
-      value.0 = other;
+      *value.winrt_mut() = other;
       Err(napi::Error::from_reason(format!(
         "Expected a {description} raw pointer"
       )))
@@ -1880,8 +1468,9 @@ fn optional_com_object(
 ) -> napi::Result<Option<windows::core::IUnknown>> {
   value
     .map(|value| {
+      value.admit_com_input()?;
       value
-        .0
+        .winrt()
         .as_object()
         .ok_or_else(|| napi::Error::from_reason(format!("{name} requires a COM object or null")))
     })
@@ -1973,6 +1562,12 @@ impl DynComMethodSig {
   }
 
   #[napi]
+  pub fn with_context_effect(&self, descriptor: String) -> napi::Result<Self> {
+    let effect = super::com_borrowed::parse_effect(&descriptor)?;
+    Ok(Self(self.0.clone().with_context_effect(effect)))
+  }
+
+  #[napi]
   pub fn add_in(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_in(typ.0.clone()))
   }
@@ -1995,6 +1590,20 @@ impl DynComMethodSig {
   #[napi]
   pub fn capture_dispatch_invoke_hresult(&self) -> Self {
     Self(self.0.clone().capture_dispatch_invoke_hresult())
+  }
+
+  #[napi]
+  pub fn canonical_format_etc_result(
+    &self,
+    input_param_index: f64,
+    output_param_index: f64,
+  ) -> napi::Result<Self> {
+    let input = checked_unsigned_number(input_param_index, u32::MAX.into(), "inputParamIndex")?;
+    let output = checked_unsigned_number(output_param_index, u32::MAX.into(), "outputParamIndex")?;
+    Ok(Self(self.0.clone().canonical_format_etc_result(
+      input as usize,
+      output as usize,
+    )))
   }
 
   #[napi]
@@ -2281,15 +1890,73 @@ impl DynComDispatchInvokeResult {
 
 #[napi]
 impl DynComMethodHandle {
+  fn invoke_managed(
+    &self,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    if !self.0.has_context_effect() {
+      obj.ensure_tracked_com_idle()?;
+      let receiver_guard = ComInputGuard::pin(&[obj])?;
+      let view = obj
+        .winrt()
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?;
+      receiver_guard.check()?;
+      return with_com_invocation_args_guarded(&args, |args, check| {
+        unsafe {
+          self
+            .0
+            .invoke_values_with_output_kinds_guarded(view.as_raw(), args, || {
+              receiver_guard.check_native()?;
+              check()
+            })
+        }
+        .map_err(com_error)
+        .map(|values| {
+          values
+            .into_iter()
+            .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+            .collect()
+        })
+      });
+    }
+    let context = obj.com_context()?;
+    let view = obj
+      .winrt()
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?
+      .clone();
+    with_com_invocation_args_guarded(&args, |args, check| {
+      let result = unsafe {
+        dynwinrt::com::borrowed::invoke_managed_guarded(&self.0, &context, &view, args, check)
+      }
+      .map_err(com_error)?;
+      result
+        .values
+        .into_iter()
+        .map(|(value, kind)| {
+          let mut value = DynWinRTValue::from_com_value(value, kind);
+          if let Some(context) = result.output_context.as_ref() {
+            value.retain_com_context(context.clone())?;
+          }
+          Ok(value)
+        })
+        .collect::<napi::Result<Vec<_>>>()
+    })
+  }
+
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
     obj.ensure_com_apartment()?;
-    let raw = obj
-      .0
+    obj.ensure_tracked_com_idle()?;
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
+      .winrt()
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("getString() requires a COM object"))?
-      .as_raw();
-    unsafe { self.0.call_getter_hstring(raw) }
+      .ok_or_else(|| napi::Error::from_reason("getString() requires a COM object"))?;
+    receiver_guard.check()?;
+    unsafe { self.0.call_getter_hstring(view.as_raw()) }
       .map(|value| value.to_string())
       .map_err(|error| napi::Error::from_reason(error.message()))
   }
@@ -2306,20 +1973,12 @@ impl DynComMethodHandle {
         "invoke() cannot discard multiple COM results; use invokeAll()",
       ));
     }
-    let raw = obj
-      .0
-      .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invoke() requires a COM object"))?
-      .as_raw();
-    let mut results = with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
-        .map_err(|error| napi::Error::from_reason(error.message()))
-    })?;
-    let (value, kind) = results.drain(..).next().unwrap_or((
-      dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::I32(0)),
-      dynwinrt::com::PointerOutputKind::None,
-    ));
-    Ok(DynWinRTValue::from_com_value(value, kind))
+    let mut results = self.invoke_managed(obj, args)?;
+    Ok(
+      results
+        .pop()
+        .unwrap_or_else(|| DynWinRTValue::new(dynwinrt::WinRTValue::I32(0))),
+    )
   }
 
   #[napi]
@@ -2328,22 +1987,7 @@ impl DynComMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
-    obj.ensure_com_apartment()?;
-    let raw = obj
-      .0
-      .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeAll() requires a COM object"))?
-      .as_raw();
-    with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
-        .map_err(|error| napi::Error::from_reason(error.message()))
-    })
-    .map(|results| {
-      results
-        .into_iter()
-        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-        .collect()
-    })
+    self.invoke_managed(obj, args)
   }
 
   #[napi]
@@ -2353,31 +1997,39 @@ impl DynComMethodHandle {
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynComDispatchInvokeResult> {
     obj.ensure_com_apartment()?;
-    let raw = obj
-      .0
+    obj.ensure_tracked_com_idle()?;
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
+      .winrt()
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeDispatch() requires a COM object"))?
-      .as_raw();
-    let result = with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_dispatch(raw, args) }.map_err(com_error)
-    })?;
-    let (hresult, result, excep_info, arg_err, finalization_error) = result.into_parts();
-    Ok(DynComDispatchInvokeResult {
-      hresult: hresult.0,
-      result: result.map(|value| {
-        DynWinRTValue::from_com_value(
-          dynwinrt::com::Value::Variant(value),
-          dynwinrt::com::PointerOutputKind::None,
-        )
-      }),
-      excep_info: excep_info.map(|value| {
-        DynWinRTValue::from_com_value(
-          dynwinrt::com::Value::ExcepInfo(value),
-          dynwinrt::com::PointerOutputKind::None,
-        )
-      }),
-      arg_err,
-      finalization_error: finalization_error.map(|error| error.message()),
+      .ok_or_else(|| napi::Error::from_reason("invokeDispatch() requires a COM object"))?;
+    receiver_guard.check()?;
+    with_com_invocation_args_guarded(&args, |args, check| {
+      let result = unsafe {
+        self.0.invoke_dispatch_guarded(view.as_raw(), args, || {
+          receiver_guard.check_native()?;
+          check()
+        })
+      }
+      .map_err(com_error)?;
+      let (hresult, result, excep_info, arg_err, finalization_error) = result.into_parts();
+      Ok(DynComDispatchInvokeResult {
+        hresult: hresult.0,
+        result: result.map(|value| {
+          DynWinRTValue::from_com_value(
+            dynwinrt::com::Value::Variant(value),
+            dynwinrt::com::PointerOutputKind::None,
+          )
+        }),
+        excep_info: excep_info.map(|value| {
+          DynWinRTValue::from_com_value(
+            dynwinrt::com::Value::ExcepInfo(value),
+            dynwinrt::com::PointerOutputKind::None,
+          )
+        }),
+        arg_err,
+        finalization_error: finalization_error.map(|error| error.message()),
+      })
     })
   }
 }
@@ -2410,24 +2062,31 @@ impl DynComRaw {
   ) -> napi::Result<Vec<DynWinRTValue>> {
     dispatch.entered.set(false);
     obj.ensure_com_apartment()?;
-    let raw = obj
-      .0
+    obj.ensure_tracked_com_idle()?;
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
+      .winrt()
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeAllTracked() requires a COM object"))?
-      .as_raw();
-    with_com_invocation_args(&args, |args| {
+      .ok_or_else(|| napi::Error::from_reason("invokeAllTracked() requires a COM object"))?;
+    receiver_guard.check()?;
+    with_com_invocation_args_guarded(&args, |args, check| {
       unsafe {
         method
           .0
-          .invoke_values_with_output_kinds_tracked(raw, args, || dispatch.entered.set(true))
+          .invoke_values_with_output_kinds_guarded(view.as_raw(), args, || {
+            receiver_guard.check_native()?;
+            check()?;
+            dispatch.entered.set(true);
+            Ok(())
+          })
       }
       .map_err(|error| napi::Error::from_reason(error.message()))
-    })
-    .map(|results| {
-      results
-        .into_iter()
-        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-        .collect()
+      .map(|results| {
+        results
+          .into_iter()
+          .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+          .collect()
+      })
     })
   }
 }
@@ -2640,14 +2299,21 @@ impl DynComNativeUnion {
 #[napi]
 pub struct DynComVariant {
   value: Option<dynwinrt::com::VariantValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComVariant {
   fn new(value: dynwinrt::com::VariantValue) -> Self {
-    Self { value: Some(value) }
+    let inputs =
+      super::com_input::InputBindings::capture(&dynwinrt::com::Value::Variant(value.clone()));
+    Self {
+      value: Some(value),
+      inputs,
+    }
   }
 
   fn value(&self) -> napi::Result<&dynwinrt::com::VariantValue> {
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -2657,7 +2323,7 @@ impl DynComVariant {
 
 impl Drop for DynComVariant {
   fn drop(&mut self) {
-    if super::winui_dispatcher_loop_exited() {
+    if !self.inputs.is_owner() || super::winui_dispatcher_loop_exited() {
       if let Some(value) = self.value.take() {
         std::mem::forget(value);
       }
@@ -2865,8 +2531,11 @@ impl DynComVariant {
   }
 
   #[napi]
-  pub fn release(&mut self) {
+  pub fn release(&mut self) -> napi::Result<()> {
+    self.inputs.ensure_owner()?;
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
+    Ok(())
   }
 }
 
@@ -2874,13 +2543,18 @@ impl DynComVariant {
 pub struct DynComDispatchParams {
   owner_thread: std::thread::ThreadId,
   value: Option<dynwinrt::com::DispatchParamsValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComDispatchParams {
   fn from_value(value: dynwinrt::com::DispatchParamsValue) -> Self {
+    let inputs = super::com_input::InputBindings::capture(&dynwinrt::com::Value::DispatchParams(
+      value.clone(),
+    ));
     Self {
       owner_thread: std::thread::current().id(),
       value: Some(value),
+      inputs,
     }
   }
 
@@ -2890,6 +2564,7 @@ impl DynComDispatchParams {
         "Apartment-bound DISPPARAMS used from a different thread",
       ));
     }
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -2968,6 +2643,7 @@ impl DynComDispatchParams {
       ));
     }
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
     Ok(())
   }
 }
@@ -3065,6 +2741,173 @@ impl DynComExcepInfo {
 pub struct DynComStatStg {
   owner_thread: std::thread::ThreadId,
   value: Option<dynwinrt::com::StatStgValue>,
+}
+
+#[napi]
+pub struct DynComFormatEtc {
+  value: dynwinrt::com::FormatEtcValue,
+}
+
+#[napi]
+impl DynComFormatEtc {
+  #[napi(factory)]
+  pub fn hglobal(
+    clipboard_format: u32,
+    aspect: Option<u32>,
+    index: Option<i32>,
+  ) -> napi::Result<Self> {
+    let clipboard_format = u16::try_from(clipboard_format)
+      .map_err(|_| napi::Error::from_reason("clipboardFormat must fit in u16"))?;
+    dynwinrt::com::FormatEtcValue::hglobal(
+      clipboard_format,
+      aspect.unwrap_or(1),
+      index.unwrap_or(-1),
+    )
+    .map(|value| Self { value })
+    .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn clipboard_format(&self) -> u32 {
+    u32::from(self.value.clipboard_format())
+  }
+
+  #[napi(getter)]
+  pub fn aspect(&self) -> u32 {
+    self.value.aspect()
+  }
+
+  #[napi(getter)]
+  pub fn index(&self) -> i32 {
+    self.value.index()
+  }
+
+  #[napi(getter)]
+  pub fn tymed(&self) -> u32 {
+    self.value.tymed()
+  }
+}
+
+#[napi]
+pub struct DynComStgMedium {
+  value: dynwinrt::com::StgMediumValue,
+}
+
+#[napi]
+impl DynComStgMedium {
+  #[napi(factory)]
+  pub fn hglobal(bytes: Buffer) -> napi::Result<Self> {
+    dynwinrt::com::StgMediumValue::hglobal(bytes.to_vec())
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn tymed(&self) -> u32 {
+    windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+  }
+
+  #[napi]
+  pub fn to_buffer(&self) -> Buffer {
+    Buffer::from(self.value.bytes().to_vec())
+  }
+}
+
+#[napi]
+pub struct DynComAudioFormat {
+  value: dynwinrt::com::AudioFormatValue,
+}
+
+#[napi]
+impl DynComAudioFormat {
+  #[napi(factory)]
+  pub fn pcm(channels: u32, samples_per_second: u32, bits_per_sample: u32) -> napi::Result<Self> {
+    let channels =
+      u16::try_from(channels).map_err(|_| napi::Error::from_reason("channels must fit in u16"))?;
+    let bits_per_sample = u16::try_from(bits_per_sample)
+      .map_err(|_| napi::Error::from_reason("bitsPerSample must fit in u16"))?;
+    dynwinrt::com::AudioFormatValue::pcm(channels, samples_per_second, bits_per_sample)
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(factory)]
+  pub fn wave_format_ex(
+    format_tag: u32,
+    channels: u32,
+    samples_per_second: u32,
+    average_bytes_per_second: u32,
+    block_align: u32,
+    bits_per_sample: u32,
+    extra_data: Option<Buffer>,
+  ) -> napi::Result<Self> {
+    let format_tag = u16::try_from(format_tag)
+      .map_err(|_| napi::Error::from_reason("formatTag must fit in u16"))?;
+    let channels =
+      u16::try_from(channels).map_err(|_| napi::Error::from_reason("channels must fit in u16"))?;
+    let block_align = u16::try_from(block_align)
+      .map_err(|_| napi::Error::from_reason("blockAlign must fit in u16"))?;
+    let bits_per_sample = u16::try_from(bits_per_sample)
+      .map_err(|_| napi::Error::from_reason("bitsPerSample must fit in u16"))?;
+    dynwinrt::com::AudioFormatValue::wave_format_ex(
+      format_tag,
+      channels,
+      samples_per_second,
+      average_bytes_per_second,
+      block_align,
+      bits_per_sample,
+      extra_data.map_or_else(Vec::new, |bytes| bytes.to_vec()),
+    )
+    .map(|value| Self { value })
+    .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(factory)]
+  pub fn from_buffer(bytes: Buffer) -> napi::Result<Self> {
+    dynwinrt::com::AudioFormatValue::from_wave_format_ex(bytes.to_vec())
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn format_tag(&self) -> u32 {
+    u32::from(self.value.format_tag())
+  }
+
+  #[napi(getter)]
+  pub fn channels(&self) -> u32 {
+    u32::from(self.value.channels())
+  }
+
+  #[napi(getter)]
+  pub fn samples_per_second(&self) -> u32 {
+    self.value.samples_per_second()
+  }
+
+  #[napi(getter)]
+  pub fn average_bytes_per_second(&self) -> u32 {
+    self.value.average_bytes_per_second()
+  }
+
+  #[napi(getter)]
+  pub fn block_align(&self) -> u32 {
+    u32::from(self.value.block_align())
+  }
+
+  #[napi(getter)]
+  pub fn bits_per_sample(&self) -> u32 {
+    u32::from(self.value.bits_per_sample())
+  }
+
+  #[napi(getter)]
+  pub fn extra_data(&self) -> Buffer {
+    Buffer::from(self.value.extra_data().to_vec())
+  }
+
+  #[napi]
+  pub fn to_buffer(&self) -> Buffer {
+    Buffer::from(self.value.bytes().to_vec())
+  }
 }
 
 #[napi]
@@ -3372,7 +3215,7 @@ impl DynComAllocation {
 fn malloc_allocator(value: &DynWinRTValue) -> napi::Result<windows::Win32::System::Com::IMalloc> {
   value.ensure_existing_com_apartment()?;
   value
-    .0
+    .winrt()
     .as_object()
     .ok_or_else(|| napi::Error::from_reason("IMalloc operation requires a COM object"))?
     .cast()
@@ -3384,22 +3227,24 @@ fn malloc_pointer_value(pointer: *mut std::ffi::c_void) -> DynWinRTValue {
 }
 
 fn take_malloc_return_pointer(value: &mut DynWinRTValue) -> napi::Result<*mut std::ffi::c_void> {
-  if value.1.is_some() || value.2 != PointerProvenance::UnclassifiedOutput {
+  if value.has_pointer_owner()
+    || value.pointer_provenance() != PointerProvenance::UnclassifiedOutput
+  {
     return Err(napi::Error::from_reason(
       "IMalloc allocation requires an unowned direct pointer return",
     ));
   }
-  match std::mem::replace(&mut value.0, dynwinrt::WinRTValue::Null) {
+  match std::mem::replace(value.winrt_mut(), dynwinrt::WinRTValue::Null) {
     dynwinrt::WinRTValue::RawPtr(pointer) => {
-      value.2 = PointerProvenance::None;
+      value.clear_pointer_provenance();
       Ok(pointer)
     }
     dynwinrt::WinRTValue::Null => {
-      value.2 = PointerProvenance::None;
+      value.clear_pointer_provenance();
       Ok(std::ptr::null_mut())
     }
     other => {
-      value.0 = other;
+      *value.winrt_mut() = other;
       Err(napi::Error::from_reason(
         "IMalloc allocation result is not a native pointer",
       ))
@@ -3486,14 +3331,21 @@ pub struct DynComSafeArrayBound {
 #[napi]
 pub struct DynComSafeArray {
   value: Option<dynwinrt::com::SafeArrayValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComSafeArray {
   fn new(value: dynwinrt::com::SafeArrayValue) -> Self {
-    Self { value: Some(value) }
+    let inputs =
+      super::com_input::InputBindings::capture(&dynwinrt::com::Value::SafeArray(value.clone()));
+    Self {
+      value: Some(value),
+      inputs,
+    }
   }
 
   fn value(&self) -> napi::Result<&dynwinrt::com::SafeArrayValue> {
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -3536,7 +3388,7 @@ impl DynComSafeArray {
 
 impl Drop for DynComSafeArray {
   fn drop(&mut self) {
-    if super::winui_dispatcher_loop_exited() {
+    if !self.inputs.is_owner() || super::winui_dispatcher_loop_exited() {
       if let Some(value) = self.value.take() {
         std::mem::forget(value);
       }
@@ -3696,6 +3548,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -3712,6 +3565,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -3752,6 +3606,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -3929,8 +3784,11 @@ impl DynComSafeArray {
   }
 
   #[napi]
-  pub fn release(&mut self) {
+  pub fn release(&mut self) -> napi::Result<()> {
+    self.inputs.ensure_owner()?;
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
+    Ok(())
   }
 }
 
@@ -4801,6 +4659,21 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn format_etc_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::format_etc())
+  }
+
+  #[napi]
+  pub fn stg_medium_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::stg_medium())
+  }
+
+  #[napi]
+  pub fn audio_format_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::audio_format())
+  }
+
+  #[napi]
   pub fn interface_type(iid: &WinGUID) -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.interface(iid.0)))
   }
@@ -5075,7 +4948,7 @@ impl DynCom {
 
   #[napi]
   pub fn is_null_native_struct_pointer(value: &DynWinRTValue) -> bool {
-    value.3.is_none() && value.0.is_null_object()
+    value.native_struct().is_none() && value.winrt().is_null_object()
   }
 
   #[napi]
@@ -5119,11 +4992,12 @@ impl DynCom {
     iid: &WinGUID,
     values: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
         value
-          .0
+          .winrt()
           .as_object()
           .ok_or_else(|| napi::Error::from_reason("COM interface arrays require managed objects"))
       })
@@ -5207,8 +5081,7 @@ impl DynCom {
   #[napi]
   pub fn take_buffer(value: &mut DynWinRTValue) -> napi::Result<Buffer> {
     let buffer = value
-      .4
-      .take()
+      .take_com_buffer()
       .ok_or_else(|| napi::Error::from_reason("Value is not an owned COM buffer result"))?;
     let bytes = buffer
       .snapshot_bytes()
@@ -5355,20 +5228,26 @@ impl DynCom {
 
   #[napi]
   pub fn take_com_array(value: &mut DynWinRTValue) -> napi::Result<Vec<DynWinRTValue>> {
+    value.admit_com_input()?;
     value
-      .4
-      .take()
+      .take_com_buffer()
       .ok_or_else(|| napi::Error::from_reason("Value is not a managed COM array result"))?
       .into_com_values()
-      .map(|values| values.into_iter().map(DynWinRTValue::new).collect())
+      .map(|values| {
+        values
+          .into_iter()
+          .map(|value| {
+            DynWinRTValue::from_com_result(value, dynwinrt::com::PointerOutputKind::None)
+          })
+          .collect()
+      })
       .map_err(com_error)
   }
 
   #[napi]
   pub fn take_bstr_array(value: &mut DynWinRTValue) -> napi::Result<Vec<String>> {
     value
-      .4
-      .take()
+      .take_com_buffer()
       .ok_or_else(|| napi::Error::from_reason("Value is not an owned BSTR array result"))?
       .into_strings()
       .map_err(com_error)
@@ -5383,9 +5262,9 @@ impl DynCom {
 
   #[napi]
   pub fn take_variant_array(value: &mut DynWinRTValue) -> napi::Result<Vec<DynComVariant>> {
+    value.admit_com_input()?;
     value
-      .4
-      .take()
+      .take_com_buffer()
       .ok_or_else(|| napi::Error::from_reason("Value is not an owned VARIANT array result"))?
       .into_variants()
       .map(|values| values.into_iter().map(DynComVariant::new).collect())
@@ -5439,8 +5318,7 @@ impl DynCom {
   #[napi]
   pub fn buffer_count(value: &DynWinRTValue) -> napi::Result<BigInt> {
     value
-      .4
-      .as_ref()
+      .com_buffer()
       .map(|buffer| BigInt::from(buffer.count() as u64))
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM buffer result"))
   }
@@ -5451,8 +5329,7 @@ impl DynCom {
     element_type: &DynComType,
   ) -> napi::Result<BigInt> {
     value
-      .4
-      .as_ref()
+      .com_buffer()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM buffer"))
       .and_then(|buffer| {
         buffer
@@ -5551,8 +5428,7 @@ impl DynCom {
   ) -> napi::Result<DynComNativeStruct> {
     let expected = native_struct_layout(&descriptor)?;
     let value = value
-      .3
-      .as_ref()
+      .native_struct()
       .ok_or_else(|| napi::Error::from_reason("Value is not a native COM struct"))?;
     if value.layout() != &expected {
       return Err(napi::Error::from_reason(format!(
@@ -5633,32 +5509,68 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn format_etc(value: &DynComFormatEtc) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::FormatEtc(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
+  pub fn stg_medium(value: &DynComStgMedium) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::StgMedium(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
+  pub fn audio_format(value: &DynComAudioFormat) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::AudioFormat(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
+  pub fn null_audio_format() -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::Null),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
   pub fn take_variant(value: &mut DynWinRTValue) -> napi::Result<DynComVariant> {
+    value.admit_com_input()?;
     let result = value
-      .5
-      .as_mut()
+      .automation_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM VARIANT"))?
       .take_variant()?;
-    value.5 = None;
-    Ok(DynComVariant::new(result))
+    value.clear_automation();
+    let result = DynComVariant::new(result);
+    value.set_input_bindings(None);
+    Ok(result)
   }
 
   #[napi]
   pub fn take_safe_array(value: &mut DynWinRTValue) -> napi::Result<DynComSafeArray> {
+    value.admit_com_input()?;
     let result = value
-      .5
-      .as_mut()
+      .automation_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM SAFEARRAY"))?
       .take_safe_array()?;
-    value.5 = None;
-    Ok(DynComSafeArray::new(result))
+    value.clear_automation();
+    let result = DynComSafeArray::new(result);
+    value.set_input_bindings(None);
+    Ok(result)
   }
 
   #[napi]
   pub fn take_nullable_safe_array(
     value: &mut DynWinRTValue,
   ) -> napi::Result<Option<DynComSafeArray>> {
-    if value.5.is_none() && value.0.is_null_object() {
+    if value.automation().is_none() && value.winrt().is_null_object() {
       return Ok(None);
     }
     Self::take_safe_array(value).map(Some)
@@ -5667,34 +5579,71 @@ impl DynCom {
   #[napi]
   pub fn take_prop_variant(value: &mut DynWinRTValue) -> napi::Result<DynComPropVariant> {
     let result = value
-      .5
-      .as_mut()
+      .automation_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM PROPVARIANT"))?
       .take_prop_variant()?;
-    value.5 = None;
+    value.clear_automation();
     Ok(DynComPropVariant::new(result))
   }
 
   #[napi]
   pub fn take_excep_info(value: &mut DynWinRTValue) -> napi::Result<DynComExcepInfo> {
     let result = value
-      .5
-      .as_mut()
+      .automation_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not COM EXCEPINFO"))?
       .take_excep_info()?;
-    value.5 = None;
+    value.clear_automation();
     Ok(DynComExcepInfo::new(result))
   }
 
   #[napi]
   pub fn take_stat_stg(value: &mut DynWinRTValue) -> napi::Result<DynComStatStg> {
     let result = value
-      .5
-      .as_mut()
+      .automation_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not COM STATSTG"))?
       .take_stat_stg()?;
-    value.5 = None;
+    value.clear_automation();
     Ok(DynComStatStg::new(result))
+  }
+
+  #[napi]
+  pub fn take_format_etc(value: &mut DynWinRTValue) -> napi::Result<DynComFormatEtc> {
+    let result = value
+      .automation_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not COM FORMATETC"))?
+      .take_format_etc()?;
+    value.clear_automation();
+    Ok(DynComFormatEtc { value: result })
+  }
+
+  #[napi]
+  pub fn take_stg_medium(value: &mut DynWinRTValue) -> napi::Result<DynComStgMedium> {
+    let result = value
+      .automation_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not COM STGMEDIUM"))?
+      .take_stg_medium()?;
+    value.clear_automation();
+    Ok(DynComStgMedium { value: result })
+  }
+
+  #[napi]
+  pub fn take_audio_format(value: &mut DynWinRTValue) -> napi::Result<DynComAudioFormat> {
+    let result = value
+      .automation_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not a COM WAVEFORMATEX"))?
+      .take_audio_format()?;
+    value.clear_automation();
+    Ok(DynComAudioFormat { value: result })
+  }
+
+  #[napi]
+  pub fn take_nullable_audio_format(
+    value: &mut DynWinRTValue,
+  ) -> napi::Result<Option<DynComAudioFormat>> {
+    if value.automation().is_none() && value.winrt().is_null_object() {
+      return Ok(None);
+    }
+    Self::take_audio_format(value).map(Some)
   }
 
   #[napi]
@@ -5797,7 +5746,7 @@ impl DynCom {
 
   #[napi]
   pub fn to_u32(value: &DynWinRTValue) -> napi::Result<u32> {
-    match &value.0 {
+    match value.winrt() {
       dynwinrt::WinRTValue::U32(value) => Ok(*value),
       _ => Err(napi::Error::from_reason("Value is not a u32")),
     }
@@ -5805,7 +5754,7 @@ impl DynCom {
 
   #[napi]
   pub fn to_i64_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
-    match &value.0 {
+    match value.winrt() {
       dynwinrt::WinRTValue::I64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason("Value is not an i64")),
     }
@@ -5813,7 +5762,7 @@ impl DynCom {
 
   #[napi]
   pub fn to_u64_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
-    match &value.0 {
+    match value.winrt() {
       dynwinrt::WinRTValue::U64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason("Value is not a u64")),
     }
@@ -5822,12 +5771,12 @@ impl DynCom {
   #[napi]
   pub fn to_isize_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
     #[cfg(target_pointer_width = "64")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::I64(value) => Some(BigInt::from(*value)),
       _ => None,
     };
     #[cfg(target_pointer_width = "32")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::I32(value) => Some(BigInt::from(i64::from(*value))),
       _ => None,
     };
@@ -5837,12 +5786,12 @@ impl DynCom {
   #[napi]
   pub fn to_usize_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
     #[cfg(target_pointer_width = "64")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::U64(value) => Some(BigInt::from(*value)),
       _ => None,
     };
     #[cfg(target_pointer_width = "32")]
-    let result = match &value.0 {
+    let result = match value.winrt() {
       dynwinrt::WinRTValue::U32(value) => Some(BigInt::from(u64::from(*value))),
       _ => None,
     };
@@ -5858,6 +5807,7 @@ impl DynCom {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::com_value::AutomationValue;
   use std::ffi::c_void;
 
   const TEST_POD_DESCRIPTOR: &str = r#"{"name":"Test.Pod","x86":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]},"x64":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]},"arm64":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]}}"#;
@@ -6434,6 +6384,7 @@ mod tests {
 
   #[test]
   fn com_typed_buffer_widths_are_exact() {
+    use crate::js_storage::typed_array_element_size;
     use napi::sys::TypedarrayType;
 
     for typ in [
@@ -6460,7 +6411,7 @@ mod tests {
     ] {
       assert_eq!(typed_array_element_size(typ as i32).unwrap(), 8);
     }
-    assert!(typed_array_element_size(i32::MAX).is_err());
+    assert!(typed_array_element_size(i32::MAX).is_none());
   }
 
   #[test]
@@ -6479,7 +6430,7 @@ mod tests {
     );
 
     assert_eq!(take_co_task_mem_wide_string(&mut value).unwrap(), text);
-    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::Null));
   }
 
   #[test]
@@ -6494,7 +6445,7 @@ mod tests {
       take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "test").unwrap(),
       ptr
     );
-    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::Null));
     assert!(take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "test").is_err());
   }
 
@@ -6507,7 +6458,7 @@ mod tests {
       take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "COM interface")
         .unwrap_err();
     assert!(error.reason.contains("Borrowed"));
-    assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::RawPtr(raw) if *raw == ptr));
   }
 
   #[test]
@@ -6516,7 +6467,7 @@ mod tests {
     let iid = WinGUID(windows::core::IUnknown::IID);
     let original = co_create_instance("00021401-0000-0000-c000-000000000046".into(), &iid)
       .expect("ShellLink activation");
-    let object = original.0.as_object().unwrap();
+    let object = original.winrt().as_object().unwrap();
 
     let borrowed = borrow_com_pointer_bits(object.as_raw(), &iid).unwrap();
     drop(borrowed);
@@ -6596,7 +6547,7 @@ mod tests {
       take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "COM interface")
         .unwrap_err();
     assert!(error.reason.contains("UnclassifiedOutput"));
-    assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::RawPtr(raw) if *raw == ptr));
   }
 
   #[test]
@@ -6612,7 +6563,7 @@ mod tests {
       take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "COM interface")
         .unwrap_err();
     assert!(error.reason.contains("CoTaskMemOutput"));
-    assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::RawPtr(raw) if *raw == ptr));
   }
 
   #[test]
@@ -6633,13 +6584,28 @@ mod tests {
       "test bitmap",
     )
     .unwrap();
-    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::Null));
     assert!(!owner.is_released());
     owner.release().unwrap();
     assert!(owner.is_released());
     owner.release().unwrap();
     assert!(!unsafe {
       windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(ptr))
+    }
+    .as_bool());
+  }
+
+  #[test]
+  fn delete_object_owned_handle_drop_releases_bitmap() {
+    let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+    assert!(!bitmap.is_invalid());
+    let pointer = bitmap.0;
+    drop(DynComOwnedHandle::new(
+      pointer.addr(),
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+    ));
+    assert!(!unsafe {
+      windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(pointer))
     }
     .as_bool());
   }
@@ -6658,8 +6624,8 @@ mod tests {
     .unwrap_err()
     .reason
     .contains("CoTaskMemOutput"));
-    value.0 = dynwinrt::WinRTValue::Null;
-    value.2 = PointerProvenance::None;
+    *value.winrt_mut() = dynwinrt::WinRTValue::Null;
+    value.clear_pointer_provenance();
   }
 
   #[test]
@@ -6671,7 +6637,7 @@ mod tests {
     );
 
     assert_eq!(take_bstr(&mut value).unwrap(), "dynwinrt");
-    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert!(matches!(value.winrt(), dynwinrt::WinRTValue::Null));
   }
 
   #[test]
@@ -6707,13 +6673,13 @@ mod tests {
     let unsigned = DynCom::usize(BigInt::from(1u64)).unwrap();
     #[cfg(target_pointer_width = "64")]
     {
-      assert!(matches!(signed.0, dynwinrt::WinRTValue::I64(-1)));
-      assert!(matches!(unsigned.0, dynwinrt::WinRTValue::U64(1)));
+      assert!(matches!(signed.winrt(), dynwinrt::WinRTValue::I64(-1)));
+      assert!(matches!(unsigned.winrt(), dynwinrt::WinRTValue::U64(1)));
     }
     #[cfg(target_pointer_width = "32")]
     {
-      assert!(matches!(signed.0, dynwinrt::WinRTValue::I32(-1)));
-      assert!(matches!(unsigned.0, dynwinrt::WinRTValue::U32(1)));
+      assert!(matches!(signed.winrt(), dynwinrt::WinRTValue::I32(-1)));
+      assert!(matches!(unsigned.winrt(), dynwinrt::WinRTValue::U32(1)));
     }
   }
 
@@ -6722,19 +6688,19 @@ mod tests {
     // Regression (#4): iid_pointer must return an OWNER-BACKED value so the
     // boxed GUID is freed on drop/GC — not leak one Box<GUID> per distinct GUID
     // into a process-lifetime static cache. The pre-fix version returned an
-    // unowned RawPtr (`.1 == None`) into a static cache (stable address per
+    // unowned RawPtr into a static cache (stable address per
     // GUID), so both assertions below fail against it.
     let guid = GUID::from_u128(0xa5caee9b_8708_49d1_8d36_67d25a8da00c);
 
     let value = iid_pointer(&WinGUID(guid));
     assert!(
-      value.1.is_some(),
+      value.has_pointer_owner(),
       "iid_pointer must be owner-backed (NativePointerOwner::Guid) so it frees on drop"
     );
-    match value.0 {
+    match value.winrt() {
       dynwinrt::WinRTValue::RawPtr(ptr) => {
         assert!(!ptr.is_null());
-        let read = unsafe { *(ptr as *const GUID) };
+        let read = unsafe { *(*ptr as *const GUID) };
         assert_eq!(
           read, guid,
           "REFIID pointer must hold the correct GUID bytes"
@@ -6747,12 +6713,12 @@ mod tests {
     // boxes (distinct addresses) — proving there is no shared static cache.
     let a = iid_pointer(&WinGUID(guid));
     let b = iid_pointer(&WinGUID(guid));
-    let pa = match a.0 {
-      dynwinrt::WinRTValue::RawPtr(p) => p as usize,
+    let pa = match a.winrt() {
+      dynwinrt::WinRTValue::RawPtr(p) => *p as usize,
       _ => 0,
     };
-    let pb = match b.0 {
-      dynwinrt::WinRTValue::RawPtr(p) => p as usize,
+    let pb = match b.winrt() {
+      dynwinrt::WinRTValue::RawPtr(p) => *p as usize,
       _ => 0,
     };
     assert_ne!(

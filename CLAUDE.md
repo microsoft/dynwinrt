@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `dynwinrt` is a Rust-based runtime library that enables dynamic invocation of Windows Runtime (WinRT) APIs. Unlike static projections (PyWinRT, C++/WinRT), this library uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods without native code generation. It provides JavaScript (napi-rs) and Python (PyO3) bindings, plus a code generation tool (`dynwinrt-codegen`) that produces typed wrappers from .winmd files.
 
+Classic COM and flat Win32 have separate JavaScript/TypeScript projections and
+runtime subpaths. Flat Win32 DLL exports use an independent native ABI and
+contract model; see [the Win32 architecture](docs/architecture/flat-win32-contracts.md).
+Run `.\tests\e2e\e2e_test.ps1 -SkipBuild -Lang win32` for its E2E suite with
+`DYNWINRT_WIN32_WINMD` pointing to the pinned Win32 metadata.
+
 ## Repository Structure
 
 ```

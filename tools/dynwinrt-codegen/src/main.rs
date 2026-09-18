@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod win32_census;
+mod win32_output;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -16,6 +19,7 @@ use dynwinrt_codegen::codegen::javascript;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::win32;
 use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
@@ -30,7 +34,8 @@ use dynwinrt_codegen::xml_doc::DocTable;
     long_about = "dynwinrt-codegen reads .winmd metadata and generates typed bindings\n\
     for dynamic Windows API invocation. JavaScript and TypeScript output uses\n\
     @microsoft/dynwinrt; Python output uses dynwinrt. Supported Classic COM APIs\n\
-    from Windows.Win32 metadata are available for JavaScript and TypeScript.\n\n\
+    from Windows.Win32 metadata are available for JavaScript and TypeScript.\n\
+    An initial contract-audited flat Win32 slice emits isolated JavaScript bindings.\n\n\
     It auto-detects Windows SDK metadata and discovers sibling .winmd files\n\
     in the same directory, so you typically only need to point at one file."
 )]
@@ -74,6 +79,15 @@ enum Commands {
         winmd: String,
 
         /// Emit one machine-readable JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Measure complete flat Win32 generation from native metadata and contracts.
+    Win32Census {
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
         #[arg(long)]
         json: bool,
     },
@@ -176,7 +190,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
-const COM_MANIFEST_VERSION: u32 = 2;
+const COM_MANIFEST_VERSION: u32 = 5;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -274,7 +288,7 @@ fn run_com_census(winmd: &str, json: bool) -> Result<(), String> {
         .collect::<Vec<_>>();
     let complete = eligible
         .iter()
-        .filter(|interface| com::generate_com_interface_files(interface, winmd).is_ok())
+        .filter(|interface| com::generate_complete_com_interface_files(interface, winmd).is_ok())
         .count();
     let result = ComCensusResult {
         metadata: winmd.to_string(),
@@ -338,6 +352,9 @@ fn run() -> Result<(), String> {
         }
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
+        }
+        Commands::Win32Census { winmd, json } => {
+            win32_census::run(&winmd, json)?;
         }
         Commands::ComCapabilityCensus {
             winmd,
@@ -470,6 +487,7 @@ fn run() -> Result<(), String> {
 
             // Auto-discover sibling .winmd files in the same directories
             let winmd = meta::expand_winmd_paths(&winmd_joined);
+            let mut win32_type_index = win32::FlatFunctionIndex::new(&winmd);
 
             // Build XML doc table from sibling .xml files of each winmd.
             let expanded_parts: Vec<String> = winmd
@@ -520,12 +538,31 @@ fn run() -> Result<(), String> {
             if let Some(ref cls_arg) = class_name {
                 let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
 
-                // First: partition into WinRT classes and classic-COM interfaces.
+                // Partition the native domains before language projection.
                 let mut classes = Vec::new();
+                let mut win32_namespaces = BTreeSet::new();
                 let mut requested_winrt_interfaces = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
+                let mut native_audio_completion = false;
                 for (ns, cls) in &class_requests {
+                    if ns.starts_with("Windows.Win32.")
+                        && win32_type_index.has_flat_functions(ns, cls)?
+                    {
+                        if cls != "Apis" {
+                            return Err(format!(
+                                "Flat Win32 generation currently supports Apis containers, not {ns}.{cls}"
+                            ));
+                        }
+                        win32_namespaces.insert(ns.clone());
+                        continue;
+                    }
+                    if ns == com_metadata::completion::AUDIO_NAMESPACE
+                        && cls == com_metadata::completion::AUDIO_EXPORT
+                    {
+                        native_audio_completion = true;
+                        continue;
+                    }
                     if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
@@ -578,6 +615,31 @@ fn run() -> Result<(), String> {
                         }
                     }
                 }
+                if !win32_namespaces.is_empty() {
+                    if lang != "js" {
+                        return Err(format!(
+                            "--lang {lang} is not supported for flat Win32 DLL exports; use --lang js"
+                        ));
+                    }
+                    win32_output::generate(
+                        output_dir,
+                        &winmd,
+                        &win32_namespaces,
+                        &import_name,
+                        dry_run,
+                    )?;
+                    if classes.is_empty()
+                        && requested_winrt_interfaces.is_empty()
+                        && com_interfaces.is_empty()
+                        && com_coclasses.is_empty()
+                        && !native_audio_completion
+                    {
+                        if let Some(transaction) = output_transaction.take() {
+                            transaction.commit()?;
+                        }
+                        return Ok(());
+                    }
+                }
                 // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
                 // today. If the user asked for a different language
                 // (e.g. `--lang py`) but any of the requested `--class-name`
@@ -585,8 +647,15 @@ fn run() -> Result<(), String> {
                 // JS files into a Python output directory would produce the
                 // wrong artifact types with no diagnostic. Reject the
                 // combination up front.
-                if lang != "js" && (!com_interfaces.is_empty() || !com_coclasses.is_empty()) {
+                if lang != "js"
+                    && (!com_interfaces.is_empty()
+                        || !com_coclasses.is_empty()
+                        || native_audio_completion)
+                {
                     let mut offenders: Vec<String> = Vec::new();
+                    if native_audio_completion {
+                        offenders.push("Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync (native COM completion)".into());
+                    }
                     for ci in &com_interfaces {
                         offenders.push(format!(
                             "{}.{} (classic-COM interface)",
@@ -613,7 +682,10 @@ fn run() -> Result<(), String> {
 
                 // Classic COM occupies its own ESM subpackage so its symbols
                 // cannot collide with or leak into the WinRT root barrel.
-                if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
+                if !com_interfaces.is_empty()
+                    || !com_coclasses.is_empty()
+                    || native_audio_completion
+                {
                     let com_output_dir = output_dir.join("com");
                     let mut unsafe_metadata = None;
 
@@ -627,6 +699,26 @@ fn run() -> Result<(), String> {
                     // delete anything here.
                     let mut generated =
                         Vec::with_capacity(com_interfaces.len() + com_coclasses.len());
+                    if native_audio_completion {
+                        let out = com::generate_audio_completion_files(&winmd)?;
+                        let module = com::canonical_module_path(
+                            com_metadata::completion::AUDIO_NAMESPACE,
+                            com_metadata::completion::AUDIO_EXPORT,
+                        )?;
+                        let mut files = vec![
+                            (format!("{module}.js"), out.js),
+                            (format!("{module}.d.ts"), out.dts),
+                        ];
+                        files.extend(out.extra_files);
+                        generated.push(PlannedComRoot {
+                            root: "Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync".into(),
+                            name: com_metadata::completion::AUDIO_EXPORT.into(),
+                            files,
+                            unsafe_support: None,
+                            summary: None,
+                            no_callable_error: None,
+                        });
+                    }
                     for com_iface in &com_interfaces {
                         let root = format!(
                             "{}.{}",
@@ -955,6 +1047,29 @@ fn run() -> Result<(), String> {
                     }
                 }
             } else {
+                if let Some(ns) = namespace
+                    .as_deref()
+                    .filter(|ns| ns.starts_with("Windows.Win32."))
+                    && com_metadata::first_classic_com_interface_in_namespace(&winmd, ns).is_none()
+                    && win32_type_index.has_flat_functions(ns, "Apis")?
+                {
+                    if lang != "js" {
+                        return Err(format!(
+                            "--lang {lang} is not supported for flat Win32 DLL exports; use --lang js"
+                        ));
+                    }
+                    win32_output::generate(
+                        output_dir,
+                        &winmd,
+                        &BTreeSet::from([ns.to_string()]),
+                        &import_name,
+                        dry_run,
+                    )?;
+                    if let Some(transaction) = output_transaction.take() {
+                        transaction.commit()?;
+                    }
+                    return Ok(());
+                }
                 if lang == "py" && !dry_run {
                     clean_python_generated_output(output_dir)?;
                 }
@@ -1185,11 +1300,17 @@ fn generate_for_types(
             .iter()
             .chain(current_javascript_records.iter())
             .map(|record| record.identity.clone());
-        let context = javascript::create_javascript_projection_context_with_records(
+        let mut context = javascript::create_javascript_projection_context_with_records(
             identities,
             previous_javascript_records.iter().cloned(),
             runtime_import_name,
         )?;
+        let helper_records = previous_javascript_records
+            .iter()
+            .chain(current_javascript_records.iter())
+            .map(|record| (record.identity.clone(), record.clone()))
+            .collect::<BTreeMap<_, _>>();
+        context.configure_implementation_helpers(&helper_records.into_values().collect::<Vec<_>>());
         let projected_names = context
             .output_targets()
             .into_iter()
@@ -1204,7 +1325,11 @@ fn generate_for_types(
             .filter(|record| {
                 projected_names
                     .get(&record.identity)
-                    .is_some_and(|projected| projected != &record.projected_name)
+                    .is_some_and(|projected| {
+                        projected != &record.projected_name
+                            || context.implementation_helpers(&record.identity)
+                                != record.implementation_helpers
+                    })
                     && !current_identities.contains(&record.identity)
             })
             .cloned()
@@ -1397,18 +1522,59 @@ fn generate_for_types(
 
     if !dry_run {
         if lang == "py" {
+            let upgrades = if pyi {
+                migrate_python_implementation_inventory(
+                    winmd,
+                    output_dir,
+                    &all_classes,
+                    &emittable_interfaces,
+                    &shared_interfaces,
+                )?
+            } else {
+                Vec::new()
+            };
+            let mut python_interfaces = emittable_interfaces.clone();
+            let mut python_shared = shared_interfaces.clone();
+            for (interface, public) in &upgrades {
+                if !python_interfaces
+                    .iter()
+                    .chain(&python_shared)
+                    .any(|current| current.type_identity() == interface.type_identity())
+                {
+                    if *public {
+                        python_interfaces.push(interface.clone());
+                    } else {
+                        python_shared.push(interface.clone());
+                    }
+                }
+            }
             generate_py_files(
                 python_context
                     .as_ref()
                     .expect("Python generation context must be available"),
                 output_dir,
                 &all_classes,
-                &emittable_interfaces,
+                &python_interfaces,
                 &all_enums,
-                &shared_interfaces,
+                &python_shared,
                 &shared_iids,
                 pyi,
             )?;
+            let public_upgrades = upgrades
+                .into_iter()
+                .filter_map(|(interface, public)| public.then_some(interface))
+                .collect::<Vec<_>>();
+            if !public_upgrades.is_empty() {
+                write_python_package_indexes(
+                    output_dir,
+                    &[],
+                    &public_upgrades,
+                    &[],
+                    &meta::ambiguous_named_type_names(winmd),
+                    pyi,
+                    true,
+                )?;
+            }
         } else {
             let mut plan = generate_js_files(
                 javascript_context.as_ref().expect("JavaScript context"),
@@ -1491,6 +1657,11 @@ fn python_generation_context(
     let mut identities = python_type_identities(classes, interfaces, enums);
     identities.extend(python_type_identities(&[], supplemental_interfaces, &[]));
     identities.extend_from_slice(existing_identities);
+    let class_names = classes
+        .iter()
+        .map(|class| (class.namespace.clone(), class.name.clone()))
+        .collect();
+    identities.retain(|identity| !python_type_shadowed_by_class(identity, &class_names));
     python::PythonProjectionContext::packaged_with_ambiguities(
         identities,
         meta::ambiguous_named_type_names(winmd),
@@ -1557,7 +1728,11 @@ fn check_javascript_layout_inventory(output_dir: &Path) -> Result<(), String> {
                 continue;
             }
             if metadata.is_dir() {
-                if current == root && path.file_name().is_some_and(|name| name == "com") {
+                if current == root
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name == "com" || name == "win32")
+                {
                     continue;
                 }
                 if contains_generated_implementation(root, &path) {
@@ -1652,7 +1827,11 @@ fn javascript_type_layout_records(
         } else {
             javascript::JavaScriptTypeIdentity::new(&interface.namespace, &interface.name, kind)
         };
-        record(identity, abi_identity)
+        let mut record = record(identity, abi_identity);
+        record.implementation_helpers = javascript::implementation_helper_records(interface);
+        record.reserved_symbols =
+            javascript::implementation_reserved_symbols(&[], std::slice::from_ref(interface));
+        record
     };
     let class_identities = classes
         .iter()
@@ -1671,14 +1850,17 @@ fn javascript_type_layout_records(
     let mut records = classes
         .iter()
         .map(|class| {
-            record(
+            let mut record = record(
                 javascript::JavaScriptTypeIdentity::new(
                     &class.namespace,
                     &class.name,
                     javascript::JavaScriptTypeKind::Class,
                 ),
                 "type".into(),
-            )
+            );
+            record.reserved_symbols =
+                javascript::implementation_reserved_symbols(std::slice::from_ref(class), &[]);
+            record
         })
         .collect::<Vec<_>>();
     records.extend(
@@ -1755,12 +1937,13 @@ fn read_javascript_type_inventory(output_dir: &Path) -> Result<JavaScriptTypeInv
     }
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let inventory = serde_json::from_str::<JavaScriptTypeInventory>(&content).map_err(|error| {
-        format!(
-            "Invalid JavaScript type inventory {}: {error}",
-            path.display()
-        )
-    })?;
+    let mut inventory =
+        serde_json::from_str::<JavaScriptTypeInventory>(&content).map_err(|error| {
+            format!(
+                "Invalid JavaScript type inventory {}: {error}",
+                path.display()
+            )
+        })?;
     if inventory.version != JAVASCRIPT_TYPE_INVENTORY_VERSION {
         return Err(format!(
             "Unsupported or invalid JavaScript type inventory in {}",
@@ -1769,7 +1952,57 @@ fn read_javascript_type_inventory(output_dir: &Path) -> Result<JavaScriptTypeInv
     }
     validate_javascript_type_layout_records(&inventory.records, &[])?;
     validate_javascript_inventory_files(output_dir, &inventory.records)?;
+    hydrate_legacy_javascript_helpers(output_dir, &mut inventory.records)?;
     Ok(inventory)
+}
+
+fn hydrate_legacy_javascript_helpers(
+    output_dir: &Path,
+    records: &mut [javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    let path = output_dir.join("index.d.ts");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let index = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let context = javascript::create_javascript_projection_context(
+        records.iter().map(|record| record.identity.clone()),
+    )?;
+    let exports = index
+        .lines()
+        .filter_map(|line| line.strip_prefix("export type "))
+        .filter_map(|line| parse_root_export_metadata(&format!("export {line}")))
+        .collect::<Vec<_>>();
+    for record in records
+        .iter_mut()
+        .filter(|record| record.implementation_helpers.is_empty())
+    {
+        let target = context
+            .target_for_identity(&record.identity)
+            .expect("inventory identity");
+        for symbol in exports
+            .iter()
+            .filter(|(_, module)| module == &target.canonical_module)
+            .flat_map(|(names, _)| names)
+        {
+            let helper = javascript::ImplementationHelper::legacy_javascript(
+                &record.implementation_name,
+                symbol,
+            )
+            .or_else(|| {
+                javascript::ImplementationHelper::legacy_javascript(&record.projected_name, symbol)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Unknown retained implementation helper {symbol} in {}",
+                    path.display()
+                )
+            })?;
+            record.implementation_helpers.push(helper);
+        }
+    }
+    Ok(())
 }
 
 fn validate_javascript_inventory_files(
@@ -1839,7 +2072,15 @@ fn validate_javascript_inventory_files(
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if path == root.join("com") && !expected_namespace_roots.contains("com") {
+                if current == root
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            matches!(name, "com" | "win32")
+                                && !expected_namespace_roots.contains(name)
+                        })
+                {
                     continue;
                 }
                 if shared_output
@@ -2037,9 +2278,6 @@ fn write_retained_javascript_projected_aliases(
                 record.identity.namespace, record.identity.name
             )
         })?;
-        if target.projected_name == record.implementation_name {
-            continue;
-        }
         let js_path = output_dir.join(format!("{}.js", target.canonical_module));
         let dts_path = output_dir.join(format!("{}.d.ts", target.canonical_module));
         let mut js = fs::read_to_string(&js_path)
@@ -2048,7 +2286,9 @@ fn write_retained_javascript_projected_aliases(
             .map_err(|error| format!("Failed to read {}: {error}", dts_path.display()))?;
         let implementation = &record.implementation_name;
         let new = &target.projected_name;
-        if record.identity.kind == javascript::JavaScriptTypeKind::Delegate {
+        if target.projected_name != record.implementation_name
+            && record.identity.kind == javascript::JavaScriptTypeKind::Delegate
+        {
             if !js.contains(&format!("exports.IID_{implementation} =")) {
                 return Err(format!(
                     "Retained delegate module '{}' does not export IID_{implementation}",
@@ -2070,7 +2310,7 @@ fn write_retained_javascript_projected_aliases(
                      export type {new} = {implementation};\n"
                 ),
             );
-        } else {
+        } else if target.projected_name != record.implementation_name {
             if !js.contains(&format!("exports.{implementation} =")) {
                 return Err(format!(
                     "Retained JavaScript module '{}' does not export `{implementation}`",
@@ -2093,6 +2333,24 @@ fn write_retained_javascript_projected_aliases(
                 append(
                     &mut dts,
                     format!("export {{ IID_{implementation} as IID_{new} }};\n"),
+                );
+            }
+        }
+        for helper in context.implementation_helpers(&record.identity) {
+            let Some(previous) = record
+                .implementation_helpers
+                .iter()
+                .find(|previous| previous.key == helper.key)
+            else {
+                continue;
+            };
+            if helper.name != previous.implementation_name {
+                append(
+                    &mut dts,
+                    format!(
+                        "export type {{ {} as {} }};\n",
+                        previous.implementation_name, helper.name
+                    ),
                 );
             }
         }
@@ -2172,13 +2430,27 @@ fn emitted_javascript_type_records(
                         )
                     })?
             };
-            Ok(javascript::JavaScriptTypeLayoutRecord::new(
+            let mut record = javascript::JavaScriptTypeLayoutRecord::new(
                 target.identity.clone(),
                 target.projected_name.clone(),
                 abi_identity,
             )
             .with_implementation_name(implementation_name)
-            .with_compatibility_aliases(compatibility_aliases))
+            .with_compatibility_aliases(compatibility_aliases);
+            record.implementation_helpers =
+                context.implementation_helpers(&target.identity).to_vec();
+            record.reserved_symbols = current
+                .iter()
+                .chain(previous)
+                .find(|record| record.identity == target.identity)
+                .map(|record| record.reserved_symbols.clone())
+                .unwrap_or_default();
+            if current_identities.contains(&target.identity) {
+                for helper in &mut record.implementation_helpers {
+                    helper.implementation_name = helper.name.clone();
+                }
+            }
+            Ok(record)
         })
         .collect()
 }
@@ -2301,7 +2573,13 @@ fn load_effective_generation_plan(
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            let (names, module) = parse_root_export_metadata(line).ok_or_else(|| {
+            let type_only = line.starts_with("export type ");
+            let metadata_line = if type_only {
+                line.replacen("export type ", "export ", 1)
+            } else {
+                line.to_string()
+            };
+            let (names, module) = parse_root_export_metadata(&metadata_line).ok_or_else(|| {
                 format!(
                     "Invalid retained JavaScript root export metadata in {}: `{line}`",
                     index_path.display()
@@ -2317,7 +2595,11 @@ fn load_effective_generation_plan(
                 retained.public_exports.extend(names);
                 plan.insert(retained)?;
             } else if let Some(retained) = plan.modules.get_mut(&module) {
-                retained.public_exports.extend(names);
+                if type_only {
+                    retained.public_type_exports.extend(names);
+                } else {
+                    retained.public_exports.extend(names);
+                }
             } else {
                 return Err(format!(
                     "Retained JavaScript root export metadata references missing canonical module `{module}`"
@@ -2367,6 +2649,13 @@ fn load_effective_generation_plan(
             }
             module.primary_export = Some(target.projected_name.clone());
         }
+        if !module.public_type_exports.is_empty() {
+            module.public_type_exports = context
+                .implementation_helpers(&target.identity)
+                .iter()
+                .map(|helper| helper.name.clone())
+                .collect();
+        }
         module.compatibility_aliases = target.compatibility_aliases.clone();
     }
     Ok(plan)
@@ -2410,6 +2699,7 @@ fn emit_javascript_projected_file(
     use dynwinrt_codegen::codegen::projected::{GeneratedModule, PlannedImport};
 
     let public_exports = projected.public_exports();
+    let public_type_exports = projected.public_type_exports();
     let internal_exports = projected.internal_exports();
     let dependencies = projected
         .imports
@@ -2548,6 +2838,7 @@ fn emit_javascript_projected_file(
         declarations: Some(dts),
         imports,
         public_exports,
+        public_type_exports,
         primary_export: (target.identity.kind != javascript::JavaScriptTypeKind::Delegate)
             .then(|| target.projected_name.clone()),
         internal_exports,
@@ -2906,6 +3197,7 @@ fn generate_js_files(
             declarations: Some(stub_dts),
             imports: Vec::new(),
             public_exports: [target.projected_name.clone()].into_iter().collect(),
+            public_type_exports: Default::default(),
             primary_export: Some(target.projected_name.clone()),
             internal_exports: BTreeSet::new(),
             compatibility_aliases: target.compatibility_aliases.clone(),
@@ -3473,11 +3765,15 @@ fn write_bindings_manifest_with_plan(
         BTreeSet::new()
     };
     let has_com_output = has_com_output(&output_dir.join("com"))?;
-    let content = package::render_bindings_package_json(&package::BindingsPackageManifestInput {
-        has_winrt_root,
-        has_com_output,
-        winrt_subpath_names: &winrt_subpath_names,
-    });
+    let win32_namespaces = win32_output::namespace_paths(output_dir)?;
+    let content = package::render_bindings_package_json_with_win32(
+        &package::BindingsPackageManifestInput {
+            has_winrt_root,
+            has_com_output,
+            winrt_subpath_names: &winrt_subpath_names,
+        },
+        &win32_namespaces,
+    );
     let path = output_dir.join("package.json");
     ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, content)
@@ -3725,6 +4021,65 @@ fn generate_py_files(
 ) -> Result<(), String> {
     use dynwinrt_codegen::codegen::python_stub;
 
+    let previous = read_python_type_inventory(output_dir)?;
+    let mut struct_interfaces = all_interfaces.to_vec();
+    struct_interfaces.extend_from_slice(shared_interfaces);
+    let mut current = python_generated_types(all_classes, &struct_interfaces, all_enums);
+    let public_interfaces = all_interfaces
+        .iter()
+        .map(meta::InterfaceMeta::type_identity)
+        .collect::<HashSet<_>>();
+    for typ in &mut current {
+        if let Some(item) = &mut typ.implementation {
+            item.pair_eligible = public_interfaces.contains(&typ.identity);
+        }
+    }
+    let mut types = merge_python_generated_types(previous.clone(), current.clone());
+    let mut configured = context.clone();
+    configured.configure_implementation_helpers(types.iter().map(|typ| {
+        (
+            typ.identity.clone(),
+            typ.implementation
+                .as_ref()
+                .map_or_else(Vec::new, |item| item.helpers.clone()),
+        )
+    }));
+    let context = &configured;
+    let current_identities = current
+        .iter()
+        .map(|typ| typ.identity.clone())
+        .collect::<HashSet<_>>();
+    if pyi {
+        let missing = types
+            .iter()
+            .filter(|typ| !current_identities.contains(&typ.identity))
+            .filter(|typ| {
+                !output_dir
+                    .join(format!(
+                        "{}.pyi",
+                        context.implementation_module(&typ.identity)
+                    ))
+                    .is_file()
+            })
+            .map(|typ| python::python_identity_display_name(&typ.identity))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Typed incremental generation requires retained .pyi modules for: {}. Regenerate those types with their original WinMD/--ref inputs as part of this request, or fully regenerate the package; --no-pyi keeps runtime-only generation available. Existing output has not been replaced.",
+                missing.join(", ")
+            ));
+        }
+    }
+    update_python_helper_layout(context, &mut types, &current_identities);
+    reconcile_retained_python_helpers(
+        context,
+        output_dir,
+        &previous,
+        &types,
+        &current_identities,
+        pyi,
+    )?;
+
     write_file(
         &output_dir.join("_runtime.py"),
         &python::generate_runtime_support_module(),
@@ -3741,8 +4096,6 @@ fn generate_py_files(
     }
 
     let mut generated_modules = HashSet::new();
-    let mut struct_interfaces = all_interfaces.to_vec();
-    struct_interfaces.extend_from_slice(shared_interfaces);
     let structs = python::package_structs(all_classes, &struct_interfaces);
 
     // A runtime class owns its public identity when metadata also exposes an
@@ -3825,10 +4178,31 @@ fn generate_py_files(
         }
     }
     if pyi {
+        write_python_implementation_pair_types(output_dir, &types)?;
         let marker = output_dir.join("py.typed");
         write_file(&marker, "")?;
     }
+    reconcile_python_implementation_root_exports(context, output_dir, &previous, &types, pyi)?;
+    write_python_type_inventory(output_dir, &types)?;
     Ok(())
+}
+
+fn write_python_implementation_pair_types(
+    output_dir: &Path,
+    types: &[PythonGeneratedType],
+) -> Result<(), String> {
+    let modules = types
+        .iter()
+        .filter_map(|typ| typ.implementation.as_ref())
+        .filter(|item| item.pair_eligible)
+        .map(|item| item.module.clone())
+        .collect::<BTreeSet<_>>();
+    write_file(
+        &output_dir.join("_implementation_types.pyi"),
+        &dynwinrt_codegen::codegen::python_stub::generate_implementation_pair_types(
+            &modules.into_iter().collect::<Vec<_>>(),
+        ),
+    )
 }
 
 #[derive(Default)]
@@ -3843,6 +4217,354 @@ struct PythonNamespaceGroup {
 struct PythonGeneratedType {
     kind: String,
     identity: python::PythonTypeIdentity,
+    #[serde(default = "legacy_python_inventory_version")]
+    schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    implementation: Option<PythonImplementationInventory>,
+}
+
+fn legacy_python_inventory_version() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+struct PythonImplementationInventory {
+    module: String,
+    interface_export: String,
+    handler_export: String,
+    helpers: Vec<python::ImplementationHelper>,
+    pair_eligible: bool,
+}
+
+fn merge_python_generated_types(
+    previous: Vec<PythonGeneratedType>,
+    current: Vec<PythonGeneratedType>,
+) -> Vec<PythonGeneratedType> {
+    let class_names = current
+        .iter()
+        .filter(|typ| typ.kind == "class")
+        .filter_map(|typ| {
+            Some((
+                typ.identity.namespace()?.to_string(),
+                typ.identity.definition_name()?.to_string(),
+            ))
+        })
+        .collect();
+    previous
+        .into_iter()
+        .chain(current)
+        .filter(|typ| !python_type_shadowed_by_class(&typ.identity, &class_names))
+        .map(|typ| (typ.identity.clone(), typ))
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect()
+}
+
+fn python_type_shadowed_by_class(
+    identity: &TypeIdentity,
+    classes: &HashSet<(String, String)>,
+) -> bool {
+    matches!(identity, TypeIdentity::Named { kind: TypeIdentityKind::Interface | TypeIdentityKind::Enum, namespace, name }
+        if classes.contains(&(namespace.clone(), name.clone())))
+}
+
+fn update_python_helper_layout(
+    context: &python::PythonProjectionContext,
+    types: &mut [PythonGeneratedType],
+    regenerated: &HashSet<TypeIdentity>,
+) {
+    for typ in types {
+        if let Some(item) = &mut typ.implementation {
+            item.module = context.implementation_module(&typ.identity);
+            item.interface_export = context.projected_name(&typ.identity);
+            item.helpers = context.implementation_helpers(&typ.identity).to_vec();
+            if regenerated.contains(&typ.identity) {
+                for helper in &mut item.helpers {
+                    helper.implementation_name = helper.name.clone();
+                }
+            }
+            item.handler_export = item
+                .helpers
+                .iter()
+                .find(|helper| helper.key == "handlers")
+                .expect("validated implementation has handlers")
+                .name
+                .clone();
+        }
+    }
+}
+
+fn migrate_python_implementation_inventory(
+    winmd: &str,
+    output_dir: &Path,
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    supplemental: &[meta::InterfaceMeta],
+) -> Result<Vec<(meta::InterfaceMeta, bool)>, String> {
+    let mut types = read_python_type_inventory(output_dir)?;
+    let class_names = classes
+        .iter()
+        .map(|class| (class.namespace.clone(), class.name.clone()))
+        .collect();
+    types.retain(|typ| !python_type_shadowed_by_class(&typ.identity, &class_names));
+    if !types.iter().any(|typ| typ.schema_version == 1) {
+        return Ok(Vec::new());
+    }
+    let context = python::PythonProjectionContext::packaged_with_ambiguities(
+        types.iter().map(|typ| typ.identity.clone()),
+        meta::ambiguous_named_type_names(winmd),
+    )?;
+    let mut available = interfaces
+        .iter()
+        .chain(supplemental)
+        .cloned()
+        .map(|interface| (interface.type_identity(), interface))
+        .collect::<BTreeMap<_, _>>();
+    let namespaces = types
+        .iter()
+        .filter(|typ| typ.schema_version == 1 && typ.kind == "interface")
+        .filter_map(|typ| typ.identity.namespace())
+        .collect::<BTreeSet<_>>();
+    for namespace in namespaces {
+        for interface in meta::parse_interfaces(winmd, namespace) {
+            available.insert(interface.type_identity(), interface);
+        }
+    }
+    // Some emitted interfaces originate in a runtime class's required set and
+    // intentionally cannot be selected through the public namespace parser.
+    for typ in types.iter().filter(|typ| typ.kind == "class") {
+        let Some(class) = meta::parse_class(
+            winmd,
+            typ.identity.namespace().unwrap_or_default(),
+            typ.identity.definition_name().unwrap_or_default(),
+        ) else {
+            continue;
+        };
+        for interface in class.required_interfaces {
+            available.insert(interface.type_identity(), interface);
+        }
+    }
+    let mut missing = Vec::new();
+    let mut upgrades = Vec::new();
+    for typ in &mut types {
+        if typ.schema_version != 1 {
+            continue;
+        }
+        if matches!(
+            typ.identity,
+            TypeIdentity::Named {
+                kind: TypeIdentityKind::Interface,
+                ..
+            }
+        ) {
+            if let Some(interface) = available.get(&typ.identity) {
+                let facade = context
+                    .public_qualified_module(&typ.identity)
+                    .replace('.', "\\");
+                let public = output_dir.join(format!("{facade}.py")).is_file();
+                upgrades.push((interface.clone(), public));
+                typ.implementation = python_interface_implementation_inventory(&context, interface);
+                if let Some(item) = &mut typ.implementation {
+                    item.pair_eligible = public;
+                    // Version 1 always used these original helper spellings.
+                    // Recover from metadata, never by parsing rendered stubs.
+                    for helper in &mut item.helpers {
+                        helper.name = format!("{}{}", item.interface_export, helper.suffix);
+                        helper.implementation_name = helper.name.clone();
+                    }
+                    item.handler_export = format!("{}Handlers", item.interface_export);
+                }
+            } else {
+                missing.push(python::python_identity_display_name(&typ.identity));
+                continue;
+            }
+        }
+        typ.schema_version = 2;
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "Python implementation inventory v1 needs original metadata for: {}. Supply the original WinMD/--ref inputs and retry, or fully regenerate the package. Existing output has not been replaced.",
+            missing.join(", ")
+        ));
+    }
+    write_python_type_inventory(output_dir, &types)?;
+    Ok(upgrades)
+}
+
+fn reconcile_retained_python_helpers(
+    context: &python::PythonProjectionContext,
+    output_dir: &Path,
+    previous: &[PythonGeneratedType],
+    current: &[PythonGeneratedType],
+    regenerated: &HashSet<TypeIdentity>,
+    pyi: bool,
+) -> Result<(), String> {
+    for typ in current
+        .iter()
+        .filter(|typ| !regenerated.contains(&typ.identity))
+    {
+        let Some(item) = &typ.implementation else {
+            continue;
+        };
+        let Some(old) = previous
+            .iter()
+            .find(|old| old.identity == typ.identity)
+            .and_then(|old| old.implementation.as_ref())
+        else {
+            continue;
+        };
+        if old.helpers == item.helpers {
+            continue;
+        }
+        for extension in if pyi { &["py", "pyi"][..] } else { &["py"][..] } {
+            let path = output_dir.join(format!("{}.{}", item.module, extension));
+            let mut source = fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+            for helper in &item.helpers {
+                let Some(original) = old.helpers.iter().find(|old| old.key == helper.key) else {
+                    continue;
+                };
+                if helper.name != original.implementation_name {
+                    let alias = format!("\n{} = {}\n", helper.name, original.implementation_name);
+                    if !source.contains(&alias) {
+                        source.push_str(&alias);
+                    }
+                }
+            }
+            write_file(&path, &source)?;
+        }
+        if !item.pair_eligible {
+            continue;
+        }
+        let namespace = typ.identity.namespace().expect("named interface");
+        let segments = python::python_namespace_segments(namespace);
+        let mut directory = output_dir.to_path_buf();
+        for segment in &segments {
+            directory.push(segment);
+        }
+        let implementation_index = format!(
+            "from .{} import IID_{}, {}\n{}",
+            item.module,
+            item.interface_export,
+            item.interface_export,
+            item.helpers
+                .iter()
+                .map(|helper| format!("from .{} import {}\n", item.module, helper.name))
+                .collect::<String>()
+        );
+        let mut runtime_exports = Vec::new();
+        write_python_facade(
+            context,
+            &directory,
+            &segments,
+            &typ.identity,
+            &item.interface_export,
+            &implementation_index,
+            "py",
+            &mut runtime_exports,
+        )?;
+        let mut stub_exports = Vec::new();
+        if pyi {
+            write_python_facade(
+                context,
+                &directory,
+                &segments,
+                &typ.identity,
+                &item.interface_export,
+                &implementation_index,
+                "pyi",
+                &mut stub_exports,
+            )?;
+        }
+        write_python_lazy_root_index(
+            &directory.join("__init__.py"),
+            &format!("{GENERATED_PYTHON_HEADER}{}", runtime_exports.join("\n")),
+            true,
+            &HashSet::new(),
+        )?;
+        if pyi {
+            write_python_index(
+                &directory.join("__init__.pyi"),
+                &format!("{GENERATED_PYTHON_HEADER}{}", stub_exports.join("\n")),
+                true,
+                &HashSet::new(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_python_implementation_root_exports(
+    context: &python::PythonProjectionContext,
+    output_dir: &Path,
+    previous: &[PythonGeneratedType],
+    current: &[PythonGeneratedType],
+    pyi: bool,
+) -> Result<(), String> {
+    let mut replaced_modules = HashSet::new();
+    let mut generated = String::from(GENERATED_PYTHON_HEADER);
+    for typ in current {
+        let old = previous
+            .iter()
+            .find(|old| old.identity == typ.identity)
+            .and_then(|old| old.implementation.as_ref());
+        let item = typ.implementation.as_ref();
+        if old.is_none() && item.is_none() {
+            continue;
+        }
+        replaced_modules.extend([
+            format!(".{}", context.implementation_module(&typ.identity)),
+            format!(".{}", context.public_qualified_module(&typ.identity)),
+        ]);
+        for record in old.into_iter().chain(item) {
+            replaced_modules.insert(format!(".{}", record.module));
+            replaced_modules.insert(format!(
+                ".{}",
+                context.public_qualified_module_for_export(&typ.identity, &record.interface_export)
+            ));
+        }
+        if let Some(item) = item
+            .filter(|item| item.pair_eligible && context.root_name_is_unambiguous(&typ.identity))
+        {
+            let module = context.public_qualified_module(&typ.identity);
+            for name in std::iter::once(item.interface_export.as_str())
+                .chain(item.helpers.iter().map(|helper| helper.name.as_str()))
+            {
+                generated.push_str(&format!("from .{module} import {name} as {name}\n"));
+            }
+        }
+    }
+    if replaced_modules.is_empty() {
+        return Ok(());
+    }
+    // Visibility is independent of helper spelling. An empty set removes
+    // an owner's old root exports without touching its namespace facade.
+    for extension in if pyi { &["py", "pyi"][..] } else { &["py"][..] } {
+        let path = output_dir.join(format!("__init__.{extension}"));
+        let existing = if path.is_file() {
+            fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
+        } else {
+            GENERATED_PYTHON_HEADER.to_string()
+        };
+        let content = if *extension == "py" {
+            merge_python_lazy_root_indexes_replacing(
+                &existing,
+                &generated,
+                &HashSet::new(),
+                &replaced_modules,
+            )
+        } else {
+            merge_python_indexes_replacing(
+                &existing,
+                &generated,
+                &HashSet::new(),
+                &replaced_modules,
+            )
+        };
+        write_file(&path, &content)?;
+    }
+    Ok(())
 }
 
 fn write_python_package_indexes(
@@ -3864,18 +4586,29 @@ fn write_python_package_indexes(
     } else {
         Vec::new()
     };
-    all_types.extend(current_types);
-    let mut seen_types = HashSet::new();
-    all_types.retain(|typ| seen_types.insert(typ.clone()));
+    all_types = merge_python_generated_types(all_types, current_types);
 
     let module_identities = all_types
         .iter()
         .map(|typ| typ.identity.clone())
         .collect::<Vec<_>>();
-    let context = python::PythonProjectionContext::packaged_with_ambiguities(
+    let mut context = python::PythonProjectionContext::packaged_with_ambiguities(
         module_identities.clone(),
         ambiguous_named_types.iter().cloned(),
     )?;
+    context.configure_implementation_helpers(all_types.iter().map(|typ| {
+        (
+            typ.identity.clone(),
+            typ.implementation
+                .as_ref()
+                .map_or_else(Vec::new, |item| item.helpers.clone()),
+        )
+    }));
+    let regenerated = python_generated_types(classes, interfaces, enums)
+        .into_iter()
+        .map(|typ| typ.identity)
+        .collect();
+    update_python_helper_layout(&context, &mut all_types, &regenerated);
     validate_python_public_identities(&context, &module_identities)?;
 
     let suppressed_root_names = module_identities
@@ -4216,7 +4949,40 @@ fn write_python_facade(
         .strip_prefix("from .")
         .and_then(|line| line.split_once(" import "))
         .ok_or_else(|| format!("Generated index import for `{type_name}` is invalid"))?;
-    let exports = exports.split('#').next().unwrap_or(exports).trim();
+    let mut exports = exports
+        .split('#')
+        .next()
+        .unwrap_or(exports)
+        .trim()
+        .to_string();
+    let mut additional_exports = Vec::new();
+    for line in implementation_index
+        .lines()
+        .filter(|line| line.starts_with("from ."))
+        .skip(1)
+    {
+        let (extra_source, extra) = line
+            .strip_prefix("from .")
+            .and_then(|line| line.split_once(" import "))
+            .ok_or_else(|| format!("Generated helper import for `{type_name}` is invalid"))?;
+        if extra_source != source {
+            return Err(format!(
+                "Generated helper exports for `{type_name}` must use the same implementation module"
+            ));
+        }
+        let extra = extra.split('#').next().unwrap_or(extra).trim();
+        for export in extra.split(',') {
+            additional_exports.push(
+                export
+                    .trim()
+                    .split_once(" as ")
+                    .map_or_else(|| export.trim(), |(_, alias)| alias.trim())
+                    .to_string(),
+            );
+        }
+        exports.push_str(", ");
+        exports.push_str(extra);
+    }
     let exported_type = exports.split(',').any(|export| {
         export
             .trim()
@@ -4261,6 +5027,13 @@ fn write_python_facade(
     } else if !exports.is_empty() {
         package_exports.push(format!("from .{public_module} import {exports}"));
     }
+    for helper in additional_exports {
+        package_exports.push(if extension == "pyi" {
+            format!("from .{public_module} import {helper} as {helper}")
+        } else {
+            format!("from .{public_module} import {helper}")
+        });
+    }
     Ok(())
 }
 
@@ -4300,9 +5073,29 @@ fn merge_python_lazy_root_indexes(
     generated: &str,
     suppressed_names: &HashSet<String>,
 ) -> String {
+    merge_python_lazy_root_indexes_replacing(existing, generated, suppressed_names, &HashSet::new())
+}
+
+fn merge_python_lazy_root_indexes_replacing(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+    replaced_modules: &HashSet<String>,
+) -> String {
     let mut exports = BTreeMap::<String, (String, String)>::new();
     collect_python_root_exports(generated, suppressed_names, &mut exports);
-    collect_python_root_exports(existing, suppressed_names, &mut exports);
+    let replaced_modules = exports
+        .values()
+        .map(|(module, _)| module.clone())
+        .chain(replaced_modules.iter().cloned())
+        .collect::<HashSet<_>>();
+    let mut retained = BTreeMap::new();
+    collect_python_root_exports(existing, suppressed_names, &mut retained);
+    for (name, (module, symbol)) in retained {
+        if !replaced_modules.contains(&module) {
+            exports.entry(name).or_insert((module, symbol));
+        }
+    }
 
     let mut out = String::from(GENERATED_PYTHON_HEADER);
     out.push_str("from importlib import import_module as _import_module\n\n");
@@ -4407,9 +5200,30 @@ fn merge_python_indexes(
     generated: &str,
     suppressed_names: &HashSet<String>,
 ) -> String {
+    merge_python_indexes_replacing(existing, generated, suppressed_names, &HashSet::new())
+}
+
+fn merge_python_indexes_replacing(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+    replaced_modules: &HashSet<String>,
+) -> String {
     let mut imports = BTreeSet::new();
     let mut exported_symbols = HashSet::new();
-    for line in generated.lines().chain(existing.lines()) {
+    // A regenerated module supplies its complete current exports. In particular,
+    // do not retain stale Handler/Delegate aliases after implementation support
+    // is removed, while leaving unrelated incremental modules untouched.
+    let replaced_modules = generated
+        .lines()
+        .filter_map(parse_python_import_line)
+        .map(|(module, _)| module)
+        .chain(replaced_modules.iter().cloned())
+        .collect::<HashSet<_>>();
+    let retained = existing.lines().filter(|line| {
+        parse_python_import_line(line).is_none_or(|(module, _)| !replaced_modules.contains(&module))
+    });
+    for line in generated.lines().chain(retained) {
         if line.starts_with("from .") {
             let (line, comment) = line
                 .split_once("  #")
@@ -4459,6 +5273,8 @@ fn python_generated_types(
     let mut types = Vec::new();
     types.extend(classes.iter().map(|class| PythonGeneratedType {
         kind: "class".into(),
+        schema_version: 2,
+        implementation: None,
         identity: TypeIdentity::named(
             TypeIdentityKind::Class,
             class.namespace.clone(),
@@ -4468,6 +5284,11 @@ fn python_generated_types(
     types.extend(interfaces.iter().map(|interface| PythonGeneratedType {
         kind: "interface".into(),
         identity: interface.type_identity(),
+        schema_version: 2,
+        implementation: python_interface_implementation_inventory(
+            &python::PythonProjectionContext::default(),
+            interface,
+        ),
     }));
     types.extend(enums.iter().filter_map(|typ| {
         let TypeMeta::Enum { .. } = typ else {
@@ -4476,6 +5297,8 @@ fn python_generated_types(
         Some(PythonGeneratedType {
             kind: "enum".into(),
             identity: typ.type_identity(),
+            schema_version: 2,
+            implementation: None,
         })
     }));
     types.extend(
@@ -4484,9 +5307,30 @@ fn python_generated_types(
             .map(|typ| PythonGeneratedType {
                 kind: "struct".into(),
                 identity: typ.type_identity(),
+                schema_version: 2,
+                implementation: None,
             }),
     );
     types
+}
+
+fn python_interface_implementation_inventory(
+    context: &python::PythonProjectionContext,
+    interface: &meta::InterfaceMeta,
+) -> Option<PythonImplementationInventory> {
+    let helpers = python::implementation_helper_records(context, interface);
+    let handler_export = helpers
+        .iter()
+        .find(|helper| helper.key == "handlers")?
+        .name
+        .clone();
+    Some(PythonImplementationInventory {
+        module: context.implementation_module_for_interface(interface),
+        interface_export: context.projected_name_for_interface(interface),
+        handler_export,
+        helpers,
+        pair_eligible: true,
+    })
 }
 
 fn read_python_type_inventory(output_dir: &Path) -> Result<Vec<PythonGeneratedType>, String> {
@@ -4501,6 +5345,44 @@ fn read_python_type_inventory(output_dir: &Path) -> Result<Vec<PythonGeneratedTy
         .map(|line| {
             let typ: PythonGeneratedType = serde_json::from_str(line)
                 .map_err(|error| format!("Invalid generated type inventory entry: {error}"))?;
+            if !matches!(typ.schema_version, 1 | 2) {
+                return Err(format!(
+                    "Unsupported Python generated type inventory version {}",
+                    typ.schema_version
+                ));
+            }
+            if let Some(item) = &typ.implementation {
+                let identifier = |name: &str| {
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                };
+                if typ.kind != "interface"
+                    || !identifier(&item.module)
+                    || !identifier(&item.interface_export)
+                    || !identifier(&item.handler_export)
+                    || !item
+                        .helpers
+                        .iter()
+                        .all(python::ImplementationHelper::is_valid)
+                    || item
+                        .helpers
+                        .iter()
+                        .map(|helper| &helper.key)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        != item.helpers.len()
+                    || !item.helpers.iter().any(|helper| {
+                        helper.key == "handlers" && helper.name == item.handler_export
+                    })
+                {
+                    return Err(format!(
+                        "Invalid Python implementation inventory for {}",
+                        python::python_identity_display_name(&typ.identity)
+                    ));
+                }
+            }
             if !matches!(typ.kind.as_str(), "class" | "interface" | "enum" | "struct") {
                 return Err(format!(
                     "Invalid generated type inventory kind `{}`",
@@ -4538,10 +5420,9 @@ fn record_python_supplemental_types(
     if interfaces.is_empty() {
         return Ok(());
     }
-    let mut types = read_python_type_inventory(output_dir)?;
-    types.extend(python_generated_types(&[], interfaces, &[]));
-    let mut seen = HashSet::new();
-    types.retain(|typ| seen.insert(typ.clone()));
+    let existing = read_python_type_inventory(output_dir)?;
+    let types =
+        merge_python_generated_types(python_generated_types(&[], interfaces, &[]), existing);
     write_python_type_inventory(output_dir, &types)
 }
 
@@ -8585,6 +9466,125 @@ mod tests {
     }
 
     #[test]
+    fn python_implementation_pair_union_tracks_incremental_support_and_indexes() {
+        let output = test_directory("implementation-pair-incremental");
+        fs::create_dir_all(&output).unwrap();
+        let interface = |namespace: &str, iid: &str| meta::InterfaceMeta {
+            namespace: namespace.into(),
+            name: "IValue".into(),
+            iid: iid.into(),
+            methods: vec![meta::MethodMeta {
+                name: "Text".into(),
+                vtable_index: 6,
+                return_type: Some(TypeMeta::String),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let left = interface("Example.Left", "33333333-3333-3333-3333-333333333333");
+        let right = interface("Example.Right", "44444444-4444-4444-4444-444444444444");
+        let ambiguity = HashSet::from(["IValue".into()]);
+        let context = python::PythonProjectionContext::packaged_with_ambiguities(
+            python_type_identities(&[], &[left.clone(), right.clone()], &[]),
+            ambiguity.iter().cloned(),
+        )
+        .unwrap();
+        let emit = |interfaces: &[meta::InterfaceMeta]| {
+            generate_py_files(
+                &context,
+                &output,
+                &[],
+                interfaces,
+                &[],
+                &[],
+                &HashSet::new(),
+                true,
+            )
+            .unwrap();
+            write_python_package_indexes(&output, &[], interfaces, &[], &ambiguity, true, true)
+                .unwrap();
+        };
+        emit(std::slice::from_ref(&left));
+        let first = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(first.contains(".example__left__i_value import _ImplementationPair"));
+        assert!(!first.contains("example__right__i_value"));
+        fs::write(
+            output.join("unrelated.pyi"),
+            format!(
+                "{GENERATED_PYTHON_HEADER}_ImplementationPair: TypeAlias = tuple[object, object]\n"
+            ),
+        )
+        .unwrap();
+        emit(std::slice::from_ref(&right));
+        let complete = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(
+            !complete.contains("unrelated"),
+            "pair membership must come from validated inventory, never stub text"
+        );
+        assert!(complete.contains(".example__left__i_value import _ImplementationPair"));
+        assert!(complete.contains(".example__right__i_value import _ImplementationPair"));
+        assert!(!output.join("_implementation_types.py").exists());
+        assert!(
+            !fs::read_to_string(output.join("__init__.py"))
+                .unwrap()
+                .contains("_Pair")
+        );
+        for namespace in ["left", "right"] {
+            let stub = output.join("example").join(namespace).join("__init__.pyi");
+            let inventory = read_python_type_inventory(&output).unwrap();
+            let handler = inventory
+                .iter()
+                .find(|typ| {
+                    typ.identity.namespace()
+                        == Some(&format!(
+                            "Example.{}",
+                            if namespace == "left" { "Left" } else { "Right" }
+                        ))
+                })
+                .unwrap()
+                .implementation
+                .as_ref()
+                .unwrap()
+                .handler_export
+                .clone();
+            assert!(fs::read_to_string(stub).unwrap().contains(&handler));
+        }
+
+        let mut unsupported = left.clone();
+        unsupported
+            .implementation_metadata
+            .diagnostics
+            .push("Unsupported contract".into());
+        emit(std::slice::from_ref(&unsupported));
+        let reduced = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(!reduced.contains("example__left__i_value"));
+        assert!(reduced.contains("example__right__i_value"));
+        for extension in ["py", "pyi"] {
+            let namespace = output.join("example").join("left");
+            for module in ["__init__", "i_value"] {
+                let text =
+                    fs::read_to_string(namespace.join(format!("{module}.{extension}"))).unwrap();
+                assert!(!text.contains("IValueHandlers"), "{text}");
+                assert!(text.contains("IValue"), "{text}");
+            }
+        }
+        emit(std::slice::from_ref(&left));
+        assert_eq!(
+            complete,
+            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+        );
+        emit(std::slice::from_ref(&right));
+        assert_eq!(
+            complete,
+            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+        );
+        remove_all_generated_python_stubs(&output).unwrap();
+        assert!(!output.join("_implementation_types.pyi").exists());
+        assert!(output.join("example__left__i_value.py").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn python_package_module_collisions_are_rejected() {
         let classes = vec![
             meta::ClassMeta {
@@ -8962,20 +9962,44 @@ mod tests {
     }
 
     #[test]
+    fn com_context_manifest_mismatch_requires_clean_regeneration() {
+        let output = test_directory("com-context-manifest").join("com");
+        fs::create_dir_all(&output).unwrap();
+        for version in [1, 2, 3, 4] {
+            let content = serde_json::to_string(&ComGenerationManifest {
+                version,
+                roots: BTreeMap::new(),
+            })
+            .unwrap();
+            fs::write(output.join(COM_MANIFEST_FILE), &content).unwrap();
+            let error =
+                prepare_com_generation_manifest(&output, &BTreeMap::new(), &BTreeMap::new())
+                    .unwrap_err();
+            assert!(error.contains("delete and regenerate"), "{error}");
+            assert!(has_com_output(&output).is_err());
+            assert_eq!(
+                fs::read_to_string(output.join(COM_MANIFEST_FILE)).unwrap(),
+                content
+            );
+        }
+        fs::remove_dir_all(output.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn unsafe_support_schema_mismatch_requires_clean_regeneration() {
         let output = test_directory("unsafe-schema-mismatch").join("com");
         let unsafe_dir = output.join("unsafe");
         fs::create_dir_all(&unsafe_dir).unwrap();
         fs::write(
             unsafe_dir.join("support.json"),
-            "{\"schemaVersion\":10,\"interfaces\":[]}\n",
+            "{\"schemaVersion\":11,\"interfaces\":[]}\n",
         )
         .unwrap();
 
         let error = prepare_generated_unsafe_package(&output, &[]).unwrap_err();
         assert!(
-            error.contains("Unsupported generated unsafe support schema 10")
-                && error.contains("expected 11"),
+            error.contains("Unsupported generated unsafe support schema 11")
+                && error.contains("expected 12"),
             "{error}"
         );
 
@@ -8994,8 +10018,9 @@ mod tests {
 
         let error = has_com_output(&output).unwrap_err();
         assert!(
-            error.contains("have no version 2 generation manifest")
-                && error.contains("delete and regenerate"),
+            error.contains(&format!(
+                "have no version {COM_MANIFEST_VERSION} generation manifest"
+            )) && error.contains("delete and regenerate"),
             "{error}"
         );
 
@@ -9942,6 +10967,61 @@ mod tests {
         assert!(appended.contains("\"First\": (\".contoso__first\", \"First\")"));
         assert!(appended.contains("\"Third\": (\".contoso__third\", \"Third\")"));
         assert!(!appended.contains("\"Second\": ("));
+    }
+
+    #[test]
+    fn python_root_replacement_removes_empty_owners_and_previous_source_paths() {
+        type Merge = fn(&str, &str, &HashSet<String>, &HashSet<String>) -> String;
+        for merge in [
+            merge_python_lazy_root_indexes_replacing as Merge,
+            merge_python_indexes_replacing as Merge,
+        ] {
+            let prior = format!(
+                "{GENERATED_PYTHON_HEADER}\
+from .old.facade import IWidget as IWidget\n\
+from .old__canonical import IWidgetHandlers as OldHandlers\n\
+from .third.facade import IWidgetHandlers as IWidgetHandlers, Stable as PublicStable\n"
+            );
+            let owned = HashSet::from([
+                ".old.facade".to_string(),
+                ".old__canonical".to_string(),
+                ".new.facade".to_string(),
+            ]);
+            let existing = merge(
+                GENERATED_PYTHON_HEADER,
+                &prior,
+                &HashSet::new(),
+                &HashSet::new(),
+            );
+            for replacement in [
+                GENERATED_PYTHON_HEADER.to_string(),
+                format!(
+                    "{GENERATED_PYTHON_HEADER}from .new.facade import NewWidget as NewWidget\n"
+                ),
+            ] {
+                let merged = merge(&existing, &replacement, &HashSet::new(), &owned);
+                let mut exports = BTreeMap::new();
+                collect_python_root_exports(&merged, &HashSet::new(), &mut exports);
+                assert!(!exports.contains_key("IWidget"));
+                assert!(!exports.contains_key("OldHandlers"));
+                assert_eq!(
+                    exports["IWidgetHandlers"],
+                    (".third.facade".into(), "IWidgetHandlers".into())
+                );
+                assert_eq!(
+                    exports["PublicStable"],
+                    (".third.facade".into(), "Stable".into())
+                );
+                assert_eq!(
+                    exports.contains_key("NewWidget"),
+                    replacement.contains("NewWidget")
+                );
+                assert_eq!(
+                    merged,
+                    merge(&merged, &replacement, &HashSet::new(), &owned)
+                );
+            }
+        }
     }
 
     #[test]

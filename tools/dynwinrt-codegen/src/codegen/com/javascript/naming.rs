@@ -58,16 +58,25 @@ pub(super) fn js_param_name(raw: &str, index: usize) -> String {
     // so a Hungarian-prefixed acronym remainder like `hwndMDI` -> `MDI` casts
     // down to `mdi`, not a naive first-letter-only `mDI`.
     let out = lower_leading_acronym(stripped);
+    // Preserve the safe projection's existing escapes for contextual names.
     match out.as_str() {
+        "undefined" | "of" | "async" => format!("{out}_"),
+        _ => escape_js_binding_name(out),
+    }
+}
+
+pub(in crate::codegen::com) fn escape_js_binding_name(name: String) -> String {
+    match name.as_str() {
         "class" | "return" | "function" | "default" | "this" | "new" | "delete" | "let"
         | "const" | "var" | "if" | "else" | "for" | "while" | "do" | "switch" | "case"
-        | "break" | "continue" | "true" | "false" | "null" | "undefined" | "in" | "of"
-        | "typeof" | "instanceof" | "throw" | "try" | "catch" | "finally" | "yield" | "async"
-        | "await" | "with" | "void" | "public" | "private" | "protected" | "package" | "static"
-        | "import" | "export" | "extends" | "super" | "arguments" => {
-            format!("{}_", out)
+        | "break" | "continue" | "true" | "false" | "null" | "in" | "typeof" | "instanceof"
+        | "throw" | "try" | "catch" | "finally" | "yield" | "await" | "with" | "void"
+        | "public" | "private" | "protected" | "package" | "static" | "import" | "export"
+        | "extends" | "super" | "arguments" | "eval" | "enum" | "implements" | "interface"
+        | "debugger" => {
+            format!("{name}_")
         }
-        _ => out,
+        _ => name,
     }
 }
 
@@ -106,5 +115,66 @@ mod tests {
         assert_eq!(js_param_name("hwndTab", 0), "tab");
         // An acronym followed by a new word keeps the word capitalized.
         assert_eq!(js_param_name("IOHandle", 0), "ioHandle");
+    }
+
+    #[test]
+    fn binding_names_escape_strict_reserved_and_restricted_identifiers() {
+        for name in [
+            "await",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "debugger",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "enum",
+            "export",
+            "extends",
+            "false",
+            "finally",
+            "for",
+            "function",
+            "if",
+            "import",
+            "in",
+            "instanceof",
+            "new",
+            "null",
+            "return",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typeof",
+            "var",
+            "void",
+            "while",
+            "with",
+            "yield",
+            "let",
+            "static",
+            "implements",
+            "interface",
+            "package",
+            "private",
+            "protected",
+            "public",
+            "arguments",
+            "eval",
+        ] {
+            assert_eq!(escape_js_binding_name(name.into()), format!("{name}_"));
+            assert_eq!(js_param_name(name, 0), format!("{name}_"));
+        }
+        for name in ["undefined", "of", "async"] {
+            assert_eq!(escape_js_binding_name(name.into()), name);
+            assert_eq!(js_param_name(name, 0), format!("{name}_"));
+        }
     }
 }

@@ -14,6 +14,12 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
+from typing import Protocol, TypedDict
+from dynwinrt import (
+    DynWinRTInterfacePlan, DynWinRTImplementationMethod,
+    DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
+)
 
 IID_IStringable = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
 
@@ -22,19 +28,76 @@ _IStringable = DynWinRTType.register_interface(
     .add_method("ToString", DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
 
 
+class IStringableHandlers(Protocol):
+    """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
+    def to_string(self) -> str: ...
+from ._runtime import (
+    _implementation_check, _implementation_field, _implementation_array,
+    _implementation_reference, _implementation_sync, _implementation_handler,
+)
+
+_implementation_plan = None
+
+def _get_implementation_plan():
+    global _implementation_plan
+    if _implementation_plan is None:
+        _implementation_plan = DynWinRTInterfacePlan.create("Windows.Foundation.IStringable", DynWinRTType.interface(WinGUID.parse("96369f54-8eb6-48f0-abce-c1b211e627c3")), [
+            DynWinRTImplementationMethod("ToString", 6, DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
+        ], [])
+    return _implementation_plan
+
+
 class IStringable:
     _dynwinrt_interface_type = True
+    @staticmethod
+    def implementation(handlers: IStringableHandlers) -> DynWinRTImplementationDescriptor:
+        h6 = _implementation_handler(handlers, "to_string", 0, "Windows.Foundation.IStringable")
+        plan = _get_implementation_plan()
+        def dispatch(vtable_index, args):
+            if not isinstance(args, list):
+                raise TypeError('implementation arguments must be a list')
+            if vtable_index == 6:
+                if len(args) != 0:
+                    raise TypeError('implementation argument count mismatch')
+                result = _implementation_sync(h6(), "Windows.Foundation.IStringable.to_string")
+                return [DynWinRTValue.from_hstring((lambda v: _implementation_check(v, isinstance(v, str), "Windows.Foundation.IStringable.to_string.result"))(result))]
+            raise ValueError('unknown implementation vtable slot')
+        return DynWinRTImplementationDescriptor(plan, dispatch)
+
+    @classmethod
+    def implement(cls, handlers: IStringableHandlers, *additional: DynWinRTImplementationDescriptor, interfaces=()) -> DynWinRTImplementationHandle:
+        return DynWinRTImplementationHandle._create(cls, handlers, additional, interfaces)
+
+    @classmethod
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle) -> 'IStringable':
+        """Query an independently owned view, tracked by the current lifetime scope."""
+        if not isinstance(owner, (DynWinRTImplementation, DynWinRTImplementationHandle)):
+            raise TypeError('from_implementation requires a DynWinRTImplementation controller or handle')
+        value = owner.to_value()
+        try:
+            native = value.cast(IID_IStringable)
+            try:
+                view = object.__new__(cls)
+                cls._set_native(view, native, cache=False)
+                return view
+            except BaseException:
+                native.release()
+                raise
+        finally:
+            value.release()
+
     _dynwinrt_interface_iid = IID_IStringable
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
         return super().__new__(cls)
 
-    def _set_native(self, obj: DynWinRTValue):
+    def _set_native(self, obj: DynWinRTValue, *, cache=True):
         self._obj = obj
         self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IStringable')
-        _dynwinrt_cache_projected(self)
+        if cache:
+            _dynwinrt_cache_projected(self)
 
     def __init__(self, obj: DynWinRTValue):
         if getattr(self, '_dynwinrt_native_ready', False):

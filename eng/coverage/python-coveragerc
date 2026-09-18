@@ -2,17 +2,30 @@
 branch = True
 parallel = True
 relative_files = True
+# Installed runtime files need an explicit tracing include; report filters alone
+# do not override coverage's default third-party-module exclusion.
+include =
+    */site-packages/dynwinrt/*
+    */bindings/py/src/*.py
+    */bindings/py/python/dynwinrt/*
+    */dynwinrt/*.py
+    */tests/e2e/e2e_generated/python_bindings/*
+    */tests/e2e/e2e_generated/implementations/python_bindings/*
 
 [report]
 include =
-    */dynwinrt/*
-    tests/e2e/e2e_generated/python_bindings/*
+    */site-packages/dynwinrt/*
+    */bindings/py/src/*.py
+    */bindings/py/python/dynwinrt/*
+    */dynwinrt/*.py
+    */tests/e2e/e2e_generated/python_bindings/*
+    */tests/e2e/e2e_generated/implementations/python_bindings/*
 omit =
     */__pycache__/*
     */site-packages/coverage/*
-    bindings/py/tests/*
-    tests/e2e/runners/*
-    tests/e2e/typecheck/*
+    */bindings/py/tests/*
+    */tests/e2e/runners/*
+    */tests/e2e/typecheck/*
 show_missing = True
 skip_empty = True
 

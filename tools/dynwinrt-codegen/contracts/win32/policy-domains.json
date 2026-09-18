@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "kind": "subsystem",
+      "namespace": "Windows.Win32.Networking.WinSock",
+      "subsystem": "winsock"
+    },
+    {
+      "kind": "subsystem",
+      "namespace": "Windows.Win32.Graphics.GdiPlus",
+      "subsystem": "gdi-plus"
+    },
+    {
+      "kind": "subsystem",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "subsystem": "media-foundation"
+    },
+    {
+      "kind": "provider-lifecycle",
+      "dll": "mapi32.dll"
+    }
+  ]
+}

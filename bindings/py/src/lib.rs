@@ -4,9 +4,13 @@
 use pyo3::prelude::*;
 
 mod async_runtime;
+mod delegate_method;
 mod errors;
+mod implementation;
 mod runtime;
 mod values;
+#[cfg(feature = "test-hooks")]
+mod winui_test_hooks;
 
 #[pymodule]
 mod dynwinrt {
@@ -560,12 +564,14 @@ def _dynwinrt_dispatch_progress(dispatch_state, value):
         m.add_class::<super::runtime::DynWinRTOverrideInterface>()?;
         m.add_class::<super::runtime::DynWinRTXamlRegistration>()?;
         m.add_class::<super::runtime::DynWinRTValue>()?;
+        m.add_class::<super::delegate_method::DynWinRTDelegateMethod>()?;
         m.add_class::<super::runtime::DynWinRTArray>()?;
         m.add_class::<super::runtime::DynWinRTStruct>()?;
         m.add_class::<super::runtime::DynWinRtDelegate>()?;
         m.add_class::<super::runtime::DynWinRtElementFactory>()?;
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
+        super::implementation::init(m)?;
         m.py().run(
             c"
 _Coroutine.register(_DynWinRTAsync)
@@ -590,6 +596,21 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
             m
         )?)?;
         m.add_function(wrap_pyfunction!(super::runtime::get_computer_name, m)?)?;
+        #[cfg(feature = "test-hooks")]
+        {
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_owned_references,
+                m
+            )?)?;
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_module_paths,
+                m
+            )?)?;
+            m.add_function(wrap_pyfunction!(
+                super::winui_test_hooks::_test_winui_with_mta_runtime,
+                m
+            )?)?;
+        }
         m.py().run(
             c"
 __all__ = [name for name in __all__ if not name.startswith('_')]
@@ -598,6 +619,8 @@ for _name in (
    'WinRTAsyncWithProgress',
    'WinRTCoroutine',
    'WinRTCoroutineWithProgress',
+   'DynWinRTImplementationDescriptor',
+   'DynWinRTImplementationHandle',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
    'project_as',

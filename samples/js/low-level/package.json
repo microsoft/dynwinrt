@@ -1,0 +1,29 @@
+{
+  "name": "dynwinrt-js-low-level-samples",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Direct WinRT runtime examples without generated application wrappers",
+  "scripts": {
+    "uri": "node uri.ts",
+    "async-file": "node async-file.ts",
+    "struct-geopoint": "node struct-geopoint.ts",
+    "array-property-value": "node array-property-value.ts",
+    "picker": "node picker.ts",
+    "check": "tsc --noEmit",
+    "check:contracts": "node --import ./tests/no-native.mjs verify-contracts.mjs",
+    "check:picker-contracts": "node --import ./tests/no-native.mjs verify-contracts.mjs --picker",
+    "test": "node --import ./tests/no-native.mjs --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  },
+  "devDependencies": {
+    "@microsoft/dynwinrt-codegen": "file:../../../tools/dynwinrt-codegen/npm",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

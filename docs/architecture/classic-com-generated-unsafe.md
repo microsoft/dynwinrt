@@ -49,9 +49,9 @@ generated/
     │   ├── ITaskbarList3.js
     │   └── ITaskbarList3.d.ts
     └── unsafe/
-        ├── windows/win32/media/audio/
-        │   ├── IAudioClientUnsafe.js
-        │   └── IAudioClientUnsafe.d.ts
+        ├── windows/win32/ai/machine-learning/win-ml/
+        │   ├── IWinMLEvaluationContextUnsafe.js
+        │   └── IWinMLEvaluationContextUnsafe.d.ts
         ├── index.js
         ├── index.mjs
         ├── index.d.ts
@@ -83,16 +83,23 @@ Rules:
 The unsafe boundary is carried by the module path and class suffix:
 
 ```js
-import { IAudioClientUnsafe } from "./generated/com/unsafe/index.js";
+import { IWinMLEvaluationContextUnsafe } from "./generated/com/unsafe/index.js";
 ```
 
 Methods keep their natural projected names:
 
 ```js
-audio.isFormatSupported(...);
+context.getValueByName(...);
 ```
 
-Do not emit a class named `IAudioClient` for an unsafe projection. Method names
+Parameter names retain their metadata spelling apart from identifier sanitization
+and escaping JavaScript reserved or strict-mode restricted binding names (for
+example, `var` becomes `var_`). Generation rejects transformed parameter collisions
+and clashes with generated implementation bindings instead of emitting ambiguous
+arguments. JavaScript argument expressions and TypeScript declarations use the
+same escaped names.
+
+Do not emit a class without the `Unsafe` suffix for an unsafe projection. Method names
 need an `Unsafe` suffix only if safe and unsafe methods are ever placed on the
 same class; the preferred design keeps them in separate companion classes.
 
@@ -118,10 +125,31 @@ Non-executable methods and their exact classifier reasons remain visible in
 
 Codegen uses the same capability classifier as `com-capability-census`.
 
+Runtime aggregate descriptors use the architecture keys `x86`, `x64`, and `arm64`.
+Census and support-report target keys remain `i686`, `x64`, and `arm64`; this
+serialization boundary does not change the native layouts or target capabilities.
+
 ### Safe complete
 
 The complete inherited interface passes the existing safe semantic projection.
 Generate the existing safe class and no unsafe replacement.
+
+PR4 resolves previously rejected overload groups only after every member has a
+fully validated normal COM call plan. Colliding JavaScript arity/shapes or
+projected buffers receive explicit
+`<camelName>AtSlot<absoluteVtableSlot>` names for every member, with no
+ambiguous unsuffixed method. Existing distinguishable dispatch stays
+unchanged; collisions with projected members and synthesized/dynamic-IID/
+non-normal groups still fail closed. Renderers consume the selected IR names
+without guessing runtime types or native semantics.
+
+This promotes 24 raw-metadata-complete interfaces, bringing complete safe
+coverage to **5,721 / 7,929** and leaving **2,208** incomplete interfaces.
+Promoted interfaces receive no duplicate unsafe companion. Native ABI,
+conversion, lifetime, and raw-runtime capabilities remain unchanged, and
+PR3's copy-only facades remain excluded from complete safe coverage.
+Already-supported safe output remains byte-identical, so PR4 needs no
+additional manifest version.
 
 ### Raw metadata complete
 
@@ -199,12 +227,12 @@ Generated unsafe companions do not add raw callback implementation.
 An unsafe companion wraps an existing managed native value:
 
 ```ts
-export declare class IAudioClientUnsafe {
+export declare class IWinMLEvaluationContextUnsafe {
   private constructor();
 
   static from(
     value: DynWinRtValue | { readonly nativeValue: DynWinRtValue },
-  ): IAudioClientUnsafe;
+  ): IWinMLEvaluationContextUnsafe;
   static readonly iid: WinGuid;
   static readonly support: UnsafeInterfaceSupport;
   readonly nativeValue: DynWinRtValue;
@@ -212,11 +240,11 @@ export declare class IAudioClientUnsafe {
   /**
    * @unsafe Metadata-complete outbound ABI.
    */
-  isFormatSupported(
-    shareMode: number,
-    format: UnsafePointee,
-    closestMatch: UnsafePointerOutput,
-  ): readonly [number, UnsafeOwnedPointer | null];
+  bindValue(descriptor: UnsafePointee): void;
+  getValueByName(
+    name: DynComRawMemory | DynComRawPointer,
+    descriptor: UnsafePointerOutput,
+  ): UnsafeOwnedPointer;
 
   release(): void;
 }
@@ -445,10 +473,10 @@ Generation emits `generated/com/unsafe/support.json`:
 
 ```json
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "interfaces": [
     {
-      "schemaVersion": 11,
+      "schemaVersion": 12,
       "metadata": {
         "setSha256": "...",
         "files": ["..."],
@@ -459,18 +487,18 @@ Generation emits `generated/com/unsafe/support.json`:
           "sha256": "..."
         }
       },
-      "interfaceName": "Windows.Win32.Media.Audio.IAudioClient",
-      "interfaceIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "interfaceName": "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
+      "interfaceIid": "95848f9e-583d-4054-af12-916387cd8426",
       "root": "IUnknown",
       "baseIids": [],
-      "unsafeClass": "IAudioClientUnsafe",
-      "modulePath": "windows/win32/media/audio/IAudioClientUnsafe",
+      "unsafeClass": "IWinMLEvaluationContextUnsafe",
+      "modulePath": "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe",
       "methods": [
         {
-          "name": "Initialize",
-          "projectedName": "initialize",
-          "declaringIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
-          "absoluteSlot": 4,
+          "name": "BindValue",
+          "projectedName": "bindValue",
+          "declaringIid": "95848f9e-583d-4054-af12-916387cd8426",
+          "absoluteSlot": 3,
           "signatureFingerprint": "...",
           "status": "manual_contract_required",
           "reasons": ["..."],
@@ -521,7 +549,7 @@ also returns nonzero.
 Example output:
 
 ```text
-[dry-run] Would generate IAudioClientUnsafe (metadata-complete: 8, manual: 4, blocked: 0)
+[dry-run] Would generate IWinMLEvaluationContextUnsafe (metadata-complete: 1, manual: 2, blocked: 0)
 [dry-run] Report-only MFASYNCRESULTUnsafe {"metadataComplete":0,"manual":0,"blocked":5,"reasons":["missing_interface_iid"]}
 ```
 
@@ -598,7 +626,7 @@ trailing dots/spaces, and Windows device names (`CON`, `PRN`, `AUX`, `NUL`,
 `CLOCK$`, `CONIN$`, `CONOUT$`, `COM1`-`COM9`, and `LPT1`-`LPT9`), including
 device names with extensions.
 
-Retained schema-11 `modulePath` is never trusted. Codegen rederives it from the
+Retained schema-12 `modulePath` is never trusted. Codegen rederives it from the
 validated qualified interface identity and exact `<Interface>Unsafe` class
 name, requires an exact match, and then checks the case-insensitive path key.
 Case-only namespaces or type names therefore fail instead of aliasing on
@@ -655,19 +683,31 @@ Required tests include:
 9. x64 and i686 live raw calls;
 10. ARM64 compile/gate behavior;
 11. deterministic support manifest generation; and
-12. complete safe COM and WinRT regression suites.
+12. complete safe COM and WinRT regression suites; and
+13. actual Node resolution of mixed WinRT, COM barrel, and unsafe canonical
+    package exports.
 
-The generated-artifact integration fixture combines safe WMI with unsafe Audio.
-The WMI test-hook validates sync/semisync OptionalOut selection, native-null
-context, failure cleanup, QueryInterface/AddRef/Release balance, CJS, ESM, and
-emitted declarations without requiring a live WMI service.
+The generated-artifact integration fixture combines safe WMI, IDataObject, and
+IAudioClient projections with an unsafe WinML companion.
+The complete seven-method WMI conditional-output family executes through a
+complete official `IWbemServices_Vtbl`. ABI-correct `IWbemClassObject` and
+`IWbemCallResult` tear-offs expose canonical IUnknown identity and shared
+reference counting; the fixture calls methods on both returned interfaces. It
+also probes unimplemented slots 7 and 25, validates sync/semisync OptionalOut
+selection, no-output sync calls, `ExecMethod` multi-input calls, native-null
+context, failure cleanup, CJS, ESM, and emitted declarations without requiring
+a live WMI service.
 
-The unsafe portion uses official `IAudioClientUnsafe::isFormatSupported` and
-`getService` vtable slots. It covers
-CoTaskMem closest-format success/failure cleanup, BSTR/Local/Global dirty
-failure cleanup, COM-owned output cleanup, required/nullable output, strategy
-mismatch before dispatch, one-shot reuse, handle/raw/count strategies, and all
-three interface-replacement modes.
+The same fixture invokes generated `IThumbnailProvider.getThumbnail()` against
+a fake COM object that returns a real HBITMAP. It validates transfer into
+`DynComOwnedHandle`, explicit `DeleteObject` release, idempotence, and COM
+reference balance; a Rust regression separately covers the Drop path.
+
+The unsafe portion uses official
+`IWinMLEvaluationContextUnsafe::bindValue` and `getValueByName` vtable slots.
+It covers CoTaskMem/BSTR/Local/Global dirty failure cleanup, COM-owned output
+cleanup, required/nullable output, strategy mismatch before dispatch, one-shot
+reuse, handle/raw/count strategies, and all three interface-replacement modes.
 
 ## Rollout plan
 
@@ -695,17 +735,19 @@ Stage 2 is implemented:
   arguments;
 - parameter requirements come from the same per-target classifier analysis;
 - runtime-blocked methods remain omitted;
-- support schema 11 records every parameter index/name, strategy type, exact
+- support schema 12 records every parameter index/name, strategy type, exact
   reason, native direction/nullability, and known target pointee layouts; and
 - a raw pointer is never substituted for missing ownership.
 
-For official 71.0.14 metadata, **1,442 of 1,446** x64 manual-contract interfaces
-have at least one portable executable generated high-level method. **1,441**
+For official 71.0.14-preview metadata, **1,427 of 1,431** x64 manual-contract interfaces
+have at least one portable executable generated high-level method. **1,426**
 have an executable manual method, one retains only metadata-complete methods,
 and four have no portable executable method because every candidate is blocked
-on another generated target. There are **6,083** portable executable manual
+on another generated target. There are **6,046** portable executable manual
 methods, **0** remaining portable manual-classified methods omitted, and
-**1,163** cross-target runtime-blocked methods still omitted.
+**1,161** cross-target runtime-blocked methods still omitted. The existing
+`official_stage2_coverage_is_exact` test confirms these measurements are
+unchanged by PR4; its promotions come from the raw-metadata-complete bucket.
 
 ### Stage 3
 

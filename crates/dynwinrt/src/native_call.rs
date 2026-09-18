@@ -36,6 +36,9 @@ pub(crate) enum NativeCallValue {
     PropVariant(crate::com::PropVariantValue),
     ExcepInfo(crate::com::ExcepInfoValue),
     StatStg(crate::com::StatStgValue),
+    FormatEtc(crate::com::FormatEtcValue),
+    StgMedium(crate::com::StgMediumValue),
+    AudioFormat(crate::com::AudioFormatValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +77,11 @@ pub(crate) enum ParameterType {
     DispatchParams,
     ExcepInfo,
     StatStg,
+    FormatEtc,
+    StgMedium,
+    AudioFormat {
+        nullable_input: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +236,18 @@ impl ParameterType {
         Self::StatStg
     }
 
+    pub(crate) fn format_etc() -> Self {
+        Self::FormatEtc
+    }
+
+    pub(crate) fn stg_medium() -> Self {
+        Self::StgMedium
+    }
+
+    pub(crate) fn audio_format(nullable_input: bool) -> Self {
+        Self::AudioFormat { nullable_input }
+    }
+
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
         match self {
             Self::WinRT(typ) => Some(typ),
@@ -244,7 +264,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => None,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => None,
         }
     }
 
@@ -263,7 +286,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => None,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => None,
         }
     }
 
@@ -348,6 +374,27 @@ impl ParameterType {
         matches!(self, Self::StatStg)
     }
 
+    pub(crate) fn is_format_etc(&self) -> bool {
+        matches!(self, Self::FormatEtc)
+    }
+
+    pub(crate) fn is_stg_medium(&self) -> bool {
+        matches!(self, Self::StgMedium)
+    }
+
+    pub(crate) fn is_audio_format(&self) -> bool {
+        matches!(self, Self::AudioFormat { .. })
+    }
+
+    pub(crate) fn is_nullable_audio_format_input(&self) -> bool {
+        matches!(
+            self,
+            Self::AudioFormat {
+                nullable_input: true
+            }
+        )
+    }
+
     pub(crate) fn is_array(&self) -> bool {
         self.as_winrt().is_some_and(TypeHandle::is_array)
     }
@@ -376,6 +423,7 @@ impl ParameterType {
                 | Self::NativeStruct(_)
                 | Self::NativeStructPointer { .. }
                 | Self::NativeUnion(_)
+                | Self::StgMedium
         ) || matches!(
             self,
             Self::WinRT(typ)
@@ -413,7 +461,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => AbiType::Ptr,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => AbiType::Ptr,
             Self::NativeStruct(_) | Self::NativeUnion(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
@@ -433,7 +484,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => libffi::middle::Type::pointer(),
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
             Self::NativeUnion(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
@@ -468,7 +522,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => {
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => {
                 panic!("native POD storage is allocated by the dynamic executor")
             }
         }
@@ -490,7 +547,10 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => {
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium
+            | Self::AudioFormat { .. } => {
                 unreachable!("native POD output conversion uses NativeStructValue")
             }
         }
@@ -527,7 +587,10 @@ impl ParameterType {
                 | Self::PropVariant
                 | Self::DispatchParams
                 | Self::ExcepInfo
-                | Self::StatStg,
+                | Self::StatStg
+                | Self::FormatEtc
+                | Self::StgMedium
+                | Self::AudioFormat { .. },
                 _,
             ) => {
                 unreachable!("native POD output conversion uses NativeStructValue")
@@ -546,6 +609,9 @@ impl ParameterType {
             Self::PropVariant => OutputCleanup::PropVariantClear,
             Self::ExcepInfo => OutputCleanup::None,
             Self::StatStg => OutputCleanup::None,
+            Self::FormatEtc => OutputCleanup::None,
+            Self::StgMedium => OutputCleanup::None,
+            Self::AudioFormat { .. } => OutputCleanup::None,
             Self::Bstr { .. } => OutputCleanup::BstrFree,
             Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
             Self::WinRT(_)
@@ -589,6 +655,7 @@ pub enum ParamKind {
 pub struct Parameter {
     pub(crate) typ: ParameterType,
     pub(crate) output_cleanup: OutputCleanup,
+    pub(crate) canonical_format_input: Option<usize>,
     /// Index in the method result vector for out and FillArray parameters.
     pub value_index: usize,
     /// Index in the caller-provided argument slice. FillArray parameters have
@@ -668,6 +735,10 @@ impl MethodReturn {
 }
 
 impl AbiMethodSignature {
+    pub(crate) fn parameters(&self) -> &[Parameter] {
+        &self.parameters
+    }
+
     pub(crate) fn new(table: &Arc<MetadataTable>) -> Self {
         AbiMethodSignature {
             out_count: 0,
@@ -686,6 +757,7 @@ impl AbiMethodSignature {
             kind: ParamKind::In,
             typ,
             output_cleanup: OutputCleanup::None,
+            canonical_format_input: None,
             value_index: input_index,
             input_index: Some(input_index),
         });
@@ -707,6 +779,7 @@ impl AbiMethodSignature {
             kind: ParamKind::Out,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: None,
         });
@@ -725,6 +798,7 @@ impl AbiMethodSignature {
             kind: ParamKind::OptionalOut,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -753,6 +827,7 @@ impl AbiMethodSignature {
             kind: ParamKind::InOut,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -767,6 +842,7 @@ impl AbiMethodSignature {
             kind: ParamKind::OutFillArray,
             typ,
             output_cleanup: OutputCleanup::None,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -816,6 +892,9 @@ impl AbiMethodSignature {
                 || p.typ.is_dispatch_params()
                 || p.typ.is_excep_info()
                 || p.typ.is_stat_stg()
+                || p.typ.is_format_etc()
+                || p.typ.is_stg_medium()
+                || p.typ.is_audio_format()
         });
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
@@ -917,6 +996,7 @@ pub(crate) fn lower_completed_method(
     index: usize,
     parameters: Vec<(ParamKind, ParameterType, OutputCleanup)>,
     return_kind: MethodReturn,
+    canonical_format_etc: Option<(usize, usize)>,
 ) -> Method {
     let mut signature = AbiMethodSignature::new(table);
     for (kind, typ, cleanup) in parameters {
@@ -935,6 +1015,13 @@ pub(crate) fn lower_completed_method(
         };
     }
     signature.return_kind = return_kind;
+    if let Some((input, output)) = canonical_format_etc {
+        signature.parameters[output].canonical_format_input = Some(
+            signature.parameters[input]
+                .input_index
+                .expect("validated canonical FORMATETC input parameter"),
+        );
+    }
     signature.build(index)
 }
 
@@ -1041,6 +1128,18 @@ fn coerce_input_object(
         })
 }
 
+pub(crate) fn array_element_types_match(expected: &TypeHandle, actual: &TypeHandle) -> bool {
+    match (expected.kind(), actual.kind()) {
+        (TypeKind::Struct(_), TypeKind::Struct(_)) | (TypeKind::Enum(_), TypeKind::Enum(_)) => {
+            expected == actual
+        }
+        (TypeKind::Enum(_), TypeKind::I32)
+        | (TypeKind::Char16, TypeKind::U16)
+        | (TypeKind::U16, TypeKind::Char16) => true,
+        (expected, actual) => expected == actual,
+    }
+}
+
 fn coerce_input_array(
     expected: &TypeHandle,
     value: &WinRTValue,
@@ -1061,14 +1160,7 @@ fn coerce_input_array(
         )
     })?;
     let is_object_array = expected_object_iid(&element_type).is_some();
-    let element_type_matches = match (element_type.kind(), array.element_type.kind()) {
-        (TypeKind::Struct(_), TypeKind::Struct(_)) => array.element_type == element_type,
-        (TypeKind::Enum(_), TypeKind::Enum(_)) => array.element_type == element_type,
-        (TypeKind::Enum(_), TypeKind::I32)
-        | (TypeKind::Char16, TypeKind::U16)
-        | (TypeKind::U16, TypeKind::Char16) => true,
-        (expected, actual) => expected == actual,
-    };
+    let element_type_matches = array_element_types_match(&element_type, &array.element_type);
     if !is_object_array && !element_type_matches {
         return Err(windows_core::Error::new(
             windows_core::HRESULT(0x80070057u32 as i32),
@@ -1131,7 +1223,7 @@ fn validate_input_struct(expected: &TypeHandle, value: &WinRTValue) -> windows_c
     Ok(())
 }
 
-fn coerce_scalar_input(
+pub(crate) fn coerce_scalar_input(
     expected: &TypeHandle,
     value: &WinRTValue,
 ) -> windows_core::Result<Option<WinRTValue>> {
@@ -1349,7 +1441,10 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             | crate::com::Value::PropVariant(_)
             | crate::com::Value::DispatchParams(_)
             | crate::com::Value::ExcepInfo(_)
-            | crate::com::Value::StatStg(_) => {
+            | crate::com::Value::StatStg(_)
+            | crate::com::Value::FormatEtc(_)
+            | crate::com::Value::StgMedium(_)
+            | crate::com::Value::AudioFormat(_) => {
                 panic!("COM-local argument requested as a WinRT value")
             }
             crate::com::Value::Buffer(_) => {
@@ -1406,6 +1501,27 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             _ => None,
         }
     }
+
+    fn get_format_etc(&self, index: usize) -> Option<&crate::com::FormatEtcValue> {
+        match &self.original[index] {
+            crate::com::Value::FormatEtc(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_stg_medium(&self, index: usize) -> Option<&crate::com::StgMediumValue> {
+        match &self.original[index] {
+            crate::com::Value::StgMedium(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_audio_format(&self, index: usize) -> Option<&crate::com::AudioFormatValue> {
+        match &self.original[index] {
+            crate::com::Value::AudioFormat(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl Method {
@@ -1441,6 +1557,9 @@ impl Method {
                 || parameter.typ.is_dispatch_params()
                 || parameter.typ.is_excep_info()
                 || parameter.typ.is_stat_stg()
+                || parameter.typ.is_format_etc()
+                || parameter.typ.is_stg_medium()
+                || parameter.typ.is_audio_format()
         }) || self.direct_return_type().is_some_and(|typ| {
             typ.native_struct_layout().is_some()
                 || typ.native_union_layout().is_some()
@@ -1452,6 +1571,9 @@ impl Method {
                 || typ.is_dispatch_params()
                 || typ.is_excep_info()
                 || typ.is_stat_stg()
+                || typ.is_format_etc()
+                || typ.is_stg_medium()
+                || typ.is_audio_format()
         })
     }
 
@@ -1649,7 +1771,7 @@ impl Method {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
-        self.call_dynamic_tracked(obj, args, || {})
+        self.call_dynamic_tracked(obj, args, || Ok(()))
     }
 
     pub(crate) fn call_dynamic_tracked<F>(
@@ -1659,7 +1781,7 @@ impl Method {
         mark_dispatched: F,
     ) -> windows_core::Result<Vec<WinRTValue>>
     where
-        F: FnOnce(),
+        F: FnOnce() -> windows_core::Result<()>,
     {
         if args.len() != self.info.input_count {
             return Err(invalid_argument(&format!(
@@ -1693,13 +1815,13 @@ impl Method {
         let mut mark_dispatched = || {
             mark_dispatched
                 .take()
-                .expect("native dispatch marker must run exactly once")();
+                .expect("native dispatch marker must run exactly once")()
         };
 
         match &self.strategy {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_winrt_method_0(self.info.index, obj);
                 hr.ok()?;
                 Ok(vec![])
@@ -1708,7 +1830,7 @@ impl Method {
                 // 0 in + 1 out: fn(this, out) -> HRESULT
                 let param = &self.info.parameters[0];
                 let mut out = param.typ.default_value();
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
                 if hr.is_err() {
                     if let WinRTValue::RawPtr(ptr) = &mut out {
@@ -1729,7 +1851,7 @@ impl Method {
             }
             CallStrategy::Direct1In0Out => {
                 // 1 in + 0 out: fn(this, val) -> HRESULT
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_1in(self.info.index, obj, args.get_value(0));
                 hr.ok()?;
                 Ok(vec![])
@@ -1738,7 +1860,7 @@ impl Method {
                 // 1 in + 1 out: fn(this, val, out) -> HRESULT
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
                 let mut out = out_param.typ.default_value();
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr =
                     call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
                 if hr.is_err() {
@@ -1763,7 +1885,7 @@ impl Method {
                 let mut length: u32 = 0;
                 let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1806,7 +1928,7 @@ impl Method {
                 let buffer = array_data.serialize_for_abi();
                 let mut out = out_param.typ.default_value();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1856,7 +1978,12 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
-                mark_dispatched();
+                let array = crate::array::ArrayData::from_cotaskmem(
+                    elem_type,
+                    buffer_ptr as _,
+                    capacity as usize,
+                );
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1866,22 +1993,7 @@ impl Method {
                         -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, capacity, buffer_ptr)
                 };
-                if hr.is_err() {
-                    // Callee may have written elements before failing.
-                    // Buffer was zero-initialized, so null slots are safe to release.
-                    // Use capacity as cleanup length — ArrayData::Drop skips null elements.
-                    let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(),
-                        buffer_ptr as _,
-                        capacity as usize,
-                    );
-                    hr.ok()?;
-                }
-                let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type,
-                    buffer_ptr as _,
-                    capacity as usize,
-                );
+                hr.ok()?;
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Direct1InFillArray => {
@@ -1904,8 +2016,13 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
+                let array = crate::array::ArrayData::from_cotaskmem(
+                    elem_type,
+                    buffer_ptr as _,
+                    capacity as usize,
+                );
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_fill_array_1in(
                     fptr,
                     obj,
@@ -1913,20 +2030,7 @@ impl Method {
                     capacity,
                     buffer_ptr,
                 );
-                if hr.is_err() {
-                    // Buffer was zero-initialized; use capacity for cleanup.
-                    let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(),
-                        buffer_ptr as _,
-                        capacity as usize,
-                    );
-                    hr.ok()?;
-                }
-                let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type,
-                    buffer_ptr as _,
-                    capacity as usize,
-                );
+                hr.ok()?;
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Libffi(cif) => call::call_method_dynamic(
@@ -1951,7 +2055,10 @@ impl Method {
                         | NativeCallValue::SafeArray(_)
                         | NativeCallValue::PropVariant(_)
                         | NativeCallValue::ExcepInfo(_)
-                        | NativeCallValue::StatStg(_) => Err(invalid_argument(
+                        | NativeCallValue::StatStg(_)
+                        | NativeCallValue::FormatEtc(_)
+                        | NativeCallValue::StgMedium(_)
+                        | NativeCallValue::AudioFormat(_) => Err(invalid_argument(
                             "COM-local result reached the WinRT invocation path",
                         )),
                     })
@@ -2143,6 +2250,39 @@ impl Method {
                 continue;
             }
 
+            if parameter.typ.is_format_etc() {
+                if !matches!(&args[input_index], crate::com::Value::FormatEtc(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected FORMATETC",
+                    ));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_stg_medium() {
+                if !matches!(&args[input_index], crate::com::Value::StgMedium(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected STGMEDIUM",
+                    ));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_audio_format() {
+                let is_format = matches!(&args[input_index], crate::com::Value::AudioFormat(_));
+                let is_nullable_input = parameter.typ.is_nullable_audio_format_input()
+                    && matches!(
+                        &args[input_index],
+                        crate::com::Value::WinRt(WinRTValue::Null)
+                    );
+                if !is_format && !is_nullable_input {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected WAVEFORMATEX",
+                    ));
+                }
+                continue;
+            }
+
             let crate::com::Value::WinRt(value) = &args[input_index] else {
                 return Err(invalid_argument(
                     "COM-local value passed to a scalar or pointer parameter",
@@ -2174,7 +2314,7 @@ impl Method {
         mark_dispatched: F,
     ) -> windows_core::Result<Vec<crate::com::Value>>
     where
-        F: FnOnce(),
+        F: FnOnce() -> windows_core::Result<()>,
     {
         if matches!(self.info.return_kind, MethodReturn::CapturedHResult(_)) {
             return Err(invalid_argument(
@@ -2209,16 +2349,23 @@ impl Method {
                     NativeCallValue::PropVariant(value) => crate::com::Value::PropVariant(value),
                     NativeCallValue::ExcepInfo(value) => crate::com::Value::ExcepInfo(value),
                     NativeCallValue::StatStg(value) => crate::com::Value::StatStg(value),
+                    NativeCallValue::FormatEtc(value) => crate::com::Value::FormatEtc(value),
+                    NativeCallValue::StgMedium(value) => crate::com::Value::StgMedium(value),
+                    NativeCallValue::AudioFormat(value) => crate::com::Value::AudioFormat(value),
                 })
                 .collect()
         })
     }
 
-    pub(crate) fn call_com_dynamic_captured(
+    pub(crate) fn call_com_dynamic_captured<F>(
         &self,
         obj: *mut std::ffi::c_void,
         args: &[crate::com::Value],
-    ) -> windows_core::Result<call::CapturedHResultCall> {
+        before_dispatch: F,
+    ) -> windows_core::Result<call::CapturedHResultCall>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let invocation_args = self.prepare_com_invocation_args(args)?;
         let CallStrategy::Libffi(cif) = &self.strategy else {
             return Err(invalid_argument(
@@ -2233,6 +2380,7 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
+            before_dispatch,
         )
     }
 }
@@ -2356,6 +2504,63 @@ mod tests {
         assert_eq!(method.info.parameters[1].input_index, Some(1));
         assert_eq!(method.info.parameters[2].value_index, 1);
         assert_eq!(method.info.parameters[2].input_index, None);
+    }
+
+    #[test]
+    fn rejecting_dispatch_guard_skips_fill_array_fast_paths() {
+        unsafe extern "system" fn fill(
+            this: *mut std::ffi::c_void,
+            _capacity: u32,
+            _data: *mut u8,
+        ) -> windows_core::HRESULT {
+            unsafe { record_i32(this, 0) }
+        }
+        unsafe extern "system" fn fill_after_scalar(
+            this: *mut std::ffi::c_void,
+            _value: u32,
+            capacity: u32,
+            data: *mut u8,
+        ) -> windows_core::HRESULT {
+            unsafe { fill(this, capacity, data) }
+        }
+
+        let table = MetadataTable::new();
+        let array_type = table.array(&table.i32_type());
+        for with_scalar in [false, true] {
+            let mut signature = AbiMethodSignature::new(&table);
+            let mut args = Vec::new();
+            if with_scalar {
+                signature = signature.add_in_type(ParameterType::winrt(table.u32_type()));
+                args.push(WinRTValue::U32(7));
+            }
+            let method = signature
+                .add_out_fill_type(ParameterType::winrt(array_type.clone()))
+                .build(0);
+            assert!(matches!(
+                (&method.strategy, with_scalar),
+                (CallStrategy::DirectFillArray, false) | (CallStrategy::Direct1InFillArray, true)
+            ));
+            args.push(WinRTValue::Array(crate::array::ArrayData::from_values(
+                table.i32_type(),
+                &[WinRTValue::I32(0), WinRTValue::I32(0)],
+            )));
+            let vtable = Box::new([if with_scalar {
+                fill_after_scalar as *mut std::ffi::c_void
+            } else {
+                fill as *mut std::ffi::c_void
+            }]);
+            let mut object = FakeComObject {
+                vtable: vtable.as_ptr(),
+                calls: AtomicU32::new(0),
+            };
+            let error = method
+                .call_dynamic_tracked((&mut object as *mut FakeComObject).cast(), &args, || {
+                    Err(windows_core::HRESULT(0x80004004u32 as i32).into())
+                })
+                .unwrap_err();
+            assert_eq!(error.code().0, 0x80004004u32 as i32);
+            assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+        }
     }
 
     #[test]

@@ -31,8 +31,16 @@ impl ComReturnKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::codegen::com) enum ComMethodSpecialContract {
+    RestrictedActivation {
+        iid_param: ParamIndex,
+        context_param: ParamIndex,
+        null_param: ParamIndex,
+        output_param: ParamIndex,
+        context: u32,
+        allowed_iids: Vec<String>,
+    },
     FixedCapacityBytes {
         guid_param: ParamIndex,
     },
@@ -52,6 +60,20 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
         semisynchronous_output: Option<ParamIndex>,
         synchronous_flags: i32,
         semisynchronous_flags: i32,
+    },
+    BorrowedStgMediumInput {
+        release_param: ParamIndex,
+    },
+    AudioFormatSupport {
+        share_mode_param: ParamIndex,
+        closest_match_param: ParamIndex,
+    },
+    PreservedStgMediumInOut {
+        medium_param: ParamIndex,
+    },
+    CanonicalFormatEtc {
+        input_param: ParamIndex,
+        output_param: ParamIndex,
     },
     Malloc,
 }
@@ -141,10 +163,24 @@ impl ComMethodContract {
     }
 
     pub(super) fn validate(&self, model: &ComModel) -> Result<(), ModelError> {
-        for param in &self.params {
+        for (index, param) in self.params.iter().enumerate() {
             (|| {
                 model.require_supported_type(param.abi_type())?;
                 let abi = model.types().get(param.abi_type())?.abi();
+                if matches!(abi, ComAbiType::StgMedium)
+                    && param.direction() == super::contract::Direction::InOut
+                    && (self.special_contract
+                        != Some(ComMethodSpecialContract::PreservedStgMediumInOut {
+                            medium_param: ParamIndex::new(index),
+                        })
+                        || param.ownership() != &ComOwnership::Borrowed
+                        || param.cleanup() != &Cleanup::None)
+                {
+                    return Err(ModelError::InvalidContract(
+                        "STGMEDIUM in/out requires exact contract evidence for caller-allocated preservation"
+                            .into(),
+                    ));
+                }
                 let is_counted_buffer = matches!(abi, ComAbiType::CountedBuffer { .. });
                 if is_counted_buffer != param.count().is_some() {
                     return Err(ModelError::InvalidContract(
@@ -165,6 +201,9 @@ impl ComMethodContract {
                             ..
                         }
                         | ComAbiType::StatStg
+                        | ComAbiType::FormatEtc
+                        | ComAbiType::StgMedium
+                        | ComAbiType::AudioFormat
                     )
                 {
                     return Err(ModelError::InvalidContract(format!(
@@ -414,10 +453,8 @@ impl ComMethodContract {
         self.return_kind
     }
 
-    pub(in crate::codegen::com) const fn special_contract(
-        &self,
-    ) -> Option<ComMethodSpecialContract> {
-        self.special_contract
+    pub(in crate::codegen::com) fn special_contract(&self) -> Option<ComMethodSpecialContract> {
+        self.special_contract.clone()
     }
 
     pub(in crate::codegen::com) const fn dynamic_iid_contract(&self) -> Option<DynamicIidContract> {
@@ -1004,6 +1041,51 @@ mod tests {
             Cleanup::None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn storage_medium_in_out_requires_a_borrowed_preservation_plan() {
+        let mut model = ComModel::default();
+        let medium = model
+            .types_mut()
+            .insert(ComTypeDefinition::new(None, None, ComAbiType::StgMedium))
+            .unwrap();
+        let method = ComMethodContract::new(
+            "FillMedium",
+            ComGuid::from_bytes([1; 16]),
+            3,
+            CallingConvention::System,
+            vec![param("medium", medium, Direction::InOut, None)],
+            ComReturnKind::HResult,
+        )
+        .unwrap();
+        assert!(method.validate(&model).is_err());
+        assert!(
+            method
+                .clone()
+                .with_special_contract(ComMethodSpecialContract::PreservedStgMediumInOut {
+                    medium_param: ParamIndex::new(1),
+                })
+                .validate(&model)
+                .is_err()
+        );
+        let mut preserved =
+            method.with_special_contract(ComMethodSpecialContract::PreservedStgMediumInOut {
+                medium_param: ParamIndex::new(0),
+            });
+        preserved.validate(&model).unwrap();
+        preserved.params[0] = ComParamContract::new(
+            "medium",
+            medium,
+            Direction::InOut,
+            false,
+            Nullability::Required,
+            None,
+            ComOwnership::StgMediumOwned,
+            Cleanup::ReleaseStgMedium,
+        )
+        .unwrap();
+        assert!(preserved.validate(&model).is_err());
     }
 
     #[test]

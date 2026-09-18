@@ -146,6 +146,17 @@ def verify_wheel(args: argparse.Namespace) -> None:
             assert any(name.endswith(".pyd") for name in names)
             assert any(name.endswith("/py.typed") for name in names)
             assert any(name.endswith(".pyi") for name in names)
+            source_name = "dynwinrt/_implementation.py"
+            assert source_name in names, "Missing retrievable implementation management source"
+            source = ROOT / "bindings" / "py" / "python" / "dynwinrt" / "_implementation.py"
+            shipped_source = archive.read(source_name).decode("utf-8").replace("\r\n", "\n")
+            assert shipped_source == source.read_text(encoding="utf-8"), (
+                "Wheel implementation source does not match the authoritative source"
+            )
+            shipped_stub = archive.read("dynwinrt/__init__.pyi").decode("utf-8").replace("\r\n", "\n")
+            assert shipped_stub == (
+                ROOT / "bindings" / "py" / "dynwinrt.pyi"
+            ).read_text(encoding="utf-8"), "Packaged root stub differs from the authoritative native stub"
         else:
             assert any(name.endswith("/dynwinrt-codegen.exe") for name in names)
 

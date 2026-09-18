@@ -10,6 +10,7 @@ on:
       - '.github/workflows/python-release.yml'
       - 'bindings/py/**'
       - 'crates/dynwinrt/**'
+      - 'crates/dynwinrt-com-contracts/**'
       - 'eng/release/python/prepare_python_release.py'
       - 'eng/release/python/test_python_*_wheel.ps1'
       - 'eng/release/python/verify_python_release.py'

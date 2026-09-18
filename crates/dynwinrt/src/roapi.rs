@@ -6,15 +6,26 @@ use windows::Win32::System::WinRT::{IActivationFactory, RoGetActivationFactory};
 use windows_core::{HRESULT, HSTRING, IUnknown, Interface, PCSTR};
 
 use crate::value::WinRTValue;
+use crate::winui_module::{ModuleReference, WinUiProcessModules};
 
 #[allow(dead_code)]
 pub fn ro_get_activation_factory(class_name: &HSTRING) -> windows_core::Result<IActivationFactory> {
     unsafe { RoGetActivationFactory::<IActivationFactory>(class_name) }
 }
 pub fn ro_get_activation_factory_2(class_name: &HSTRING) -> crate::result::Result<WinRTValue> {
+    activation_factory_with_modules(class_name, None)
+}
+
+pub(crate) fn activation_factory_with_modules(
+    class_name: &HSTRING,
+    modules: Option<&'static WinUiProcessModules>,
+) -> crate::result::Result<WinRTValue> {
     let r = unsafe { RoGetActivationFactory::<IActivationFactory>(class_name) };
     match r {
         Ok(factory) => {
+            if let Some(modules) = modules {
+                modules.retain_factory(class_name, &factory, &mut None)?;
+            }
             let ukn = unsafe { IUnknown::from_raw(factory.as_raw()) };
             std::mem::forget(factory);
             Ok(WinRTValue::Object(ukn))
@@ -23,13 +34,16 @@ pub fn ro_get_activation_factory_2(class_name: &HSTRING) -> crate::result::Resul
             // Fallback: C++/WinRT-style DLL probing.
             // For class "A.B.C.ClassName", try loading "A.B.C.dll", "A.B.dll", "A.dll"
             // and call DllGetActivationFactory to obtain the factory.
-            if let Some(val) = dll_get_activation_factory_fallback(class_name) {
+            if let Some(val) = dll_get_activation_factory_fallback(class_name, modules)? {
                 return Ok(val);
             }
             // If fallback also failed, return the original error
             let r2 = unsafe { RoGetActivationFactory::<IActivationFactory>(class_name) };
             match r2 {
                 Ok(factory) => {
+                    if let Some(modules) = modules {
+                        modules.retain_factory(class_name, &factory, &mut None)?;
+                    }
                     let ukn = unsafe { IUnknown::from_raw(factory.as_raw()) };
                     std::mem::forget(factory);
                     Ok(WinRTValue::Object(ukn))
@@ -47,7 +61,10 @@ pub fn ro_get_activation_factory_2(class_name: &HSTRING) -> crate::result::Resul
 /// Mirrors the logic in C++/WinRT base.h `get_runtime_activation_factory_impl`
 /// (lines 6116-6156): for class "A.B.C.Name", tries loading "A.B.C.dll",
 /// "A.B.dll", "A.dll" in order and calls DllGetActivationFactory on each.
-fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValue> {
+fn dll_get_activation_factory_fallback(
+    class_name: &HSTRING,
+    modules: Option<&'static WinUiProcessModules>,
+) -> crate::result::Result<Option<WinRTValue>> {
     use windows::Win32::Foundation::FreeLibrary;
 
     type DllGetActivationFactoryFn = unsafe extern "system" fn(
@@ -65,6 +82,7 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
             Ok(m) => m,
             Err(_) => continue,
         };
+        let mut owned_module = modules.map(|_| unsafe { ModuleReference::adopt(module) });
 
         let proc = unsafe {
             GetProcAddress(
@@ -73,8 +91,10 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
             )
         };
         let Some(proc) = proc else {
-            unsafe {
-                let _ = FreeLibrary(module);
+            if modules.is_none() {
+                unsafe {
+                    let _ = FreeLibrary(module);
+                }
             }
             continue;
         };
@@ -87,19 +107,42 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
         let hr = unsafe { dll_get_factory(class_id, &mut factory_ptr) };
 
         if hr.is_ok() && !factory_ptr.is_null() {
+            if let Some(modules) = modules {
+                let factory = unsafe { IActivationFactory::from_raw(factory_ptr) };
+                modules.retain_factory(class_name, &factory, &mut owned_module)?;
+                return Ok(Some(WinRTValue::Object(factory.into())));
+            }
             // Success — keep the DLL loaded (don't FreeLibrary) so the factory
             // and any objects it creates remain valid for the process lifetime.
             let factory_unk = unsafe { IUnknown::from_raw(factory_ptr) };
-            return Some(WinRTValue::Object(factory_unk));
+            return Ok(Some(WinRTValue::Object(factory_unk)));
+        }
+
+        if modules.is_some()
+            && hr != windows::Win32::Foundation::CLASS_E_CLASSNOTAVAILABLE
+            && hr != windows::Win32::Foundation::REGDB_E_CLASSNOTREG
+        {
+            let code = if hr.is_ok() {
+                windows::Win32::Foundation::E_POINTER
+            } else {
+                hr
+            };
+            return Err(windows_core::Error::new(
+                code,
+                format!("WinUI DLL `{dll_hstring}` failed to create factory `{class_name}`"),
+            )
+            .into());
         }
 
         // Factory not found in this DLL — unload and try next
-        unsafe {
-            let _ = FreeLibrary(module);
+        if modules.is_none() {
+            unsafe {
+                let _ = FreeLibrary(module);
+            }
         }
     }
 
-    None
+    Ok(None)
 }
 
 #[allow(dead_code)]

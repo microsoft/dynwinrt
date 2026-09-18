@@ -9,7 +9,16 @@ use windows_metadata::{HasAttributes, reader};
 pub use crate::contract_registry::ComStandardRule as RawComStandardRule;
 pub use crate::contract_registry::ContractKind as RawContractKind;
 pub use crate::contract_registry::ExactFamilyId as RawExactFamilyId;
+use crate::contract_registry::adapters;
 use crate::types::TypeMeta;
+
+#[path = "com_borrowed_metadata.rs"]
+pub mod borrowed;
+#[path = "com_completion_metadata.rs"]
+pub mod completion;
+#[cfg(test)]
+#[path = "com_contract_registry_tests.rs"]
+mod contract_registry_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawConstness {
@@ -381,6 +390,13 @@ pub enum RawExactMethodContractKind {
     StatStg,
     Malloc,
     FlagSelectedString,
+    BorrowedStgMediumInput,
+    PreservedStgMediumInOut,
+    CanonicalFormatEtc,
+    AudioFormatOwnedOutput,
+    AudioFormatSupport,
+    NullableAudioFormatInput,
+    RestrictedEndpointActivation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +412,8 @@ pub struct RawExactMethodContract {
     pub actual_length_param_index: Option<usize>,
     pub discriminator_param_index: Option<usize>,
     pub reserved_null_param_index: Option<usize>,
+    pub ownership_transfer_param_index: Option<usize>,
+    pub source_fingerprint: Option<&'static str>,
     pub citation: &'static str,
     pub reason: &'static str,
 }
@@ -409,8 +427,24 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::UnsafePrivateData => {
                 crate::contract_registry::ExactFamilyId::PrivateDataHazard
             }
-            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+            RawExactMethodContractKind::StatStg
+            | RawExactMethodContractKind::Malloc
+            | RawExactMethodContractKind::BorrowedStgMediumInput
+            | RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::PreservedStgMediumInOut => {
                 crate::contract_registry::ExactFamilyId::Ownership
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                crate::contract_registry::ExactFamilyId::AudioConditionalOutput
+            }
+            RawExactMethodContractKind::NullableAudioFormatInput => {
+                crate::contract_registry::ExactFamilyId::NullableInput
+            }
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                crate::contract_registry::ExactFamilyId::Ownership
+            }
+            RawExactMethodContractKind::CanonicalFormatEtc => {
+                crate::contract_registry::ExactFamilyId::SemanticHresult
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ExactFamilyId::ShellCommandString
@@ -437,8 +471,24 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::UnsafePrivateData => {
                 crate::contract_registry::ContractKind::Hazard
             }
-            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+            RawExactMethodContractKind::StatStg
+            | RawExactMethodContractKind::Malloc
+            | RawExactMethodContractKind::BorrowedStgMediumInput
+            | RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::PreservedStgMediumInOut => {
                 crate::contract_registry::ContractKind::Ownership
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                crate::contract_registry::ContractKind::ConditionalOutput
+            }
+            RawExactMethodContractKind::NullableAudioFormatInput => {
+                crate::contract_registry::ContractKind::NullInput
+            }
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                crate::contract_registry::ContractKind::Ownership
+            }
+            RawExactMethodContractKind::CanonicalFormatEtc => {
+                crate::contract_registry::ContractKind::SemanticHresult
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ContractKind::FlagSelectedBuffer
@@ -1145,6 +1195,9 @@ pub(crate) fn collect_evidence_dependencies(
     use crate::contract_registry::{ComStandardRule, EvidenceDependencies};
 
     let mut dependencies = EvidenceDependencies::default();
+    for entry in borrowed::catalog_entries(interface) {
+        dependencies.add_exact(entry.entry_id, entry.family_id, entry.contract_kind);
+    }
     dependencies.add_standard(ComStandardRule::IUnknownIdentityRefcount);
     dependencies.add_standard(ComStandardRule::QueryInterfaceOutputPlusOne);
     if interface.coclass_clsid.is_some() {
@@ -1182,14 +1235,12 @@ pub(crate) fn collect_evidence_dependencies(
         for contract in &method.exact_parameter_direction_contracts {
             dependencies.consume_raw_evidence(&contract.evidence);
         }
-        if let Some(borrowed) =
-            crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
-                &method.declaring_namespace,
-                &method.declaring_interface,
-                &method.metadata_name,
-                method.vtable_index,
-            )
-        {
+        if let Some(borrowed) = adapters::borrowed_handle::borrowed_hwnd_evidence_for_declaration(
+            &method.declaring_namespace,
+            &method.declaring_interface,
+            &method.metadata_name,
+            method.vtable_index,
+        ) {
             dependencies.add_exact(
                 borrowed.entry_id(),
                 borrowed.family_id(),
@@ -1250,11 +1301,12 @@ pub(crate) fn collect_evidence_dependencies(
 
 pub(crate) fn collect_exact_registry_entries(
     interface: &ComInterfaceMeta,
-) -> Vec<crate::contract_registry::ExactRegistryEntry> {
+) -> Result<Vec<crate::contract_registry::ExactRegistryEntry>, String> {
     use crate::contract_registry::{ExactEntrySelector, ExactRegistryEntry};
 
-    let mut entries = Vec::new();
+    let mut entries = borrowed::catalog_entries(interface);
     for method in interface.raw_methods.as_deref().unwrap_or_default() {
+        validate_migrated_source_shape(method)?;
         let method_fingerprint = method
             .exact_interface_output_call
             .as_ref()
@@ -1308,7 +1360,10 @@ pub(crate) fn collect_exact_registry_entries(
                 family_id: contract.family_id(),
                 contract_kind: contract.contract_kind(),
                 selector: method_selector(),
-                source_fingerprint: method_fingerprint.clone(),
+                source_fingerprint: contract
+                    .source_fingerprint
+                    .unwrap_or(&method_fingerprint)
+                    .into(),
                 reason: contract.reason.into(),
                 citation: contract.citation.into(),
             });
@@ -1414,14 +1469,12 @@ pub(crate) fn collect_exact_registry_entries(
                 citation: citation.clone(),
             });
         }
-        if let Some(borrowed) =
-            crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
-                &method.declaring_namespace,
-                &method.declaring_interface,
-                &method.metadata_name,
-                method.vtable_index,
-            )
-        {
+        if let Some(borrowed) = adapters::borrowed_handle::borrowed_hwnd_evidence_for_declaration(
+            &method.declaring_namespace,
+            &method.declaring_interface,
+            &method.metadata_name,
+            method.vtable_index,
+        ) {
             entries.push(ExactRegistryEntry {
                 entry_id: borrowed.entry_id(),
                 family_id: borrowed.family_id(),
@@ -1475,7 +1528,7 @@ pub(crate) fn collect_exact_registry_entries(
             }
         }
     }
-    entries
+    Ok(entries)
 }
 
 fn apply_exact_parameter_direction_overrides(
@@ -1665,7 +1718,7 @@ fn apply_exact_out_parameter_contracts(
 ) -> bool {
     let source_fingerprint = raw_method_fingerprint(raw);
     let mut attached = false;
-    for entry in crate::com_parameter_direction_registry::entries() {
+    for entry in adapters::parameter_direction::entries() {
         if raw.declaring_namespace != entry.declaring_namespace
             || raw.declaring_interface != entry.declaring_interface
             || !raw.declaring_iid.eq_ignore_ascii_case(entry.declaring_iid)
@@ -1674,6 +1727,7 @@ fn apply_exact_out_parameter_contracts(
             || raw.params.len() != entry.parameter_count
             || compatibility.params.len() != entry.parameter_count
             || source_fingerprint != entry.source_fingerprint
+            || !raw_parameters_match_selector(raw, entry.selector)
         {
             continue;
         }
@@ -1708,7 +1762,7 @@ fn apply_exact_out_parameter_contracts(
 fn apply_exact_null_input_contracts(raw: &mut RawComMethod) -> bool {
     let source_fingerprint = raw_method_fingerprint(raw);
     let mut attached = false;
-    for entry in crate::com_null_input_registry::entries() {
+    for entry in adapters::null_input::entries() {
         if raw.declaring_namespace != entry.declaring_namespace
             || raw.declaring_interface != entry.declaring_interface
             || !raw.declaring_iid.eq_ignore_ascii_case(entry.declaring_iid)
@@ -1716,6 +1770,7 @@ fn apply_exact_null_input_contracts(raw: &mut RawComMethod) -> bool {
             || raw.vtable_index != entry.vtable_index
             || raw.params.len() != entry.parameter_count
             || source_fingerprint != entry.source_fingerprint
+            || !raw_parameters_match_selector(raw, entry.selector)
         {
             continue;
         }
@@ -1755,6 +1810,26 @@ fn raw_type_registry_name(typ: &RawComType) -> String {
     }
 }
 
+fn raw_parameters_match_selector(
+    raw: &RawComMethod,
+    selector: &crate::contract_registry::ContractSelector,
+) -> bool {
+    raw.params.len() == selector.parameter_count
+        && selector.parameters.len() == raw.params.len()
+        && selector.parameters.iter().zip(&raw.params).enumerate().all(
+            |(index, (expected, actual))| {
+                expected.index == index
+                    && expected.name == actual.name
+                    && expected.native_type == raw_type_registry_name(&actual.typ)
+                    && expected.pointer_depth == actual.typ.pointer_depth
+                    && expected.direction == raw_direction_key(actual.direction)
+                    && expected.optional == actual.optional
+                    && expected.constness == raw_constness_key(actual.typ.constness)
+                    && expected.const_attribute == actual.const_attribute
+            },
+        )
+}
+
 const fn raw_direction_key(direction: RawParamDirection) -> &'static str {
     match direction {
         RawParamDirection::In => "in",
@@ -1774,13 +1849,12 @@ const fn raw_constness_key(constness: RawConstness) -> &'static str {
 
 fn apply_safe_array_evidence(raw: &mut RawComMethod) {
     for parameter_index in 0..raw.params.len() {
-        let declaration_evidence =
-            crate::com_safe_array_registry::safe_array_evidence_for_declaration(
-                &raw.declaring_namespace,
-                &raw.declaring_interface,
-                &raw.metadata_name,
-                parameter_index,
-            );
+        let declaration_evidence = adapters::safearray::safe_array_evidence_for_declaration(
+            &raw.declaring_namespace,
+            &raw.declaring_interface,
+            &raw.metadata_name,
+            parameter_index,
+        );
         let is_safe_array = matches!(
             &raw.params[parameter_index].typ.native_type,
             RawNativeType::Named {
@@ -1798,7 +1872,7 @@ fn apply_safe_array_evidence(raw: &mut RawComMethod) {
             }
             continue;
         }
-        let Some(evidence) = crate::com_safe_array_registry::registered_safe_array_evidence(
+        let Some(evidence) = adapters::safearray::registered_safe_array_evidence(
             &raw.declaring_namespace,
             &raw.declaring_interface,
             &raw.declaring_iid,
@@ -1867,6 +1941,8 @@ fn validate_safe_array_evidence(
         || evidence.element_iid.is_some()
             != (evidence.element_vartype == RawSafeArrayVartype::Unknown)
         || raw_method_shape(raw) != evidence.raw_method_shape
+        || adapters::safearray::contract_for_evidence(evidence)
+            .is_none_or(|entry| !raw_parameters_match_selector(raw, &entry.selector))
     {
         return Err(format!(
             "{}.{} SAFEARRAY signature no longer matches exact documented evidence",
@@ -1885,7 +1961,7 @@ pub(crate) fn validate_attached_safe_array_evidence(raw: &RawComMethod) -> Resul
         .iter()
         .filter_map(|parameter| parameter.safe_array_evidence.as_ref())
     {
-        let registered = crate::com_safe_array_registry::registered_safe_array_evidence(
+        let registered = adapters::safearray::registered_safe_array_evidence(
             &raw.declaring_namespace,
             &raw.declaring_interface,
             &raw.declaring_iid,
@@ -1911,17 +1987,15 @@ pub(crate) fn validate_attached_safe_array_evidence(raw: &RawComMethod) -> Resul
 }
 
 pub(crate) fn validate_borrowed_hwnd_output_evidence(raw: &RawComMethod) -> Result<(), String> {
-    let Some(evidence) =
-        crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
-            &raw.declaring_namespace,
-            &raw.declaring_interface,
-            &raw.metadata_name,
-            raw.vtable_index,
-        )
-    else {
+    let Some(evidence) = adapters::borrowed_handle::borrowed_hwnd_evidence_for_declaration(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+        &raw.metadata_name,
+        raw.vtable_index,
+    ) else {
         return Ok(());
     };
-    let registered = crate::com_borrowed_handle_registry::registered_borrowed_hwnd_output(
+    let registered = adapters::borrowed_handle::registered_borrowed_hwnd_output(
         &raw.declaring_namespace,
         &raw.declaring_interface,
         &raw.declaring_iid,
@@ -1981,7 +2055,7 @@ pub(crate) fn is_registered_borrowed_hwnd_output(
     raw: &RawComMethod,
     parameter_index: usize,
 ) -> bool {
-    crate::com_borrowed_handle_registry::registered_borrowed_hwnd_output(
+    adapters::borrowed_handle::registered_borrowed_hwnd_output(
         &raw.declaring_namespace,
         &raw.declaring_interface,
         &raw.declaring_iid,
@@ -2170,6 +2244,13 @@ fn apply_exact_method_contract(
         }
         RawExactMethodContractKind::StatStg => {}
         RawExactMethodContractKind::Malloc => {}
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {}
+        RawExactMethodContractKind::AudioFormatSupport => {}
+        RawExactMethodContractKind::NullableAudioFormatInput => {}
+        RawExactMethodContractKind::RestrictedEndpointActivation => {}
+        RawExactMethodContractKind::BorrowedStgMediumInput
+        | RawExactMethodContractKind::PreservedStgMediumInOut
+        | RawExactMethodContractKind::CanonicalFormatEtc => {}
         RawExactMethodContractKind::FlagSelectedString => {
             let buffer = contract.buffer_param_index;
             let capacity = contract.capacity_param_index;
@@ -2315,6 +2396,86 @@ fn registered_exact_method_contract(
             "IMalloc::HeapMinimize has no parameters and no return value",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         ),
+        ("Windows.Win32.System.Com", "IDataObject", "GetDataHere") => (
+            RawExactMethodContractKind::PreservedStgMediumInOut,
+            1,
+            0,
+            None,
+            "IDataObject::GetDataHere fills caller-allocated storage without resizing or replacing the HGLOBAL and must leave pUnkForRelease null; the caller retains cleanup responsibility",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getdatahere",
+        ),
+        ("Windows.Win32.System.Com", "IDataObject", "SetData") => (
+            RawExactMethodContractKind::BorrowedStgMediumInput,
+            1,
+            0,
+            None,
+            "IDataObject::SetData transfers STGMEDIUM ownership only when fRelease is TRUE; the safe projection pins fRelease to FALSE so call-local HGLOBAL storage remains caller-owned",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
+        ),
+        (
+            "Windows.Win32.Media.DeviceManager",
+            "IMDSPDeviceControl" | "IWMDMDeviceControl",
+            "Record",
+        ) => (
+            RawExactMethodContractKind::NullableAudioFormatInput,
+            0,
+            0,
+            None,
+            "Record accepts a null WAVEFORMATEX pointer to select the device default format; explicit formats are borrowed for the call",
+            if interface == "IMDSPDeviceControl" {
+                "https://learn.microsoft.com/windows/win32/api/mswmdm/nf-mswmdm-imdspdevicecontrol-record"
+            } else {
+                "https://learn.microsoft.com/windows/win32/api/mswmdm/nf-mswmdm-iwmdmdevicecontrol-record"
+            },
+        ),
+        ("Windows.Win32.Media.Audio", "IMMDevice", "Activate") => (
+            RawExactMethodContractKind::RestrictedEndpointActivation,
+            3,
+            0,
+            None,
+            "IMMDevice::Activate returns a counted interface reference for the requested IID; the safe subset uses CLSCTX_INPROC_SERVER and null activation parameters for documented endpoint interfaces",
+            "https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate",
+        ),
+        ("Windows.Win32.Media.Audio", "IAudioClient", "IsFormatSupported") => (
+            RawExactMethodContractKind::AudioFormatSupport,
+            2,
+            0,
+            None,
+            "IAudioClient::IsFormatSupported requests a closest-match output only for shared mode and returns that format with CoTaskMem ownership",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient-isformatsupported",
+        ),
+        ("Windows.Win32.Media.Audio", "IAudioClient", "GetMixFormat") => (
+            RawExactMethodContractKind::AudioFormatOwnedOutput,
+            0,
+            0,
+            None,
+            "IAudioClient::GetMixFormat returns variable-length WAVEFORMATEX storage allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getmixformat",
+        ),
+        ("Windows.Win32.Media.Audio", "IAudioClient3", "GetCurrentSharedModeEnginePeriod") => (
+            RawExactMethodContractKind::AudioFormatOwnedOutput,
+            0,
+            0,
+            None,
+            "IAudioClient3::GetCurrentSharedModeEnginePeriod returns variable-length WAVEFORMATEX storage allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-getcurrentsharedmodeengineperiod",
+        ),
+        ("Windows.Win32.System.Ole", "IOleCache", "SetData") => (
+            RawExactMethodContractKind::BorrowedStgMediumInput,
+            1,
+            0,
+            None,
+            "IOleCache::SetData transfers STGMEDIUM ownership when fRelease is TRUE; the safe projection fixes FALSE so the cache borrows call-local storage",
+            "https://learn.microsoft.com/windows/win32/api/oleidl/nf-oleidl-iolecache-setdata",
+        ),
+        ("Windows.Win32.System.Com", "IDataObject", "GetCanonicalFormatEtc") => (
+            RawExactMethodContractKind::CanonicalFormatEtc,
+            1,
+            0,
+            None,
+            "IDataObject::GetCanonicalFormatEtc ignores tymed on S_OK and returns the input format on DATA_S_SAMEFORMATETC without decoding the unused output",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getcanonicalformatetc",
+        ),
         ("Windows.Win32.Graphics.Dxgi", "IDXGIObject", "GetPrivateData") => (
             RawExactMethodContractKind::UnsafePrivateData,
             2,
@@ -2382,7 +2543,10 @@ fn registered_exact_method_contract(
             "ID3D11DeviceChild" | "ID3D11Device" => "Windows.Win32.Graphics.Direct3D11",
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
-            "IStream" => "Windows.Win32.System.Com",
+            "IStream" | "IDataObject" => "Windows.Win32.System.Com",
+            "IAudioClient" | "IAudioClient3" | "IMMDevice" => "Windows.Win32.Media.Audio",
+            "IMDSPDeviceControl" | "IWMDMDeviceControl" => "Windows.Win32.Media.DeviceManager",
+            "IOleCache" => "Windows.Win32.System.Ole",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
             "IContextMenu" => "Windows.Win32.UI.Shell",
             "IMalloc" => "Windows.Win32.System.Com",
@@ -2401,9 +2565,19 @@ fn registered_exact_method_contract(
             "IStorage" => "IStorage",
             "IContextMenu" => "IContextMenu",
             "IMalloc" => "IMalloc",
+            "IDataObject" => "IDataObject",
+            "IAudioClient" => "IAudioClient",
+            "IAudioClient3" => "IAudioClient3",
+            "IMMDevice" => "IMMDevice",
+            "IMDSPDeviceControl" => "IMDSPDeviceControl",
+            "IWMDMDeviceControl" => "IWMDMDeviceControl",
+            "IOleCache" => "IOleCache",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                "d666063f-1587-4e43-81f1-b948e807363f"
+            }
             RawExactMethodContractKind::FixedCapacityBytes => {
                 "2cd2d921-c447-44a7-a13c-4adabfc247e3"
             }
@@ -2426,8 +2600,35 @@ fn registered_exact_method_contract(
             RawExactMethodContractKind::FlagSelectedString => {
                 "000214e4-0000-0000-c000-000000000046"
             }
+            RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::AudioFormatSupport
+                if interface == "IAudioClient" =>
+            {
+                "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2"
+            }
+            RawExactMethodContractKind::AudioFormatOwnedOutput => {
+                "7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42"
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                unreachable!("audio format support belongs to IAudioClient")
+            }
+            RawExactMethodContractKind::NullableAudioFormatInput => match interface {
+                "IMDSPDeviceControl" => "1dcb3a14-33ed-11d3-8470-00c04f79dbc0",
+                "IWMDMDeviceControl" => "1dcb3a04-33ed-11d3-8470-00c04f79dbc0",
+                _ => unreachable!("matched exact nullable audio input"),
+            },
+            RawExactMethodContractKind::BorrowedStgMediumInput => match interface {
+                "IDataObject" => "0000010e-0000-0000-c000-000000000046",
+                "IOleCache" => "0000011e-0000-0000-c000-000000000046",
+                _ => unreachable!("matched exact borrowed STGMEDIUM input"),
+            },
+            RawExactMethodContractKind::PreservedStgMediumInOut
+            | RawExactMethodContractKind::CanonicalFormatEtc => {
+                "0000010e-0000-0000-c000-000000000046"
+            }
         },
         method_name: match kind {
+            RawExactMethodContractKind::RestrictedEndpointActivation => "Activate",
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
             RawExactMethodContractKind::UnsafePrivateData => "GetPrivateData",
             RawExactMethodContractKind::StatStg => "Stat",
@@ -2441,8 +2642,19 @@ fn registered_exact_method_contract(
                 _ => unreachable!("matched exact IMalloc method"),
             },
             RawExactMethodContractKind::FlagSelectedString => "GetCommandString",
+            RawExactMethodContractKind::AudioFormatOwnedOutput => match method {
+                "GetMixFormat" => "GetMixFormat",
+                "GetCurrentSharedModeEnginePeriod" => "GetCurrentSharedModeEnginePeriod",
+                _ => unreachable!("matched exact audio format output"),
+            },
+            RawExactMethodContractKind::AudioFormatSupport => "IsFormatSupported",
+            RawExactMethodContractKind::NullableAudioFormatInput => "Record",
+            RawExactMethodContractKind::BorrowedStgMediumInput => "SetData",
+            RawExactMethodContractKind::PreservedStgMediumInOut => "GetDataHere",
+            RawExactMethodContractKind::CanonicalFormatEtc => "GetCanonicalFormatEtc",
         },
         vtable_index: match (interface, method) {
+            ("IMMDevice", "Activate") => 3,
             ("IMFAttributes", "GetBlob") => 15,
             ("IDXGIObject", "GetPrivateData") => 5,
             ("ID3D10DeviceChild", "GetPrivateData") => 4,
@@ -2459,15 +2671,61 @@ fn registered_exact_method_contract(
             ("IMalloc", "GetSize") => 6,
             ("IMalloc", "DidAlloc") => 7,
             ("IMalloc", "HeapMinimize") => 8,
+            ("IAudioClient", "IsFormatSupported") => 7,
+            ("IAudioClient", "GetMixFormat") => 8,
+            ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => 19,
+            ("IMDSPDeviceControl" | "IWMDMDeviceControl", "Record") => 6,
+            ("IDataObject" | "IOleCache", "SetData") => 7,
+            ("IDataObject", "GetDataHere") => 4,
+            ("IDataObject", "GetCanonicalFormatEtc") => 6,
             _ => unreachable!("matched exact method identity"),
         },
         buffer_param_index: buffer,
         capacity_param_index: capacity,
         actual_length_param_index: actual,
-        discriminator_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
-            .then_some(1),
+        discriminator_param_index: match kind {
+            RawExactMethodContractKind::FlagSelectedString => Some(1),
+            RawExactMethodContractKind::AudioFormatSupport => Some(0),
+            _ => None,
+        },
         reserved_null_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
             .then_some(2),
+        ownership_transfer_param_index: (kind
+            == RawExactMethodContractKind::BorrowedStgMediumInput)
+            .then_some(2),
+        source_fingerprint: match (interface, method) {
+            ("IMMDevice", "Activate") => {
+                Some("5025E3C25B95D89F92271233B0761D56DF1041F985D6C1D0BAFE0FC4DEDD26E3")
+            }
+            ("IMDSPDeviceControl", "Record") => {
+                Some("346C3A5C69100EF034C6B1773533C7B9AB74C66F05581FF8D1D02370C9506F52")
+            }
+            ("IWMDMDeviceControl", "Record") => {
+                Some("68EB1BDA9994CE96C21642D9D336EBBF7BC38DD14C04E799A9091025D0D55871")
+            }
+            ("IDataObject", "GetDataHere") => {
+                Some("65165D814B216835E273E9342B4CBEC2A4F6F1A68477F3F07036C2479BDADBFF")
+            }
+            ("IDataObject", "SetData") => {
+                Some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1")
+            }
+            ("IAudioClient", "IsFormatSupported") => {
+                Some("8C96A1A91E80657C730E2729DEBC3B708E7B94CC8CF9BAF2F3FD0348237CB186")
+            }
+            ("IAudioClient", "GetMixFormat") => {
+                Some("2B32209119D444096A58A1E60C27D3056FACCDC9CD36A3411FBA3CA993537EC4")
+            }
+            ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => {
+                Some("5566DB7A948DDA6FD355EFC15B60BB90F5A932891255E32143C6554DFF920CAF")
+            }
+            ("IOleCache", "SetData") => {
+                Some("AACEA7AC7F8360EE26C559E2EC69F254DF944977174AB767769B40AF899D5573")
+            }
+            ("IDataObject", "GetCanonicalFormatEtc") => {
+                Some("CD6292C4AFD80B76A7C3BA8122D4D98DA02105748829B7F63543A045AE92DDEA")
+            }
+            _ => None,
+        },
         citation,
         reason,
     })
@@ -2585,6 +2843,31 @@ fn raw_hresult(typ: &RawComType) -> bool {
             .is_some_and(|underlying| matches!(underlying.native_type, RawNativeType::I32))
 }
 
+pub(crate) fn validate_required_exact_contract_presence(raw: &RawComMethod) -> Result<(), String> {
+    let required = registered_exact_method_contract(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+        &raw.metadata_name,
+    )
+    .is_some_and(|contract| {
+        matches!(
+            contract.kind,
+            RawExactMethodContractKind::BorrowedStgMediumInput
+                | RawExactMethodContractKind::PreservedStgMediumInOut
+                | RawExactMethodContractKind::CanonicalFormatEtc
+                | RawExactMethodContractKind::NullableAudioFormatInput
+                | RawExactMethodContractKind::RestrictedEndpointActivation
+        )
+    });
+    if required && raw.exact_contract.is_none() {
+        return Err(format!(
+            "{}.{} requires exact contract evidence for its input/output semantics",
+            raw.declaring_interface, raw.metadata_name
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_exact_method_contract(
     current_namespace: &str,
     current_interface: &str,
@@ -2602,6 +2885,20 @@ pub(crate) fn validate_exact_method_contract(
     .ok_or_else(|| "exact method contract is not registered".to_string())?;
     if &expected != contract {
         return Err("exact method contract evidence does not match the registry".into());
+    }
+    if let Some(expected_fingerprint) = contract.source_fingerprint {
+        let mut source = raw.clone();
+        source.exact_contract = None;
+        let actual_fingerprint = raw_method_fingerprint(&source);
+        if actual_fingerprint != expected_fingerprint {
+            return Err(format!(
+                "{}.{} source fingerprint changed: expected {}, found {}",
+                contract.declaring_interface,
+                contract.method_name,
+                expected_fingerprint,
+                actual_fingerprint
+            ));
+        }
     }
     if raw.declaring_namespace != contract.declaring_namespace
         || raw.declaring_interface != contract.declaring_interface
@@ -2633,6 +2930,10 @@ pub(crate) fn validate_exact_method_contract(
         ));
     }
     let valid_shape = match contract.kind {
+        RawExactMethodContractKind::RestrictedEndpointActivation => {
+            raw_method_shape(raw)
+                == "Activate@3(iid:in:required:constattr:System.Guid[Unknown]/ptr1/Mutable,dwClsCtx:in:required:noconstattr:Windows.Win32.System.Com.CLSCTX[Enum]/ptr0/Unspecified/underlying=u32/ptr0/Unspecified,pActivationParams:in:optional:noconstattr:Windows.Win32.System.Com.StructuredStorage.PROPVARIANT[Struct]/ptr1/Mutable,ppInterface:out:required:noconstattr:void/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
         RawExactMethodContractKind::FixedCapacityBytes => {
             raw.params.len() == 4
                 && raw.params[0].name == "guidKey"
@@ -2739,8 +3040,91 @@ pub(crate) fn validate_exact_method_contract(
                 && raw_u32_scalar(&raw.params[capacity], RawParamDirection::In, false)
                 && raw_hresult(&raw.return_type)
         }
+        RawExactMethodContractKind::BorrowedStgMediumInput => {
+            raw.params.len() == 3
+                && raw.params[0].name == "pformatetc"
+                && raw.params[0].direction == RawParamDirection::In
+                && !raw.params[0].optional
+                && raw.params[0].typ.pointer_depth == 1
+                && matches!(
+                    &raw.params[0].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        kind: RawNamedKind::Struct,
+                        ..
+                    } if namespace == "Windows.Win32.System.Com" && name == "FORMATETC"
+                )
+                && raw.params[1].name == "pmedium"
+                && raw.params[1].direction == RawParamDirection::In
+                && !raw.params[1].optional
+                && raw.params[1].typ.pointer_depth == 1
+                && matches!(
+                    &raw.params[1].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        kind: RawNamedKind::Struct,
+                        ..
+                    } if namespace == "Windows.Win32.System.Com" && name == "STGMEDIUM"
+                )
+                && raw.params[2].name == "fRelease"
+                && raw.params[2].direction == RawParamDirection::In
+                && !raw.params[2].optional
+                && raw.params[2].typ.pointer_depth == 0
+                && matches!(
+                    &raw.params[2].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "Windows.Win32.Foundation" && name == "BOOL"
+                )
+                && raw.params[2]
+                    .typ
+                    .underlying
+                    .as_deref()
+                    .is_some_and(|underlying| {
+                        underlying.pointer_depth == 0
+                            && matches!(underlying.native_type, RawNativeType::I32)
+                    })
+                && raw_hresult(&raw.return_type)
+        }
+        RawExactMethodContractKind::NullableAudioFormatInput => {
+            raw_method_shape(raw)
+                == "Record@6(pFormat:in:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            if contract.method_name == "GetMixFormat" {
+                raw_method_shape(raw)
+                    == "GetMixFormat@8(ppDeviceFormat:out:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+            } else {
+                raw_method_shape(raw)
+                    == "GetCurrentSharedModeEnginePeriod@19(ppFormat:out:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable,pCurrentPeriodInFrames:out:required:noconstattr:u32/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+            }
+        }
+        RawExactMethodContractKind::AudioFormatSupport => {
+            raw_method_shape(raw)
+                == "IsFormatSupported@7(ShareMode:in:required:noconstattr:Windows.Win32.Media.Audio.AUDCLNT_SHAREMODE[Enum]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified,pFormat:in:required:constattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr1/Mutable,ppClosestMatch:out:optional:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
+        }
+        RawExactMethodContractKind::PreservedStgMediumInOut => {
+            raw_method_shape(raw)
+                == "GetDataHere@4(pformatetc:in:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable,pmedium:inout:required:noconstattr:Windows.Win32.System.Com.STGMEDIUM[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+        RawExactMethodContractKind::CanonicalFormatEtc => {
+            raw_method_shape(raw)
+                == "GetCanonicalFormatEtc@6(pformatectIn:in:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable,pformatetcOut:out:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
+        }
     };
     let indices_valid = match contract.kind {
+        RawExactMethodContractKind::RestrictedEndpointActivation => {
+            contract.buffer_param_index == 3
+                && contract.capacity_param_index == 0
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
+        }
         RawExactMethodContractKind::FixedCapacityBytes
         | RawExactMethodContractKind::UnsafePrivateData
         | RawExactMethodContractKind::StatStg => {
@@ -2761,9 +3145,47 @@ pub(crate) fn validate_exact_method_contract(
                     .is_some_and(|index| index < raw.params.len())
         }
         RawExactMethodContractKind::Malloc => true,
+        RawExactMethodContractKind::BorrowedStgMediumInput => {
+            contract.buffer_param_index == 1
+                && contract.ownership_transfer_param_index == Some(2)
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+        }
+        RawExactMethodContractKind::NullableAudioFormatInput => {
+            contract.buffer_param_index == 0
+                && contract.capacity_param_index == 0
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
+        }
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            contract.buffer_param_index == 0
+                && contract.discriminator_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
+        }
+        RawExactMethodContractKind::AudioFormatSupport => {
+            contract.buffer_param_index == 2
+                && contract.discriminator_param_index == Some(0)
+                && contract.ownership_transfer_param_index.is_none()
+        }
+        RawExactMethodContractKind::PreservedStgMediumInOut
+        | RawExactMethodContractKind::CanonicalFormatEtc => {
+            contract.buffer_param_index == 1
+                && contract.ownership_transfer_param_index.is_none()
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+        }
     };
     if !valid_shape
-        || raw.semantic_hresult.is_some()
+        || (raw.semantic_hresult.is_some()
+            && !matches!(
+                contract.kind,
+                RawExactMethodContractKind::AudioFormatSupport
+                    | RawExactMethodContractKind::CanonicalFormatEtc
+            ))
         || raw.enumerator_next.is_some()
         || !indices_valid
     {
@@ -2788,7 +3210,7 @@ fn known_array_contract_override(
     if metadata.is_none()
         && method_name == "Next"
         && param_index == 1
-        && let Some(contract) = crate::com_enumerator_registry::exact_contract(
+        && let Some(contract) = adapters::enumerator::exact_contract(
             interface_namespace,
             interface_name,
             interface_iid,
@@ -2951,24 +3373,21 @@ fn known_enumerator_next_override(
     params: &[RawComParam],
     return_type: &RawComType,
 ) -> Option<RawEnumeratorNext> {
-    let expected = crate::com_enumerator_registry::exact_contract(
+    let expected = adapters::enumerator::exact_contract(
         interface_namespace,
         interface_name,
         interface_iid,
         vtable_index,
     )?;
-    let (expected_fetched_direction, expected_fetched_optional) =
-        crate::com_enumerator_registry::fetched_shape(interface_namespace, interface_name);
-    let expected_fetched_direction = match expected_fetched_direction {
-        crate::com_enumerator_registry::EnumeratorDirection::Out => RawParamDirection::Out,
-        crate::com_enumerator_registry::EnumeratorDirection::InOut => RawParamDirection::InOut,
+    let expected_fetched_optional = expected.fetched_optional;
+    let expected_fetched_direction = match expected.fetched_direction {
+        adapters::enumerator::EnumeratorDirection::Out => RawParamDirection::Out,
+        adapters::enumerator::EnumeratorDirection::InOut => RawParamDirection::InOut,
     };
-    let expected_values_direction =
-        match crate::com_enumerator_registry::values_direction(interface_namespace, interface_name)
-        {
-            crate::com_enumerator_registry::EnumeratorDirection::Out => RawParamDirection::Out,
-            crate::com_enumerator_registry::EnumeratorDirection::InOut => RawParamDirection::InOut,
-        };
+    let expected_values_direction = match expected.values_direction {
+        adapters::enumerator::EnumeratorDirection::Out => RawParamDirection::Out,
+        adapters::enumerator::EnumeratorDirection::InOut => RawParamDirection::InOut,
+    };
     let exact_hresult = return_type.pointer_depth == 0
         && matches!(
             &return_type.native_type,
@@ -3007,13 +3426,13 @@ fn known_enumerator_next_override(
                     && matches!(
                         (expected.element_kind, kind),
                         (
-                            crate::com_enumerator_registry::EnumeratorElementKind::Interface,
+                            adapters::enumerator::EnumeratorElementKind::Interface,
                             RawNamedKind::Interface
                         ) | (
-                            crate::com_enumerator_registry::EnumeratorElementKind::Struct,
+                            adapters::enumerator::EnumeratorElementKind::Struct,
                             RawNamedKind::Struct
                         ) | (
-                            crate::com_enumerator_registry::EnumeratorElementKind::Unknown,
+                            adapters::enumerator::EnumeratorElementKind::Unknown,
                             RawNamedKind::Unknown
                         )
                     )
@@ -3090,15 +3509,12 @@ fn known_enumerator_next_override(
         values_param_index: 1,
         fetched_param_index: 2,
         fetched_optional_for_single: expected_fetched_optional,
-        evidence: enumerator_contract_evidence(
-            expected,
-            "the standard IEnum* contract defines pceltFetched as the initialized element count and permits omission only where this exact interface metadata marks it optional",
-        ),
+        evidence: enumerator_contract_evidence(expected, expected.reason),
     })
 }
 
 fn enumerator_contract_evidence(
-    contract: &crate::com_enumerator_registry::EnumeratorContract,
+    contract: &adapters::enumerator::EnumeratorContract,
     reason: &str,
 ) -> RawEvidence {
     if contract.uses_generic_standard() {
@@ -3115,8 +3531,7 @@ fn enumerator_contract_evidence(
 }
 
 fn is_registered_enumerator_interface(interface_namespace: &str, interface_name: &str) -> bool {
-    crate::com_enumerator_registry::contract_for_declaration(interface_namespace, interface_name)
-        .is_some()
+    adapters::enumerator::contract_for_declaration(interface_namespace, interface_name).is_some()
 }
 
 pub(crate) fn validate_attached_enumerator_evidence(raw: &RawComMethod) -> Result<(), String> {
@@ -3167,6 +3582,47 @@ pub(crate) fn validate_attached_enumerator_evidence(raw: &RawComMethod) -> Resul
         return Err(format!(
             "{}.Next EnumeratorNext evidence no longer matches the registry",
             raw.declaring_interface
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_migrated_source_shape(raw: &RawComMethod) -> Result<(), String> {
+    let enumerator = adapters::enumerator::contract_for_declaration(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+    )
+    .filter(|entry| raw.metadata_name == "Next" || raw.vtable_index == entry.next_vtable_index);
+    let selector = if let Some(entry) = enumerator {
+        validate_attached_enumerator_evidence(raw)?;
+        entry.selector
+    } else if let Some(evidence) = adapters::borrowed_handle::borrowed_hwnd_evidence_for_declaration(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+        &raw.metadata_name,
+        raw.vtable_index,
+    ) {
+        validate_borrowed_hwnd_output_evidence(raw)?;
+        evidence.selector
+    } else {
+        return Ok(());
+    };
+    if raw.declaring_namespace != selector.interface.namespace
+        || raw.declaring_interface != selector.interface.name
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.interface.iid)
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.declaring_iid)
+        || raw.metadata_name != selector.method
+        || raw.vtable_index != selector.absolute_slot
+        || !raw_parameters_match_selector(raw, selector)
+        || raw_method_shape(raw) != selector.raw_method_shape()
+    {
+        return Err(format!(
+            "{}.{} signature no longer matches exact contract evidence (registry source shape)",
+            raw.declaring_interface, raw.metadata_name
         ));
     }
     Ok(())
@@ -4334,7 +4790,7 @@ mod tests {
 
     #[test]
     fn external_evidence_families_have_stable_typed_provenance() {
-        let borrowed = crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
+        let borrowed = adapters::borrowed_handle::borrowed_hwnd_evidence_for_declaration(
             "Windows.Win32.System.Ole",
             "IOleWindow",
             "GetWindow",
@@ -4355,7 +4811,7 @@ mod tests {
             crate::contract_registry::ContractKind::BorrowedHandle
         );
 
-        let enumerator = crate::com_enumerator_registry::contract_for_declaration(
+        let enumerator = adapters::enumerator::contract_for_declaration(
             "Windows.Win32.System.Com",
             "IEnumString",
         )
@@ -4374,7 +4830,7 @@ mod tests {
             crate::contract_registry::ContractKind::EnumeratorNext
         );
 
-        let safe_array = &crate::com_safe_array_registry::all_safe_array_evidence()[0];
+        let safe_array = &adapters::safearray::all_safe_array_evidence()[0];
         assert!(
             safe_array
                 .entry_id()
@@ -4543,6 +4999,8 @@ mod tests {
                 actual_length_param_index: None,
                 discriminator_param_index: None,
                 reserved_null_param_index: None,
+                ownership_transfer_param_index: None,
+                source_fingerprint: None,
                 citation: "test://drift",
                 reason: "drift",
             })
@@ -4663,7 +5121,7 @@ mod tests {
             return;
         };
         let index = crate::meta::load_index(&winmd).expect("configured Win32 metadata must load");
-        let evidence = crate::com_safe_array_registry::all_safe_array_evidence();
+        let evidence = adapters::safearray::all_safe_array_evidence();
         let mut interfaces = std::collections::BTreeMap::new();
         for entry in evidence {
             interfaces
@@ -4862,6 +5320,294 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn data_object_set_data_exact_contract_is_fingerprint_pinned() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.System.Com", "IDataObject").unwrap();
+        let raw = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "SetData")
+            .unwrap();
+        let contract = raw.exact_contract.as_ref().unwrap();
+        let mut source = raw.clone();
+        source.exact_contract = None;
+        assert_eq!(
+            raw_method_fingerprint(&source),
+            contract.source_fingerprint.unwrap()
+        );
+        validate_exact_method_contract(
+            "Windows.Win32.System.Com",
+            "IDataObject",
+            "0000010e-0000-0000-c000-000000000046",
+            raw,
+            contract,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn endpoint_activation_contract_is_exact() {
+        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.Media.Audio", "IMMDevice").unwrap();
+        let method = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "Activate")
+            .unwrap();
+        let contract = method.exact_contract.as_ref().unwrap_or_else(|| {
+            panic!(
+                "missing endpoint activation contract: {} ({})",
+                raw_method_shape(method),
+                raw_method_fingerprint(method)
+            )
+        });
+        validate_exact_method_contract(
+            "Windows.Win32.Media.Audio",
+            "IMMDevice",
+            &interface.interface.iid,
+            method,
+            contract,
+        )
+        .unwrap();
+        let get_id = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "GetId")
+            .unwrap();
+        assert!(
+            !get_id.output_ownership_contracts.is_empty(),
+            "missing GetId ownership: {} ({})",
+            raw_method_shape(get_id),
+            raw_method_fingerprint(get_id)
+        );
+    }
+
+    #[test]
+    fn audio_record_nullability_contracts_are_exact() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let mut missing = Vec::new();
+        for name in ["IMDSPDeviceControl", "IWMDMDeviceControl"] {
+            let namespace = "Windows.Win32.Media.DeviceManager";
+            let interface = parse_com_interface(&winmd, namespace, name).unwrap();
+            let raw = interface
+                .raw_methods
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|method| method.metadata_name == "Record")
+                .unwrap();
+            if let Some(contract) = &raw.exact_contract {
+                assert_eq!(
+                    contract.kind,
+                    RawExactMethodContractKind::NullableAudioFormatInput
+                );
+                assert_eq!(contract.buffer_param_index, 0);
+                validate_exact_method_contract(
+                    namespace,
+                    name,
+                    &interface.interface.iid,
+                    raw,
+                    contract,
+                )
+                .unwrap();
+            } else {
+                missing.push(format!(
+                    "{name} {}: {} ({})",
+                    interface.interface.iid,
+                    raw_method_shape(raw),
+                    raw_method_fingerprint(raw)
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "missing nullable Record evidence: {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn audio_format_exact_contracts_are_fingerprint_pinned() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.Media.Audio", "IAudioClient3").unwrap();
+        let actual = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|raw| {
+                let contract = raw.exact_contract.as_ref()?;
+                matches!(
+                    contract.kind,
+                    RawExactMethodContractKind::AudioFormatOwnedOutput
+                        | RawExactMethodContractKind::AudioFormatSupport
+                )
+                .then(|| {
+                    let mut source = raw.clone();
+                    source.exact_contract = None;
+                    (
+                        raw.metadata_name.clone(),
+                        raw_method_fingerprint(&source),
+                        contract.source_fingerprint.unwrap().to_string(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "IsFormatSupported",
+                "GetMixFormat",
+                "GetCurrentSharedModeEnginePeriod"
+            ]
+        );
+        for (_, fingerprint, expected) in actual {
+            assert_eq!(fingerprint, expected);
+        }
+        for raw in interface.raw_methods.as_ref().unwrap() {
+            let Some(contract) = raw.exact_contract.as_ref().filter(|contract| {
+                matches!(
+                    contract.kind,
+                    RawExactMethodContractKind::AudioFormatOwnedOutput
+                        | RawExactMethodContractKind::AudioFormatSupport
+                )
+            }) else {
+                continue;
+            };
+            if let Err(error) = validate_exact_method_contract(
+                contract.declaring_namespace,
+                contract.declaring_interface,
+                contract.declaring_iid,
+                raw,
+                contract,
+            ) {
+                panic!("{error}: {}", raw_method_shape(raw));
+            }
+        }
+        let mut drift = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|raw| raw.metadata_name == "IsFormatSupported")
+            .unwrap()
+            .clone();
+        drift.params[2].optional = false;
+        let contract = drift.exact_contract.clone().unwrap();
+        assert!(
+            validate_exact_method_contract(
+                contract.declaring_namespace,
+                contract.declaring_interface,
+                contract.declaring_iid,
+                &drift,
+                &contract,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn storage_medium_contracts_pin_borrowing_and_canonical_results() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let mut errors = Vec::new();
+        for (namespace, name, method_name) in [
+            ("Windows.Win32.System.Com", "IDataObject", "GetDataHere"),
+            ("Windows.Win32.System.Ole", "IOleCache", "SetData"),
+            ("Windows.Win32.System.Ole", "IOleCache2", "SetData"),
+            (
+                "Windows.Win32.System.Com",
+                "IDataObject",
+                "GetCanonicalFormatEtc",
+            ),
+        ] {
+            let interface = parse_com_interface(&winmd, namespace, name).unwrap();
+            let method = interface
+                .raw_methods
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|method| method.metadata_name == method_name)
+                .unwrap();
+            let contract = method.exact_contract.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{name}.{method_name} is missing its exact storage-medium contract: {} ({})",
+                    raw_method_shape(method),
+                    raw_method_fingerprint(method),
+                )
+            });
+            if let Err(error) = validate_exact_method_contract(
+                namespace,
+                name,
+                &interface.interface.iid,
+                method,
+                contract,
+            ) {
+                errors.push(format!("{error}: {}", raw_method_shape(method)));
+            }
+            for mutation in 0..9 {
+                let mut drift = method.clone();
+                match mutation {
+                    0 => drift.declaring_iid = "00000000-0000-0000-0000-000000000001".into(),
+                    1 => drift.vtable_index += 1,
+                    2 => drift.params[0].typ.pointer_depth += 1,
+                    3 => drift.params[0].direction = RawParamDirection::InOut,
+                    4 => drift.params[0].optional = true,
+                    5 => drift.params[0].const_attribute = !drift.params[0].const_attribute,
+                    6 => drift.params[1].typ.pointer_depth += 1,
+                    7 => drift.params[1].optional = !drift.params[1].optional,
+                    8 => drift.params[1].const_attribute = !drift.params[1].const_attribute,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    validate_exact_method_contract(
+                        namespace,
+                        name,
+                        &interface.interface.iid,
+                        &drift,
+                        contract,
+                    )
+                    .is_err(),
+                    "{name}.{method_name} admitted contract mutation {mutation}"
+                );
+            }
+        }
+        assert!(errors.is_empty(), "{errors:#?}");
     }
 
     #[test]
@@ -5151,7 +5897,7 @@ mod tests {
         };
         let index = crate::meta::load_index(&winmd).unwrap();
         let mut failures = Vec::new();
-        for contract in crate::com_enumerator_registry::contracts() {
+        for contract in adapters::enumerator::contracts() {
             let Some(interface) = parse_com_interface_from_index(
                 &index,
                 contract.interface_namespace,

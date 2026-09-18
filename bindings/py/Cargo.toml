@@ -10,6 +10,9 @@ authors = ["Microsoft"]
 name = "dynwinrt"
 crate-type = ["cdylib"]
 
+[features]
+test-hooks = ["dynwinrt/test-hooks"]
+
 [dependencies]
 dynwinrt = { path = "../../crates/dynwinrt" }
 pyo3 = "0.29.0"

@@ -23,6 +23,7 @@ const _IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce = ne
     }
 });
 
+
 class IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce {
     _obj;
 
@@ -33,6 +34,9 @@ class IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce {
     static from(obj) {
         return new IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce(obj.cast(IID_IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce));
     }
+
+    static implementation() { throw new TypeError("Windows.Foundation.Collections.IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce cannot be implemented: generic interface implementations are not supported"); }
+    static implement() { throw new TypeError("Windows.Foundation.Collections.IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce cannot be implemented: generic interface implementations are not supported"); }
 
     get current() {
         return ((v) => v.isNull() ? null : new (__get_IWwwFormUrlDecoderEntry())(v))((() => { const _m = _IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce.method(6); return typeof _m.getObj === 'function' ? _m.getObj(this._obj) : _m.invoke(this._obj, []); })());

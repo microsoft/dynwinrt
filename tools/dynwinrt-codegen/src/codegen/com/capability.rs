@@ -14,8 +14,6 @@ use crate::com_metadata::{
     RawParamDirection, RawSafeArrayOwnership, RawStringEncoding,
 };
 
-use super::generate_com_interface_files;
-
 pub const OFFICIAL_METADATA_VERSION: &str = "71.0.14-preview";
 pub const OFFICIAL_METADATA_SHA256: &str =
     "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D";
@@ -642,8 +640,8 @@ fn build_report(
         metadata_matched_entry_ids.extend(raw_dependencies.exact_entry_ids);
         registered_entry_records.extend(crate::com_metadata::collect_exact_registry_entries(
             interface,
-        ));
-        let safe_result = generate_com_interface_files(interface, winmd);
+        )?);
+        let safe_result = super::generate_complete_com_interface_files(interface, winmd);
         let safe_complete = safe_result.is_ok();
         let safe_error = safe_result
             .err()
@@ -1248,6 +1246,7 @@ pub fn classify_interface_methods(
                     interface.interface.namespace, method.metadata_name, method.vtable_index
                 ));
             }
+            crate::com_metadata::validate_migrated_source_shape(method)?;
             let canonical = canonical_method(method);
             Ok(MethodCapability {
                 name: method.metadata_name.clone(),
@@ -2415,7 +2414,12 @@ pub fn raw_aggregate_descriptor(
             ));
         };
         root.insert(
-            target.key().into(),
+            match target {
+                CensusTarget::I686 => "x86",
+                CensusTarget::X64 => "x64",
+                CensusTarget::Arm64 => "arm64",
+            }
+            .into(),
             raw_layout_descriptor_value(variant, target, &mut Vec::new())?,
         );
     }
@@ -2852,7 +2856,7 @@ fn summarize(
         by_metadata_attribute,
         by_standard_rule_id,
         exact_entry_status,
-        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by safe plans; exactEntryInterfaceDependencies counts every safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per safe interface. None is a net-contribution or ablation count.".into(),
+        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by complete-interface safe plans; exactEntryInterfaceDependencies counts every complete-safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per complete-safe interface. Copy-only facade dependencies are registered and metadata-matched but are excluded from complete-interface consumption counts. None is a net-contribution or ablation count.".into(),
     };
 
     CapabilitySummary {
@@ -2862,7 +2866,7 @@ fn summarize(
         definitions: BTreeMap::from([
             (
                 "safe_complete".into(),
-                "Existing complete safe generator succeeds for the full inherited interface.".into(),
+                "Complete safe generation succeeds for the full inherited interface; bounded copy-only facades are excluded.".into(),
             ),
             (
                 "standard_derived".into(),
@@ -3424,6 +3428,79 @@ mod tests {
             raw_referenced_enums: Some(Vec::new()),
             raw_methods,
         }
+    }
+
+    #[test]
+    fn raw_aggregate_descriptors_use_runtime_architectures_without_renaming_census_targets() {
+        for is_union in [false, true] {
+            let layout = RawNativeLayoutSet {
+                recursive: false,
+                variants: vec![RawNativeLayout {
+                    architectures: 7,
+                    kind: if is_union {
+                        RawLayoutKind::Explicit
+                    } else {
+                        RawLayoutKind::Sequential
+                    },
+                    packing: RawPacking::Default,
+                    declared_size: None,
+                    fields: [("tag", RawNativeType::U32), ("value", RawNativeType::USize)]
+                        .into_iter()
+                        .map(|(name, typ)| RawNativeField {
+                            name: name.into(),
+                            typ: raw(typ, 0),
+                            explicit_offset: is_union.then_some(0),
+                            fixed_count: None,
+                            bitfield: false,
+                            flexible_array: false,
+                        })
+                        .collect(),
+                    is_union,
+                }],
+            };
+            let (actual_union, descriptor) =
+                raw_aggregate_descriptor("Tests", "Record", &layout).unwrap();
+            assert_eq!(actual_union, is_union);
+            let descriptor: serde_json::Value = serde_json::from_str(&descriptor).unwrap();
+            assert_eq!(
+                descriptor
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["arm64", "name", "x64", "x86"]
+            );
+            for (target, width) in [("x86", 4), ("x64", 8), ("arm64", 8)] {
+                assert_eq!(
+                    descriptor[target]["size"],
+                    if is_union { width } else { 2 * width }
+                );
+                assert_eq!(descriptor[target]["alignment"], width);
+                assert_eq!(descriptor[target]["fields"][1]["type"]["kind"], "usize");
+                if is_union {
+                    assert_eq!(descriptor[target]["complete"], true);
+                    assert!(descriptor[target]["fields"][1].get("offset").is_none());
+                } else {
+                    assert_eq!(descriptor[target]["fields"][1]["offset"], width);
+                }
+            }
+        }
+        assert_eq!(CensusTarget::I686.key(), "i686");
+        assert_eq!(
+            serde_json::to_string(&CensusTarget::I686).unwrap(),
+            "\"i686\""
+        );
+        let methods =
+            classify_interface_methods(&raw_interface(Some(vec![raw_method(Vec::new())]))).unwrap();
+        assert_eq!(
+            methods[0]
+                .targets
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["arm64", "i686", "x64"]
+        );
     }
 
     #[test]
@@ -4559,10 +4636,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_681);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_681);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_326);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 355);
+        assert_eq!(report.summary.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_incomplete, 2_208);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_355);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 366);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4570,55 +4648,65 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_974
+            6_012
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_076
+            26_247
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 495);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 532);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            495
+            532
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            404
+            431
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            655
+            694
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            404
+            425
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
             BTreeMap::from([
                 ("borrowed-handle".into(), 54),
+                ("borrowed-storage".into(), 15),
                 ("bounded-two-call".into(), 16),
                 ("compound-dispatch".into(), 1),
-                ("conditional-output".into(), 7),
+                ("conditional-output".into(), 10),
+                ("contextual-effect".into(), 7),
                 ("counted-buffer".into(), 16),
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
-                ("null-input".into(), 2),
-                ("ownership".into(), 172),
+                ("null-input".into(), 4),
+                ("ownership".into(), 183),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
-                ("semantic-hresult".into(), 2),
+                ("semantic-hresult".into(), 3),
             ])
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            116
+            124
+        );
+        assert_eq!(
+            report.summary.safe_evidence.by_family_id["audio.conditional-output.v1"],
+            3
+        );
+        assert_eq!(
+            report.summary.safe_evidence.by_family_id["com.nullable-input.v1"],
+            2
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["windows.borrowed-hwnd-output.v1"],
@@ -4632,7 +4720,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 404);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 431);
         assert!(
             report
                 .summary
@@ -4677,9 +4765,23 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            404
+            431
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1")
+                .count(),
+            169
+        );
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1" && entry.safe_consumed)
+                .count(),
+            118
+        );
         assert_eq!(
             status
                 .values()
@@ -4705,6 +4807,13 @@ mod tests {
             status
                 .values()
                 .filter(|entry| entry.family_id == "automation.idispatch-invoke.v1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "audio.conditional-output.v1")
                 .count(),
             1
         );
@@ -4744,6 +4853,53 @@ mod tests {
             promoted_audio.evidence_class,
             Some(SafeEvidenceClass::ExactRegistryDependent)
         ));
+        let endpoint = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Media.Audio" && interface.name == "IMMDevice"
+            })
+            .unwrap();
+        assert!(endpoint.safe_complete);
+        assert!(matches!(
+            endpoint.evidence_class,
+            Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        assert_eq!(endpoint.exact_entry_ids.len(), 2);
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1".into()
+        ));
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1".into()
+        ));
+        let data_object = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.System.Com" && interface.name == "IDataObject"
+            })
+            .unwrap();
+        assert!(data_object.safe_complete);
+        assert!(matches!(
+            data_object.evidence_class,
+            Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        assert!(data_object.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1".into()
+        ));
+        assert!(data_object.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getdatahere.slot-4.v1".into()
+        ));
+        let wia = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Devices.ImageAcquisition"
+                    && interface.name == "IWiaDataTransfer"
+            })
+            .unwrap();
+        assert!(!wia.safe_complete);
+        assert!(wia.evidence_class.is_none());
         assert_eq!(
             promoted_audio
                 .exact_entry_ids
@@ -4811,9 +4967,9 @@ mod tests {
                     counts.safe_incomplete_raw_runtime_blocked,
                 ),
                 (
-                    412 - usize::from(target == CensusTarget::I686),
-                    1_446 - 23 * usize::from(target == CensusTarget::I686),
-                    390 + 24 * usize::from(target == CensusTarget::I686)
+                    388 - usize::from(target == CensusTarget::I686),
+                    1_431 - 23 * usize::from(target == CensusTarget::I686),
+                    389 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );
         }
@@ -4919,6 +5075,7 @@ mod tests {
             "IDispatch",
             "IPropertyStore",
             "IClassFactory",
+            "IMMDevice",
         ] {
             let interface = report
                 .interfaces

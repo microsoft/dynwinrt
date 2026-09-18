@@ -8,14 +8,34 @@ use std::{
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT};
+use windows::Win32::Media::{
+  Audio::{IMMDevice, IMMDevice_Vtbl, DEVICE_STATE, WAVEFORMATEX},
+  DeviceManager::{
+    IMDSPDeviceControl, IMDSPDeviceControl_Vtbl, IWMDMDeviceControl, IWMDMDeviceControl_Vtbl,
+  },
+};
+use windows::{
+  core::{IUnknown, IUnknown_Vtbl, Interface, BOOL, GUID, HRESULT, PCWSTR, PWSTR},
+  Win32::System::{
+    Com::{StructuredStorage::PROPVARIANT, CLSCTX, SAFEARRAY, STGM},
+    Ole::{IOleCache, IOleCache2, IOleCache2_Vtbl, IOleCache_Vtbl, UPDFCACHE_FLAGS},
+    Variant::VARIANT,
+    Wmi::{
+      IWbemCallResult_Vtbl, IWbemClassObject_Vtbl, IWbemServices_Vtbl, WBEM_COMPARISON_FLAG,
+      WBEM_CONDITION_FLAG_TYPE, WBEM_GENERIC_FLAG_TYPE,
+    },
+  },
+};
 
 use crate::DynWinRTValue;
 
 const IID_IWBEM_SERVICES: GUID = GUID::from_u128(0x9556dc99_828c_11cf_a37e_00aa003240c7);
-const IID_IWBEM_CONTEXT: GUID = GUID::from_u128(0x44aca674_e8fc_11d0_a07c_00c04fb68820);
 const IID_IWBEM_CALL_RESULT: GUID = GUID::from_u128(0x44aca675_e8fc_11d0_a07c_00c04fb68820);
+const IID_IWBEM_CLASS_OBJECT: GUID = GUID::from_u128(0xdc12a681_737f_11cf_884d_00aa004b2e24);
+const IID_ITHUMBNAIL_PROVIDER: GUID = GUID::from_u128(0xe357fccd_a995_4576_b01f_234630154e96);
+const IID_IDATA_OBJECT: GUID = GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
 const IID_IAUDIO_CLIENT: GUID = GUID::from_u128(0x1cb9ad4c_dbfa_4c32_b178_c2f568a703b2);
+const IID_IWINML_EVALUATION_CONTEXT: GUID = GUID::from_u128(0x95848f9e_583d_4054_af12_916387cd8426);
 const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
 const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
 const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
@@ -24,49 +44,113 @@ static QUERY_INTERFACE_CALLS: AtomicU32 = AtomicU32::new(0);
 static ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_CALLS: AtomicU32 = AtomicU32::new(0);
-static OPEN_NAMESPACE_MODE: AtomicI32 = AtomicI32::new(0);
 static OPEN_NAMESPACE_WORKING_SLOT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_WORKING_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_RESULT_SLOT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_RESULT_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_LAST_FLAGS: AtomicI32 = AtomicI32::new(0);
+static WMI_CONDITIONAL_MODE: AtomicI32 = AtomicI32::new(0);
+static GET_OBJECT_CALLS: AtomicU32 = AtomicU32::new(0);
+static PUT_CLASS_CALLS: AtomicU32 = AtomicU32::new(0);
+static DELETE_CLASS_CALLS: AtomicU32 = AtomicU32::new(0);
+static PUT_INSTANCE_CALLS: AtomicU32 = AtomicU32::new(0);
+static DELETE_INSTANCE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EXEC_METHOD_CALLS: AtomicU32 = AtomicU32::new(0);
 static QUERY_OBJECT_SINK_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_FLAGS: AtomicI32 = AtomicI32::new(0);
 static CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLASS_OBJECT_END_ENUMERATION_CALLS: AtomicU32 = AtomicU32::new(0);
+static CALL_RESULT_GET_STATUS_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_OUTPUT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_IS_FORMAT_SUPPORTED_CALLS: AtomicU32 = AtomicU32::new(0);
+static AUDIO_INITIALIZE_CALLS: AtomicU32 = AtomicU32::new(0);
+static AUDIO_GET_MIX_FORMAT_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_GET_SERVICE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_LAST_SHARE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_LAST_FORMAT_TAG: AtomicU32 = AtomicU32::new(0);
+static AUDIO_FORMAT_SUPPORT_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_GET_SERVICE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
-
-#[repr(C)]
-struct GeneratedIWbemServicesVtbl {
-  base__: IUnknown_Vtbl,
-  open_namespace: unsafe extern "system" fn(
-    *mut c_void,
-    *mut u16,
-    i32,
-    *mut c_void,
-    *mut *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-  cancel_async_call: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
-  query_object_sink: unsafe extern "system" fn(*mut c_void, i32, *mut *mut c_void) -> HRESULT,
-}
+static MM_DEVICE_ACTIVATE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_VALIDATED_ACTIVATE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_ACTIVATE_MODE: AtomicI32 = AtomicI32::new(0);
+static MM_DEVICE_RETURNED_AUDIO_OBJECTS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_GET_ID_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_BIND_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_GET_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_OUTPUT_MODE: AtomicI32 = AtomicI32::new(0);
+static EVALUATION_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static THUMBNAIL_CALLS: AtomicU32 = AtomicU32::new(0);
+static THUMBNAIL_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_GET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_GET_DATA_HERE_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_QUERY_GET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_CANONICAL_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_CANONICAL_MODE: AtomicI32 = AtomicI32::new(0);
+static DATA_OBJECT_SET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_LAST_SET_RELEASE: AtomicI32 = AtomicI32::new(-1);
+static DATA_OBJECT_LAST_OUTPUT_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static DATA_OBJECT_LAST_SET_DATA_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static DATA_OBJECT_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_SET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_BORROWED_INPUT_CALLS: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_LAST_SET_RELEASE: AtomicI32 = AtomicI32::new(-1);
+static OLE_CACHE_LAST_SET_DATA_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static OLE_CACHE_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
 struct GeneratedIWbemServicesFake {
-  vtable: *const GeneratedIWbemServicesVtbl,
+  services_vtable: *const IWbemServices_Vtbl,
+  class_object_vtable: *const IWbemClassObject_Vtbl,
+  call_result_vtable: *const IWbemCallResult_Vtbl,
   references: AtomicU32,
 }
 
-unsafe extern "system" fn query_interface(
-  this: *mut c_void,
+unsafe fn owner_from_class_object(this: *mut c_void) -> *mut GeneratedIWbemServicesFake {
+  unsafe {
+    this
+      .cast::<u8>()
+      .sub(std::mem::offset_of!(
+        GeneratedIWbemServicesFake,
+        class_object_vtable
+      ))
+      .cast()
+  }
+}
+
+unsafe fn owner_from_call_result(this: *mut c_void) -> *mut GeneratedIWbemServicesFake {
+  unsafe {
+    this
+      .cast::<u8>()
+      .sub(std::mem::offset_of!(
+        GeneratedIWbemServicesFake,
+        call_result_vtable
+      ))
+      .cast()
+  }
+}
+
+unsafe fn services_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  owner.cast()
+}
+
+unsafe fn class_object_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  unsafe { std::ptr::addr_of_mut!((*owner).class_object_vtable).cast() }
+}
+
+unsafe fn call_result_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  unsafe { std::ptr::addr_of_mut!((*owner).call_result_vtable).cast() }
+}
+
+unsafe fn query_interface_owner(
+  owner: *mut GeneratedIWbemServicesFake,
   iid: *const GUID,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -76,50 +160,121 @@ unsafe extern "system" fn query_interface(
   }
   unsafe {
     *result = std::ptr::null_mut();
-    if *iid != IUnknown::IID
-      && *iid != IID_IWBEM_SERVICES
-      && *iid != IID_IWBEM_CONTEXT
-      && *iid != IID_IWBEM_CALL_RESULT
-    {
+    *result = if *iid == IUnknown::IID || *iid == IID_IWBEM_SERVICES {
+      services_pointer(owner)
+    } else if *iid == IID_IWBEM_CLASS_OBJECT {
+      class_object_pointer(owner)
+    } else if *iid == IID_IWBEM_CALL_RESULT {
+      call_result_pointer(owner)
+    } else {
       return E_NOINTERFACE;
-    }
-    *result = this;
-    add_ref(this);
+    };
+    add_ref_owner(owner);
   }
   HRESULT(0)
 }
 
-unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+unsafe extern "system" fn services_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(this.cast(), iid, result) }
+}
+
+unsafe extern "system" fn class_object_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(owner_from_class_object(this), iid, result) }
+}
+
+unsafe extern "system" fn call_result_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(owner_from_call_result(this), iid, result) }
+}
+
+unsafe fn add_ref_owner(owner: *mut GeneratedIWbemServicesFake) -> u32 {
   ADD_REF_CALLS.fetch_add(1, Ordering::SeqCst);
-  let object = unsafe { &*this.cast::<GeneratedIWbemServicesFake>() };
+  let object = unsafe { &*owner };
   let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
   CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
   count
 }
 
-unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+unsafe extern "system" fn services_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(this.cast()) }
+}
+
+unsafe extern "system" fn class_object_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(owner_from_class_object(this)) }
+}
+
+unsafe extern "system" fn call_result_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(owner_from_call_result(this)) }
+}
+
+unsafe fn release_owner(owner: *mut GeneratedIWbemServicesFake) -> u32 {
   RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
-  let object = unsafe { &*this.cast::<GeneratedIWbemServicesFake>() };
+  let object = unsafe { &*owner };
   let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
   CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
   if count == 0 {
     unsafe {
-      drop(Box::from_raw(this.cast::<GeneratedIWbemServicesFake>()));
+      drop(Box::from_raw(owner));
     }
   }
   count
 }
 
+unsafe extern "system" fn services_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(this.cast()) }
+}
+
+unsafe extern "system" fn class_object_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(owner_from_class_object(this)) }
+}
+
+unsafe extern "system" fn call_result_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(owner_from_call_result(this)) }
+}
+
+#[derive(Clone, Copy)]
+enum WbemOutputView {
+  Services,
+  ClassObject,
+  CallResult,
+}
+
+unsafe fn write_owned_view(
+  owner: *mut GeneratedIWbemServicesFake,
+  output: *mut *mut c_void,
+  view: WbemOutputView,
+) {
+  unsafe {
+    add_ref_owner(owner);
+    *output = match view {
+      WbemOutputView::Services => services_pointer(owner),
+      WbemOutputView::ClassObject => class_object_pointer(owner),
+      WbemOutputView::CallResult => call_result_pointer(owner),
+    };
+  }
+}
+
 unsafe extern "system" fn open_namespace(
   this: *mut c_void,
-  _namespace: *mut u16,
-  flags: i32,
+  _namespace: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   working_namespace: *mut *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
   OPEN_NAMESPACE_CALLS.fetch_add(1, Ordering::SeqCst);
-  OPEN_NAMESPACE_LAST_FLAGS.store(flags, Ordering::SeqCst);
+  OPEN_NAMESPACE_LAST_FLAGS.store(flags.0, Ordering::SeqCst);
   OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL.store(u32::from(context.is_null()), Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_ARGUMENT_NULL
     .store(u32::from(working_namespace.is_null()), Ordering::SeqCst);
@@ -134,30 +289,235 @@ unsafe extern "system" fn open_namespace(
   {
     return E_POINTER;
   }
-  match OPEN_NAMESPACE_MODE.load(Ordering::SeqCst) {
-    0 if flags == 0 && !working_namespace.is_null() && result.is_null() => {
-      add_ref(this);
-      unsafe { *working_namespace = this };
+  let owner = this.cast::<GeneratedIWbemServicesFake>();
+  match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
+    0 if flags.0 == 0 && !working_namespace.is_null() && result.is_null() => {
+      unsafe { write_owned_view(owner, working_namespace, WbemOutputView::Services) };
       HRESULT(0)
     }
-    1 if flags == 0x10 && working_namespace.is_null() && !result.is_null() => {
-      add_ref(this);
-      unsafe { *result = this };
+    1 if flags.0 == 0x10 && working_namespace.is_null() && !result.is_null() => {
+      unsafe { write_owned_view(owner, result, WbemOutputView::CallResult) };
       HRESULT(0)
     }
     -1 => {
       if !working_namespace.is_null() {
-        add_ref(this);
-        unsafe { *working_namespace = this };
+        unsafe { write_owned_view(owner, working_namespace, WbemOutputView::Services) };
       }
       if !result.is_null() {
-        add_ref(this);
-        unsafe { *result = this };
+        unsafe { write_owned_view(owner, result, WbemOutputView::CallResult) };
       }
       HRESULT(0x80004005u32 as i32)
     }
     _ => E_NOTIMPL,
   }
+}
+
+unsafe fn complete_conditional_call(
+  this: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  synchronous_output: *mut *mut c_void,
+  semisynchronous_output: *mut *mut c_void,
+  synchronous_view: Option<WbemOutputView>,
+) -> HRESULT {
+  if !context.is_null()
+    || (!synchronous_output.is_null() && unsafe { !(*synchronous_output).is_null() })
+    || (!semisynchronous_output.is_null() && unsafe { !(*semisynchronous_output).is_null() })
+  {
+    return E_POINTER;
+  }
+  let owner = this.cast::<GeneratedIWbemServicesFake>();
+  match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
+    0 if flags.0 == 0
+      && semisynchronous_output.is_null()
+      && (synchronous_view.is_some() == !synchronous_output.is_null()) =>
+    {
+      if let Some(view) = synchronous_view {
+        unsafe { write_owned_view(owner, synchronous_output, view) };
+      }
+      HRESULT(0)
+    }
+    1 if flags.0 == 0x10 && synchronous_output.is_null() && !semisynchronous_output.is_null() => {
+      unsafe {
+        write_owned_view(owner, semisynchronous_output, WbemOutputView::CallResult);
+      }
+      HRESULT(0)
+    }
+    -1 => {
+      if !synchronous_output.is_null() {
+        if let Some(view) = synchronous_view {
+          unsafe { write_owned_view(owner, synchronous_output, view) };
+        }
+      }
+      if !semisynchronous_output.is_null() {
+        unsafe {
+          write_owned_view(owner, semisynchronous_output, WbemOutputView::CallResult);
+        }
+      }
+      HRESULT(0x80004005u32 as i32)
+    }
+    _ => E_NOTIMPL,
+  }
+}
+
+unsafe extern "system" fn get_object(
+  this: *mut c_void,
+  object_path: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  object: *mut *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  GET_OBJECT_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    complete_conditional_call(
+      this,
+      flags,
+      context,
+      object,
+      result,
+      Some(WbemOutputView::ClassObject),
+    )
+  }
+}
+
+unsafe extern "system" fn put_class(
+  this: *mut c_void,
+  object: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  PUT_CLASS_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
+}
+
+unsafe extern "system" fn delete_class(
+  this: *mut c_void,
+  class_name: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  DELETE_CLASS_CALLS.fetch_add(1, Ordering::SeqCst);
+  if class_name.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
+}
+
+unsafe extern "system" fn put_instance(
+  this: *mut c_void,
+  instance: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  PUT_INSTANCE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if instance.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
+}
+
+unsafe extern "system" fn delete_instance(
+  this: *mut c_void,
+  object_path: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  DELETE_INSTANCE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
+}
+
+unsafe extern "system" fn exec_method(
+  this: *mut c_void,
+  object_path: *mut c_void,
+  method_name: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
+  context: *mut c_void,
+  input: *mut c_void,
+  output: *mut *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  EXEC_METHOD_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() || method_name.is_null() || input.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    complete_conditional_call(
+      this,
+      flags,
+      context,
+      output,
+      result,
+      Some(WbemOutputView::ClassObject),
+    )
+  }
+}
+
+unsafe extern "system" fn unimplemented_wbem_async_single(
+  _this: *mut c_void,
+  _value: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_enum(
+  _this: *mut c_void,
+  _filter: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_query(
+  _this: *mut c_void,
+  _query_language: *mut c_void,
+  _query: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_query_async(
+  _this: *mut c_void,
+  _query_language: *mut c_void,
+  _query: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_exec_method_async(
+  _this: *mut c_void,
+  _object_path: *mut c_void,
+  _method_name: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _input: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
 }
 
 unsafe extern "system" fn cancel_async_call(_this: *mut c_void, _sink: *mut c_void) -> HRESULT {
@@ -166,31 +526,237 @@ unsafe extern "system" fn cancel_async_call(_this: *mut c_void, _sink: *mut c_vo
 
 unsafe extern "system" fn query_object_sink(
   _this: *mut c_void,
-  flags: i32,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   result: *mut *mut c_void,
 ) -> HRESULT {
   if result.is_null() {
     return E_POINTER;
   }
   QUERY_OBJECT_SINK_CALLS.fetch_add(1, Ordering::SeqCst);
-  LAST_FLAGS.store(flags, Ordering::SeqCst);
-  let output = std::ptr::with_exposed_provenance_mut::<c_void>(0x1234);
-  LAST_OUTPUT_ADDRESS.store(output.expose_provenance(), Ordering::SeqCst);
+  LAST_FLAGS.store(flags.0, Ordering::SeqCst);
   unsafe {
-    *result = output;
+    *result = std::ptr::null_mut();
+  }
+  LAST_OUTPUT_ADDRESS.store(0, Ordering::SeqCst);
+  E_NOTIMPL
+}
+
+static SERVICES_VTABLE: IWbemServices_Vtbl = IWbemServices_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: services_query_interface,
+    AddRef: services_add_ref,
+    Release: services_release,
+  },
+  OpenNamespace: open_namespace,
+  CancelAsyncCall: cancel_async_call,
+  QueryObjectSink: query_object_sink,
+  GetObject: get_object,
+  GetObjectAsync: unimplemented_wbem_async_single,
+  PutClass: put_class,
+  PutClassAsync: unimplemented_wbem_async_single,
+  DeleteClass: delete_class,
+  DeleteClassAsync: unimplemented_wbem_async_single,
+  CreateClassEnum: unimplemented_wbem_enum,
+  CreateClassEnumAsync: unimplemented_wbem_async_single,
+  PutInstance: put_instance,
+  PutInstanceAsync: unimplemented_wbem_async_single,
+  DeleteInstance: delete_instance,
+  DeleteInstanceAsync: unimplemented_wbem_async_single,
+  CreateInstanceEnum: unimplemented_wbem_enum,
+  CreateInstanceEnumAsync: unimplemented_wbem_async_single,
+  ExecQuery: unimplemented_wbem_query,
+  ExecQueryAsync: unimplemented_wbem_query_async,
+  ExecNotificationQuery: unimplemented_wbem_query,
+  ExecNotificationQueryAsync: unimplemented_wbem_query_async,
+  ExecMethod: exec_method,
+  ExecMethodAsync: unimplemented_wbem_exec_method_async,
+};
+
+unsafe extern "system" fn class_object_out(
+  _this: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _value: *mut VARIANT,
+  _kind: *mut i32,
+  _flavor: *mut i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_put(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _value: *const VARIANT,
+  _kind: i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_name(_this: *mut c_void, _name: PCWSTR) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get_names(
+  _this: *mut c_void,
+  _qualifier_name: PCWSTR,
+  _flags: WBEM_CONDITION_FLAG_TYPE,
+  _qualifier_value: *const VARIANT,
+  _names: *mut *mut SAFEARRAY,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_flags(_this: *mut c_void, _flags: i32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_next(
+  _this: *mut c_void,
+  _flags: i32,
+  _name: *mut *mut c_void,
+  _value: *mut VARIANT,
+  _kind: *mut i32,
+  _flavor: *mut i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_end_enumeration(_this: *mut c_void) -> HRESULT {
+  CLASS_OBJECT_END_ENUMERATION_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn class_object_named_out(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_flags_out(
+  _this: *mut c_void,
+  _flags: i32,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_compare(
+  _this: *mut c_void,
+  _flags: WBEM_COMPARISON_FLAG,
+  _other: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get_method(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _input: *mut *mut c_void,
+  _output: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_put_method(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _input: *mut c_void,
+  _output: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_next_method(
+  _this: *mut c_void,
+  _flags: i32,
+  _name: *mut *mut c_void,
+  _input: *mut *mut c_void,
+  _output: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_end_method_enumeration(_this: *mut c_void) -> HRESULT {
+  E_NOTIMPL
+}
+
+static CLASS_OBJECT_VTABLE: IWbemClassObject_Vtbl = IWbemClassObject_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: class_object_query_interface,
+    AddRef: class_object_add_ref,
+    Release: class_object_release,
+  },
+  GetQualifierSet: class_object_out,
+  Get: class_object_get,
+  Put: class_object_put,
+  Delete: class_object_name,
+  GetNames: class_object_get_names,
+  BeginEnumeration: class_object_flags,
+  Next: class_object_next,
+  EndEnumeration: class_object_end_enumeration,
+  GetPropertyQualifierSet: class_object_named_out,
+  Clone: class_object_out,
+  GetObjectText: class_object_flags_out,
+  SpawnDerivedClass: class_object_flags_out,
+  SpawnInstance: class_object_flags_out,
+  CompareTo: class_object_compare,
+  GetPropertyOrigin: class_object_named_out,
+  InheritsFrom: class_object_name,
+  GetMethod: class_object_get_method,
+  PutMethod: class_object_put_method,
+  DeleteMethod: class_object_name,
+  BeginMethodEnumeration: class_object_flags,
+  NextMethod: class_object_next_method,
+  EndMethodEnumeration: class_object_end_method_enumeration,
+  GetMethodQualifierSet: class_object_named_out,
+  GetMethodOrigin: class_object_named_out,
+};
+
+unsafe extern "system" fn call_result_object(
+  _this: *mut c_void,
+  _timeout: i32,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn call_result_get_status(
+  _this: *mut c_void,
+  _timeout: i32,
+  status: *mut i32,
+) -> HRESULT {
+  if status.is_null() {
+    return E_POINTER;
+  }
+  CALL_RESULT_GET_STATUS_CALLS.fetch_add(1, Ordering::SeqCst);
+  unsafe {
+    *status = 0;
   }
   HRESULT(0)
 }
 
-static VTABLE: GeneratedIWbemServicesVtbl = GeneratedIWbemServicesVtbl {
+static CALL_RESULT_VTABLE: IWbemCallResult_Vtbl = IWbemCallResult_Vtbl {
   base__: IUnknown_Vtbl {
-    QueryInterface: query_interface,
-    AddRef: add_ref,
-    Release: release,
+    QueryInterface: call_result_query_interface,
+    AddRef: call_result_add_ref,
+    Release: call_result_release,
   },
-  open_namespace,
-  cancel_async_call,
-  query_object_sink,
+  GetResultObject: call_result_object,
+  GetResultString: call_result_object,
+  GetResultServices: call_result_object,
+  GetCallStatus: call_result_get_status,
 };
 
 #[napi(object)]
@@ -205,10 +771,18 @@ pub struct GeneratedUnsafeComStats {
   pub open_namespace_result_argument_null: bool,
   pub open_namespace_context_argument_null: bool,
   pub open_namespace_last_flags: i32,
+  pub get_object_calls: u32,
+  pub put_class_calls: u32,
+  pub delete_class_calls: u32,
+  pub put_instance_calls: u32,
+  pub delete_instance_calls: u32,
+  pub exec_method_calls: u32,
   pub query_object_sink_calls: u32,
   pub last_flags: i32,
   pub current_ref_count: u32,
   pub last_output_address: u32,
+  pub class_object_end_enumeration_calls: u32,
+  pub call_result_get_status_calls: u32,
 }
 
 #[napi]
@@ -217,24 +791,82 @@ pub fn create_generated_iwbem_services_fake() -> napi::Result<DynWinRTValue> {
   ADD_REF_CALLS.store(0, Ordering::SeqCst);
   RELEASE_CALLS.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_CALLS.store(0, Ordering::SeqCst);
-  OPEN_NAMESPACE_MODE.store(0, Ordering::SeqCst);
+  WMI_CONDITIONAL_MODE.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_SLOT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_RESULT_SLOT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_RESULT_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_LAST_FLAGS.store(0, Ordering::SeqCst);
+  GET_OBJECT_CALLS.store(0, Ordering::SeqCst);
+  PUT_CLASS_CALLS.store(0, Ordering::SeqCst);
+  DELETE_CLASS_CALLS.store(0, Ordering::SeqCst);
+  PUT_INSTANCE_CALLS.store(0, Ordering::SeqCst);
+  DELETE_INSTANCE_CALLS.store(0, Ordering::SeqCst);
+  EXEC_METHOD_CALLS.store(0, Ordering::SeqCst);
   QUERY_OBJECT_SINK_CALLS.store(0, Ordering::SeqCst);
   LAST_FLAGS.store(0, Ordering::SeqCst);
   CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
   LAST_OUTPUT_ADDRESS.store(0, Ordering::SeqCst);
+  CLASS_OBJECT_END_ENUMERATION_CALLS.store(0, Ordering::SeqCst);
+  CALL_RESULT_GET_STATUS_CALLS.store(0, Ordering::SeqCst);
 
   let object = Box::new(GeneratedIWbemServicesFake {
-    vtable: &VTABLE,
+    services_vtable: &SERVICES_VTABLE,
+    class_object_vtable: &CLASS_OBJECT_VTABLE,
+    call_result_vtable: &CALL_RESULT_VTABLE,
     references: AtomicU32::new(1),
   });
   let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
   crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn probe_generated_iwbem_services_unimplemented_slots(
+  value: &DynWinRTValue,
+) -> napi::Result<()> {
+  let raw = match value.winrt() {
+    dynwinrt::WinRTValue::Object(object) => object.as_raw(),
+    _ => {
+      return Err(napi::Error::from_reason(
+        "IWbemServices probe requires a managed COM object",
+      ));
+    }
+  };
+  let vtable = unsafe { *(raw.cast::<*const IWbemServices_Vtbl>()) };
+  let mut object_sink = std::ptr::null_mut();
+  let query_object_sink =
+    unsafe { ((*vtable).QueryObjectSink)(raw, WBEM_GENERIC_FLAG_TYPE(0), &mut object_sink) };
+  let get_object_async = unsafe {
+    ((*vtable).GetObjectAsync)(
+      raw,
+      std::ptr::null_mut(),
+      WBEM_GENERIC_FLAG_TYPE(0),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+    )
+  };
+  let exec_method_async = unsafe {
+    ((*vtable).ExecMethodAsync)(
+      raw,
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      WBEM_GENERIC_FLAG_TYPE(0),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+    )
+  };
+  if query_object_sink != E_NOTIMPL
+    || !object_sink.is_null()
+    || get_object_async != E_NOTIMPL
+    || exec_method_async != E_NOTIMPL
+  {
+    return Err(napi::Error::from_reason(
+      "IWbemServices unimplemented slot probe returned an unexpected HRESULT",
+    ));
+  }
+  Ok(())
 }
 
 #[napi]
@@ -255,22 +887,932 @@ pub fn generated_unsafe_com_stats() -> GeneratedUnsafeComStats {
       .load(Ordering::SeqCst)
       != 0,
     open_namespace_last_flags: OPEN_NAMESPACE_LAST_FLAGS.load(Ordering::SeqCst),
+    get_object_calls: GET_OBJECT_CALLS.load(Ordering::SeqCst),
+    put_class_calls: PUT_CLASS_CALLS.load(Ordering::SeqCst),
+    delete_class_calls: DELETE_CLASS_CALLS.load(Ordering::SeqCst),
+    put_instance_calls: PUT_INSTANCE_CALLS.load(Ordering::SeqCst),
+    delete_instance_calls: DELETE_INSTANCE_CALLS.load(Ordering::SeqCst),
+    exec_method_calls: EXEC_METHOD_CALLS.load(Ordering::SeqCst),
     query_object_sink_calls: QUERY_OBJECT_SINK_CALLS.load(Ordering::SeqCst),
     last_flags: LAST_FLAGS.load(Ordering::SeqCst),
     current_ref_count: CURRENT_REF_COUNT.load(Ordering::SeqCst),
     last_output_address: LAST_OUTPUT_ADDRESS.load(Ordering::SeqCst) as u32,
+    class_object_end_enumeration_calls: CLASS_OBJECT_END_ENUMERATION_CALLS.load(Ordering::SeqCst),
+    call_result_get_status_calls: CALL_RESULT_GET_STATUS_CALLS.load(Ordering::SeqCst),
   }
 }
 
 #[napi]
-pub fn set_generated_iwbem_services_open_namespace_mode(mode: i32) -> napi::Result<()> {
+pub fn set_generated_iwbem_services_conditional_mode(mode: i32) -> napi::Result<()> {
   if !matches!(mode, -1..=1) {
     return Err(napi::Error::from_reason(
-      "IWbemServices::OpenNamespace test mode must be -1, 0, or 1",
+      "IWbemServices conditional test mode must be -1, 0, or 1",
     ));
   }
-  OPEN_NAMESPACE_MODE.store(mode, Ordering::SeqCst);
+  WMI_CONDITIONAL_MODE.store(mode, Ordering::SeqCst);
   Ok(())
+}
+
+#[repr(C)]
+struct GeneratedThumbnailProviderVtbl {
+  base__: IUnknown_Vtbl,
+  get_thumbnail: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut i32) -> HRESULT,
+}
+
+#[repr(C)]
+struct GeneratedThumbnailProviderFake {
+  vtable: *const GeneratedThumbnailProviderVtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn thumbnail_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IID_ITHUMBNAIL_PROVIDER {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    thumbnail_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn thumbnail_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedThumbnailProviderFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  THUMBNAIL_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn thumbnail_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedThumbnailProviderFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  THUMBNAIL_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedThumbnailProviderFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn get_thumbnail(
+  _this: *mut c_void,
+  size: u32,
+  bitmap: *mut *mut c_void,
+  alpha_type: *mut i32,
+) -> HRESULT {
+  THUMBNAIL_CALLS.fetch_add(1, Ordering::SeqCst);
+  if size == 0 || bitmap.is_null() || alpha_type.is_null() {
+    return E_POINTER;
+  }
+  if unsafe { !(*bitmap).is_null() } {
+    return E_POINTER;
+  }
+  let bitmap_value = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+  if bitmap_value.is_invalid() {
+    return HRESULT(0x80004005u32 as i32);
+  }
+  unsafe {
+    *bitmap = bitmap_value.0;
+    *alpha_type = 2;
+  }
+  HRESULT(0)
+}
+
+static THUMBNAIL_VTABLE: GeneratedThumbnailProviderVtbl = GeneratedThumbnailProviderVtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: thumbnail_query_interface,
+    AddRef: thumbnail_add_ref,
+    Release: thumbnail_release,
+  },
+  get_thumbnail,
+};
+
+#[napi(object)]
+pub struct GeneratedThumbnailProviderStats {
+  pub calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_thumbnail_provider_fake() -> napi::Result<DynWinRTValue> {
+  THUMBNAIL_CALLS.store(0, Ordering::SeqCst);
+  THUMBNAIL_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedThumbnailProviderFake {
+    vtable: &THUMBNAIL_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn generated_thumbnail_provider_stats() -> GeneratedThumbnailProviderStats {
+  GeneratedThumbnailProviderStats {
+    calls: THUMBNAIL_CALLS.load(Ordering::SeqCst),
+    current_ref_count: THUMBNAIL_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedDataObjectVtbl {
+  base__: IUnknown_Vtbl,
+  get_data: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+    *mut windows::Win32::System::Com::STGMEDIUM,
+  ) -> HRESULT,
+  get_data_here: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+    *mut windows::Win32::System::Com::STGMEDIUM,
+  ) -> HRESULT,
+  query_get_data: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+  ) -> HRESULT,
+  get_canonical_format_etc: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+    *mut windows::Win32::System::Com::FORMATETC,
+  ) -> HRESULT,
+  set_data: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+    *const windows::Win32::System::Com::STGMEDIUM,
+    i32,
+  ) -> HRESULT,
+  enum_format_etc: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT,
+  d_advise: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::Win32::System::Com::FORMATETC,
+    u32,
+    *mut c_void,
+    *mut u32,
+  ) -> HRESULT,
+  d_unadvise: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+  enum_d_advise: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
+}
+
+#[repr(C)]
+struct GeneratedDataObjectFake {
+  vtable: *const GeneratedDataObjectVtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn data_object_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IID_IDATA_OBJECT {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    data_object_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn data_object_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDataObjectFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  DATA_OBJECT_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn data_object_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDataObjectFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  DATA_OBJECT_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedDataObjectFake>()));
+    }
+  }
+  count
+}
+
+fn valid_hglobal_format(format: *const windows::Win32::System::Com::FORMATETC) -> bool {
+  !format.is_null()
+    && unsafe {
+      (*format).cfFormat == 13
+        && (*format).ptd.is_null()
+        && (*format).dwAspect == 1
+        && (*format).lindex == -1
+        && (*format).tymed == windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+    }
+}
+
+unsafe fn write_hglobal_bytes(
+  medium: *mut windows::Win32::System::Com::STGMEDIUM,
+  bytes: &[u8],
+) -> HRESULT {
+  if medium.is_null() || unsafe { (*medium).tymed != 0 } {
+    return E_POINTER;
+  }
+  let handle = match unsafe {
+    windows::Win32::System::Memory::GlobalAlloc(
+      windows::Win32::System::Memory::GMEM_MOVEABLE | windows::Win32::System::Memory::GMEM_ZEROINIT,
+      bytes.len(),
+    )
+  } {
+    Ok(handle) => handle,
+    Err(_) => return HRESULT(0x8007000eu32 as i32),
+  };
+  let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+  if data.is_null() {
+    unsafe {
+      let _ = windows::Win32::Foundation::GlobalFree(Some(handle));
+    }
+    return HRESULT(0x8007000eu32 as i32);
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast::<u8>(), bytes.len());
+    let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+    medium.write(windows::Win32::System::Com::STGMEDIUM {
+      tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+      u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+      pUnkForRelease: std::mem::ManuallyDrop::new(None),
+    });
+  }
+  DATA_OBJECT_LAST_OUTPUT_HANDLE.store(handle.0.addr(), Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe fn read_hglobal_bytes(
+  medium: *const windows::Win32::System::Com::STGMEDIUM,
+) -> Option<Vec<u8>> {
+  if medium.is_null()
+    || unsafe { (*medium).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+  {
+    return None;
+  }
+  let handle = unsafe { (*medium).u.hGlobal };
+  let size = unsafe { windows::Win32::System::Memory::GlobalSize(handle) };
+  let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+  if size > 0 && data.is_null() {
+    return None;
+  }
+  let bytes = if size == 0 {
+    Vec::new()
+  } else {
+    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec()
+  };
+  if !data.is_null() {
+    unsafe {
+      let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+    }
+  }
+  Some(bytes)
+}
+
+fn hglobal_handle_released(address: usize) -> bool {
+  address != 0
+    && unsafe {
+      windows::Win32::System::Memory::GlobalSize(windows::Win32::Foundation::HGLOBAL(
+        std::ptr::with_exposed_provenance_mut(address),
+      ))
+    } == 0
+}
+
+unsafe extern "system" fn data_object_get_data(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+  medium: *mut windows::Win32::System::Com::STGMEDIUM,
+) -> HRESULT {
+  DATA_OBJECT_GET_DATA_CALLS.fetch_add(1, Ordering::SeqCst);
+  if !valid_hglobal_format(format) {
+    return HRESULT(0x80040064u32 as i32);
+  }
+  unsafe { write_hglobal_bytes(medium, &[1, 2, 3, 4]) }
+}
+
+unsafe extern "system" fn data_object_get_data_here(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+  medium: *mut windows::Win32::System::Com::STGMEDIUM,
+) -> HRESULT {
+  DATA_OBJECT_GET_DATA_HERE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if !valid_hglobal_format(format) {
+    return HRESULT(0x80040064u32 as i32);
+  }
+  let Some(mut bytes) = (unsafe { read_hglobal_bytes(medium) }) else {
+    return HRESULT(0x80040069u32 as i32);
+  };
+  if bytes.len() < 4 {
+    return HRESULT(0x80030070u32 as i32);
+  }
+  bytes[..4].copy_from_slice(&[9, 8, 7, 6]);
+  let handle = unsafe { (*medium).u.hGlobal };
+  DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE.store(handle.0.addr(), Ordering::SeqCst);
+  let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast::<u8>(), bytes.len());
+    let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn data_object_query_get_data(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+) -> HRESULT {
+  DATA_OBJECT_QUERY_GET_DATA_CALLS.fetch_add(1, Ordering::SeqCst);
+  if valid_hglobal_format(format) {
+    HRESULT(0)
+  } else {
+    HRESULT(0x80040064u32 as i32)
+  }
+}
+
+unsafe extern "system" fn data_object_get_canonical_format_etc(
+  _this: *mut c_void,
+  input: *const windows::Win32::System::Com::FORMATETC,
+  output: *mut windows::Win32::System::Com::FORMATETC,
+) -> HRESULT {
+  DATA_OBJECT_CANONICAL_CALLS.fetch_add(1, Ordering::SeqCst);
+  if !valid_hglobal_format(input) || output.is_null() {
+    return E_POINTER;
+  }
+  let mode = DATA_OBJECT_CANONICAL_MODE.load(Ordering::SeqCst);
+  match mode {
+    -1 => return HRESULT(0x80004005u32 as i32),
+    2 => return HRESULT(0x40130),
+    3 => {
+      // DATA_S_SAMEFORMATETC must not decode these invalid scalar fields.
+      unsafe {
+        output.write(windows::Win32::System::Com::FORMATETC {
+          cfFormat: 0,
+          ptd: std::ptr::null_mut(),
+          dwAspect: u32::MAX,
+          lindex: i32::MIN,
+          tymed: u32::MAX,
+        });
+      }
+      return HRESULT(0x40130);
+    }
+    _ => {}
+  }
+  unsafe {
+    output.write(windows::Win32::System::Com::FORMATETC {
+      cfFormat: 1,
+      ptd: std::ptr::null_mut(),
+      dwAspect: 4,
+      lindex: 7,
+      tymed: match mode {
+        0 => 0,
+        1 => u32::MAX,
+        _ => windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+      },
+    });
+  }
+  HRESULT(if mode == 4 { 1 } else { 0 })
+}
+
+unsafe extern "system" fn data_object_set_data(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+  medium: *const windows::Win32::System::Com::STGMEDIUM,
+  release_medium: i32,
+) -> HRESULT {
+  DATA_OBJECT_SET_DATA_CALLS.fetch_add(1, Ordering::SeqCst);
+  DATA_OBJECT_LAST_SET_RELEASE.store(release_medium, Ordering::SeqCst);
+  if !medium.is_null()
+    && unsafe { (*medium).tymed } == windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+  {
+    DATA_OBJECT_LAST_SET_DATA_HANDLE
+      .store(unsafe { (*medium).u.hGlobal }.0.addr(), Ordering::SeqCst);
+  }
+  if !valid_hglobal_format(format)
+    || release_medium != 0
+    || unsafe { read_hglobal_bytes(medium) }.as_deref() != Some(&[5, 6, 7, 8])
+  {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn data_object_enum_format_etc(
+  _this: *mut c_void,
+  _direction: u32,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn data_object_d_advise(
+  _this: *mut c_void,
+  _format: *const windows::Win32::System::Com::FORMATETC,
+  _flags: u32,
+  _sink: *mut c_void,
+  _connection: *mut u32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn data_object_d_unadvise(_this: *mut c_void, _connection: u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn data_object_enum_d_advise(
+  _this: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+static DATA_OBJECT_VTABLE: GeneratedDataObjectVtbl = GeneratedDataObjectVtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: data_object_query_interface,
+    AddRef: data_object_add_ref,
+    Release: data_object_release,
+  },
+  get_data: data_object_get_data,
+  get_data_here: data_object_get_data_here,
+  query_get_data: data_object_query_get_data,
+  get_canonical_format_etc: data_object_get_canonical_format_etc,
+  set_data: data_object_set_data,
+  enum_format_etc: data_object_enum_format_etc,
+  d_advise: data_object_d_advise,
+  d_unadvise: data_object_d_unadvise,
+  enum_d_advise: data_object_enum_d_advise,
+};
+
+#[napi(object)]
+pub struct GeneratedDataObjectStats {
+  pub get_data_calls: u32,
+  pub get_data_here_calls: u32,
+  pub query_get_data_calls: u32,
+  pub canonical_calls: u32,
+  pub set_data_calls: u32,
+  pub last_set_release: i32,
+  pub output_released: bool,
+  pub get_data_here_input_released: bool,
+  pub set_data_input_released: bool,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_data_object_fake() -> napi::Result<DynWinRTValue> {
+  DATA_OBJECT_GET_DATA_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_GET_DATA_HERE_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_QUERY_GET_DATA_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_CANONICAL_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_CANONICAL_MODE.store(0, Ordering::SeqCst);
+  DATA_OBJECT_SET_DATA_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_LAST_SET_RELEASE.store(-1, Ordering::SeqCst);
+  DATA_OBJECT_LAST_OUTPUT_HANDLE.store(0, Ordering::SeqCst);
+  DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE.store(0, Ordering::SeqCst);
+  DATA_OBJECT_LAST_SET_DATA_HANDLE.store(0, Ordering::SeqCst);
+  DATA_OBJECT_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedDataObjectFake {
+    vtable: &DATA_OBJECT_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_data_object_canonical_mode(mode: i32) -> napi::Result<()> {
+  if !matches!(mode, -1..=4) {
+    return Err(napi::Error::from_reason(
+      "IDataObject canonical test mode must be between -1 and 4",
+    ));
+  }
+  DATA_OBJECT_CANONICAL_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
+pub fn generated_data_object_stats() -> GeneratedDataObjectStats {
+  GeneratedDataObjectStats {
+    get_data_calls: DATA_OBJECT_GET_DATA_CALLS.load(Ordering::SeqCst),
+    get_data_here_calls: DATA_OBJECT_GET_DATA_HERE_CALLS.load(Ordering::SeqCst),
+    query_get_data_calls: DATA_OBJECT_QUERY_GET_DATA_CALLS.load(Ordering::SeqCst),
+    canonical_calls: DATA_OBJECT_CANONICAL_CALLS.load(Ordering::SeqCst),
+    set_data_calls: DATA_OBJECT_SET_DATA_CALLS.load(Ordering::SeqCst),
+    last_set_release: DATA_OBJECT_LAST_SET_RELEASE.load(Ordering::SeqCst),
+    output_released: hglobal_handle_released(DATA_OBJECT_LAST_OUTPUT_HANDLE.load(Ordering::SeqCst)),
+    get_data_here_input_released: hglobal_handle_released(
+      DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE.load(Ordering::SeqCst),
+    ),
+    set_data_input_released: hglobal_handle_released(
+      DATA_OBJECT_LAST_SET_DATA_HANDLE.load(Ordering::SeqCst),
+    ),
+    current_ref_count: DATA_OBJECT_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedOleCacheFake {
+  vtable: *const IOleCache2_Vtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn ole_cache_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IOleCache::IID && *iid != IOleCache2::IID {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    ole_cache_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn ole_cache_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedOleCacheFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  OLE_CACHE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn ole_cache_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedOleCacheFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  OLE_CACHE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedOleCacheFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn ole_cache_cache(
+  _this: *mut c_void,
+  _format: *const windows::Win32::System::Com::FORMATETC,
+  _flags: u32,
+  _connection: *mut u32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_uncache(_this: *mut c_void, _connection: u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_enum_cache(
+  _this: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_init_cache(
+  _this: *mut c_void,
+  _data_object: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_set_data(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+  medium: *const windows::Win32::System::Com::STGMEDIUM,
+  release_medium: BOOL,
+) -> HRESULT {
+  OLE_CACHE_SET_DATA_CALLS.fetch_add(1, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_RELEASE.store(release_medium.0, Ordering::SeqCst);
+  // Reject ownership transfer before touching the borrowed allocation.
+  if release_medium.0 != 0 {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if !valid_hglobal_format(format)
+    || medium.is_null()
+    || unsafe { (*medium).pUnkForRelease.is_some() }
+    || unsafe { read_hglobal_bytes(medium) }.as_deref() != Some(&[5, 6, 7, 8])
+  {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  OLE_CACHE_LAST_SET_DATA_HANDLE.store(unsafe { (*medium).u.hGlobal }.0.addr(), Ordering::SeqCst);
+  OLE_CACHE_BORROWED_INPUT_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn ole_cache_update_cache(
+  _this: *mut c_void,
+  _data_object: *mut c_void,
+  _flags: UPDFCACHE_FLAGS,
+  _reserved: *const c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_discard_cache(_this: *mut c_void, _options: u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+static OLE_CACHE_VTABLE: IOleCache2_Vtbl = IOleCache2_Vtbl {
+  base__: IOleCache_Vtbl {
+    base__: IUnknown_Vtbl {
+      QueryInterface: ole_cache_query_interface,
+      AddRef: ole_cache_add_ref,
+      Release: ole_cache_release,
+    },
+    Cache: ole_cache_cache,
+    Uncache: ole_cache_uncache,
+    EnumCache: ole_cache_enum_cache,
+    InitCache: ole_cache_init_cache,
+    SetData: ole_cache_set_data,
+  },
+  UpdateCache: ole_cache_update_cache,
+  DiscardCache: ole_cache_discard_cache,
+};
+
+#[napi(object)]
+pub struct GeneratedOleCacheStats {
+  pub set_data_calls: u32,
+  pub borrowed_input_calls: u32,
+  pub last_set_release: i32,
+  pub set_data_input_released: bool,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_ole_cache_fake() -> napi::Result<DynWinRTValue> {
+  OLE_CACHE_SET_DATA_CALLS.store(0, Ordering::SeqCst);
+  OLE_CACHE_BORROWED_INPUT_CALLS.store(0, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_RELEASE.store(-1, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_DATA_HANDLE.store(0, Ordering::SeqCst);
+  OLE_CACHE_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedOleCacheFake {
+    vtable: &OLE_CACHE_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn generated_ole_cache_stats() -> GeneratedOleCacheStats {
+  GeneratedOleCacheStats {
+    set_data_calls: OLE_CACHE_SET_DATA_CALLS.load(Ordering::SeqCst),
+    borrowed_input_calls: OLE_CACHE_BORROWED_INPUT_CALLS.load(Ordering::SeqCst),
+    last_set_release: OLE_CACHE_LAST_SET_RELEASE.load(Ordering::SeqCst),
+    set_data_input_released: hglobal_handle_released(
+      OLE_CACHE_LAST_SET_DATA_HANDLE.load(Ordering::SeqCst),
+    ),
+    current_ref_count: OLE_CACHE_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+struct DeviceControlCounters {
+  record_calls: AtomicU32,
+  null_format_calls: AtomicU32,
+  explicit_format_calls: AtomicU32,
+  add_ref_calls: AtomicU32,
+  release_calls: AtomicU32,
+  current_ref_count: AtomicU32,
+}
+
+impl DeviceControlCounters {
+  const fn new() -> Self {
+    Self {
+      record_calls: AtomicU32::new(0),
+      null_format_calls: AtomicU32::new(0),
+      explicit_format_calls: AtomicU32::new(0),
+      add_ref_calls: AtomicU32::new(0),
+      release_calls: AtomicU32::new(0),
+      current_ref_count: AtomicU32::new(0),
+    }
+  }
+
+  fn reset(&self) {
+    for counter in [
+      &self.record_calls,
+      &self.null_format_calls,
+      &self.explicit_format_calls,
+      &self.add_ref_calls,
+      &self.release_calls,
+    ] {
+      counter.store(0, Ordering::SeqCst);
+    }
+    self.current_ref_count.store(1, Ordering::SeqCst);
+  }
+
+  fn snapshot(&self) -> GeneratedDeviceControlStats {
+    GeneratedDeviceControlStats {
+      record_calls: self.record_calls.load(Ordering::SeqCst),
+      null_format_calls: self.null_format_calls.load(Ordering::SeqCst),
+      explicit_format_calls: self.explicit_format_calls.load(Ordering::SeqCst),
+      add_ref_calls: self.add_ref_calls.load(Ordering::SeqCst),
+      release_calls: self.release_calls.load(Ordering::SeqCst),
+      current_ref_count: self.current_ref_count.load(Ordering::SeqCst),
+    }
+  }
+}
+
+static MDSP_DEVICE_CONTROL_COUNTERS: DeviceControlCounters = DeviceControlCounters::new();
+static WMDM_DEVICE_CONTROL_COUNTERS: DeviceControlCounters = DeviceControlCounters::new();
+
+#[repr(C)]
+struct GeneratedDeviceControlFake {
+  vtable: *const IUnknown_Vtbl,
+  iid: GUID,
+  references: AtomicU32,
+  counters: &'static DeviceControlCounters,
+}
+
+unsafe extern "system" fn device_control_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    let object = &*this.cast::<GeneratedDeviceControlFake>();
+    if *iid != IUnknown::IID && *iid != object.iid {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    device_control_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn device_control_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDeviceControlFake>() };
+  object.counters.add_ref_calls.fetch_add(1, Ordering::SeqCst);
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  object
+    .counters
+    .current_ref_count
+    .store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn device_control_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDeviceControlFake>() };
+  object.counters.release_calls.fetch_add(1, Ordering::SeqCst);
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  object
+    .counters
+    .current_ref_count
+    .store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedDeviceControlFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn device_control_get_u32(_this: *mut c_void, _value: *mut u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn device_control_no_args(_this: *mut c_void) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn device_control_record(
+  this: *mut c_void,
+  format: *const WAVEFORMATEX,
+) -> HRESULT {
+  let counters = unsafe { &*this.cast::<GeneratedDeviceControlFake>() }.counters;
+  counters.record_calls.fetch_add(1, Ordering::SeqCst);
+  if format.is_null() {
+    counters.null_format_calls.fetch_add(1, Ordering::SeqCst);
+    return HRESULT(0);
+  }
+  // WAVEFORMATEX is packed; copy the header without forming aligned field references.
+  let header = unsafe { format.read_unaligned() };
+  if header.wFormatTag != 1
+    || header.nChannels != 2
+    || header.nSamplesPerSec != 48_000
+    || header.nAvgBytesPerSec != 192_000
+    || header.nBlockAlign != 4
+    || header.wBitsPerSample != 16
+    || header.cbSize != 0
+  {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  counters
+    .explicit_format_calls
+    .fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn device_control_seek(
+  _this: *mut c_void,
+  _mode: u32,
+  _offset: i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+static MDSP_DEVICE_CONTROL_VTABLE: IMDSPDeviceControl_Vtbl = IMDSPDeviceControl_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: device_control_query_interface,
+    AddRef: device_control_add_ref,
+    Release: device_control_release,
+  },
+  GetDCStatus: device_control_get_u32,
+  GetCapabilities: device_control_get_u32,
+  Play: device_control_no_args,
+  Record: device_control_record,
+  Pause: device_control_no_args,
+  Resume: device_control_no_args,
+  Stop: device_control_no_args,
+  Seek: device_control_seek,
+};
+
+static WMDM_DEVICE_CONTROL_VTABLE: IWMDMDeviceControl_Vtbl = IWMDMDeviceControl_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: device_control_query_interface,
+    AddRef: device_control_add_ref,
+    Release: device_control_release,
+  },
+  GetStatus: device_control_get_u32,
+  GetCapabilities: device_control_get_u32,
+  Play: device_control_no_args,
+  Record: device_control_record,
+  Pause: device_control_no_args,
+  Resume: device_control_no_args,
+  Stop: device_control_no_args,
+  Seek: device_control_seek,
+};
+
+fn create_generated_device_control_fake(
+  vtable: &'static IUnknown_Vtbl,
+  iid: GUID,
+  counters: &'static DeviceControlCounters,
+) -> napi::Result<DynWinRTValue> {
+  counters.reset();
+  // Each object has its own full SDK vtable and advertises only its matching IID.
+  let object = Box::new(GeneratedDeviceControlFake {
+    vtable,
+    iid,
+    references: AtomicU32::new(1),
+    counters,
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi(object)]
+pub struct GeneratedDeviceControlStats {
+  pub record_calls: u32,
+  pub null_format_calls: u32,
+  pub explicit_format_calls: u32,
+  pub add_ref_calls: u32,
+  pub release_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_mdsp_device_control_fake() -> napi::Result<DynWinRTValue> {
+  create_generated_device_control_fake(
+    &MDSP_DEVICE_CONTROL_VTABLE.base__,
+    IMDSPDeviceControl::IID,
+    &MDSP_DEVICE_CONTROL_COUNTERS,
+  )
+}
+
+#[napi]
+pub fn create_generated_wmdm_device_control_fake() -> napi::Result<DynWinRTValue> {
+  create_generated_device_control_fake(
+    &WMDM_DEVICE_CONTROL_VTABLE.base__,
+    IWMDMDeviceControl::IID,
+    &WMDM_DEVICE_CONTROL_COUNTERS,
+  )
+}
+
+#[napi]
+pub fn generated_mdsp_device_control_stats() -> GeneratedDeviceControlStats {
+  MDSP_DEVICE_CONTROL_COUNTERS.snapshot()
+}
+
+#[napi]
+pub fn generated_wmdm_device_control_stats() -> GeneratedDeviceControlStats {
+  WMDM_DEVICE_CONTROL_COUNTERS.snapshot()
 }
 
 #[repr(C)]
@@ -296,6 +1838,7 @@ struct GeneratedAudioClientVtbl {
 struct GeneratedAudioClientFake {
   vtable: *const GeneratedAudioClientVtbl,
   references: AtomicU32,
+  supports_audio_client: bool,
 }
 
 unsafe extern "system" fn audio_query_interface(
@@ -308,7 +1851,8 @@ unsafe extern "system" fn audio_query_interface(
   }
   unsafe {
     *result = std::ptr::null_mut();
-    if *iid != IUnknown::IID && *iid != IID_IAUDIO_CLIENT {
+    let object = &*this.cast::<GeneratedAudioClientFake>();
+    if *iid != IUnknown::IID && (*iid != IID_IAUDIO_CLIENT || !object.supports_audio_client) {
       return E_NOINTERFACE;
     }
     *result = this;
@@ -338,16 +1882,62 @@ unsafe extern "system" fn audio_release(this: *mut c_void) -> u32 {
   count
 }
 
+fn valid_audio_format(format: *const c_void) -> bool {
+  if format.is_null() {
+    return false;
+  }
+  let bytes = unsafe { std::slice::from_raw_parts(format.cast::<u8>(), 18) };
+  u16::from_le_bytes([bytes[0], bytes[1]]) != 0
+    && u16::from_le_bytes([bytes[2], bytes[3]]) != 0
+    && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) != 0
+    && u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != 0
+    && u16::from_le_bytes([bytes[12], bytes[13]]) != 0
+}
+
+unsafe fn write_audio_format(
+  output: *mut *mut c_void,
+  channels: u16,
+  samples_per_second: u32,
+  bits_per_sample: u16,
+) -> HRESULT {
+  if output.is_null() {
+    return E_POINTER;
+  }
+  let block_align = channels * (bits_per_sample / 8);
+  let average_bytes_per_second = samples_per_second * u32::from(block_align);
+  let mut bytes = Vec::with_capacity(18);
+  bytes.extend_from_slice(&1u16.to_le_bytes());
+  bytes.extend_from_slice(&channels.to_le_bytes());
+  bytes.extend_from_slice(&samples_per_second.to_le_bytes());
+  bytes.extend_from_slice(&average_bytes_per_second.to_le_bytes());
+  bytes.extend_from_slice(&block_align.to_le_bytes());
+  bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+  bytes.extend_from_slice(&0u16.to_le_bytes());
+  let allocation = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.len()) };
+  if allocation.is_null() {
+    return HRESULT(0x8007000eu32 as i32);
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.cast(), bytes.len());
+    output.write(allocation);
+  }
+  HRESULT(0)
+}
+
 unsafe extern "system" fn audio_initialize(
   _this: *mut c_void,
   _share_mode: i32,
   _stream_flags: u32,
   _buffer_duration: i64,
   _periodicity: i64,
-  _format: *mut c_void,
+  format: *mut c_void,
   _session: *const GUID,
 ) -> HRESULT {
-  E_NOTIMPL
+  if !valid_audio_format(format.cast_const()) {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  AUDIO_INITIALIZE_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
 }
 
 unsafe extern "system" fn audio_get_u32(_this: *mut c_void, _value: *mut u32) -> HRESULT {
@@ -364,8 +1954,14 @@ unsafe extern "system" fn audio_is_format_supported(
   format: *mut c_void,
   closest: *mut *mut c_void,
 ) -> HRESULT {
-  if format.is_null() || closest.is_null() {
+  if !valid_audio_format(format.cast_const()) {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if (share_mode == 0 && closest.is_null()) || (share_mode == 1 && !closest.is_null()) {
     return E_POINTER;
+  }
+  if !matches!(share_mode, 0 | 1) {
+    return HRESULT(0x80070057u32 as i32);
   }
   AUDIO_IS_FORMAT_SUPPORTED_CALLS.fetch_add(1, Ordering::SeqCst);
   AUDIO_LAST_SHARE_MODE.store(share_mode, Ordering::SeqCst);
@@ -373,26 +1969,32 @@ unsafe extern "system" fn audio_is_format_supported(
     unsafe { u32::from(*format.cast::<u16>()) },
     Ordering::SeqCst,
   );
-  let allocation = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(16) };
-  if allocation.is_null() {
-    return HRESULT(0x8007000eu32 as i32);
+  if !closest.is_null() {
+    unsafe {
+      *closest = std::ptr::null_mut();
+    }
   }
-  unsafe {
-    allocation.cast::<u32>().write(0xaabb_ccdd);
-    *closest = allocation;
-  }
-  if share_mode == 2 {
-    HRESULT(0x80004005u32 as i32)
-  } else {
-    HRESULT(1)
+  match AUDIO_FORMAT_SUPPORT_MODE.load(Ordering::SeqCst) {
+    0 => HRESULT(0),
+    1 if share_mode == 0 => {
+      let result = unsafe { write_audio_format(closest, 1, 44_100, 16) };
+      if result.is_ok() {
+        HRESULT(1)
+      } else {
+        result
+      }
+    }
+    1 => HRESULT(0x88890008u32 as i32),
+    _ => HRESULT(0x80004005u32 as i32),
   }
 }
 
 unsafe extern "system" fn audio_get_mix_format(
   _this: *mut c_void,
-  _format: *mut *mut c_void,
+  format: *mut *mut c_void,
 ) -> HRESULT {
-  E_NOTIMPL
+  AUDIO_GET_MIX_FORMAT_CALLS.fetch_add(1, Ordering::SeqCst);
+  unsafe { write_audio_format(format, 2, 48_000, 16) }
 }
 
 unsafe extern "system" fn audio_get_device_period(
@@ -495,7 +2097,9 @@ static AUDIO_VTABLE: GeneratedAudioClientVtbl = GeneratedAudioClientVtbl {
 
 #[napi(object)]
 pub struct GeneratedAudioClientStats {
+  pub initialize_calls: u32,
   pub is_format_supported_calls: u32,
+  pub get_mix_format_calls: u32,
   pub get_service_calls: u32,
   pub last_share_mode: i32,
   pub last_format_tag: u32,
@@ -504,12 +2108,14 @@ pub struct GeneratedAudioClientStats {
   pub current_ref_count: u32,
 }
 
-#[napi]
-pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
+fn create_generated_audio_client_unknown(supports_audio_client: bool) -> IUnknown {
+  AUDIO_INITIALIZE_CALLS.store(0, Ordering::SeqCst);
   AUDIO_IS_FORMAT_SUPPORTED_CALLS.store(0, Ordering::SeqCst);
+  AUDIO_GET_MIX_FORMAT_CALLS.store(0, Ordering::SeqCst);
   AUDIO_GET_SERVICE_CALLS.store(0, Ordering::SeqCst);
   AUDIO_LAST_SHARE_MODE.store(0, Ordering::SeqCst);
   AUDIO_LAST_FORMAT_TAG.store(0, Ordering::SeqCst);
+  AUDIO_FORMAT_SUPPORT_MODE.store(0, Ordering::SeqCst);
   AUDIO_GET_SERVICE_MODE.store(0, Ordering::SeqCst);
   AUDIO_ADD_REF_CALLS.store(0, Ordering::SeqCst);
   AUDIO_RELEASE_CALLS.store(0, Ordering::SeqCst);
@@ -517,9 +2123,25 @@ pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
   let object = Box::new(GeneratedAudioClientFake {
     vtable: &AUDIO_VTABLE,
     references: AtomicU32::new(1),
+    supports_audio_client,
   });
-  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
-  crate::com::apartment_bound_com_object(unknown)
+  unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) }
+}
+
+#[napi]
+pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
+  crate::com::apartment_bound_com_object(create_generated_audio_client_unknown(true))
+}
+
+#[napi]
+pub fn set_generated_audio_client_format_support_mode(mode: i32) -> napi::Result<()> {
+  if !(-1..=1).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated audio format-support mode must be -1, 0, or 1",
+    ));
+  }
+  AUDIO_FORMAT_SUPPORT_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
 }
 
 #[napi]
@@ -536,13 +2158,388 @@ pub fn set_generated_audio_client_get_service_mode(mode: i32) -> napi::Result<()
 #[napi]
 pub fn generated_audio_client_stats() -> GeneratedAudioClientStats {
   GeneratedAudioClientStats {
+    initialize_calls: AUDIO_INITIALIZE_CALLS.load(Ordering::SeqCst),
     is_format_supported_calls: AUDIO_IS_FORMAT_SUPPORTED_CALLS.load(Ordering::SeqCst),
+    get_mix_format_calls: AUDIO_GET_MIX_FORMAT_CALLS.load(Ordering::SeqCst),
     get_service_calls: AUDIO_GET_SERVICE_CALLS.load(Ordering::SeqCst),
     last_share_mode: AUDIO_LAST_SHARE_MODE.load(Ordering::SeqCst),
     last_format_tag: AUDIO_LAST_FORMAT_TAG.load(Ordering::SeqCst),
     add_ref_calls: AUDIO_ADD_REF_CALLS.load(Ordering::SeqCst),
     release_calls: AUDIO_RELEASE_CALLS.load(Ordering::SeqCst),
     current_ref_count: AUDIO_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedMmDeviceFake {
+  vtable: *const IMMDevice_Vtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn mm_device_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IMMDevice::IID {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    mm_device_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_add_ref(this: *mut c_void) -> u32 {
+  MM_DEVICE_ADD_REF_CALLS.fetch_add(1, Ordering::SeqCst);
+  let object = unsafe { &*this.cast::<GeneratedMmDeviceFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  MM_DEVICE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn mm_device_release(this: *mut c_void) -> u32 {
+  MM_DEVICE_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let object = unsafe { &*this.cast::<GeneratedMmDeviceFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  MM_DEVICE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedMmDeviceFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn mm_device_activate(
+  _this: *mut c_void,
+  iid: *const GUID,
+  context: CLSCTX,
+  activation_params: *const PROPVARIANT,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  MM_DEVICE_ACTIVATE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if iid.is_null() || result.is_null() || context.0 != 1 || !activation_params.is_null() {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if unsafe { iid.read_unaligned() } != IID_IAUDIO_CLIENT {
+    return E_NOINTERFACE;
+  }
+  if unsafe { !(*result).is_null() } {
+    return E_POINTER;
+  }
+  MM_DEVICE_VALIDATED_ACTIVATE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let mode = MM_DEVICE_ACTIVATE_MODE.load(Ordering::SeqCst);
+  match mode {
+    -1 => return HRESULT(0x80004005u32 as i32),
+    1 => return HRESULT(0),
+    _ => {}
+  }
+  // The negative-QI mode still returns a real object with a complete audio vtable.
+  let audio = create_generated_audio_client_unknown(mode != 2);
+  MM_DEVICE_RETURNED_AUDIO_OBJECTS.fetch_add(1, Ordering::SeqCst);
+  unsafe {
+    result.write(audio.into_raw());
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_open_property_store(
+  _this: *mut c_void,
+  _access: STGM,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn mm_device_get_id(_this: *mut c_void, result: *mut PWSTR) -> HRESULT {
+  MM_DEVICE_GET_ID_CALLS.fetch_add(1, Ordering::SeqCst);
+  if result.is_null() || unsafe { !(*result).0.is_null() } {
+    return E_POINTER;
+  }
+  let id = "dynwinrt-fake-audio-endpoint"
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect::<Vec<_>>();
+  let allocation =
+    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(id.len() * std::mem::size_of::<u16>()) }
+      .cast::<u16>();
+  if allocation.is_null() {
+    return HRESULT(0x8007000eu32 as i32);
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(id.as_ptr(), allocation, id.len());
+    result.write(PWSTR(allocation));
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_get_state(
+  _this: *mut c_void,
+  _state: *mut DEVICE_STATE,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+static MM_DEVICE_VTABLE: IMMDevice_Vtbl = IMMDevice_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: mm_device_query_interface,
+    AddRef: mm_device_add_ref,
+    Release: mm_device_release,
+  },
+  Activate: mm_device_activate,
+  OpenPropertyStore: mm_device_open_property_store,
+  GetId: mm_device_get_id,
+  GetState: mm_device_get_state,
+};
+
+#[napi(object)]
+pub struct GeneratedMmDeviceStats {
+  pub activate_calls: u32,
+  pub validated_activate_calls: u32,
+  pub returned_audio_objects: u32,
+  pub get_id_calls: u32,
+  pub add_ref_calls: u32,
+  pub release_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_mm_device_fake() -> napi::Result<DynWinRTValue> {
+  MM_DEVICE_ACTIVATE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_VALIDATED_ACTIVATE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_ACTIVATE_MODE.store(0, Ordering::SeqCst);
+  MM_DEVICE_RETURNED_AUDIO_OBJECTS.store(0, Ordering::SeqCst);
+  MM_DEVICE_GET_ID_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_ADD_REF_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_RELEASE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedMmDeviceFake {
+    vtable: &MM_DEVICE_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_mm_device_activate_mode(mode: i32) -> napi::Result<()> {
+  if !(-1..=2).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated IMMDevice Activate mode must be -1, 0, 1, or 2",
+    ));
+  }
+  MM_DEVICE_ACTIVATE_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
+pub fn generated_mm_device_stats() -> GeneratedMmDeviceStats {
+  GeneratedMmDeviceStats {
+    activate_calls: MM_DEVICE_ACTIVATE_CALLS.load(Ordering::SeqCst),
+    validated_activate_calls: MM_DEVICE_VALIDATED_ACTIVATE_CALLS.load(Ordering::SeqCst),
+    returned_audio_objects: MM_DEVICE_RETURNED_AUDIO_OBJECTS.load(Ordering::SeqCst),
+    get_id_calls: MM_DEVICE_GET_ID_CALLS.load(Ordering::SeqCst),
+    add_ref_calls: MM_DEVICE_ADD_REF_CALLS.load(Ordering::SeqCst),
+    release_calls: MM_DEVICE_RELEASE_CALLS.load(Ordering::SeqCst),
+    current_ref_count: MM_DEVICE_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedEvaluationContextVtbl {
+  base__: IUnknown_Vtbl,
+  bind_value: unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT,
+  get_value_by_name:
+    unsafe extern "system" fn(*mut c_void, *const u16, *mut *mut c_void) -> HRESULT,
+  clear: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+}
+
+#[repr(C)]
+struct GeneratedEvaluationContextFake {
+  vtable: *const GeneratedEvaluationContextVtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn evaluation_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IID_IWINML_EVALUATION_CONTEXT {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    evaluation_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn evaluation_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedEvaluationContextFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  EVALUATION_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn evaluation_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedEvaluationContextFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  EVALUATION_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedEvaluationContextFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn evaluation_bind_value(
+  _this: *mut c_void,
+  descriptor: *const c_void,
+) -> HRESULT {
+  if descriptor.is_null() {
+    return E_POINTER;
+  }
+  EVALUATION_BIND_VALUE_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn evaluation_get_value_by_name(
+  this: *mut c_void,
+  name: *const u16,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if name.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  EVALUATION_GET_VALUE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let mode = EVALUATION_OUTPUT_MODE.load(Ordering::SeqCst);
+  unsafe {
+    *result = std::ptr::null_mut();
+    if mode == 2 {
+      return HRESULT(0);
+    }
+    if mode == -2 {
+      return HRESULT(0x80004005u32 as i32);
+    }
+    if mode.abs() == 3 {
+      *result = windows::core::BSTR::from("stage2-bstr")
+        .into_raw()
+        .cast_mut()
+        .cast();
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 4 {
+      *result =
+        windows::Win32::System::Memory::LocalAlloc(windows::Win32::System::Memory::LMEM_FIXED, 32)
+          .map_or(std::ptr::null_mut(), |value| value.0);
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 5 {
+      *result =
+        windows::Win32::System::Memory::GlobalAlloc(windows::Win32::System::Memory::GMEM_FIXED, 32)
+          .map_or(std::ptr::null_mut(), |value| value.0);
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 6 {
+      *result = windows::Win32::System::Com::CoTaskMemAlloc(16);
+      if !(*result).is_null() {
+        (*result).cast::<u32>().write(0xaabb_ccdd);
+      }
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else if (*result).is_null() {
+        HRESULT(0x8007000eu32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    evaluation_add_ref(this);
+    *result = this;
+  }
+  if mode == 1 {
+    HRESULT(0x80004005u32 as i32)
+  } else {
+    HRESULT(0)
+  }
+}
+
+unsafe extern "system" fn evaluation_clear(_this: *mut c_void) -> HRESULT {
+  HRESULT(0)
+}
+
+static EVALUATION_VTABLE: GeneratedEvaluationContextVtbl = GeneratedEvaluationContextVtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: evaluation_query_interface,
+    AddRef: evaluation_add_ref,
+    Release: evaluation_release,
+  },
+  bind_value: evaluation_bind_value,
+  get_value_by_name: evaluation_get_value_by_name,
+  clear: evaluation_clear,
+};
+
+#[napi(object)]
+pub struct GeneratedEvaluationContextStats {
+  pub bind_value_calls: u32,
+  pub get_value_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_evaluation_context_fake() -> napi::Result<DynWinRTValue> {
+  EVALUATION_BIND_VALUE_CALLS.store(0, Ordering::SeqCst);
+  EVALUATION_GET_VALUE_CALLS.store(0, Ordering::SeqCst);
+  EVALUATION_OUTPUT_MODE.store(0, Ordering::SeqCst);
+  EVALUATION_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedEvaluationContextFake {
+    vtable: &EVALUATION_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_evaluation_context_output_mode(mode: i32) -> napi::Result<()> {
+  if !(-6..=6).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated evaluation output mode must be between -6 and 6",
+    ));
+  }
+  EVALUATION_OUTPUT_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
+pub fn generated_evaluation_context_stats() -> GeneratedEvaluationContextStats {
+  GeneratedEvaluationContextStats {
+    bind_value_calls: EVALUATION_BIND_VALUE_CALLS.load(Ordering::SeqCst),
+    get_value_calls: EVALUATION_GET_VALUE_CALLS.load(Ordering::SeqCst),
+    current_ref_count: EVALUATION_CURRENT_REF_COUNT.load(Ordering::SeqCst),
   }
 }
 

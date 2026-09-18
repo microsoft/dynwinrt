@@ -1,0 +1,171 @@
+{
+  "contracts": [
+    {
+      "contract": {
+        "parameterIndex": 1,
+        "value": "native-null"
+      },
+      "entryId": "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.openstream.slot-4.param-1-reserved1.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-openstream"
+        }
+      ],
+      "familyId": "com.reserved-null-input.v1",
+      "kind": "null-input",
+      "reason": "IStorage::OpenStream requires reserved1 to be native null",
+      "selector": {
+        "absoluteSlot": 4,
+        "declaringIid": "0000000b-0000-0000-c000-000000000046",
+        "interface": {
+          "iid": "0000000b-0000-0000-c000-000000000046",
+          "name": "IStorage",
+          "namespace": "Windows.Win32.System.Com.StructuredStorage"
+        },
+        "method": "OpenStream",
+        "parameterCount": 5,
+        "parameters": [
+          {
+            "constAttribute": true,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 0,
+            "name": "pwcsName",
+            "nativeType": "Windows.Win32.Foundation.PWSTR",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "in",
+            "index": 1,
+            "name": "reserved1",
+            "nativeType": "void",
+            "optional": true,
+            "pointerDepth": 1
+          },
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 2,
+            "name": "grfMode",
+            "nativeType": "Windows.Win32.System.Com.STGM",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 3,
+            "name": "reserved2",
+            "nativeType": "u32",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 4,
+            "name": "ppstm",
+            "nativeType": "Windows.Win32.System.Com.IStream",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "A72D743B32CCE55D17F522F6695095CF08BBCDCF4FA54E29E3275B24B30716F0"
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "parameterIndex": 1,
+        "value": "native-null"
+      },
+      "entryId": "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.enumelements.slot-11.param-1-reserved2.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-enumelements"
+        }
+      ],
+      "familyId": "com.reserved-null-input.v1",
+      "kind": "null-input",
+      "reason": "IStorage::EnumElements requires reserved2 to be native null",
+      "selector": {
+        "absoluteSlot": 11,
+        "declaringIid": "0000000b-0000-0000-c000-000000000046",
+        "interface": {
+          "iid": "0000000b-0000-0000-c000-000000000046",
+          "name": "IStorage",
+          "namespace": "Windows.Win32.System.Com.StructuredStorage"
+        },
+        "method": "EnumElements",
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 0,
+            "name": "reserved1",
+            "nativeType": "u32",
+            "optional": true,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "in",
+            "index": 1,
+            "name": "reserved2",
+            "nativeType": "void",
+            "optional": true,
+            "pointerDepth": 1
+          },
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 2,
+            "name": "reserved3",
+            "nativeType": "u32",
+            "optional": true,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 3,
+            "name": "ppenum",
+            "nativeType": "Windows.Win32.System.Com.StructuredStorage.IEnumSTATSTG",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "77D49C81B42D6B6961239D06E42A8728EC4CDDDFFF0A0174DD3FC248D17071C6"
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 2
+}

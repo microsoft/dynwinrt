@@ -1,6 +1,6 @@
 ---
 name: e2e-test
-description: Run end-to-end tests for dynwinrt code generation and WinRT/Classic COM API invocation
+description: Run end-to-end tests for dynwinrt code generation and WinRT, Classic COM, and flat Win32 API invocation
 tools:
   - powershell
   - view
@@ -24,13 +24,18 @@ You run and manage the dynwinrt end-to-end test suite.
 # Classic COM only (requires Windows.Win32.winmd)
 .\tests\e2e\e2e_test.ps1 -SkipBuild -Lang com
 
+# Flat Win32 only (requires Windows.Win32.winmd)
+.\tests\e2e\e2e_test.ps1 -SkipBuild -Lang win32
+
 # Full build + test
 .\tests\e2e\e2e_test.ps1
 ```
 
 ## Adding test cases
 
-Add entries to `tests/e2e/e2e_specs.json`. See `tests/e2e/e2e_specs.schema.json` for the field definitions.
+Add WinRT entries to `tests/e2e/e2e_specs.json`. See `tests/e2e/e2e_specs.schema.json` for the field definitions.
+Classic COM and flat Win32 scenarios use the runners under `tests/e2e/runners/com/`
+and `tests/e2e/runners/win32/`, wired through `tests/e2e/e2e_test.ps1`.
 
 Safe WinRT APIs to test (no extra dependencies):
 - `Windows.Foundation`: Uri, PropertyValue, WwwFormUrlDecoder, MemoryBuffer
@@ -43,5 +48,5 @@ Avoid APIs that need WinAppSDK, network, or user interaction.
 ## Diagnosing failures
 
 1. Check `tests/e2e/e2e_generated/results_py.json` or `results_ts.json` for structured failure details
-2. Inspect generated code in `tests/e2e/e2e_generated/python_bindings/`, `ts/`, or `com/`
+2. Inspect generated code in `tests/e2e/e2e_generated/python_bindings/`, `ts/`, `com/`, or `win32/`
 3. Common issues: circular imports in codegen, naming mismatch (Python snake_case vs TS camelCase)

@@ -33,6 +33,9 @@ pub(in crate::codegen::com) enum ComOwnership {
     PropVariantOwned,
     ExcepInfoOwned,
     StatStgOwned,
+    FormatEtcOwned,
+    StgMediumOwned,
+    AudioFormatOwned,
     LocalOwned,
     HandleOwned(HandleCleanup),
     CustomOwned(CleanupId),
@@ -51,6 +54,9 @@ pub(in crate::codegen::com) enum Cleanup {
     PropVariantClear,
     ExcepInfoClear,
     StatStgClear,
+    FormatEtcClear,
+    ReleaseStgMedium,
+    CoTaskMemAudioFormat,
     LocalFree,
     Handle(HandleCleanup),
     Custom(CleanupId),
@@ -111,6 +117,9 @@ pub(super) fn validate_ownership_cleanup(
         | (ComOwnership::PropVariantOwned, Cleanup::PropVariantClear)
         | (ComOwnership::ExcepInfoOwned, Cleanup::ExcepInfoClear)
         | (ComOwnership::StatStgOwned, Cleanup::StatStgClear)
+        | (ComOwnership::FormatEtcOwned, Cleanup::FormatEtcClear)
+        | (ComOwnership::StgMediumOwned, Cleanup::ReleaseStgMedium)
+        | (ComOwnership::AudioFormatOwned, Cleanup::CoTaskMemAudioFormat)
         | (ComOwnership::LocalOwned, Cleanup::LocalFree) => true,
         (ComOwnership::HandleOwned(expected), Cleanup::Handle(actual)) => expected == actual,
         (ComOwnership::CustomOwned(expected), Cleanup::Custom(actual)) => expected == actual,

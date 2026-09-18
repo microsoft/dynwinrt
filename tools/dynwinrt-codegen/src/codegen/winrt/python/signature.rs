@@ -399,7 +399,7 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
-            format!("DynWinRTValue.from_i32({})", name)
+            format!("DynWinRTValue.from_hresult({})", name)
         }
         TypeMeta::Struct {
             name: struct_name, ..
@@ -438,7 +438,7 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
-            format!("DynWinRTValue.from_i32({})", name)
+            format!("DynWinRTValue.from_hresult({})", name)
         }
         TypeMeta::Struct {
             name: struct_name, ..
@@ -781,7 +781,8 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::I8 => format!("{}.to_i8_list()", arr_expr),
         TypeMeta::U8 => format!("{}.to_bytes()", arr_expr),
         TypeMeta::I16 => format!("{}.to_i16_list()", arr_expr),
-        TypeMeta::U16 | TypeMeta::Char16 => format!("{}.to_u16_list()", arr_expr),
+        TypeMeta::U16 => format!("{}.to_u16_list()", arr_expr),
+        TypeMeta::Char16 => format!("[chr(value) for value in {}.to_u16_list()]", arr_expr),
         TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
         typ @ TypeMeta::Enum { name, .. } if context.is_known_type(typ) => format!(
             "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",

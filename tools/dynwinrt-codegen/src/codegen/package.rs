@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Emit `package.json` for a generated bindings package containing WinRT,
-//! Classic COM, or both domains.
+//! Classic COM, and flat Win32 domains.
 
 use std::collections::BTreeSet;
 
@@ -34,10 +34,17 @@ pub fn render_package_json(input: &PackageManifestInput<'_>) -> String {
 }
 
 pub fn render_bindings_package_json(input: &BindingsPackageManifestInput<'_>) -> String {
+    render_bindings_package_json_with_win32(input, &BTreeSet::new())
+}
+
+pub fn render_bindings_package_json_with_win32(
+    input: &BindingsPackageManifestInput<'_>,
+    win32_namespaces: &BTreeSet<String>,
+) -> String {
     if input.has_winrt_root {
-        render_winrt_package(input)
+        render_winrt_package(input, win32_namespaces)
     } else {
-        render_com_only_package(input.has_com_output)
+        render_native_package(input.has_com_output, win32_namespaces)
     }
 }
 
@@ -93,7 +100,10 @@ pub fn render_python_setup_cfg(build_cache_key: &str) -> String {
     )
 }
 
-fn render_winrt_package(input: &BindingsPackageManifestInput<'_>) -> String {
+fn render_winrt_package(
+    input: &BindingsPackageManifestInput<'_>,
+    win32_namespaces: &BTreeSet<String>,
+) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"name\": \"@winapp/bindings\",\n");
@@ -123,12 +133,13 @@ fn render_winrt_package(input: &BindingsPackageManifestInput<'_>) -> String {
     }
 
     append_com_exports(&mut out, input.has_com_output, true);
+    append_win32_exports(&mut out, win32_namespaces, true);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
 }
 
-fn render_com_only_package(has_com_output: bool) -> String {
+fn render_native_package(has_com_output: bool, win32_namespaces: &BTreeSet<String>) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"name\": \"@winapp/bindings\",\n");
@@ -136,6 +147,7 @@ fn render_com_only_package(has_com_output: bool) -> String {
     out.push_str("  \"sideEffects\": false,\n");
     out.push_str("  \"exports\": {\n");
     append_com_exports(&mut out, has_com_output, false);
+    append_win32_exports(&mut out, win32_namespaces, has_com_output);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
@@ -159,6 +171,38 @@ fn append_com_exports(out: &mut String, include_com: bool, has_previous: bool) {
     out.push_str("      \"import\": \"./com/*.js\",\n");
     out.push_str("      \"require\": \"./com/*.js\"\n");
     out.push_str("    }");
+}
+
+fn append_win32_exports(out: &mut String, namespaces: &BTreeSet<String>, has_previous: bool) {
+    if namespaces.is_empty() {
+        return;
+    }
+    if has_previous {
+        out.push_str(",\n");
+    }
+    out.push_str("    \"./win32\": {\n");
+    out.push_str("      \"types\": \"./win32/index.d.ts\",\n");
+    out.push_str("      \"import\": \"./win32/index.mjs\",\n");
+    out.push_str("      \"require\": \"./win32/index.js\"\n");
+    out.push_str("    },\n");
+    out.push_str("    \"./win32/*\": {\n");
+    out.push_str("      \"types\": \"./win32/*.d.ts\",\n");
+    out.push_str("      \"import\": \"./win32/*.js\",\n");
+    out.push_str("      \"require\": \"./win32/*.js\"\n");
+    out.push_str("    }");
+    for namespace in namespaces {
+        out.push_str(&format!(",\n    \"./win32/{namespace}\": {{\n"));
+        out.push_str(&format!(
+            "      \"types\": \"./win32/{namespace}/index.d.ts\",\n"
+        ));
+        out.push_str(&format!(
+            "      \"import\": \"./win32/{namespace}/index.mjs\",\n"
+        ));
+        out.push_str(&format!(
+            "      \"require\": \"./win32/{namespace}/index.js\"\n"
+        ));
+        out.push_str("    }");
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +281,38 @@ mod tests {
         assert!(out.contains("\"import\": \"./com/*.js\""));
         assert!(out.contains("\"require\": \"./com/index.js\""));
         assert!(out.contains("\"require\": \"./com/*.js\""));
+    }
+
+    #[test]
+    fn win32_package_preserves_root_isolation_and_namespace_exports() {
+        let namespaces = BTreeSet::from(["windows/win32/system/registry".to_string()]);
+        for has_winrt_root in [false, true] {
+            for has_com_output in [false, true] {
+                let names = BTreeSet::from(["windows/foundation/Uri".to_string()]);
+                let input = BindingsPackageManifestInput {
+                    has_winrt_root,
+                    has_com_output,
+                    winrt_subpath_names: &names,
+                };
+                let output = render_bindings_package_json_with_win32(&input, &namespaces);
+                let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+                let exports = output["exports"].as_object().unwrap();
+                assert_eq!(exports.contains_key("."), has_winrt_root);
+                assert_eq!(exports.contains_key("./com"), has_com_output);
+                assert!(exports.contains_key("./win32"));
+                assert_eq!(
+                    exports["./win32/windows/win32/system/registry"]["import"],
+                    "./win32/windows/win32/system/registry/index.mjs"
+                );
+                if has_winrt_root {
+                    let baseline: serde_json::Value =
+                        serde_json::from_str(&render_bindings_package_json(&input)).unwrap();
+                    for (key, value) in baseline["exports"].as_object().unwrap() {
+                        assert_eq!(&exports[key], value);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

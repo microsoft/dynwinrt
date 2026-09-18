@@ -16,7 +16,10 @@ mod result;
 mod roapi;
 mod signature;
 mod value;
+pub mod win32;
 mod winapp;
+mod winrt_implementation;
+mod winui_module;
 mod xaml_application;
 
 mod array;
@@ -59,6 +62,11 @@ pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
 pub use crate::value::{ArrayOfIUnknownData, AsyncInfo, WinRTValue};
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
+pub use crate::winrt_implementation::{
+    WinRtImplementation, WinRtImplementationCallback, WinRtImplementationPlan,
+    WinRtInterfaceDefinition, WinRtMethodDefinition, WinRtThreadingPolicy,
+};
+pub use crate::winui_module::WinUiProcessModules;
 pub use crate::xaml_application::{
     XamlRuntimeClassActivator, XamlRuntimeClassRegistration, create_xaml_application,
     register_xaml_runtime_class,

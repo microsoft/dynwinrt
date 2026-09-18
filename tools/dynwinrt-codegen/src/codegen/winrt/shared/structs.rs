@@ -91,7 +91,13 @@ pub(crate) fn collect_used_structs_from_class(class: &ClassMeta) -> Vec<TypeMeta
 pub(crate) fn collect_used_structs_from_iface(iface: &InterfaceMeta) -> Vec<TypeMeta> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for m in &iface.methods {
+    for m in iface.methods.iter().chain(
+        iface
+            .implementation_metadata
+            .delegates
+            .iter()
+            .map(|delegate| &delegate.invoke),
+    ) {
         for p in &m.params {
             collect_used_structs_from_type(&p.typ, &mut seen, &mut result);
         }

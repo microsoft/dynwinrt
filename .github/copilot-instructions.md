@@ -10,6 +10,10 @@ This file provides instructions for the GitHub Copilot coding agent when working
 - **Python binding** (`bindings/py/`) — PyO3 binding for Python
 - **Code generator** (`tools/dynwinrt-codegen/`) — Source for dynwinrt-codegen, which generates typed JavaScript (`.js`) + TypeScript declarations (`.d.ts`), or Python (`.py` + optional `.pyi`) wrappers from .winmd metadata
 
+Classic COM and flat Win32 have separate JavaScript/TypeScript projections and
+runtime subpaths. Flat Win32 uses its own native ABI, resource, and contract
+model; see [the Win32 architecture](../docs/architecture/flat-win32-contracts.md).
+
 ## Build & Test Commands
 
 ```bash
@@ -53,9 +57,9 @@ The E2E test framework validates the full pipeline: reading .winmd metadata → 
    - `instantiate`: how to create an instance (`activate`, `static_factory`, or `none`)
    - `checks`: array of assertions (`property_equals`, `property_exists`, `method_equals`, `method_result_contains`, `static_equals`, `static_not_null`)
 
-2. **Runners** (`tests/e2e/runners/py_runner.py`, `tests/e2e/runners/ts_runner.ts`, and `tests/e2e/runners/com/*.mjs`) execute generated WinRT and Classic COM bindings.
+2. **Runners** (`tests/e2e/runners/py_runner.py`, `tests/e2e/runners/ts_runner.ts`, `tests/e2e/runners/com/*.mjs`, and `tests/e2e/runners/win32/*.mjs`) execute generated WinRT, Classic COM, and flat Win32 bindings.
 
-3. **Orchestrator** (`tests/e2e/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for the Classic COM suite; it requires `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
+3. **Orchestrator** (`tests/e2e/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for Classic COM or `-Lang win32` for flat Win32; both require `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
 
 4. **Adding new test cases**: Add entries to `tests/e2e/e2e_specs.json`:
 ```json

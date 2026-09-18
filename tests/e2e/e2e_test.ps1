@@ -3,7 +3,8 @@
 # Licensed under the MIT License.
 #
 # E2E test orchestrator: build, generate, run language-specific runners, collect results.
-# Test logic lives in runners/py_runner.py, runners/ts_runner.ts, and runners/com/*.mjs.
+# Test logic lives in runners/py_runner.py, runners/ts_runner.ts, runners/com/*.mjs,
+# and runners/implementation_{py.py,js.mjs}.
 #
 # Usage:
 #   .\tests\e2e\e2e_test.ps1                    # Full (build + generate + test)
@@ -11,6 +12,9 @@
 #   .\tests\e2e\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e\e2e_test.ps1 -Lang ts           # TypeScript only
 #   .\tests\e2e\e2e_test.ps1 -Lang com          # Classic COM only
+#   .\tests\e2e\e2e_test.ps1 -Lang win32        # Contract-driven flat Win32 slice
+#   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite implementations -Lang py,ts -KeepGenerated
+#   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite standard  # Existing WinRT/COM cases only
 
 param(
     [switch]$SkipBuild,
@@ -18,12 +22,18 @@ param(
     [string]$CargoProfile = "release",
     [string]$CargoTarget,
     [string]$Python,
-    [ValidateSet("py", "ts", "com")]
-    [string[]]$Lang = @("py", "ts", "com")
+    [ValidateSet("all", "standard", "implementations")]
+    [string]$Suite = "all",
+    [ValidateSet("py", "ts", "com", "win32")]
+    [string[]]$Lang = @("py", "ts", "com", "win32")
 )
 
 $ErrorActionPreference = "Stop"
 $langWasExplicit = $PSBoundParameters.ContainsKey("Lang")
+if ($Suite -eq "implementations") {
+    $Lang = @($Lang | Where-Object { $_ -in @("py", "ts") })
+    if ($Lang.Count -eq 0) { throw "The implementations suite requires -Lang py and/or ts." }
+}
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $specsFile = Join-Path $PSScriptRoot "e2e_specs.json"
 $e2eDir = Join-Path $PSScriptRoot "e2e_generated"
@@ -37,6 +47,7 @@ $comStreamDir = Join-Path $comBindingsDir "stream"
 $comAutomationDir = Join-Path $comBindingsDir "automation"
 $comInfrastructureDir = Join-Path $comBindingsDir "infrastructure"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
+$win32BindingsDir = Join-Path $e2eDir "win32"
 [string[]]$cargoProfileArgs = @(
     if ($CargoProfile -eq "release") {
         "--release"
@@ -59,8 +70,11 @@ Write-Host "=== dynwinrt E2E Test ===" -ForegroundColor Cyan
 # --------------------------------------------------------------------------
 # Detect available tools
 # --------------------------------------------------------------------------
+$venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
 $pythonExe = if ($Python) {
     (Resolve-Path -LiteralPath $Python).Path
+} elseif (Test-Path -LiteralPath $venvPython -PathType Leaf) {
+    (Resolve-Path -LiteralPath $venvPython).Path
 } else {
     (Get-Command python -ErrorAction SilentlyContinue).Source
 }
@@ -71,9 +85,9 @@ if ("py" -in $Lang -and -not $hasPython) {
     Write-Host "  SKIP Python (not installed)" -ForegroundColor DarkYellow
     $Lang = $Lang | Where-Object { $_ -ne "py" }
 }
-if (("ts" -in $Lang -or "com" -in $Lang) -and -not $hasNode) {
+if (("ts" -in $Lang -or "com" -in $Lang -or "win32" -in $Lang) -and -not $hasNode) {
     Write-Host "  SKIP JavaScript E2E (Node.js not installed)" -ForegroundColor DarkYellow
-    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com") })
+    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com", "win32") })
 }
 
 function Find-Win32Winmd {
@@ -95,15 +109,15 @@ function Find-Win32Winmd {
 }
 
 $win32Winmd = $null
-if ("com" -in $Lang) {
+if ("com" -in $Lang -or "win32" -in $Lang) {
     $win32Winmd = Find-Win32Winmd
     if (-not $win32Winmd) {
         if ($langWasExplicit -or $env:DYNWINRT_REQUIRE_WIN32_METADATA -eq "1") {
-            Write-Error "Classic COM E2E requires Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
+            Write-Error "Classic COM and flat Win32 E2E require Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
             exit 1
         }
-        Write-Host "  SKIP Classic COM (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
-        $Lang = @($Lang | Where-Object { $_ -ne "com" })
+        Write-Host "  SKIP Classic COM and flat Win32 (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
+        $Lang = @($Lang | Where-Object { $_ -notin @("com", "win32") })
     } else {
         $env:DYNWINRT_WIN32_WINMD = $win32Winmd
         Write-Host "  Win32 metadata: $win32Winmd"
@@ -111,6 +125,25 @@ if ("com" -in $Lang) {
 }
 
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
+
+function Invoke-NodeRunner([string]$runnerPath, [string[]]$runnerArguments = @(), [int]$timeoutSeconds = 180) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new((Get-Command node).Source)
+    $start.UseShellExecute = $false
+    $start.ArgumentList.Add($runnerPath)
+    foreach ($argument in $runnerArguments) { $start.ArgumentList.Add($argument) }
+    $process = [System.Diagnostics.Process]::Start($start)
+    try {
+        if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+            Write-Host "TIMEOUT: $runnerPath exceeded ${timeoutSeconds}s" -ForegroundColor Red
+            Stop-Process -Id $process.Id -Force
+            $process.WaitForExit()
+            return 124
+        }
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
 
 # --------------------------------------------------------------------------
 # Build (optional)
@@ -128,7 +161,7 @@ if (-not $SkipBuild) {
             if (-not (Test-Path $venvPython)) {
                 & $pythonExe -m venv .venv
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python virtual environment creation failed"; exit 1 }
-                & $venvPython -m pip install pytest maturin --quiet
+                & $venvPython -m pip install pytest maturin mypy "coverage>=7.15,<8" --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python test dependency installation failed"; exit 1 }
             }
             $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
@@ -151,23 +184,34 @@ if (-not $SkipBuild) {
         Pop-Location
     }
 
-    if ("ts" -in $Lang -or "com" -in $Lang) {
+    if ("ts" -in $Lang -or "com" -in $Lang -or "win32" -in $Lang) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
         $napi = Join-Path $root "bindings\js\node_modules\.bin\napi.cmd"
         if (-not (Test-Path -LiteralPath $napi)) { Write-Error "NAPI CLI is missing: $napi"; exit 1 }
-        & $napi build --no-const-enum --platform @cargoProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
+        # NAPI uses --profile literally as the artifact directory. Cargo's
+        # built-in dev profile writes to debug, so let NAPI select its default
+        # debug build rather than looking for a nonexistent target/.../dev DLL.
+        [string[]]$napiProfileArgs = @(
+            if ($CargoProfile -eq "release") { "--release" }
+            elseif ($CargoProfile -ne "dev") { "--profile"; $CargoProfile }
+        )
+        & $napi build --no-const-enum --platform @napiProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
         npm run build:entrypoints --silent
         if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
-} else {
-    $venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
-    if (-not $Python -and (Test-Path $venvPython)) {
-        $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
-    }
+}
+
+# Focused and full suites share preparation. Branch before reading or deleting
+# any standard fixtures, preserving their retained output in focused runs.
+if ($Suite -eq "implementations") {
+    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
+        -Lang $Lang -Python $pythonExe -CargoProfile $CargoProfile -CargoTarget $CargoTarget `
+        -KeepGenerated:$KeepGenerated
+    exit $LASTEXITCODE
 }
 
 # --------------------------------------------------------------------------
@@ -310,6 +354,31 @@ if ("com" -in $Lang) {
 }
 
 # --------------------------------------------------------------------------
+if ("win32" -in $Lang) {
+    Write-Host "`n--- Generate contract-driven flat Win32 ---" -ForegroundColor Yellow
+    $win32Classes = @(
+        "Windows.Win32.System.Registry",
+        "Windows.Win32.System.SystemInformation",
+        "Windows.Win32.System.LibraryLoader",
+        "Windows.Win32.Graphics.Gdi",
+        "Windows.Win32.System.Threading",
+        "Windows.Win32.System.Com",
+        "Windows.Win32.Networking.Ldap",
+        "Windows.Win32.Networking.WinSock",
+        "Windows.Win32.NetworkManagement.IpHelper",
+        "Windows.Win32.Graphics.GdiPlus",
+        "Windows.Win32.Media.MediaFoundation",
+        "Windows.Win32.System.Pipes",
+        "Windows.Win32.Storage.FileSystem"
+    ) | ForEach-Object { "$_.Apis" }
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --class-name ($win32Classes -join ",") `
+        --output $win32BindingsDir `
+        --import-name "../../../../bindings/js/dist/win32.js"
+    if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 contract generation failed"; exit 1 }
+}
+
 # Run language-specific runners
 # --------------------------------------------------------------------------
 $totalPass = 0
@@ -335,6 +404,10 @@ if ("py" -in $Lang) {
         --output $pyResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $pyResult) { $allResults += (Get-Content $pyResult -Raw | ConvertFrom-Json) }
+    & $pythonExe (Join-Path $runnersDir "implementation_py.py") `
+        --generated $pyBindingsDir --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_py.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("ts" -in $Lang) {
@@ -352,6 +425,11 @@ if ("ts" -in $Lang) {
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
+    & node (Join-Path $runnersDir "implementation_js.mjs") `
+        --generated (Join-Path $e2eDir "ts") --runtime (Join-Path $root "bindings\js\dist\winrt.js") `
+        --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_ts.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("com" -in $Lang) {
@@ -379,8 +457,8 @@ if ("com" -in $Lang) {
     $comFailed = 0
     foreach ($runner in $comRunners) {
         Write-Host "  $runner"
-        & node (Join-Path $runnersDir "com\$runner")
-        if ($LASTEXITCODE -eq 0) {
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "com\$runner")
+        if ($runnerExitCode -eq 0) {
             $comPassed++
         } else {
             $comFailed++
@@ -391,6 +469,45 @@ if ("com" -in $Lang) {
         language = "com"
         passed = $comPassed
         total = $comRunners.Count
+    }
+}
+
+if ("win32" -in $Lang) {
+    Write-Host "`n--- Flat Win32 contract E2E ---" -ForegroundColor Yellow
+    $tsc = Join-Path $root "bindings\js\node_modules\.bin\tsc.cmd"
+    if (-not (Test-Path -LiteralPath $tsc)) { Write-Error "Flat Win32 typecheck requires the JS development dependencies."; exit 1 }
+    & $tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext `
+        --types node --typeRoots (Join-Path $root "bindings\js\node_modules\@types") `
+        (Join-Path $PSScriptRoot "typecheck\win32_contracts.ts")
+    if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 declarations failed typecheck"; exit 1 }
+    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs", "contracts.mjs", "owned-fields.mjs")
+    $win32Passed = 0
+    foreach ($runner in $win32Runners) {
+        Write-Host "  $runner"
+        $arguments = if ($runner -eq "contracts.mjs") { @("--generated", $win32BindingsDir) } else { @() }
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "win32\$runner") -runnerArguments $arguments
+        if ($runnerExitCode -eq 0) { $win32Passed++ }
+    }
+    if ($win32Passed -eq $win32Runners.Count) { $totalPass++ } else { $totalFail++ }
+    $allResults += [pscustomobject]@{
+        language = "win32"
+        passed = $win32Passed
+        total = $win32Runners.Count
+    }
+}
+
+if ($Suite -eq "all" -and ("py" -in $Lang -or "ts" -in $Lang)) {
+    Write-Host "`n--- Generated WinRT implementations ---" -ForegroundColor Yellow
+    $implementationLangs = @($Lang | Where-Object { $_ -in @("py", "ts") })
+    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
+        -Lang $implementationLangs -Python $pythonExe `
+        -CargoProfile $CargoProfile -CargoTarget $CargoTarget -KeepGenerated
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
+    foreach ($l in $implementationLangs) {
+        $resultPath = Join-Path $e2eDir "implementations\results_$l.json"
+        if (Test-Path $resultPath) {
+            $allResults += Get-Content $resultPath -Raw | ConvertFrom-Json
+        }
     }
 }
 

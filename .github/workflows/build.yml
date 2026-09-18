@@ -72,9 +72,26 @@ jobs:
           "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
           "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
-        run: cargo test -p dynwinrt
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts -p dynwinrt
+      - name: Test native-independent contracts on i686
+        run: cargo test -p dynwinrt-com-contracts -p dynwinrt-win32-contracts --target i686-pc-windows-msvc
+      - name: Test borrowed-copy ABI on live i686
+        run: cargo test -p dynwinrt --target i686-pc-windows-msvc --lib borrowed_copy
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Test Win32 binding boundaries and lifetimes
+        run: cargo test -p jswinrt_rs --lib win32
+      - name: Enforce flat Win32 coverage baseline
+        shell: pwsh
+        run: |
+          $json = cargo run -p dynwinrt-codegen --quiet -- win32-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $json | ConvertFrom-Json
+          if ($result.eligible_functions -ne 18321 -or $result.complete_functions -lt 8936) {
+            throw "Flat Win32 coverage regressed: $($result.complete_functions)/$($result.eligible_functions)"
+          }
+          Write-Host "Flat Win32 coverage: $($result.complete_functions)/$($result.eligible_functions)"
       - name: Test raw union MSVC C oracle (x64)
         run: cargo test -p jswinrt_rs --features test-hooks com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
       - name: Test raw union MSVC C oracle (live i686)
@@ -90,7 +107,7 @@ jobs:
           if ($result.eligible_interfaces -ne 7929) {
             throw "Classic COM census denominator changed: $($result.eligible_interfaces)"
           }
-          if ($result.complete_interfaces -lt 5681) {
+          if ($result.complete_interfaces -lt 5721) {
             throw "Classic COM complete coverage regressed: $($result.complete_interfaces)"
           }
           if ($result.coverage_percent -lt 70.0) {
@@ -107,21 +124,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $result = Get-Content (Join-Path $output 'classic-com-capability-summary.json') -Raw |
             ConvertFrom-Json
-          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5681) {
+          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5721) {
             throw "Classic COM safe totals changed in capability census"
           }
           $support = Import-Csv (Join-Path $output 'classic-com-interface-support.csv')
           if (
             @($support).Count -ne 7929 -or
-            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5681 -or
-            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2248
+            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5721 -or
+            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2208
           ) {
             throw "Classic COM compact interface support index changed"
           }
+          foreach ($name in @('IAudioRenderClient', 'IAudioCaptureClient', 'IMFMediaBuffer')) {
+            $copyOnly = @($support | Where-Object { $_.name -eq $name })
+            if ($copyOnly.Count -ne 1 -or $copyOnly[0].safe_complete -ne 'false') {
+              throw "Bounded copy facade $name was incorrectly counted as complete"
+            }
+          }
           $expected = @{
-            x64 = @(412, 1446, 390)
-            i686 = @(411, 1423, 414)
-            arm64 = @(412, 1446, 390)
+            x64 = @(388, 1431, 389)
+            i686 = @(387, 1408, 413)
+            arm64 = @(388, 1431, 389)
           }
           foreach ($target in @('x64', 'i686', 'arm64')) {
             $counts = $result.targets.$target
@@ -134,24 +157,29 @@ jobs:
             }
           }
           if (
-            $result.safeEvidence.safeComplete -ne 5681 -or
-            $result.safeEvidence.standardDerived -ne 5326 -or
-            $result.safeEvidence.exactRegistryDependent -ne 355 -or
-            $result.safeEvidence.metadataFactOccurrences -ne 5974 -or
-            $result.safeEvidence.comStandardFactOccurrences -ne 26076 -or
-            $result.safeEvidence.registeredExactEntries -ne 495 -or
-            $result.safeEvidence.metadataMatchedExactEntries -ne 495 -or
-            $result.safeEvidence.safeConsumedExactEntries -ne 404 -or
-            $result.safeEvidence.exactEntryInterfaceDependencies -ne 655 -or
-            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 404
+            $result.safeEvidence.safeComplete -ne 5721 -or
+            $result.safeEvidence.standardDerived -ne 5355 -or
+            $result.safeEvidence.exactRegistryDependent -ne 366 -or
+            $result.safeEvidence.metadataFactOccurrences -ne 6012 -or
+            $result.safeEvidence.comStandardFactOccurrences -ne 26247 -or
+            $result.safeEvidence.registeredExactEntries -ne 532 -or
+            $result.safeEvidence.metadataMatchedExactEntries -ne 532 -or
+            $result.safeEvidence.safeConsumedExactEntries -ne 431 -or
+            $result.safeEvidence.exactEntryInterfaceDependencies -ne 694 -or
+            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 425
           ) {
             throw "Classic COM safe evidence dependency census changed"
           }
           $statuses = @($result.safeEvidence.exactEntryStatus.psobject.Properties.Value)
           if (
             @($statuses | Where-Object { -not $_.registered -or -not $_.metadataMatched }).Count -ne 0 -or
+            @($statuses | Where-Object { $_.familyId -eq 'com.ownership.v1' }).Count -ne 169 -or
+            @($statuses | Where-Object { $_.familyId -eq 'com.ownership.v1' -and $_.safeConsumed }).Count -ne 118 -or
             @($statuses | Where-Object { $_.familyId -eq 'windows.borrowed-hwnd-output.v1' }).Count -ne 22 -or
-            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73
+            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73 -or
+            @($statuses | Where-Object { $_.familyId -eq 'audio.conditional-output.v1' }).Count -ne 1 -or
+            @($statuses | Where-Object { $_.familyId -eq 'audio.context-effect.v1' }).Count -ne 3 -or
+            @($statuses | Where-Object { $_.familyId -eq 'buffers.borrowed-copy.v1' }).Count -ne 23
           ) {
             throw "Classic COM exact registry entry validation changed"
           }
@@ -259,12 +287,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:entrypoints --silent
           npm install --no-save tsx
+      - name: Test JS binding
+        working-directory: bindings/js
+        run: npm test
       - name: Build Python binding
         run: |
           cd bindings/py
           python -m venv .venv
           .venv/Scripts/Activate.ps1
-          pip install pytest maturin "mypy>=1.13,<2" --quiet
+          pip install pytest maturin "mypy>=1.13,<2" "coverage>=7.15,<8" --quiet
           maturin build --quiet
           pip install (Get-ChildItem ../../target/wheels/*.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName --force-reinstall --quiet
       - name: Test Python binding
@@ -276,14 +307,60 @@ jobs:
           .\eng\release\python\test_generated_python_long_paths.ps1 `
             -Python .\bindings\py\.venv\Scripts\python.exe `
             -Codegen .\target\release\dynwinrt-codegen.exe
+      - name: Test generated implementation symbol identities
+        shell: pwsh
+        run: |
+          $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
+          $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
+          cargo test -p dynwinrt-codegen --test implementation_naming_test
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild
+      # This optional-SDK behavioral smoke is separate from generated coverage
+      # totals. The receiver/GIL regressions also run in instrumented core and
+      # binding tests; no WinAppSDK runtime bootstrap or UI loop is needed here.
+      - name: Test metadata-generated dispatcher implementation
+        shell: pwsh
+        run: |
+          $packages = Join-Path $env:RUNNER_TEMP 'dispatcher-metadata'
+          nuget install Microsoft.WindowsAppSDK.InteractiveExperiences `
+            -Version 1.8.251104001 -OutputDirectory $packages -DirectDownload -NonInteractive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata = Join-Path $packages 'Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.251104001\metadata\10.0.18362.0'
+          $hashes = @{
+            'Microsoft.UI.winmd' = 'BA28DFC20E18630F3037AF2B91897082E41F1FA0E1DBB001D900505AB3577FE1'
+            'Microsoft.Foundation.winmd' = '56A37D003D6CD568B4BEFC95990AB28F576F128C00033C0372EAE390123F9C1F'
+            'Microsoft.Graphics.winmd' = '63165F774C2699E5A44E323F932A10BEE7BD5E11F25D82A730F5FB728107EA83'
+          }
+          foreach ($entry in $hashes.GetEnumerator()) {
+            if ((Get-FileHash -LiteralPath (Join-Path $metadata $entry.Key) -Algorithm SHA256).Hash -ne $entry.Value) {
+              throw "Unexpected WinAppSDK metadata: $($entry.Key)"
+            }
+          }
+          $windows = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" `
+            -Filter Windows.winmd -File -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $windows) { throw 'Windows SDK metadata is required for the dispatcher smoke' }
+          $output = Join-Path $PWD 'artifacts\dispatcher-implementation-smoke'
+          .\target\release\dynwinrt-codegen.exe generate `
+            --winmd (Join-Path $metadata 'Microsoft.UI.winmd') --ref $windows.FullName `
+            --namespace Microsoft.UI.Dispatching --class-name DispatcherQueue `
+            --lang py --output $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\bindings\py\.venv\Scripts\python.exe .\tests\e2e\runners\dispatcher_implementation_py.py --generated $output
       - name: Test JS TSFN lifecycle and queue handling
         working-directory: bindings/js
         run: npm run test:tsfn
       - name: Test actual generated unsafe COM companion
         working-directory: bindings/js
         run: npm run test:generated-unsafe
+      - name: Test metadata-driven native COM one-shot completion
+        working-directory: bindings/js
+        run: npm run test:native-completion
+      - name: Test metadata-driven COM borrowed copies
+        working-directory: bindings/js
+        run: npm run test:borrowed-copy
+      - name: Test Win32 failed-cleanup recovery
+        working-directory: bindings/js
+        run: node --expose-gc __test__\fixtures\win32-cleanup-errors.cjs
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:
@@ -338,17 +415,18 @@ jobs:
           npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:entrypoints --silent
+      - name: Check production native imports
+        working-directory: bindings/js
+        run: npm run test:imports
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
-          path: |
-            bindings/js/dist/dynwinrt.win32-x64-msvc.node
-            bindings/js/dist/dynwinrt.win32-arm64-msvc.node
-            bindings/js/dist/index.js
-            bindings/js/dist/index.d.ts
-            bindings/js/dist/winrt.js
-            bindings/js/dist/winrt.d.ts
-            bindings/js/dist/com.js
-            bindings/js/dist/com.d.ts
-            bindings/js/dist/com-unsafe.js
-            bindings/js/dist/com-unsafe.d.ts
+          path: bindings/js/dist/
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          name: dynwinrt
+          path: ${{ runner.temp }}\dynwinrt-artifact
+      - name: Verify downloaded JS runtime artifact
+        shell: pwsh
+        run: node .\bindings\js\scripts\verify-runtime-artifact.mjs "$env:RUNNER_TEMP\dynwinrt-artifact"

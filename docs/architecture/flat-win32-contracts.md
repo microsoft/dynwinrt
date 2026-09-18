@@ -1,0 +1,393 @@
+# Contract-driven flat Win32
+
+Flat Win32 bindings dynamically invoke DLL exports described by Windows
+metadata. They use a Win32-local ABI model and explicit semantic contracts,
+separate from WinRT activation and Classic COM vtables.
+
+> **Status: experimental.** Flat Win32 support is under active development and
+> intended for evaluation and prototyping. Its JavaScript/TypeScript APIs,
+> generated bindings, and Win32 runtime/codegen contracts may change between
+> releases; backward compatibility is not yet guaranteed. Do not treat this
+> projection as a stable production dependency. Use matching runtime and
+> codegen versions, regenerate Win32 bindings when upgrading, and validate the
+> APIs you rely on in your target environment.
+
+## Metadata and supported capabilities
+
+Built-in contracts are validated against
+`Microsoft.Windows.SDK.Win32Metadata 71.0.14-preview` with SHA-256
+`B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
+
+The measured inventory contains 18,321 eligible exports and 8,936 complete
+projections: 8,934 synchronous functions and two asynchronous helpers. There
+are 182 supported containers and 10,680 public exports including aliases,
+enums and helper functions. These are generation counts, not a claim that
+every API has been exercised against a live system.
+
+| Area | Supported behavior |
+| --- | --- |
+| Native ABI | All admitted scalars, enums, GUID/scalar pointers, native structures/unions, pointer and by-value aggregate shapes; system/cdecl calls and target availability. |
+| Return contracts | Direct, void, status/HRESULT and LastError behavior, including expected failure results. |
+| Strings and buffers | UTF-16/ANSI storage, double-NUL lists, reserved inputs, counted buffers, capacity/actual-size relationships and caller-owned output semantics. |
+| Resources | Exact HKEY, HANDLE, HLOCAL, HGLOBAL, HMODULE, SC_HANDLE, CoTaskMem and credential cleanup; synchronized leases and consuming calls. |
+| Native builders | SECURITY_ATTRIBUTES, STARTUPINFOA/W, PROCESS_INFORMATION and POD helpers, including retained pointer fields and owned outputs. |
+| COM inputs | Exact-IID, borrowed managed interface inputs without changing the WinRT model. |
+| Asynchronous I/O | IOCP-backed ReadFile/WriteFile Promises, cancellation, EOF, retained storage, detachment checks and bounded pending work. |
+| Subsystems | Winsock, GDI+, Media Foundation and explicit unsafe MAPI utility context behavior. |
+| Tooling | Safe/unsafe entrypoints, declarations, CLI/census, manifests, examples and stock-Windows scenarios. |
+
+The examples under `samples/js/win32` demonstrate system information,
+Registry queries and asynchronous file I/O with the namespace layout.
+
+## Contract boundary
+
+```text
+Windows.Win32.winmd facts
+    + independent Win32 JSON semantic evidence
+    -> validated Win32 model
+    -> typed language projection
+    -> generic renderer and immutable native call plans
+```
+
+`tools/dynwinrt-codegen/contracts/win32/` owns Win32-specific manual evidence.
+COM retains its own interface/IID/vtable contracts. Both follow the
+[contract evidence principles](classic-com-contract-evidence-registry.md);
+their selectors and ABI models are not interchangeable.
+
+Generate-command routing uses one lazily loaded flat-function index for the
+metadata set, rather than rereading and hashing WinMD for every requested COM
+interface. Presence-only lookup preserves the existing DllImport-based routing
+order and does not compute provenance hashes. Actual flat Win32 parsing still
+performs the unchanged metadata-hash and contract-fingerprint validation.
+
+Metadata-complete shapes use generic projection. Manual facts such as missing
+count relationships, ownership, cleanup, special layouts and lifecycle
+requirements belong in typed, closed contracts with exact selectors,
+fingerprints, metadata provenance and authoritative evidence. Contracts must
+not contain JavaScript, declaration fragments, arbitrary cleanup functions or
+unconstrained native adapter names. Unsupported facts remain explicit errors.
+
+Refactoring must not weaken an existing safety boundary to increase
+coverage. If a behavior needs a correctness fix, implement and
+document that fix and exercise its nearest failure case rather than silently
+dropping the API or relabeling it as supported.
+
+### Shared protocol and result model
+
+`crates/dynwinrt-win32-contracts` is the single source of the Win32 wire types,
+version handling and structural validation. It depends on neither Windows,
+libffi nor a language binding. Metadata validation still proves pointer depth,
+encoding, type identity and provenance against the selected WinMD; core still
+checks the executing ABI and its supported capabilities. Sharing the protocol
+does not merge these responsibilities or the WinRT/COM models.
+
+Version 3 describes every direct return, native output slot and declared
+caller-aggregate result field with a
+`ResultContract`: a target, explicit success/failure policies and bounded,
+non-overlapping conditional overrides. The schema is derived from these Rust
+types rather than separately maintained protocol definitions. Unknown fields,
+unsupported versions, contradictory cases and incomplete slot coverage fail
+before native dispatch.
+
+| Resolved result policy | Native behavior |
+| --- | --- |
+| Undefined | Do not decode the payload, adopt a resource or call a cleanup function on it. |
+| Defined value or borrowed result | Deliver the value, or discard it without inventing an independent native owner. |
+| Defined owned result | Transfer an owned value when delivered; otherwise run the exact declared cleanup even when the overall operation failed. |
+| Defined input alias | Validate the declared input relationship and share its owner; never create a second owner by matching arbitrary handle numbers. |
+
+Delivery is independent from native validity and ownership. A valid discarded
+resource uses `Value::Discarded`, not the undefined-output state. Direct returns
+and out parameters have cleanup guards before any fallible conversion, so an
+allocation or conversion failure also retires valid, untransferred resources.
+Language projection chooses nullability and exception/result shape; it cannot
+erase cleanup obligations.
+
+Direct-return and independent out-slot resource owners are captured before
+fallible result processing. An error retires untransferred results and preserves
+any failed cleanup in `win32::CallError::cleanup_failures()`, together with its
+result target, original cleanup error, and shared `OwnedResource`. This includes
+results converted earlier in the call but not yet delivered to the caller.
+`retry_cleanup()` attempts every retained cleanup without invoking the original
+function again; successful owners stay closed and failed owners remain available
+for another retry. Native consumption and resource effects are not rolled back
+by a result-processing failure. Callers can also retain
+or explicitly close the same resource owner through the failure record.
+No raw-handle re-adoption or process-global recovery queue is used.
+
+The JavaScript call boundary retains byte/string storage independently of managed
+COM inputs. COM admission and leases, retained-storage validation, and aggregate
+owner validation precede native dispatch. After these checks, plans with owned
+direct returns or out slots prepare their JavaScript recovery carrier before
+dispatch; scalar and aggregate-only plans do not allocate that carrier.
+
+JavaScript recovery wrapping uses null-prototype property descriptors. If an
+`AggregateError` cannot be constructed or decorated after projection failure,
+the original native error carrier is rethrown rather than replaced by the
+wrapping exception. `DynWin32CallError.getCleanupFailures(error)` and
+`DynWin32CallError.retryCleanup(error)` work without installing an instance
+prototype, including for non-extensible carriers. Keeping the thrown carrier
+therefore keeps the native cleanup owner and its recovery path alive.
+
+`CallPlan::invoke()` returns the Win32-specific `CallError` on failure; its
+`message()` and `source_error()` preserve the original invocation error.
+Dropping the error releases its retained owners and performs best-effort cleanup.
+Deterministic recovery requires keeping the error or resource alive, resolving
+the reason cleanup was refused, and retrying. The runtime does not remove native
+close-protection flags or bypass resource leases. Aggregate-field ownership
+continues to reside in the caller's aggregate buffer.
+
+Descriptors without a version are read as version 1. Their historical null
+resource results and cleanup behavior are isolated in an explicit compatibility
+adapter and lowered to the common execution plan. Version 2 slot-only contracts
+remain readable; aggregate field targets require version 3. New generated code emits
+version 3. Metadata ownership evidence alone does not prove a pointer is defined
+on failure: new generation leaves that failure result undefined unless reviewed
+result evidence establishes validity and the required cleanup/delivery policy.
+
+An aggregate pointer remains a physical input pointer; it is not converted into
+a pointer-to-pointer or an owned aggregate allocation. Its `pointeeDescriptor`
+retains the exact native layout and ordered `outputFields`. The caller owns the
+structure bytes, while the native buffer's result store independently owns
+resources written into fields such as `PROCESS_INFORMATION.hProcess/hThread`.
+Field validity, cleanup and native completion state for every described aggregate
+are registered immediately after native dispatch, before any per-field conversion
+or discard cleanup can fail, before return/out decoding and before N-API wraps
+`_call`. Taking a field moves the existing resource owner rather than adopting
+its handle a second time. Failed discard cleanup preserves the original field
+bytes and cleanup guard for retry by `prepare()` or destruction; merely attempting
+cleanup does not release ownership or remove overlapping-write protection.
+Generated code does not rely on JS prepare/mark calls for this lifetime boundary.
+Legacy manual mark helpers cannot erase already registered native ownership.
+
+Output-buffer reuse first locks the aggregate storage, then coordinates input
+owners and old owned-field results in one identity-ordered resource lock set.
+If retiring an old field would close an input owner in the same call, invocation
+fails before any old output is retired or the native function is dispatched.
+`field_value()` shares the field's owner; use `take_field()` to move that owner
+out before reusing its buffer as an output. Input-alias result policies do not
+retire their shared input owner. Retirement uses the already acquired owner
+guards rather than recursively calling a locking `close()` method.
+
+Once all output guards and native aggregate states are registered, the call
+commits successful input consumption and resource effects while input-resource
+locks are still held, before any field/return/out conversion or discard cleanup.
+The decision uses native success, not result-delivery success. A native failure
+leaves consuming-input ownership and success-only resource effects unchanged,
+even when valid failure outputs subsequently fail to decode or clean up.
+
+Legacy raw-field adoption is explicitly `unsafe` in Rust, including the binding
+adapter entrypoint. The caller must prove that successful fields are initialized
+and valid, that each non-null owned resource transfers exclusive ownership, and
+that its declared cleanup matches the allocator/resource kind. Native writes must
+have completed; borrowed handles and duplicated owning fields cannot be adopted.
+Safe aggregate construction, reads and writes only manage bytes, not resource
+ownership. If field conversion fails with raw cleanup still pending, safe writes
+cannot overwrite any part of those cleanup targets until they are retired.
+Version 3's native result registration does not use this legacy adoption boundary.
+
+## Runtime and package boundary
+
+Win32 stays outside the public WinRT model and the `@microsoft/dynwinrt` root.
+Generated Win32 code uses `/win32`, with manual raw ABI capabilities isolated
+under `/win32/unsafe`. Existing WinRT and COM entrypoints remain unchanged.
+Sharing behavior-neutral private FFI storage/execution remains allowed.
+
+Native invocation follows completed plans; it does not infer pointer meanings
+from JavaScript objects. Handle values, dereferenced storage and owned resources
+remain distinct. Resource consumption and lease acquisition are synchronized.
+Buffer bounds come from validated native backing storage, not spoofable JS
+length properties. Unknown ownership or successful out-of-bounds lengths must
+not produce success-shaped fallback values.
+
+Output relationships and validity are part of the native call contract, not
+renderer-specific Registry rules. Bounded input predicates are evaluated before
+the call; native return conditions are evaluated immediately after the call.
+The resulting output disposition is applied before decoding, ownership adoption
+or cleanup. Undefined outputs use `Value::Unavailable`; language projection maps
+that outcome to `null`, rather than reading a native value and hiding it afterward.
+
+`RegOpenKeyA/W` with a null/empty subkey returns an alias of its input.
+Managed aliases share the existing owner, close state and leases; borrowed input
+handles stay borrowed. `RegOpenKeyExA/W` applies that relationship only to the
+documented native predefined-key case. Its predicate compares the full,
+pointer-sized signed handle value: on 64-bit Windows, a zero-extended
+`0x80000002` can produce a new owned handle, whereas the native predefined value
+is sign-extended. These representations must not be merged by masking away
+the upper bits. Aliases are authorized by exact contracts and
+checked against the specified input, never discovered by globally merging handle
+numbers. For `RegQueryValueExA/W` and `RegGetValueA/W`, performance-data queries
+remain supported: successful results retain their size, while
+`HKEY_PERFORMANCE_DATA` combined with `ERROR_MORE_DATA` exposes `dataSize: null`
+without decoding the undefined count. Callers grow a separate capacity and retry.
+Normal-key size queries retain their prior behavior.
+
+Native Win32 carriers use type tags rather than mutable JavaScript prototypes.
+Manual aggregate descriptors and MAPI utility initialization are available on
+the explicit unsafe subpath; generated validated helpers call those primitives
+internally. Win32 runtime types are exposed through the dedicated safe and
+unsafe entrypoints. x86 plan invocation remains explicitly unsupported;
+x64 is exercised live and ARM64 is compile-validated.
+
+Win32 optional lifecycle DLLs are loaded on explicit subsystem initialization,
+not on addon or generated-wrapper import. Winsock, GDI+, Media Foundation and
+MAPI use complete typed startup/shutdown function tables, including rollback
+and native error-query entrypoints. Every required export is resolved before
+Startup; neither a missing module/export nor a failed Startup publishes a
+context. Module and function-table caches retain successful values only, so
+later requests can retry failures. Winsock version-negotiation rollback failure
+is reported and retried before any new Startup.
+
+The shared Win32 module loader accepts bare system DLL/DRV names, uses
+`LOAD_LIBRARY_SEARCH_SYSTEM32`, and owns each successful load reference.
+Concurrent first loads publish one module and release losing references outside
+the cache lock. Cached modules and tables live for the process; their lifetime
+is separate from subsystem activation. The last context closes the activation,
+not the DLL. Explicit Shutdown failure leaves the context active for retry.
+Ordinary export plans still bind lazily, and subsystem-exempt contracts do not
+gain an initialization requirement. WinRT/COM models and foundational imports
+remain unchanged. Normal shared-addon PE import tables must not contain these
+optional lifecycle DLLs; test-hook-only COM media fixtures retain their separate
+native test dependencies.
+
+MAPI utility symbols follow the same loading and caching policy. Their x86
+exports carry stdcall suffixes (`ScInitMapiUtil@4`, `DeinitMapiUtil@0`);
+binding them as unconditional undecorated imports would prevent unrelated
+WinRT/COM consumers from loading the addon. Missing utility exports produce
+an explicit error when that subsystem is requested. The system DLL is a
+dispatch stub, not a MAPI provider: utility initialization requires an installed,
+configured provider matching the process architecture. Without one, the stub
+can display a native initialization message before returning `E_FAIL`, as
+documented in [MAPI stub registry settings](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/windowsmapi/mapi32-dll-stub-registry-settings).
+The unsafe entrypoint preserves that native behavior; it does not install a
+provider, change mail-client registration, or substitute a successful no-op.
+
+The IOCP engine retains native state through terminal completion, including
+cancellation. The limits are 1,024 pending operations, 64 MiB per
+operation and 256 MiB of pending private buffers. These limits include completed
+results waiting to be consumed or discarded, not only active OS requests.
+A shared worker set is used,
+not one blocked OS/libuv worker per operation. Subsystem call guards prevent
+close from racing synchronous dependent calls. File I/O retains its native
+resource leases independently and does not require these optional subsystems.
+Opaque unsafe subsystem resources remain caller-managed: callers must retain
+their context for the required native lifetime. A future managed subsystem-owned
+resource or asynchronous operation requires an explicit retained subsystem
+lease; DLL caching alone does not provide that activation lifetime.
+
+The native Win32 I/O module owns the operation registry, stable `OVERLAPPED`,
+private buffers, cancellation and terminal completion. It can run from Rust
+without loading Node. Native completion records keep their storage, resource
+occupancy and quota ownership until consumption or discard; failed notification
+or a dropped consumer cannot strand them.
+
+Native operations hand off owning records through a native queue/channel. They
+do not retain an arbitrary callback closure that can capture adapter objects.
+The Node adapter independently owns its completion receiver and TSFN
+registrations; even indirectly, no native operation owns a TSFN.
+
+The private Node bridge keeps JS references and original backing information on
+the owner thread. That thread revalidates the backing, performs read copy-back
+and delivers the callback. No Node Buffer, N-API environment/reference or TSFN
+type enters core I/O. Environment teardown cancels native work without freeing
+OS-owned storage early, while JS references are released on their owner thread.
+COM/WinRT carriers and their backing-storage ownership remain separate from
+the native Win32 I/O engine. The adapter uses the private
+`js_storage::RetainedBuffer` for JS ownership and
+the original view; completion, cancellation and resource coordination remain
+Win32-specific. Synchronous Win32 byte/string storage also uses shared storage
+primitives directly, separate from managed COM inputs. See
+[JavaScript binding internals](javascript-binding-internals.md).
+
+Generic resource coordination governs borrowing, consuming, state mutation and
+asynchronous occupancy. File-specific modes and association state belong to a
+typed file capability, not a growing collection of API-specific fields on the
+generic owner. Neither a string-keyed state bag nor a global handle-value owner
+registry is used.
+
+File completion notification changes have a typed resource state effect.
+Native mode changes are serialized with managed calls and rejected while an
+asynchronous lease exists, including a prepared operation not yet submitted.
+Successful changes only add mode bits; failures do not update state. Before
+each IOCP submission the runtime queries the actual native notification modes,
+so a preconfigured handle is not assumed to use defaults. Synchronous success
+with `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` completes locally through the same
+retirement path; ordinary synchronous success and `ERROR_IO_PENDING` still wait
+for their IOCP packet. Buffers and leases are retired exactly once in either path.
+Raw/unsafe handle escape does not authorize concurrent foreign mutation or close
+of a managed handle.
+
+## Namespace output
+
+Generated modules use a lowercase/kebab namespace directory mapping, for
+example `win32/windows/win32/system/registry/Apis.js`. The Win32 output manifest
+records namespace exports and generated file hashes. The CLI uses the shared
+atomic output transaction, retaining other generated namespaces on incremental
+runs and rejecting stale or conflicting output.
+
+Win32-only packages do not acquire a WinRT package-root entrypoint. Mixed
+generation preserves existing root exports and adds explicit Win32 subpaths.
+Namespaces containing COM interfaces retain explicit `--class-name`
+selection; use their `Apis` container for flat exports. Python flat-Win32
+generation remains explicitly unsupported.
+
+Flags declarations permit normal bitwise combinations while ordinary enums
+retain their member types. ABI-width validation remains separate from the
+TypeScript surface. CI uploads the complete `dist` runtime tree, matching the
+npm distribution boundary, rather than maintaining a second filename list.
+It then downloads that artifact and checks every public package entrypoint
+through CommonJS, ESM and native dispatch.
+
+## Tests
+
+Behavior is protected by contract, ABI, ownership, generated-output, package,
+and live Windows API tests:
+
+| Tests | Assertions |
+| --- | --- |
+| Shared Win32 contract tests | Strict version decoding, legacy migration, complete result coverage, ownership/delivery combinations, disjoint conditions and Rust-derived schema consistency. |
+| Codegen Win32 unit tests | Exact contract selectors and drift rejection, typed ABI and ownership plans, count/size relationships, native layouts, builders, return conventions and generated behavior. |
+| Core Win32 unit tests | Real FFI scalar/aggregate calls, output ordering, success/failure and cleanup, handle leases and consuming calls. |
+| Aggregate field result tests | Caller-owned storage identity, per-field validity and ownership, failed delivery before `_call` wrapping, partial and cross-aggregate conversion failures, unsafe legacy transfers, safe-write protection, extraction, failed discard cleanup retry and real `CreateProcessW` handle retirement. |
+| Aggregate owner lock tests | Bounded real `DuplicateHandle` reuse, shared-owner rejection without mutation, moved/distinct owners, input-alias policies, failed/busy retirement, invalid-input preservation and ordered/cross-thread resource coordination. |
+| Native side-effect tests | Input consumption, alias/lease state and real file completion-mode updates across native success/failure, field/return conversion errors and discard cleanup failure. |
+| Result cleanup recovery tests | Protected-handle cleanup failures for direct returns and out slots, partial conversion, cleanup of other results, repeated and partial retries, shared owner state, lease exclusion, and best-effort error destruction. |
+| Native I/O tests | Real local file/pipe I/O without Node, synchronous/pending completion, cancellation, dropped consumers, queued-result quotas and exact lifetime retirement. |
+| JS Win32 tests | Native carrier identity, argument/descriptor validation, encoded strings and buffers, resource lifetimes, IOCP cancellation/capacity and subsystem state. |
+| Module/lifecycle loading tests | Controlled System32 paths, successful-cache identity, retryable failures, concurrent load reference balance, complete function-table publication, startup/shutdown/rollback state, and the actual shared-addon PE import boundary. |
+| Win32 CLI tests | Namespace/enum files, relative runtime imports, CJS/ESM resolution, missing or malformed output, atomic failure/rollback and retry, incremental regeneration and coexistence with WinRT/COM. |
+| Generated-module tests | Load every currently admitted JS/enum module as CJS and ESM without native dispatch, and compile its declarations with TypeScript. Expected behavior comes from actual exports and type rules, not stored implementation hashes. |
+| Win32 E2E runners | Actual Registry, aggregate, resource, IOCP, subsystem and generated declaration behavior. |
+
+The existing CI jobs run these tests together with WinRT and Classic COM
+regressions. The census minimum is an additional coverage signal, not proof
+of correctness or a substitute for explicit behavioral assertions.
+`npm test` includes Win32 consumer typechecking; the existing CI jobs run the
+Rust binding tests and Node suite in addition to generated E2E scenarios.
+
+Real-metadata tests read `DYNWINRT_WIN32_WINMD`. CI also sets
+`DYNWINRT_REQUIRE_WIN32_METADATA=1` so missing metadata is a failure, not an
+unnoticed skip. Live scenarios require stock Windows; optional-device and
+ARM64 execution coverage must be reported separately from compilation.
+Native subsystem lifecycle tests run in isolated, time-bounded processes with
+initialization/cleanup stage output, so a platform startup failure cannot
+silently block unrelated tests behind a process-global lock.
+
+Deterministic lifecycle tests use test-only function tables to exercise the
+same context, counting and call-guard implementation. They cover reserved
+flags, first-lease initialization, last-lease cleanup, retries after startup
+or shutdown failure, rollback, missing exports, aliases, idempotent close,
+`Drop` and concurrent close. Separate integration cases invoke the installed
+Winsock, GDI+ and Media Foundation APIs; only positively identified missing
+optional DLLs or lifecycle exports permit a skip, not arbitrary Startup
+failures. Architecture-specific MAPI system export resolution is mandatory
+without invoking a provider.
+
+The real MAPI lifecycle test remains available separately on a machine with a
+configured provider (for example, matching-bitness Outlook). It is ignored by
+default, fails on initialization errors/timeouts, and never treats an unavailable
+provider as success:
+
+```powershell
+cargo test -p jswinrt_rs --lib win32_subsystem::tests::mapi_utility_contexts_use_installed_provider -- --exact --ignored --nocapture
+```

@@ -406,6 +406,18 @@ pub(crate) trait ArgumentList {
     fn get_dispatch_params(&self, _index: usize) -> Option<&crate::com::DispatchParamsValue> {
         None
     }
+
+    fn get_format_etc(&self, _index: usize) -> Option<&crate::com::FormatEtcValue> {
+        None
+    }
+
+    fn get_stg_medium(&self, _index: usize) -> Option<&crate::com::StgMediumValue> {
+        None
+    }
+
+    fn get_audio_format(&self, _index: usize) -> Option<&crate::com::AudioFormatValue> {
+        None
+    }
 }
 
 impl ArgumentList for [WinRTValue] {
@@ -418,6 +430,38 @@ pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_
     unsafe {
         let vtable_ptr = *(obj as *const *const *mut c_void);
         *vtable_ptr.add(method_index)
+    }
+}
+
+/// Execute an already prepared flat native ABI without a COM receiver.
+pub(crate) unsafe fn call_native_function(
+    cif: &libffi::middle::Cif,
+    function: *mut c_void,
+    args: &[Arg<'_>],
+    return_type: Option<AbiType>,
+) -> Option<AbiValue> {
+    use libffi::middle::CodePtr;
+
+    match return_type {
+        None => {
+            unsafe { cif.call::<()>(CodePtr(function), args) };
+            None
+        }
+        Some(AbiType::Bool) => Some(AbiValue::Bool(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I8) => Some(AbiValue::I8(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U8) => Some(AbiValue::U8(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I16) => Some(AbiValue::I16(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U16) => Some(AbiValue::U16(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I32) => Some(AbiValue::I32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U32) => Some(AbiValue::U32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I64) => Some(AbiValue::I64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U64) => Some(AbiValue::U64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::F32) => Some(AbiValue::F32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::F64) => Some(AbiValue::F64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::Guid) => Some(AbiValue::Guid(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::Ptr) => Some(AbiValue::Pointer(unsafe {
+            cif.call(CodePtr(function), args)
+        })),
     }
 }
 
@@ -463,6 +507,7 @@ macro_rules! dispatch_scalar {
             WinRTValue::I16(v) => $call(*v),
             WinRTValue::U16(v) => $call(*v),
             WinRTValue::I32(v) => $call(*v),
+            WinRTValue::HResult(v) => $call(v.0),
             WinRTValue::Enum { value: v, .. } => $call(*v),
             WinRTValue::U32(v) => $call(*v),
             WinRTValue::I64(v) => $call(*v),
@@ -637,7 +682,7 @@ pub(crate) fn call_method_dynamic<A, F>(
 ) -> windows_core::Result<Vec<NativeCallValue>>
 where
     A: ArgumentList + ?Sized,
-    F: FnOnce(),
+    F: FnOnce() -> windows_core::Result<()>,
 {
     match call_method_dynamic_impl(
         vtable_index,
@@ -657,7 +702,7 @@ where
     }
 }
 
-pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
+pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized, F>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
@@ -665,7 +710,11 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
     out_count: usize,
     return_kind: &MethodReturn,
     cif: &libffi::middle::Cif,
-) -> windows_core::Result<CapturedHResultCall> {
+    before_dispatch: F,
+) -> windows_core::Result<CapturedHResultCall>
+where
+    F: FnOnce() -> windows_core::Result<()>,
+{
     match call_method_dynamic_impl(
         vtable_index,
         obj,
@@ -674,7 +723,7 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
         out_count,
         return_kind,
         cif,
-        || {},
+        before_dispatch,
     )? {
         DynamicCallOutcome::Captured(call) => Ok(call),
         DynamicCallOutcome::Values(_) => Err(windows_core::Error::new(
@@ -696,7 +745,7 @@ fn call_method_dynamic_impl<A, F>(
 ) -> windows_core::Result<DynamicCallOutcome>
 where
     A: ArgumentList + ?Sized,
-    F: FnOnce(),
+    F: FnOnce() -> windows_core::Result<()>,
 {
     use crate::metadata_table::ValueTypeData;
     use libffi::middle::CodePtr;
@@ -724,6 +773,12 @@ where
         std::collections::BTreeMap::<usize, crate::com::ExcepInfoValue>::new();
     let mut stat_stg_out_values =
         std::collections::BTreeMap::<usize, crate::com::StatStgOutput>::new();
+    let mut format_etc_out_values =
+        std::collections::BTreeMap::<usize, crate::com::FormatEtcOutput>::new();
+    let mut stg_medium_out_values =
+        std::collections::BTreeMap::<usize, crate::com::StgMediumStorage>::new();
+    let mut audio_format_out_values =
+        std::collections::BTreeMap::<usize, crate::com::AudioFormatOutput>::new();
     let mut optional_out_requests: Vec<Option<bool>> = Vec::with_capacity(out_count);
 
     // Array storage: Box'd for pointer stability (addresses don't change after creation)
@@ -740,6 +795,9 @@ where
     let mut bstr_in_slots: Vec<BstrCallValue> = Vec::new();
     let mut native_union_in_slots: Vec<Option<NativeUnionStorage>> = Vec::new();
     let mut variant_by_value_in_slots: Vec<crate::com::automation::VariantCopyValue> = Vec::new();
+    let mut format_etc_in_slots: Vec<Box<windows::Win32::System::Com::FORMATETC>> = Vec::new();
+    let mut stg_medium_in_slots: Vec<crate::com::StgMediumStorage> = Vec::new();
+    let mut audio_format_in_ptrs: Vec<*const c_void> = Vec::new();
 
     // FillArray storage: caller-allocated buffers
     let mut fill_array_slots: Vec<Box<FillArraySlot>> = Vec::new();
@@ -1010,6 +1068,70 @@ where
                 stat_stg_out_values.insert(p.value_index, value);
                 array_out_map.push(None);
                 fill_array_map.push(None);
+            } else if p.typ.is_format_etc() {
+                if p.is_in_out() {
+                    return Err(windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        "FORMATETC in/out is not supported",
+                    ));
+                }
+                let mut value = crate::com::FormatEtcOutput::new();
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                format_etc_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_stg_medium() {
+                let mut value = if p.is_in_out() {
+                    crate::com::StgMediumStorage::from_value(
+                        args.get_stg_medium(p.input_index.expect("STGMEDIUM input index"))
+                            .expect("validated STGMEDIUM in/out value"),
+                    )
+                    .map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })?
+                } else {
+                    crate::com::StgMediumStorage::output()
+                };
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                stg_medium_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_audio_format() {
+                if p.is_in_out() {
+                    return Err(windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        "WAVEFORMATEX in/out is not supported",
+                    ));
+                }
+                let mut value = crate::com::AudioFormatOutput::new();
+                out_ptrs.push(value.as_mut_ptr().cast_const());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                audio_format_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
             } else if p.typ.is_struct() {
                 let val = if p.is_in_out() {
                     args.get_value(p.input_index.expect("in/out input index"))
@@ -1110,6 +1232,33 @@ where
                     )
                 })?,
             );
+        } else if p.is_input() && !p.is_out() && p.typ.is_format_etc() {
+            format_etc_in_slots.push(Box::new(
+                args.get_format_etc(p.input_index.expect("FORMATETC input index"))
+                    .expect("validated FORMATETC input")
+                    .to_raw(),
+            ));
+        } else if p.is_input() && !p.is_out() && p.typ.is_stg_medium() {
+            stg_medium_in_slots.push(
+                crate::com::StgMediumStorage::from_value(
+                    args.get_stg_medium(p.input_index.expect("STGMEDIUM input index"))
+                        .expect("validated STGMEDIUM input"),
+                )
+                .map_err(|error| {
+                    windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        &error.message(),
+                    )
+                })?,
+            );
+        } else if p.is_input() && !p.is_out() && p.typ.is_audio_format() {
+            let input_index = p.input_index.expect("WAVEFORMATEX input index");
+            let pointer = match args.get_audio_format(input_index) {
+                Some(format) => format.as_ptr(),
+                None if p.typ.is_nullable_audio_format_input() => std::ptr::null(),
+                None => panic!("validated WAVEFORMATEX input"),
+            };
+            audio_format_in_ptrs.push(pointer);
         }
     }
     let native_struct_in_ptrs = native_struct_in_slots
@@ -1200,6 +1349,14 @@ where
                 .cast::<c_void>()
         })
         .collect::<Vec<_>>();
+    let format_etc_in_ptrs = format_etc_in_slots
+        .iter_mut()
+        .map(|value| (&mut **value as *mut windows::Win32::System::Com::FORMATETC).cast::<c_void>())
+        .collect::<Vec<_>>();
+    let stg_medium_in_ptrs = stg_medium_in_slots
+        .iter_mut()
+        .map(crate::com::StgMediumStorage::as_mut_ptr)
+        .collect::<Vec<_>>();
 
     // Phase 2: Build ffi_args
     let mut array_in_idx = 0usize;
@@ -1212,6 +1369,9 @@ where
     let mut safe_array_in_idx = 0usize;
     let mut prop_variant_in_idx = 0usize;
     let mut dispatch_params_in_idx = 0usize;
+    let mut format_etc_in_idx = 0usize;
+    let mut stg_medium_in_idx = 0usize;
+    let mut audio_format_in_idx = 0usize;
     for p in parameters {
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
@@ -1259,6 +1419,15 @@ where
                 variant_by_value_in_slots[variant_by_value_in_idx].as_ref()
             ));
             variant_by_value_in_idx += 1;
+        } else if p.typ.is_format_etc() {
+            ffi_args.push(arg(&format_etc_in_ptrs[format_etc_in_idx]));
+            format_etc_in_idx += 1;
+        } else if p.typ.is_stg_medium() {
+            ffi_args.push(arg(&stg_medium_in_ptrs[stg_medium_in_idx]));
+            stg_medium_in_idx += 1;
+        } else if p.typ.is_audio_format() {
+            ffi_args.push(arg(&audio_format_in_ptrs[audio_format_in_idx]));
+            audio_format_in_idx += 1;
         } else if p.typ.is_variant() {
             ffi_args.push(arg(&variant_in_ptrs[variant_in_idx]));
             variant_in_idx += 1;
@@ -1281,7 +1450,7 @@ where
     let mut mark_dispatched = || {
         mark_dispatched
             .take()
-            .expect("native dispatch marker must run exactly once")();
+            .expect("native dispatch marker must run exactly once")()
     };
     let call_result: windows_core::Result<(
         Option<NativeCallValue>,
@@ -1289,12 +1458,12 @@ where
     )> = unsafe {
         match return_kind {
             MethodReturn::HResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::SemanticHResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((
                     hr.is_ok()
@@ -1303,24 +1472,24 @@ where
                 ))
             }
             MethodReturn::PreservedHResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((Some(NativeCallValue::WinRt(WinRTValue::HResult(hr))), None))
             }
             MethodReturn::CapturedHResult(_) => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::Void => {
-                mark_dispatched();
+                mark_dispatched()?;
                 cif.call::<()>(CodePtr(fptr), &ffi_args);
                 Ok((None, None))
             }
             MethodReturn::Value { typ, .. } => {
                 if let crate::native_call::ParameterType::NativeStruct(layout) = typ {
                     NativeStructStorage::zeroed(layout).and_then(|mut storage| {
-                        mark_dispatched();
+                        mark_dispatched()?;
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeStructValue::new(layout.clone(), storage.to_vec())
@@ -1334,7 +1503,7 @@ where
                     })
                 } else if let crate::native_call::ParameterType::NativeUnion(layout) = typ {
                     NativeUnionStorage::zeroed(layout).and_then(|mut storage| {
-                        mark_dispatched();
+                        mark_dispatched()?;
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeUnionValue::from_returned_bytes(
@@ -1350,7 +1519,7 @@ where
                         })
                     })
                 } else {
-                    mark_dispatched();
+                    mark_dispatched()?;
                     let value = match typ.abi_type() {
                         AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
                         AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),
@@ -1623,6 +1792,41 @@ where
                             )
                         },
                     )?));
+                } else if let Some(value) = format_etc_out_values.remove(&p.value_index) {
+                    let value = if let Some(input_index) = p.canonical_format_input {
+                        value.into_canonical_value(
+                            args.get_format_etc(input_index)
+                                .expect("validated canonical FORMATETC input"),
+                            native_hresult.expect("canonical FORMATETC uses a semantic HRESULT"),
+                        )
+                    } else {
+                        value.into_value()
+                    };
+                    result_values.push(NativeCallValue::FormatEtc(value.map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })?));
+                } else if let Some(value) = stg_medium_out_values.remove(&p.value_index) {
+                    result_values.push(NativeCallValue::StgMedium(value.into_value().map_err(
+                        |error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        },
+                    )?));
+                } else if let Some(value) = audio_format_out_values.remove(&p.value_index) {
+                    match value.into_value(p.is_optional_out()).map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })? {
+                        Some(value) => result_values.push(NativeCallValue::AudioFormat(value)),
+                        None => result_values.push(NativeCallValue::WinRt(WinRTValue::Null)),
+                    }
                 } else if let Some(struct_val) = struct_out_values[p.value_index].take() {
                     result_values.push(NativeCallValue::WinRt(WinRTValue::Struct(struct_val)));
                 } else {

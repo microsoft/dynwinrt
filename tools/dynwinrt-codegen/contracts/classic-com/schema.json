@@ -33,44 +33,26 @@
             "automation.safearray.v1",
             "windows.borrowed-hwnd-output.v1",
             "com.enumerator-next-exception.v1",
-            "buffers.bounded-two-call.v1",
-            "buffers.counted-buffer.v1",
             "com.ownership.v1",
-            "com.semantic-hresult.v1",
-            "graphics.private-data-hazard.v1",
             "wmi.conditional-output.v1",
-            "com.sequential-stream-buffer.v1",
-            "automation.idispatch-invoke.v1"
-            ,"com.reserved-null-input.v1",
+            "com.reserved-null-input.v1",
             "com.parameter-direction.v1"
-            ,"shell.flag-selected-string.v1"
           ]
         },
         "kind": {
           "enum": [
             "ownership",
             "conditional-output",
-            "counted-buffer",
-            "bounded-two-call",
             "borrowed-handle",
             "enumerator-next",
             "safearray",
-            "semantic-hresult",
-            "compound-dispatch",
-            "hazard"
-            ,"null-input",
+            "null-input",
             "parameter-direction"
-            ,"flag-selected-buffer"
           ]
         },
         "reason": { "type": "string", "minLength": 1 },
         "selector": { "$ref": "#/$defs/selector" },
-        "contract": {
-          "oneOf": [
-            { "$ref": "#/$defs/conditionalOutput" },
-            { "$ref": "#/$defs/outputOwnership" }
-          ]
-        },
+        "contract": { "type": "object" },
         "evidence": {
           "type": "array",
           "minItems": 1,
@@ -81,7 +63,65 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/validatedMetadata" }
         }
-      }
+      },
+      "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "conditional-output" },
+              "familyId": { "const": "wmi.conditional-output.v1" },
+              "selector": { "not": { "required": ["sourceShape"] } },
+              "contract": { "$ref": "#/$defs/conditionalOutput" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "ownership" },
+              "familyId": { "const": "com.ownership.v1" },
+              "selector": { "not": { "required": ["sourceShape"] } },
+              "contract": { "$ref": "#/$defs/outputOwnership" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "safearray" },
+              "familyId": { "const": "automation.safearray.v1" },
+              "selector": { "required": ["sourceShape"] },
+              "contract": { "$ref": "#/$defs/safeArray" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "borrowed-handle" },
+              "familyId": { "const": "windows.borrowed-hwnd-output.v1" },
+              "selector": { "required": ["sourceShape"] },
+              "contract": { "$ref": "#/$defs/borrowedHandle" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "enumerator-next" },
+              "familyId": { "const": "com.enumerator-next-exception.v1" },
+              "selector": { "required": ["sourceShape"] },
+              "contract": { "$ref": "#/$defs/enumerator" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "null-input" },
+              "familyId": { "const": "com.reserved-null-input.v1" },
+              "selector": { "not": { "required": ["sourceShape"] } },
+              "contract": { "$ref": "#/$defs/nullInput" }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "parameter-direction" },
+              "familyId": { "const": "com.parameter-direction.v1" },
+              "selector": { "not": { "required": ["sourceShape"] } },
+              "contract": { "$ref": "#/$defs/parameterDirection" }
+            }
+          }
+      ]
     },
     "selector": {
       "type": "object",
@@ -105,7 +145,17 @@
           "type": "array",
           "items": { "$ref": "#/$defs/parameter" }
         },
-        "sourceFingerprint": { "$ref": "#/$defs/sha256" }
+        "sourceFingerprint": { "$ref": "#/$defs/sha256" },
+        "sourceShape": { "$ref": "#/$defs/sourceShape" }
+      }
+    },
+    "sourceShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "value"],
+      "properties": {
+        "format": { "const": "raw-method-shape-v1" },
+        "value": { "type": "string", "minLength": 1 }
       }
     },
     "interface": {
@@ -182,7 +232,166 @@
         "parameterIndex": { "type": "integer", "minimum": 0 },
         "ownership": { "enum": ["cotaskmem-owned", "handle-owned"] },
         "cleanup": { "enum": ["CoTaskMemFree", "DeleteObject"] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "ownership": { "const": "cotaskmem-owned" },
+            "cleanup": { "const": "CoTaskMemFree" }
+          }
+        },
+        {
+          "properties": {
+            "ownership": { "const": "handle-owned" },
+            "cleanup": { "const": "DeleteObject" }
+          }
+        }
+      ]
+    },
+    "safeArray": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameterIndex", "element", "ownership", "cleanup", "nullability"],
+      "properties": {
+        "parameterIndex": { "type": "integer", "minimum": 0 },
+        "element": { "$ref": "#/$defs/safeArrayElement" },
+        "ownership": { "enum": ["borrowed-input", "owned-output"] },
+        "cleanup": { "enum": ["none", "SafeArrayDestroy"] },
+        "nullability": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": { "kind": { "const": "required-input" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "pointee"],
+              "properties": {
+                "kind": { "const": "required-output-cell" },
+                "pointee": { "$ref": "#/$defs/safeArrayPointee" }
+              }
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "ownership": { "const": "borrowed-input" },
+            "cleanup": { "const": "none" },
+            "nullability": { "properties": { "kind": { "const": "required-input" } } }
+          }
+        },
+        {
+          "properties": {
+            "ownership": { "const": "owned-output" },
+            "cleanup": { "const": "SafeArrayDestroy" },
+            "nullability": { "properties": { "kind": { "const": "required-output-cell" } } }
+          }
+        }
+      ]
+    },
+    "safeArrayElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vartype", "interfaceIid"],
+      "properties": {
+        "vartype": {
+          "enum": ["VT_I4", "VT_UI1", "VT_UI4", "VT_R8", "VT_BSTR", "VT_UNKNOWN", "VT_VARIANT"]
+        },
+        "interfaceIid": { "oneOf": [{ "$ref": "#/$defs/guid" }, { "type": "null" }] }
+      },
+      "if": { "properties": { "vartype": { "const": "VT_UNKNOWN" } } },
+      "then": { "properties": { "interfaceIid": { "$ref": "#/$defs/guid" } } },
+      "else": { "properties": { "interfaceIid": { "type": "null" } } }
+    },
+    "safeArrayPointee": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "required" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason", "evidence"],
+          "properties": {
+            "kind": { "const": "nullable-on-success" },
+            "reason": { "type": "string", "minLength": 1 },
+            "evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/evidence" }
+            }
+          }
+        }
+      ]
+    },
+    "nullInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameterIndex", "value"],
+      "properties": {
+        "parameterIndex": { "type": "integer", "minimum": 0 },
+        "value": { "const": "native-null" }
       }
+    },
+    "parameterDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameterIndex", "direction"],
+      "properties": {
+        "parameterIndex": { "type": "integer", "minimum": 0 },
+        "direction": { "const": "out" }
+      }
+    },
+    "borrowedHandle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameterIndex", "handle", "ownership", "cleanup", "receivingCell"],
+      "properties": {
+        "parameterIndex": { "type": "integer", "minimum": 0 },
+        "handle": { "const": "Windows.Win32.Foundation.HWND" },
+        "ownership": { "const": "borrowed" },
+        "cleanup": { "const": "none" },
+        "receivingCell": { "const": "required" }
+      }
+    },
+    "enumerator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capacityParameterIndex", "valuesParameterIndex", "fetchedParameterIndex",
+        "element", "fetchedOptionalForSingle", "hresult", "evidenceSource"
+      ],
+      "properties": {
+        "capacityParameterIndex": { "const": 0 },
+        "valuesParameterIndex": { "const": 1 },
+        "fetchedParameterIndex": { "const": 2 },
+        "element": { "$ref": "#/$defs/enumeratorElement" },
+        "fetchedOptionalForSingle": { "type": "boolean" },
+        "hresult": { "const": "s-ok-s-false" },
+        "evidenceSource": { "enum": ["com-standard", "exact-registry"] }
+      }
+    },
+    "enumeratorElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "name", "kind", "iid"],
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["interface", "struct", "unknown"] },
+        "iid": { "oneOf": [{ "$ref": "#/$defs/guid" }, { "type": "null" }] }
+      },
+      "if": { "properties": { "kind": { "const": "interface" } } },
+      "then": { "properties": { "iid": { "$ref": "#/$defs/guid" } } },
+      "else": { "properties": { "iid": { "type": "null" } } }
     },
     "outputMode": {
       "type": "object",

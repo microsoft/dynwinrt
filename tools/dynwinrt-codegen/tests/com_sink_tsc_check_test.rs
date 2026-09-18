@@ -5,6 +5,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+mod support;
+
 #[test]
 fn generated_com_sink_dts_passes_tsc_no_emit() {
     let winmd = std::env::var("DYNWINRT_WIN32_WINMD")
@@ -144,11 +146,7 @@ composed.release();
 "#,
     )
     .expect("write COM sink usage");
-    fs::write(
-        tmp.join("globals.d.ts"),
-        "declare class Buffer extends Uint8Array {}\n",
-    )
-    .expect("write Buffer stub");
+    support::write_com_runtime_stub(&tmp);
     fs::write(
         tmp.join("tsconfig.json"),
         r#"{
@@ -165,34 +163,6 @@ composed.release();
 }"#,
     )
     .expect("write COM sink tsconfig");
-
-    let package = tmp.join("node_modules").join("@microsoft").join("dynwinrt");
-    fs::create_dir_all(&package).expect("create COM runtime stub");
-    fs::write(
-        package.join("package.json"),
-        r#"{
-  "name": "@microsoft/dynwinrt",
-  "version": "0.0.0",
-  "exports": {
-    "./com": {
-      "types": "./com.d.ts"
-    }
-  }
-}"#,
-    )
-    .expect("write COM runtime package stub");
-    fs::write(
-        package.join("com.d.ts"),
-        r#"export declare class WinGuid {}
-export interface DynComImplementation {}
-export declare class DynWinRtValue {
-  isNull(): boolean;
-}
-export declare class DynComNativeStruct {}
-export declare class DynComNativeStructArray {}
-"#,
-    )
-    .expect("write COM runtime declarations");
 
     let output = Command::new("cmd")
         .arg("/c")

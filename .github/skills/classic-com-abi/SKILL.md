@@ -15,6 +15,8 @@ Use this skill for changes under:
 
 Read [`docs/architecture/classic-com-support.md`](../../../docs/architecture/classic-com-support.md)
 before changing supported types or claiming support for an interface.
+For method-specific overrides, also follow the
+[contract evidence registry](../../../docs/architecture/classic-com-contract-evidence-registry.md).
 
 ## Core principle
 
@@ -31,6 +33,14 @@ Windows.Win32.winmd facts
 
 `Buffer`, `bigint`, `string`, and generated wrappers are projection choices.
 They must not determine native semantics.
+
+Supporting a native type does not establish every method's contract. The same
+pointer shape can mean borrowed storage, replacement, ownership transfer, or a
+property-selected medium. Prove the method contract before granting safe support.
+
+Keep production invocation and JavaScript implementation purely dynamic.
+Extend centralized ABI primitives and validated plans, not per-interface
+generated or compiled Rust adapters.
 
 ## Required semantic model
 
@@ -230,6 +240,33 @@ Examples:
 - Pair CoTaskMem allocations with `CoTaskMemFree`.
 - Win32 handles are not COM references; cleanup is resource-specific.
 - Unknown allocator or ownership contracts fail closed.
+- For fallible explicit release, retain the address and ownership/provenance
+  until native cleanup succeeds. Surface failures so the caller can retry;
+  destructors/finalizers may remain best-effort.
+
+## Method-contract boundaries
+
+- Preserve input nullability through metadata evidence, semantic parameters,
+  projected declarations, COM signatures, value wrapping, and native storage.
+  A `.d.ts` union alone is not support. An allowed `NULL` must become an actual
+  null pointer, not a zeroed struct or dummy allocation. Keep unrelated inputs
+  required; do not confuse a nullable value with an optional argument.
+- Model InOut storage preservation separately from replacement or transfer.
+  `IDataObject::GetDataHere` borrows caller-allocated HGLOBAL storage that must
+  not be resized or replaced. WIA file transfer and filename output cannot
+  inherit that policy merely because both use `STGMEDIUM* InOut`.
+- Resolve ownership-controlling flags in the method plan. When input storage
+  remains call-local and caller-owned, a `SetData`-style transfer flag must be
+  fixed to the documented borrowing value, or generation must reject the call
+  until a real ownership-transfer plan exists. Cover inherited declarations.
+- Model successful HRESULTs and output validity together. For example,
+  `IDataObject::GetCanonicalFormatEtc` ignores `tymed`, and
+  `DATA_S_SAMEFORMATETC` does not make unused output fields valid. Preserve
+  meaningful status codes and apply the status-specific output plan. Keep
+  cleanup obligations separate from value validity, including on failure.
+
+These decisions belong before rendering and native dispatch. A check after
+the call cannot substitute for missing pre-call storage or ownership evidence.
 
 ## Metadata evidence
 
@@ -246,23 +283,37 @@ Before supporting an interface:
    callers to provide external definitions through `--ref`.
 7. Check Microsoft API documentation for ownership that metadata does not
    encode.
-8. Generate with `--dry-run` and verify unsupported methods stop the whole
-   unsafe interface projection.
+8. Generate with `--dry-run` and verify an unsupported method rejects complete
+   safe interface projection.
 
 Do not claim general interface support when only a manually described runtime
-subset works.
+subset works. An explicitly named `*Unsafe` companion may expose a supported
+subset of methods; it must never silently replace a safe symbol or count as
+safe-complete.
+
+For new or changed exact overrides:
+
+- Pin the declaring namespace/interface/IID, absolute slot, parameter roles,
+  full pre-contract fingerprint, metadata hash/provenance, and authoritative
+  citation. An inherited method consumes its declaring interface's evidence.
+- Use an independently pinned expected fingerprint, not one computed from the
+  current input and then accepted as its own proof.
+- Missing, conflicting, or drifted required evidence must fail closed. Do not
+  fall back to a generic type-based policy or add renderer name heuristics.
 
 ## Fail-closed requirements
 
-Reject generation when any required fact is unknown, including:
+Reject safe generation when any required fact is unknown, including:
 
 - native struct/union layout;
+- method-specific nullability, InOut policy, conditional ownership, or
+  status-dependent output validity;
 - writable caller-sized buffers without a modeled count relationship;
 - untyped output pointers without ownership;
 - unsupported interface in/out replacement;
 - BSTR arrays or unknown string allocation;
-- VARIANT, PROPVARIANT, SAFEARRAY, FORMATETC, or STGMEDIUM without dedicated
-  models;
+- VARIANT, PROPVARIANT, SAFEARRAY, FORMATETC, STGMEDIUM, or variable-length
+  WAVEFORMATEX without dedicated models;
 - unsupported direct native returns; or
 - interface parameters whose IID or PIID cannot be resolved from loaded
   metadata;
@@ -291,11 +342,36 @@ Every new semantic type or ownership rule needs:
 Prefer tests that add a new ABI shape. Do not add many interfaces that only
 repeat activation.
 
+Exercise the generated call at the native boundary, not only its declaration
+text. Cover nullable and non-null inputs, required-input rejection before
+dispatch, preserved argument positions, meaningful success statuses, and
+failure cleanup. A hook returning before native cleanup does not prove that
+the production native return-value check works.
+
+Native fixtures must use full SDK vtables or equally complete, ABI-correct
+declarations for every advertised IID. Unused slots still need exact signatures
+and may return `E_NOTIMPL`. QI aliases require compatible vtable prefixes;
+otherwise use separate objects/tear-offs with correct canonical IUnknown and
+reference ownership. Never return fabricated interface pointers or substitute
+an unrelated interface's vtable. For hardware-dependent or externally
+side-effecting APIs such as `Record`, use controlled fixtures to test pointer
+semantics without triggering the real operation.
+
+When capability or evidence changes, regenerate the safe and raw/evidence
+censuses from the pinned metadata. Reconcile CI expectations, retained reports,
+and linked documentation; confirm repeated artifacts are byte-identical.
+Removing an incorrectly promoted interface may legitimately lower the safe
+baseline. Keep versioned counts and support inventories in those reports,
+not in this skill.
+
 ## Review checklist
 
 - Does the change start from metadata facts rather than JS convenience?
 - Is the semantic type explicit?
+- Is the method contract proven, rather than inferred from a supported type?
 - Are pointer depth and direction preserved?
+- Does nullable input reach native NULL without weakening required inputs?
+- Does InOut preserve or replace storage according to explicit evidence?
 - Is storage correctly sized before native invocation?
 - Is ownership explicit on success and failure?
 - Are x86 and x64 widths correct?
@@ -304,4 +380,6 @@ repeat activation.
 - Does an InOut path use the same conversion and helper availability as In?
 - Does the renderer contain ABI heuristics that belong in projection?
 - Does unsupported metadata fail during generation?
+- Are output validity and cleanup correct for each meaningful HRESULT?
+- Are fixture vtables/QI truthful, and does the census reflect only proven support?
 - Did any WinRT model, output, or root API change?

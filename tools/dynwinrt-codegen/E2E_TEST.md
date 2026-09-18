@@ -169,14 +169,18 @@ A file picker dialog will open. Select a file (filtered to .png/.jpg/.txt) to co
 
 The repository's canonical cross-language specs are in
 [`tests/e2e/e2e_specs.json`](../../tests/e2e/e2e_specs.json). The orchestrator
-generates temporary bindings and runs the JavaScript/TypeScript, Python, or
-Classic COM runners. From the repository root:
+generates temporary bindings and runs the WinRT JavaScript/TypeScript and
+Python runners, plus separate Classic COM and flat Win32 runners. From the
+repository root:
 
 ```powershell
 .\tests\e2e\e2e_test.ps1 -Lang ts
 .\tests\e2e\e2e_test.ps1 -Lang py
 .\tests\e2e\e2e_test.ps1 -Lang com
+.\tests\e2e\e2e_test.ps1 -Lang win32
 ```
 
-The Classic COM suite also requires `DYNWINRT_WIN32_WINMD` or an installed
-`Microsoft.Windows.SDK.Win32Metadata` package.
+The Classic COM and flat Win32 suites require `DYNWINRT_WIN32_WINMD` or an
+installed `Microsoft.Windows.SDK.Win32Metadata` package. The Win32 suite uses
+the runners in `tests\e2e\runners\win32` to exercise Registry buffers, resource
+cleanup, native structures, IOCP, subsystem loading, and package isolation.

@@ -13,9 +13,10 @@ use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeKind, TypeMeta};
 
 use crate::codegen::winrt::shared::imports::{
-    collect_iface_type_imports, collect_struct_field_type_imports, collect_type_imports,
-    collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
-    collect_used_generic_identities_from_type, ireference_inner_type,
+    collect_iface_type_imports_by_identity, collect_struct_field_type_imports,
+    collect_type_imports, collect_used_generic_identities_from_class,
+    collect_used_generic_identities_from_methods, collect_used_generic_identities_from_type,
+    ireference_inner_type,
 };
 use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -126,7 +127,10 @@ def _dynwinrt_can_cast(value, iid):
 \n";
 
 pub fn generate_runtime_support_module() -> String {
-    format!("{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}")
+    format!(
+        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}",
+        super::implementation::HELPERS
+    )
 }
 
 const ASYNC_IMPORT_LINE: &str = "\

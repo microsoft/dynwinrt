@@ -157,6 +157,8 @@ fn generated_dts_passes_tsc_no_emit() {
 import { User } from "./windows/system/User.js";
 import { ContactDate } from "./windows/application-model/contacts/ContactDate.js";
 import { IReference_UInt32 } from "./windows/foundation/IReference_UInt32.js";
+import { IStringable } from "./windows/foundation/IStringable.js";
+import { releaseProjected } from "./lifetime.js";
 
 new Uri("https://example.com");
 new Uri("https://example.com/base/", "child");
@@ -164,6 +166,15 @@ new Uri("https://example.com/base/", "child");
 new Uri();
 // @ts-expect-error User instances can only be returned by the system.
 new User();
+
+const owner = IStringable.implement({ toString: () => "public view" });
+const view: IStringable = IStringable.fromImplementation(owner);
+function consumeStringable(value: IStringable): string { return value.toString(); }
+const text: string = consumeStringable(view);
+// @ts-expect-error Native interface constructors remain internal.
+new IStringable(owner.toValue());
+releaseProjected(view);
+owner.dispose();
 
 const contactDate = ContactDate.create();
 const day: number | null = contactDate.day;
@@ -231,6 +242,39 @@ export declare class DynWinRtMethodSig {
     addOut(t: DynWinRtType): DynWinRtMethodSig;
     addOutFill(t: DynWinRtType): DynWinRtMethodSig;
     [key: string]: any;
+}
+export declare class DynWinRtInterfacePlan {
+    private constructor();
+    static create(name: string, interfaceType: DynWinRtType, methods: { name: string; vtableIndex: number; signature: DynWinRtMethodSig }[], requiredIids?: WinGuid[]): DynWinRtInterfacePlan;
+}
+export interface DynWinRtImplementationDescriptor {
+    readonly plan: DynWinRtInterfacePlan;
+    readonly dispatch: (vtableIndex: number, args: DynWinRtValue[]) => DynWinRtValue[];
+}
+export declare class DynWinRtImplementation {
+    private constructor();
+    static create(interfaces: DynWinRtInterfacePlan[], callback: (interfaceIndex: number, vtableIndex: number, args: DynWinRtValue[]) => DynWinRtValue[], runtimeClassName?: string): DynWinRtImplementation;
+    toValue(): DynWinRtValue;
+    release(): void;
+    dispose(): void;
+    disconnect(): void;
+    readonly isClosed: boolean;
+    takeError(): string | null;
+}
+export interface DynWinRtImplementationType { implementation(handlers: never): DynWinRtImplementationDescriptor; }
+type ImplementationHandlers<T> = T extends { implementation(handlers: infer H): DynWinRtImplementationDescriptor } ? H : never;
+export type DynWinRtImplementationOptions<T extends readonly DynWinRtImplementationType[]> = {
+    readonly interfaces: { readonly [K in keyof T]: readonly [T[K], NoInfer<ImplementationHandlers<T[K]>>] };
+};
+export declare class DynWinRtImplementationHandle<T> {
+    private constructor();
+    readonly value: T;
+    toValue(): DynWinRtValue;
+    release(): void;
+    dispose(): void;
+    disconnect(): void;
+    readonly isClosed: boolean;
+    takeError(): string | null;
 }
 export declare class DynWinRtValue {
     toNumber(): number;

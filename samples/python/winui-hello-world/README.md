@@ -41,3 +41,11 @@ installed runtime.
 
 Use `-Smoke` to create the window and controls, update the text once, print
 `python-winui-hello-ok`, and exit automatically.
+
+The runtime keeps a single owned reference to the WinUI XAML implementation
+DLL from its first use until process termination, including cleanup on MTA
+threads that outlive the UI apartment. This does not replace the sample's
+event unsubscription, projected object release, or balanced `RoApartment`.
+The DLL and its module-level static state are not unloaded when the window
+closes; in-process WinUI module unloading/hot replacement is not supported.
+See [Python WinUI lifetime policy](../../../bindings/py/README.md#experimental-winui-support).

@@ -164,6 +164,13 @@ impl ArrayData {
         }
     }
 
+    pub(crate) fn from_owned_values(element_type: TypeHandle, values: Vec<WinRTValue>) -> Self {
+        Self {
+            element_type,
+            buffer: ArrayBuffer::Values(values),
+        }
+    }
+
     /// Wrap a CoTaskMem-allocated buffer (ReceiveArray or FillArray pattern).
     /// ArrayData takes ownership and will CoTaskMemFree on drop.
     pub(crate) fn from_cotaskmem(
@@ -240,10 +247,8 @@ impl ArrayData {
     /// For Values arrays, returns a clone of the stored value.
     /// For CoTaskMem arrays, reads from raw bytes (AddRef / DuplicateString as needed).
     pub fn get(&self, index: usize) -> WinRTValue {
-        let len = self.len();
-        self.try_get(index).unwrap_or_else(|_| {
-            panic!("ArrayData::get index {} out of bounds (len {})", index, len)
-        })
+        self.try_get(index)
+            .unwrap_or_else(|error| panic!("ArrayData::get failed: {}", error.message()))
     }
 
     /// Fallible element access that reports invalid indices instead of panicking.
@@ -252,17 +257,17 @@ impl ArrayData {
         if index >= len {
             return Err(crate::result::Error::IndexOutOfBounds { index, len });
         }
-        Ok(match &self.buffer {
-            ArrayBuffer::Values(v) => v[index].clone(),
+        match &self.buffer {
+            ArrayBuffer::Values(v) => Ok(v[index].clone()),
             ArrayBuffer::CoTaskMem { ptr, .. } => self.get_from_raw(index, *ptr as *const u8),
-        })
+        }
     }
 
     /// Read element from a raw byte buffer (CoTaskMem path).
-    fn get_from_raw(&self, index: usize, base: *const u8) -> WinRTValue {
+    fn get_from_raw(&self, index: usize, base: *const u8) -> crate::result::Result<WinRTValue> {
         let elem_size = self.element_type.element_size();
         unsafe {
-            match self.element_type.kind() {
+            Ok(match self.element_type.kind() {
                 TypeKind::Bool => WinRTValue::Bool(*base.add(index * elem_size) != 0),
                 TypeKind::I8 => WinRTValue::I8(*(base.add(index * elem_size) as *const i8)),
                 TypeKind::U8 => WinRTValue::U8(*base.add(index * elem_size)),
@@ -300,8 +305,12 @@ impl ArrayData {
                         WinRTValue::Null
                     } else {
                         // from_raw takes ownership, but we want a clone — so AddRef first
-                        let obj = IUnknown::from_raw_borrowed(&raw).unwrap();
-                        WinRTValue::Object(obj.clone())
+                        let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
+                        if self.element_type.is_async() {
+                            self.element_type.from_out(obj.into_raw())?
+                        } else {
+                            WinRTValue::Object(obj)
+                        }
                     }
                 }
                 TypeKind::Struct(_) => {
@@ -314,8 +323,8 @@ impl ArrayData {
                     }
                     WinRTValue::Struct(vd)
                 }
-                other => panic!("ArrayData::get unsupported element type: {:?}", other),
-            }
+                other => return Err(crate::result::Error::UnsupportedCollectionElement(other)),
+            })
         }
     }
 

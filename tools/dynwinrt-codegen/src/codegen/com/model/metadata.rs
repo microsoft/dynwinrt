@@ -10,6 +10,7 @@ use crate::com_metadata::{
     RawNativeLayoutSet, RawNativeType, RawPacking, RawParamDirection, RawSafeArrayOwnership,
     RawSafeArrayVartype, RawStringEncoding,
 };
+use crate::contract_registry::adapters;
 
 use super::ComModel;
 use super::abi::{
@@ -181,6 +182,11 @@ pub(super) fn map_interface(meta: &ComInterfaceMeta) -> Result<SemanticComInterf
         ));
     }
     interface.validate()?;
+    // Preserve existing semantic diagnostics before checking the newly pinned source shapes.
+    for raw in raw_methods {
+        crate::com_metadata::validate_migrated_source_shape(raw)
+            .map_err(ModelError::InvalidContract)?;
+    }
     Ok(interface)
 }
 
@@ -294,6 +300,8 @@ fn map_method(
         .map_err(ModelError::InvalidContract)?;
     crate::com_metadata::validate_attached_safe_array_evidence(raw)
         .map_err(ModelError::InvalidContract)?;
+    crate::com_metadata::validate_required_exact_contract_presence(raw)
+        .map_err(ModelError::InvalidContract)?;
     if let Some(contract) = &raw.exact_contract {
         crate::com_metadata::validate_exact_method_contract(
             interface_namespace,
@@ -402,6 +410,19 @@ fn map_method(
         })
     } else {
         match raw.exact_contract.as_ref().map(|contract| contract.kind) {
+            Some(RawExactMethodContractKind::RestrictedEndpointActivation) => {
+                let (context, allowed_iids) = map_activation_targets(
+                    crate::com_activation_registry::imm_device_activate_targets(),
+                )?;
+                method.with_special_contract(ComMethodSpecialContract::RestrictedActivation {
+                    iid_param: ParamIndex::new(0),
+                    context_param: ParamIndex::new(1),
+                    null_param: ParamIndex::new(2),
+                    output_param: ParamIndex::new(3),
+                    context,
+                    allowed_iids,
+                })
+            }
             Some(RawExactMethodContractKind::FixedCapacityBytes) => {
                 method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
                     guid_param: ParamIndex::new(0),
@@ -429,10 +450,87 @@ fn map_method(
                     validation_flag: 6,
                 })
             }
+            Some(RawExactMethodContractKind::BorrowedStgMediumInput) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::BorrowedStgMediumInput {
+                    release_param: ParamIndex::new(
+                        contract
+                            .ownership_transfer_param_index
+                            .expect("validated SetData ownership-transfer parameter"),
+                    ),
+                })
+            }
+            Some(RawExactMethodContractKind::PreservedStgMediumInOut) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::PreservedStgMediumInOut {
+                    medium_param: ParamIndex::new(contract.buffer_param_index),
+                })
+            }
+            Some(RawExactMethodContractKind::CanonicalFormatEtc) => {
+                method.with_special_contract(ComMethodSpecialContract::CanonicalFormatEtc {
+                    input_param: ParamIndex::new(0),
+                    output_param: ParamIndex::new(1),
+                })
+            }
+            Some(
+                RawExactMethodContractKind::AudioFormatOwnedOutput
+                | RawExactMethodContractKind::NullableAudioFormatInput,
+            ) => method,
+            Some(RawExactMethodContractKind::AudioFormatSupport) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::AudioFormatSupport {
+                    share_mode_param: ParamIndex::new(
+                        contract
+                            .discriminator_param_index
+                            .expect("validated audio share-mode discriminator"),
+                    ),
+                    closest_match_param: ParamIndex::new(contract.buffer_param_index),
+                })
+            }
             None => method,
         }
     };
     Ok(method)
+}
+
+fn map_activation_targets(
+    entries: &[crate::com_activation_registry::ActivationTargetEvidence],
+) -> Result<(u32, Vec<String>), ModelError> {
+    use crate::com_activation_registry::{
+        ActivationConditions, ActivationContext, ActivationOutput, ActivationParameters,
+    };
+
+    let required = ActivationConditions {
+        context: ActivationContext::InProcess,
+        parameters: ActivationParameters::NativeNull,
+        output: ActivationOutput::OwnedRequestedInterface,
+    };
+    if entries.is_empty() {
+        return Err(ModelError::InvalidContract(
+            "restricted activation requires target contract evidence".into(),
+        ));
+    }
+    let mut identities = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    let mut iids = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let iid = ComGuid::parse(entry.iid)?;
+        if iid.is_zero()
+            || !identities.insert(iid)
+            || !names.insert((entry.namespace, entry.interface))
+            || entry.conditions != required
+            || entry.reason.trim().is_empty()
+            || !entry.citation.starts_with("https://learn.microsoft.com/")
+        {
+            return Err(ModelError::InvalidContract(format!(
+                "{}.{} has invalid, duplicate, or incompatible activation target evidence",
+                entry.namespace, entry.interface
+            )));
+        }
+        QualifiedName::new(entry.namespace, entry.interface)?;
+        iids.push(entry.iid.to_ascii_lowercase());
+    }
+    Ok((required.context.native_value(), iids))
 }
 
 fn map_param(
@@ -455,7 +553,11 @@ fn map_param(
         || raw_method
             .exact_interface_output_call
             .as_ref()
-            .is_some_and(|contract| contract.context_param_index == param_index);
+            .is_some_and(|contract| contract.context_param_index == param_index)
+        || raw_method.exact_contract.as_ref().is_some_and(|contract| {
+            contract.kind == RawExactMethodContractKind::RestrictedEndpointActivation
+                && param_index == 2
+        });
     let effective_direction = documented_bstr_direction_override(
         interface_namespace,
         interface_name,
@@ -498,6 +600,66 @@ fn map_param(
                 raw_native_name(&raw.typ)?,
                 None,
                 ComAbiType::ExactNullPointer,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.Media.Audio"
+            && name == "WAVEFORMATEX"
+            && matches!(raw.typ.pointer_depth, 1 | 2)
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new(
+                    "Windows.Win32.Media.Audio",
+                    "WAVEFORMATEX",
+                )?),
+                None,
+                ComAbiType::AudioFormat,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Com"
+            && name == "FORMATETC"
+            && raw.typ.pointer_depth == 1
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new("Windows.Win32.System.Com", "FORMATETC")?),
+                None,
+                ComAbiType::FormatEtc,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Com"
+            && name == "STGMEDIUM"
+            && raw.typ.pointer_depth == 1
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new("Windows.Win32.System.Com", "STGMEDIUM")?),
+                None,
+                ComAbiType::StgMedium,
             )?,
             None,
         )
@@ -634,7 +796,13 @@ fn map_param(
         param_index,
         dynamic_iid_output,
     )?;
-    let nullable = if !exact_null_input
+    let exact_nullable_audio_input = raw_method.exact_contract.as_ref().is_some_and(|contract| {
+        contract.kind == RawExactMethodContractKind::NullableAudioFormatInput
+            && contract.buffer_param_index == param_index
+    });
+    let nullable = if exact_nullable_audio_input {
+        Nullability::Nullable
+    } else if !exact_null_input
         && (raw.optional
             || known_nullable_param_override(
                 interface_namespace,
@@ -645,7 +813,7 @@ fn map_param(
             || raw
                 .safe_array_evidence
                 .as_ref()
-                .is_some_and(crate::com_safe_array_registry::safe_array_output_allows_null))
+                .is_some_and(adapters::safearray::safe_array_output_allows_null))
         && is_nullable_type(model, abi_type)?
     {
         Nullability::Nullable
@@ -967,6 +1135,9 @@ pub(in crate::codegen::com) fn census_raw_base_category(raw: &RawComType) -> &'s
             ComAbiType::DispatchParams => "DispatchParams",
             ComAbiType::ExcepInfo => "ExcepInfo",
             ComAbiType::StatStg => "StatStg",
+            ComAbiType::FormatEtc => "FormatEtc",
+            ComAbiType::StgMedium => "StgMedium",
+            ComAbiType::AudioFormat => "AudioFormat",
             ComAbiType::FunctionPointer(_) => "FunctionPointer",
             ComAbiType::Unknown(_) => "Unknown",
         };
@@ -1164,6 +1335,12 @@ fn map_raw_named_struct(
     }
     if namespace == "Windows.Win32.System.Com" && name == "EXCEPINFO" {
         return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::ExcepInfo);
+    }
+    if namespace == "Windows.Win32.System.Com" && name == "FORMATETC" {
+        return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::FormatEtc);
+    }
+    if namespace == "Windows.Win32.System.Com" && name == "STGMEDIUM" {
+        return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::StgMedium);
     }
     if namespace == "Windows.Win32.System.Com.StructuredStorage" && name == "PROPVARIANT" {
         return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::PropVariant);
@@ -1462,6 +1639,9 @@ fn validate_pod_field_type(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout)),
     }
@@ -1531,6 +1711,9 @@ fn abi_size_alignment(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::Unknown(_) => {
             return Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout));
         }
@@ -1748,6 +1931,9 @@ fn buffer_element_ownership(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => BufferElementOwnership::Unknown,
     };
@@ -1883,6 +2069,45 @@ fn map_ownership(
         }
         ComAbiType::StatStg if direction == Direction::Out => {
             Ok((ComOwnership::StatStgOwned, Cleanup::StatStgClear))
+        }
+        ComAbiType::FormatEtc if direction == Direction::Out => {
+            Ok((ComOwnership::FormatEtcOwned, Cleanup::FormatEtcClear))
+        }
+        ComAbiType::StgMedium if direction == Direction::Out => {
+            Ok((ComOwnership::StgMediumOwned, Cleanup::ReleaseStgMedium))
+        }
+        ComAbiType::AudioFormat
+            if direction == Direction::Out
+                && raw_method.exact_contract.as_ref().is_some_and(|contract| {
+                    matches!(
+                        contract.kind,
+                        RawExactMethodContractKind::AudioFormatOwnedOutput
+                            | RawExactMethodContractKind::AudioFormatSupport
+                    ) && contract.buffer_param_index == param_index
+                }) =>
+        {
+            Ok((
+                ComOwnership::AudioFormatOwned,
+                Cleanup::CoTaskMemAudioFormat,
+            ))
+        }
+        ComAbiType::AudioFormat if direction == Direction::Out => Err(ModelError::Unsupported(
+            UnsupportedReason::Other(
+                "WAVEFORMATEX output requires exact CoTaskMem ownership evidence".into(),
+            ),
+        )),
+        ComAbiType::FormatEtc if direction == Direction::InOut => Err(
+            ModelError::Unsupported(UnsupportedReason::Other(
+                "FORMATETC in/out requires a dedicated replacement contract".into(),
+            )),
+        ),
+        ComAbiType::AudioFormat if direction == Direction::InOut => Err(
+            ModelError::Unsupported(UnsupportedReason::Other(
+                "WAVEFORMATEX in/out requires a dedicated replacement contract".into(),
+            )),
+        ),
+        ComAbiType::FormatEtc | ComAbiType::StgMedium | ComAbiType::AudioFormat => {
+            Ok((ComOwnership::Borrowed, Cleanup::None))
         }
         ComAbiType::DispatchParams if direction == Direction::Out => Err(
             ModelError::Unsupported(UnsupportedReason::Other(
@@ -2372,6 +2597,51 @@ fn is_explicit_pointer_alias(namespace: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_target_registry_lowers_without_a_fixed_target_count() {
+        let entries = crate::com_activation_registry::imm_device_activate_targets();
+        let (context, iids) = map_activation_targets(entries).unwrap();
+        assert_eq!(context, 1);
+        assert_eq!(
+            iids,
+            entries.iter().map(|entry| entry.iid).collect::<Vec<_>>()
+        );
+        let (context, subset) = map_activation_targets(&entries[..2]).unwrap();
+        assert_eq!(context, 1);
+        assert_eq!(subset.len(), 2);
+        let mut mixed_case = entries.to_vec();
+        mixed_case[0].iid = "1CB9AD4C-DBFA-4C32-B178-C2F568A703B2";
+        assert_eq!(map_activation_targets(&mixed_case).unwrap().1, iids);
+    }
+
+    #[test]
+    fn activation_target_registry_rejects_missing_or_ambiguous_evidence() {
+        let entries = crate::com_activation_registry::imm_device_activate_targets();
+        assert!(map_activation_targets(&[]).is_err());
+        for mutation in 0..9 {
+            let mut invalid = entries.to_vec();
+            match mutation {
+                0 => invalid[1].iid = invalid[0].iid,
+                1 => {
+                    invalid[1].namespace = invalid[0].namespace;
+                    invalid[1].interface = invalid[0].interface;
+                }
+                2 => invalid[0].iid = "not-an-iid",
+                3 => invalid[0].iid = "00000000-0000-0000-0000-000000000000",
+                4 => invalid[0].citation = "",
+                5 => invalid[0].reason = " ",
+                6 => invalid[0].namespace = "",
+                7 => invalid[0].interface = "",
+                8 => invalid[1].iid = "1CB9AD4C-DBFA-4C32-B178-C2F568A703B2",
+                _ => unreachable!(),
+            }
+            assert!(
+                map_activation_targets(&invalid).is_err(),
+                "accepted mutation {mutation}"
+            );
+        }
+    }
 
     #[test]
     fn const_attribute_does_not_erase_mixed_pointer_qualifiers() {

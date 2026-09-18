@@ -37,6 +37,7 @@ fn renderer_api_accepts_only_projected_ir() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("registerIUnknownInterface"));
@@ -157,6 +158,7 @@ fn renderer_serializes_validated_com_sink_plan() {
             ],
         }),
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -198,6 +200,157 @@ fn renderer_serializes_validated_com_sink_plan() {
             "static implement(handlers: ITestSinkImplementation, ...additional: DynComImplementation[]): ITestSink;"
         )
     );
+}
+
+#[test]
+fn nullable_audio_format_inputs_serialize_the_validated_contract() {
+    let mut method = ProjectedComMethod {
+        name: "UseFormat".into(),
+        camel_name: "useFormat".into(),
+        vtable_index: 6,
+        params: vec![ProjectedComParam {
+            name: "format".into(),
+            typ: ComType::AudioFormat,
+            direction: ComParamDirection::In,
+            surface_input: true,
+            surface_result: false,
+            nullable: true,
+        }],
+        return_convention: ComReturnConvention::HResult,
+        results: Vec::new(),
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::Normal,
+        doc: None,
+        overload: None,
+    };
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addNullableIn(DynCom.audioFormatType())"
+    );
+    assert_eq!(dts_params(&method), ["format: DynComAudioFormat | null"]);
+    assert_eq!(
+        wrap_param_arg_js(&method.params[0], "format"),
+        "format === null ? DynCom.nullAudioFormat() : DynCom.audioFormat(format)"
+    );
+    method.params[0].nullable = false;
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.audioFormatType())"
+    );
+    assert_eq!(dts_params(&method), ["format: DynComAudioFormat"]);
+    assert_eq!(
+        wrap_param_arg_js(&method.params[0], "format"),
+        "DynCom.audioFormat(format)"
+    );
+}
+
+#[test]
+fn storage_medium_result_rules_and_borrowing_are_serialized_from_ir() {
+    let format_param = |name: &str, direction| ProjectedComParam {
+        name: name.into(),
+        typ: ComType::FormatEtc,
+        direction,
+        surface_input: direction == ComParamDirection::In,
+        surface_result: direction == ComParamDirection::Out,
+        nullable: false,
+    };
+    let mut method = ProjectedComMethod {
+        name: "Normalize".into(),
+        camel_name: "normalize".into(),
+        vtable_index: 6,
+        params: vec![
+            format_param("input", ComParamDirection::In),
+            format_param("output", ComParamDirection::Out),
+        ],
+        return_convention: ComReturnConvention::SemanticHResult,
+        results: vec![
+            ProjectedComResult {
+                typ: ComType::HResult,
+                source: ResultSource::DirectReturn,
+                conversion: ResultConversion::Value,
+            },
+            ProjectedComResult {
+                typ: ComType::FormatEtc,
+                source: ResultSource::Param(1),
+                conversion: ResultConversion::FormatEtc,
+            },
+        ],
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::CanonicalFormatEtc {
+            input_param_index: 0,
+            output_param_index: 1,
+        },
+        doc: None,
+        overload: None,
+    };
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.formatEtcType()).addOut(DynCom.formatEtcType()).preserveHresult().canonicalFormatEtcResult(0, 1)"
+    );
+    method.kind = ProjectedComMethodKind::Normal;
+    assert!(!super::build_method_sig_js(&method).contains("canonicalFormatEtcResult"));
+
+    method.name = "Fill".into();
+    method.camel_name = "fill".into();
+    method.kind = ProjectedComMethodKind::PreservedStgMediumInOut {
+        medium_param_index: 1,
+    };
+    method.params[1] = ProjectedComParam {
+        name: "medium".into(),
+        typ: ComType::StgMedium,
+        direction: ComParamDirection::InOut,
+        surface_input: true,
+        surface_result: true,
+        nullable: false,
+    };
+    method.return_convention = ComReturnConvention::HResult;
+    method.results = vec![ProjectedComResult {
+        typ: ComType::StgMedium,
+        source: ResultSource::Param(1),
+        conversion: ResultConversion::StgMedium,
+    }];
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.formatEtcType()).addInOut(DynCom.stgMediumType())"
+    );
+    let mut js = String::new();
+    emit_method_js(&mut js, &method, "_iface");
+    assert!(js.contains("fill(input, medium)"));
+    assert!(js.contains("return DynCom.takeStgMedium(_out);"), "{js}");
+    assert_eq!(dts_return_type(&method), "DynComStgMedium");
+
+    method.name = "Store".into();
+    method.camel_name = "store".into();
+    method.kind = ProjectedComMethodKind::BorrowedStgMediumInput {
+        release_param_index: 2,
+    };
+    method.params[1] = ProjectedComParam {
+        name: "medium".into(),
+        typ: ComType::StgMedium,
+        direction: ComParamDirection::In,
+        surface_input: true,
+        surface_result: false,
+        nullable: false,
+    };
+    method.params.push(ProjectedComParam {
+        name: "transfer".into(),
+        typ: ComType::Win32Bool,
+        direction: ComParamDirection::In,
+        surface_input: false,
+        surface_result: false,
+        nullable: false,
+    });
+    method.return_convention = ComReturnConvention::HResult;
+    method.results.clear();
+    let mut js = String::new();
+    emit_method_js(&mut js, &method, "_iface");
+    assert!(js.contains("store(input, medium)"));
+    assert!(js.contains("DynCom.stgMedium(medium), DynCom.i32(0)"));
+    assert!(!dts_params(&method).join(", ").contains("transfer"));
 }
 
 #[test]
@@ -262,6 +415,7 @@ fn renderer_serializes_direct_and_void_com_sink_returns() {
             ],
         }),
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -366,6 +520,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -435,6 +590,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
     assert!(
@@ -481,6 +637,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
 
@@ -529,6 +686,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
 
@@ -649,6 +807,7 @@ fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     })
     .unwrap();
 
@@ -705,6 +864,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -760,6 +920,7 @@ fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     assert_eq!(
@@ -845,6 +1006,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -951,6 +1113,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -1080,6 +1243,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -1161,6 +1325,7 @@ fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     })
     .unwrap();
 
@@ -1213,6 +1378,7 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let coclass = ProjectedComCoclass {
         name: "Test".into(),
@@ -1266,6 +1432,7 @@ fn coclass_renderer_rejects_exact_canonical_interface_path_collisions() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let first = interface("Tests.FooBar", "00000000-0000-0000-0000-000000000001");
     let second = interface("Tests.Foo-Bar", "00000000-0000-0000-0000-000000000002");
@@ -1300,6 +1467,7 @@ fn renderer_returns_invalid_referenced_identity_errors() {
         }],
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let error = render_com_interface(&projected).unwrap_err();

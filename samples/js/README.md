@@ -1,6 +1,6 @@
 # JavaScript samples
 
-The JavaScript samples use generated bindings and the
+The application samples below use generated bindings and the
 `@microsoft/dynwinrt` runtime.
 
 | Sample                                                        | Demonstrates                                                 |
@@ -10,6 +10,9 @@ The JavaScript samples use generated bindings and the
 | [`windows-hello`](windows-hello/)                             | Electron, Windows Hello, and HWND-bound Classic COM interop  |
 | [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
 | [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
+| [`interface-implementation`](interface-implementation/) | Standalone JavaScript-backed WinRT interfaces, native IBackgroundTask calls, and multi-interface lifetime |
+| [`win32`](win32/) | Generated Win32 DLL exports, Registry buffers and handle cleanup, and IOCP-backed asynchronous file I/O |
+| [`ocr`](ocr/) | Windows AI TextRecognizer OCR, generated bindings, interactive picker or `--image`, and private WinApp CLI identity |
 
 The WinUI samples use WinApp CLI to restore matching Windows App SDK metadata,
 runtime packages, bootstrap binaries, and generated npm bindings.
@@ -17,3 +20,12 @@ Their `winapp.yaml` and `winapp.jsBindings` configuration is already checked in,
 so run `npm run restore` rather than initializing the sample again.
 Run `prepare-local.ps1` first to build the repository's JavaScript runtime and
 codegen executable used by both samples.
+
+## Low-level runtime examples
+
+Direct runtime API demonstrations are grouped under
+[`low-level`](low-level/), separately from the generated-binding application
+samples and automated tests. Start with its Uri, asynchronous file, Geopoint
+struct, and PropertyValue array examples; these need no GUI or package identity.
+The interactive `low-level/picker.ts` additionally requires Windows App SDK 1.8;
+its setup and separate native-free contract check are documented alongside it.

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
-use crate::types::{TypeIdentity, TypeKind, TypeMeta, TypeRef};
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
 /// Empty set passed as `deferred` for codegen (no circular dep handling needed).
 pub(crate) static NO_DEFERRED: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
@@ -186,8 +186,35 @@ fn collect_methods_type_imports(
 
 /// Collect type references from an interface for import generation.
 pub(crate) fn collect_iface_type_imports(iface: &InterfaceMeta) -> HashSet<TypeRef> {
+    collect_iface_type_imports_except(iface, &iface.name)
+}
+
+/// Python imports exclude only the owning canonical interface identity.
+pub(crate) fn collect_iface_type_imports_by_identity(iface: &InterfaceMeta) -> HashSet<TypeRef> {
+    let self_identity = iface.type_identity();
+    let mut imports = collect_iface_type_imports_except(iface, "");
+    imports.retain(|reference| {
+        let kind = match reference.kind {
+            TypeKind::Class => TypeIdentityKind::Class,
+            TypeKind::Enum => TypeIdentityKind::Enum,
+            TypeKind::Interface => TypeIdentityKind::Interface,
+        };
+        TypeIdentity::named(kind, &reference.namespace, &reference.name) != self_identity
+    });
+    imports
+}
+
+fn collect_iface_type_imports_except(iface: &InterfaceMeta, self_name: &str) -> HashSet<TypeRef> {
     let mut imports = HashSet::new();
-    collect_methods_type_imports(&iface.methods, &iface.name, false, &mut imports);
+    collect_methods_type_imports(&iface.methods, self_name, false, &mut imports);
+    for delegate in &iface.implementation_metadata.delegates {
+        collect_methods_type_imports(
+            std::slice::from_ref(&delegate.invoke),
+            self_name,
+            false,
+            &mut imports,
+        );
+    }
     imports
 }
 

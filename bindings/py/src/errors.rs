@@ -5,6 +5,9 @@ use pyo3::exceptions::asyncio::CancelledError as PyCancelledError;
 use pyo3::exceptions::{PyIndexError, PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 
+#[cfg(test)]
+pub(crate) static UNRAISABLE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn map_windows_error(error: windows::core::Error) -> PyErr {
     windows_error(error, None)
 }

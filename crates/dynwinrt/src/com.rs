@@ -29,6 +29,12 @@ use crate::{
 
 #[path = "com_automation.rs"]
 pub(crate) mod automation;
+#[path = "com_borrowed.rs"]
+#[doc(hidden)]
+pub mod borrowed;
+#[path = "com_completion.rs"]
+#[doc(hidden)]
+pub mod completion;
 pub use automation::{
     DispatchParamsValue, ExcepInfoValue, PropVariantData, PropVariantType, PropVariantValue,
     PropVariantVector, PropVariantVectorType, SafeArrayBound, SafeArrayElementType,
@@ -645,6 +651,479 @@ impl StatStgValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatEtcValue {
+    clipboard_format: u16,
+    aspect: u32,
+    index: i32,
+    tymed: u32,
+}
+
+impl FormatEtcValue {
+    pub fn hglobal(clipboard_format: u16, aspect: u32, index: i32) -> result::Result<Self> {
+        if clipboard_format == 0 {
+            return Err(invalid_argument(
+                "FORMATETC clipboard format must be non-zero",
+            ));
+        }
+        if !matches!(aspect, 1 | 2 | 4 | 8) {
+            return Err(invalid_argument(
+                "FORMATETC aspect must contain exactly one DVASPECT value",
+            ));
+        }
+        Ok(Self {
+            clipboard_format,
+            aspect,
+            index,
+            tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+        })
+    }
+
+    pub const fn clipboard_format(&self) -> u16 {
+        self.clipboard_format
+    }
+
+    pub const fn aspect(&self) -> u32 {
+        self.aspect
+    }
+
+    pub const fn index(&self) -> i32 {
+        self.index
+    }
+
+    pub const fn tymed(&self) -> u32 {
+        self.tymed
+    }
+
+    pub(crate) fn to_raw(&self) -> windows::Win32::System::Com::FORMATETC {
+        windows::Win32::System::Com::FORMATETC {
+            cfFormat: self.clipboard_format,
+            ptd: std::ptr::null_mut(),
+            dwAspect: self.aspect,
+            lindex: self.index,
+            tymed: self.tymed,
+        }
+    }
+
+    fn from_raw(raw: &windows::Win32::System::Com::FORMATETC) -> result::Result<Self> {
+        if !raw.ptd.is_null() {
+            return Err(invalid_argument(
+                "FORMATETC target-device output is not supported",
+            ));
+        }
+        if raw.tymed != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32 {
+            return Err(invalid_argument(
+                "FORMATETC currently supports only TYMED_HGLOBAL",
+            ));
+        }
+        Self::hglobal(raw.cfFormat, raw.dwAspect, raw.lindex)
+    }
+}
+
+pub(crate) struct FormatEtcOutput {
+    raw: Box<windows::Win32::System::Com::FORMATETC>,
+}
+
+impl FormatEtcOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            raw: Box::new(unsafe { std::mem::zeroed() }),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut windows::Win32::System::Com::FORMATETC).cast()
+    }
+
+    pub(crate) fn into_value(mut self) -> result::Result<FormatEtcValue> {
+        let value = FormatEtcValue::from_raw(&self.raw);
+        self.free_target_device();
+        value
+    }
+
+    pub(crate) fn into_canonical_value(
+        mut self,
+        input: &FormatEtcValue,
+        hresult: HRESULT,
+    ) -> result::Result<FormatEtcValue> {
+        use windows::Win32::Foundation::{DATA_S_SAMEFORMATETC, S_OK};
+
+        if hresult == DATA_S_SAMEFORMATETC {
+            // The output is unused; this status does not transfer a target-device owner.
+            self.raw.ptd = std::ptr::null_mut();
+            return Ok(input.clone());
+        }
+        let value = if hresult == S_OK {
+            // Canonicalization does not select a transfer medium.
+            self.raw.tymed = input.tymed();
+            FormatEtcValue::from_raw(&self.raw)
+        } else {
+            Err(invalid_argument(format!(
+                "unexpected canonical FORMATETC success HRESULT {:#010x}",
+                hresult.0 as u32
+            )))
+        };
+        self.free_target_device();
+        value
+    }
+
+    fn free_target_device(&mut self) {
+        if self.raw.ptd.is_null() {
+            return;
+        }
+        unsafe {
+            OutputCleanup::CoTaskMemFree.cleanup(self.raw.ptd.cast());
+        }
+        self.raw.ptd = std::ptr::null_mut();
+    }
+}
+
+impl Drop for FormatEtcOutput {
+    fn drop(&mut self) {
+        self.free_target_device();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StgMediumValue {
+    hglobal_bytes: Arc<[u8]>,
+}
+
+impl StgMediumValue {
+    pub fn hglobal(bytes: Vec<u8>) -> result::Result<Self> {
+        if bytes.is_empty() {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL storage must contain at least one byte",
+            ));
+        }
+        Ok(Self {
+            hglobal_bytes: bytes.into(),
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.hglobal_bytes
+    }
+}
+
+pub(crate) struct StgMediumStorage {
+    raw: Box<windows::Win32::System::Com::STGMEDIUM>,
+    owned_input_hglobal: Option<windows::Win32::Foundation::HGLOBAL>,
+}
+
+impl StgMediumStorage {
+    pub(crate) fn output() -> Self {
+        Self {
+            raw: Box::new(unsafe { std::mem::zeroed() }),
+            owned_input_hglobal: None,
+        }
+    }
+
+    pub(crate) fn from_value(value: &StgMediumValue) -> result::Result<Self> {
+        use windows::Win32::System::Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc};
+
+        let handle =
+            unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, value.hglobal_bytes.len()) }
+                .map_err(result::Error::WindowsError)?;
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() {
+            unsafe {
+                let _ = windows::Win32::Foundation::GlobalFree(Some(handle));
+            }
+            return Err(invalid_argument("GlobalLock failed for TYMED_HGLOBAL"));
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                value.hglobal_bytes.as_ptr(),
+                data.cast::<u8>(),
+                value.hglobal_bytes.len(),
+            );
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        Ok(Self {
+            raw: Box::new(windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            }),
+            owned_input_hglobal: Some(handle),
+        })
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast()
+    }
+
+    pub(crate) fn into_value(mut self) -> result::Result<StgMediumValue> {
+        if self.raw.tymed != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32 {
+            return Err(invalid_argument(
+                "STGMEDIUM currently supports only TYMED_HGLOBAL",
+            ));
+        }
+        let handle = unsafe { self.raw.u.hGlobal };
+        if let Some(owned_input_hglobal) = self.owned_input_hglobal
+            && (handle.0 != owned_input_hglobal.0 || self.raw.pUnkForRelease.is_some())
+        {
+            return Err(invalid_argument(
+                "caller-owned TYMED_HGLOBAL storage was replaced by the callee",
+            ));
+        }
+        if handle.0.is_null() {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL returned a null storage handle",
+            ));
+        }
+        let size = unsafe { windows::Win32::System::Memory::GlobalSize(handle) };
+        if size == 0 {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL returned invalid or empty storage",
+            ));
+        }
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() {
+            return Err(invalid_argument(
+                "GlobalLock failed for returned TYMED_HGLOBAL",
+            ));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
+        unsafe {
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        self.release();
+        Ok(StgMediumValue {
+            hglobal_bytes: bytes.into(),
+        })
+    }
+
+    fn release(&mut self) {
+        if let Some(handle) = self.owned_input_hglobal.take() {
+            let mut owned = windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            };
+            unsafe {
+                windows::Win32::System::Ole::ReleaseStgMedium(&mut owned);
+                std::ptr::write_bytes(
+                    (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast::<u8>(),
+                    0,
+                    size_of::<windows::Win32::System::Com::STGMEDIUM>(),
+                );
+            }
+            return;
+        }
+        if self.raw.tymed == 0 && self.raw.pUnkForRelease.is_none() {
+            return;
+        }
+        unsafe {
+            windows::Win32::System::Ole::ReleaseStgMedium(&mut *self.raw);
+            std::ptr::write_bytes(
+                (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast::<u8>(),
+                0,
+                size_of::<windows::Win32::System::Com::STGMEDIUM>(),
+            );
+        }
+    }
+}
+
+impl Drop for StgMediumStorage {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+const WAVEFORMATEX_SIZE: usize = 18;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioFormatValue {
+    bytes: Arc<[u8]>,
+}
+
+impl AudioFormatValue {
+    pub fn from_wave_format_ex(bytes: Vec<u8>) -> result::Result<Self> {
+        if bytes.len() < WAVEFORMATEX_SIZE {
+            return Err(invalid_argument(
+                "WAVEFORMATEX storage is smaller than its 18-byte header",
+            ));
+        }
+        let extra_size = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
+        if bytes.len() != WAVEFORMATEX_SIZE + extra_size {
+            return Err(invalid_argument(&format!(
+                "WAVEFORMATEX storage length {} does not match cbSize {}",
+                bytes.len(),
+                extra_size
+            )));
+        }
+        let value = Self {
+            bytes: bytes.into(),
+        };
+        if value.format_tag() == 0xfffe && extra_size < 22 {
+            return Err(invalid_argument(
+                "WAVEFORMATEXTENSIBLE storage requires at least 22 extension bytes",
+            ));
+        }
+        Ok(value)
+    }
+
+    pub fn wave_format_ex(
+        format_tag: u16,
+        channels: u16,
+        samples_per_second: u32,
+        average_bytes_per_second: u32,
+        block_align: u16,
+        bits_per_sample: u16,
+        extra_data: Vec<u8>,
+    ) -> result::Result<Self> {
+        let extra_size = u16::try_from(extra_data.len())
+            .map_err(|_| invalid_argument("WAVEFORMATEX extra data exceeds u16::MAX bytes"))?;
+        let mut bytes = Vec::with_capacity(WAVEFORMATEX_SIZE + extra_data.len());
+        bytes.extend_from_slice(&format_tag.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&samples_per_second.to_le_bytes());
+        bytes.extend_from_slice(&average_bytes_per_second.to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+        bytes.extend_from_slice(&extra_size.to_le_bytes());
+        bytes.extend_from_slice(&extra_data);
+        Self::from_wave_format_ex(bytes)
+    }
+
+    pub fn pcm(
+        channels: u16,
+        samples_per_second: u32,
+        bits_per_sample: u16,
+    ) -> result::Result<Self> {
+        if channels == 0 || samples_per_second == 0 {
+            return Err(invalid_argument(
+                "PCM channel count and sample rate must be non-zero",
+            ));
+        }
+        if bits_per_sample == 0 || bits_per_sample % 8 != 0 {
+            return Err(invalid_argument(
+                "PCM bits per sample must be a non-zero multiple of eight",
+            ));
+        }
+        let block_align = u32::from(channels)
+            .checked_mul(u32::from(bits_per_sample / 8))
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| invalid_argument("PCM block alignment exceeds u16::MAX"))?;
+        let average_bytes_per_second = samples_per_second
+            .checked_mul(u32::from(block_align))
+            .ok_or_else(|| invalid_argument("PCM average byte rate exceeds u32::MAX"))?;
+        Self::wave_format_ex(
+            1,
+            channels,
+            samples_per_second,
+            average_bytes_per_second,
+            block_align,
+            bits_per_sample,
+            Vec::new(),
+        )
+    }
+
+    pub fn format_tag(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[0], self.bytes[1]])
+    }
+
+    pub fn channels(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[2], self.bytes[3]])
+    }
+
+    pub fn samples_per_second(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[4..8].try_into().unwrap())
+    }
+
+    pub fn average_bytes_per_second(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[8..12].try_into().unwrap())
+    }
+
+    pub fn block_align(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[12], self.bytes[13]])
+    }
+
+    pub fn bits_per_sample(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[14], self.bytes[15]])
+    }
+
+    pub fn extra_data(&self) -> &[u8] {
+        &self.bytes[WAVEFORMATEX_SIZE..]
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const c_void {
+        self.bytes.as_ptr().cast()
+    }
+
+    unsafe fn copy_from_native(value: *const c_void) -> result::Result<Self> {
+        if value.is_null() {
+            return Err(invalid_argument("WAVEFORMATEX output was null"));
+        }
+        let header = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), WAVEFORMATEX_SIZE) };
+        let format_tag = u16::from_le_bytes([header[0], header[1]]);
+        let extra_size = if format_tag == 1 {
+            0
+        } else {
+            u16::from_le_bytes([header[16], header[17]]) as usize
+        };
+        let mut bytes = unsafe {
+            std::slice::from_raw_parts(value.cast::<u8>(), WAVEFORMATEX_SIZE + extra_size)
+        }
+        .to_vec();
+        if format_tag == 1 {
+            bytes[16..18].copy_from_slice(&0u16.to_le_bytes());
+        }
+        Self::from_wave_format_ex(bytes)
+    }
+}
+
+pub(crate) struct AudioFormatOutput {
+    raw: Box<*mut c_void>,
+}
+
+impl AudioFormatOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            raw: Box::new(std::ptr::null_mut()),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut *mut c_void).cast()
+    }
+
+    pub(crate) fn into_value(mut self, nullable: bool) -> result::Result<Option<AudioFormatValue>> {
+        if self.raw.is_null() {
+            return if nullable {
+                Ok(None)
+            } else {
+                Err(invalid_argument("required WAVEFORMATEX output was null"))
+            };
+        }
+        let value = unsafe { AudioFormatValue::copy_from_native(*self.raw) };
+        self.free();
+        value.map(Some)
+    }
+
+    fn free(&mut self) {
+        if self.raw.is_null() {
+            return;
+        }
+        unsafe {
+            crate::native_call::OutputCleanup::CoTaskMemFree.cleanup(*self.raw);
+        }
+        *self.raw = std::ptr::null_mut();
+    }
+}
+
+impl Drop for AudioFormatOutput {
+    fn drop(&mut self) {
+        self.free();
+    }
+}
+
 #[cfg(test)]
 static STATSTG_TEST_FREES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -992,7 +1471,130 @@ pub enum Value {
     DispatchParams(DispatchParamsValue),
     ExcepInfo(ExcepInfoValue),
     StatStg(StatStgValue),
+    FormatEtc(FormatEtcValue),
+    StgMedium(StgMediumValue),
+    AudioFormat(AudioFormatValue),
     Buffer(ComBufferValue),
+}
+
+/// Visits only typed, owned interface values, never unclassified pointer bits.
+/// The caller must already have admitted the value's apartment before traversal.
+#[doc(hidden)]
+pub fn visit_winrt_interfaces(
+    value: &WinRTValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    match value {
+        WinRTValue::Object(object) => visitor(object)?,
+        WinRTValue::Async(value) => visitor((&value.info).into())?,
+        WinRTValue::ArrayOfIUnknown(array) => {
+            for object in array.0.iter().flatten() {
+                visitor(object)?;
+            }
+        }
+        WinRTValue::Array(array) => {
+            for index in 0..array.len() {
+                visit_winrt_interfaces(&array.try_get(index)?, visitor)?;
+            }
+        }
+        WinRTValue::Struct(value) => {
+            let typ = value.type_handle();
+            for index in 0..typ.field_count() {
+                let field = typ.field_type(index);
+                if field.kind().is_com_pointer() {
+                    if let Some(object) = value.get_field_object(index)? {
+                        visitor(&object)?;
+                    }
+                } else if matches!(field.kind(), crate::TypeKind::Struct(_)) {
+                    visit_winrt_interfaces(
+                        &WinRTValue::Struct(value.get_field_struct_checked(index)?),
+                        visitor,
+                    )?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+impl Value {
+    #[doc(hidden)]
+    pub fn visit_interfaces(
+        &self,
+        visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+    ) -> result::Result<()> {
+        match self {
+            Self::WinRt(value) => visit_winrt_interfaces(value, visitor)?,
+            Self::Variant(value) => visit_variant_interfaces(value, visitor)?,
+            Self::SafeArray(value) => visit_safe_array_interfaces(value, visitor)?,
+            Self::DispatchParams(value) => {
+                for argument in value.arguments()? {
+                    visit_variant_interfaces(&argument, visitor)?;
+                }
+            }
+            Self::Buffer(value) => match &value.storage {
+                ComBufferStorage::InterfaceArray { values, .. } => {
+                    for value in values {
+                        visitor(value)?;
+                    }
+                }
+                ComBufferStorage::OwnedCom { values } => {
+                    for value in values {
+                        visit_winrt_interfaces(value, visitor)?;
+                    }
+                }
+                ComBufferStorage::VariantArray { values }
+                | ComBufferStorage::OwnedVariants { values } => {
+                    for value in values {
+                        visit_variant_interfaces(value, visitor)?;
+                    }
+                }
+                _ => {}
+            },
+            // The supported PROPVARIANT set is scalar/vector POD and owned
+            // strings; STGMEDIUM is copied HGLOBAL bytes, not stream/storage.
+            Self::Bstr(_)
+            | Self::NativeStruct(_)
+            | Self::NativeUnion(_)
+            | Self::PropVariant(_)
+            | Self::ExcepInfo(_)
+            | Self::StatStg(_)
+            | Self::FormatEtc(_)
+            | Self::StgMedium(_)
+            | Self::AudioFormat(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn visit_variant_interfaces(
+    value: &VariantValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    match value.data()? {
+        VariantData::Unknown(Some(object)) | VariantData::Dispatch(Some(object)) => {
+            visitor(&object)?
+        }
+        VariantData::SafeArray(value) => visit_safe_array_interfaces(&value, visitor)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn visit_safe_array_interfaces(
+    value: &SafeArrayValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    for element in value.elements()? {
+        match element {
+            SafeArrayElementValue::Unknown(Some(object))
+            | SafeArrayElementValue::Dispatch(Some(object)) => visitor(&object)?,
+            SafeArrayElementValue::Variant(value) => visit_variant_interfaces(&value, visitor)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn is_null_input_value(value: &Value) -> bool {
@@ -1008,6 +1610,9 @@ fn is_null_input_value(value: &Value) -> bool {
         | Value::DispatchParams(_)
         | Value::ExcepInfo(_)
         | Value::StatStg(_)
+        | Value::FormatEtc(_)
+        | Value::StgMedium(_)
+        | Value::AudioFormat(_)
         | Value::Buffer(_) => false,
     }
 }
@@ -1757,7 +2362,10 @@ impl BufferElementPlan {
             | ParameterType::PropVariant
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
-            | ParameterType::StatStg => {
+            | ParameterType::StatStg
+            | ParameterType::FormatEtc
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat { .. } => {
                 return Err(invalid_argument(
                     "Automation buffer elements require dedicated ownership and cleanup plans",
                 ));
@@ -2051,6 +2659,33 @@ impl Type {
     pub fn stat_stg() -> Self {
         Self {
             abi: ParameterType::stat_stg(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn format_etc() -> Self {
+        Self {
+            abi: ParameterType::format_etc(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn stg_medium() -> Self {
+        Self {
+            abi: ParameterType::stg_medium(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn audio_format() -> Self {
+        Self {
+            abi: ParameterType::audio_format(false),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: None,
@@ -2991,6 +3626,9 @@ impl CallbackMethodPlan {
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
             | ParameterType::StatStg => Some(crate::native_callback::CallbackAbiType::Pointer),
+            ParameterType::FormatEtc
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat { .. } => None,
             ParameterType::NativeStruct(layout) => {
                 Some(crate::native_callback::CallbackAbiType::NativeStruct(
                     format!("{layout:?}"),
@@ -3444,7 +4082,11 @@ impl CallbackMethodPlan {
                         .map_err(|_| SINK_E_FAIL)
                 }
             }
-            ParameterType::NativeUnion(_) | ParameterType::VariantByValue => Err(SINK_E_FAIL),
+            ParameterType::NativeUnion(_)
+            | ParameterType::VariantByValue
+            | ParameterType::FormatEtc
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat { .. } => Err(SINK_E_FAIL),
         }
     }
 
@@ -4095,7 +4737,10 @@ impl ComCallPlan {
                 | Value::PropVariant(_)
                 | Value::DispatchParams(_)
                 | Value::ExcepInfo(_)
-                | Value::StatStg(_) => Err(invalid_argument(
+                | Value::StatStg(_)
+                | Value::FormatEtc(_)
+                | Value::StgMedium(_)
+                | Value::AudioFormat(_) => Err(invalid_argument(
                     "COM-local result requires the COM value invocation path",
                 )),
                 Value::Buffer(_) => Err(invalid_argument(
@@ -4117,6 +4762,21 @@ impl ComCallPlan {
     ) -> result::Result<Vec<Value>>
     where
         F: FnOnce(),
+    {
+        self.invoke_values_guarded(obj, args, || {
+            mark_dispatched();
+            Ok(())
+        })
+    }
+
+    fn invoke_values_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        mark_dispatched: F,
+    ) -> result::Result<Vec<Value>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
     {
         if matches!(self.return_plan, ComReturnPlan::DispatchInvokeHResult(_)) {
             return Err(invalid_argument(
@@ -4291,7 +4951,10 @@ impl ComCallPlan {
                     | Value::PropVariant(_)
                     | Value::DispatchParams(_)
                     | Value::ExcepInfo(_)
-                    | Value::StatStg(_) => Err(invalid_argument(
+                    | Value::StatStg(_)
+                    | Value::FormatEtc(_)
+                    | Value::StgMedium(_)
+                    | Value::AudioFormat(_) => Err(invalid_argument(
                         "COM-local value passed to a scalar COM method",
                     )),
                     Value::Buffer(_) => Err(invalid_argument(
@@ -4566,6 +5229,18 @@ impl ComCallPlan {
         obj: *mut c_void,
         args: &[Value],
     ) -> result::Result<DispatchInvokeResult> {
+        self.invoke_dispatch_guarded(obj, args, || Ok(()))
+    }
+
+    fn invoke_dispatch_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<DispatchInvokeResult>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let ComReturnPlan::DispatchInvokeHResult(plan) = &self.return_plan else {
             return Err(invalid_argument(
                 "method does not use the IDispatch::Invoke captured HRESULT convention",
@@ -4583,7 +5258,7 @@ impl ComCallPlan {
 
         let captured = self
             .native
-            .call_com_dynamic_captured(obj, args)
+            .call_com_dynamic_captured(obj, args, before_dispatch)
             .map_err(result::Error::WindowsError)?;
         let mut outputs = captured.outputs;
         let result = match outputs[plan.result_output_index].take() {
@@ -4702,7 +5377,19 @@ impl ComCallPlan {
         obj: *mut c_void,
         args: &[Value],
     ) -> result::Result<Vec<(Value, PointerOutputKind)>> {
-        let values = self.invoke_values(obj, args)?;
+        self.invoke_values_with_output_kinds_guarded(obj, args, || Ok(()))
+    }
+
+    fn invoke_values_with_output_kinds_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<Vec<(Value, PointerOutputKind)>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
+        let values = self.invoke_values_guarded(obj, args, before_dispatch)?;
         if values.len() != self.results.len() {
             return Err(invalid_argument(format!(
                 "COM result plan mismatch: native call returned {} value(s), plan describes {}",
@@ -5329,6 +6016,14 @@ pub struct MethodSignature {
     parameters: Vec<ComParameterSpec>,
     return_plan: ComReturnPlan,
     enumerator_next_vtable_index: Option<usize>,
+    canonical_format_etc: Option<CanonicalFormatEtcContract>,
+    context_effect: Option<borrowed::ContextEffect>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalFormatEtcContract {
+    input_param_index: usize,
+    output_param_index: usize,
 }
 
 impl MethodSignature {
@@ -5338,6 +6033,8 @@ impl MethodSignature {
             parameters: Vec::new(),
             return_plan: ComReturnPlan::HResult,
             enumerator_next_vtable_index: None,
+            canonical_format_etc: None,
+            context_effect: None,
         }
     }
 
@@ -5352,7 +6049,10 @@ impl MethodSignature {
         self
     }
 
-    pub fn add_nullable_in(mut self, typ: Type) -> Self {
+    pub fn add_nullable_in(mut self, mut typ: Type) -> Self {
+        if let ParameterType::AudioFormat { nullable_input } = &mut typ.abi {
+            *nullable_input = true;
+        }
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::In,
             typ,
@@ -5573,12 +6273,33 @@ impl MethodSignature {
         self
     }
 
+    pub fn canonical_format_etc_result(
+        mut self,
+        input_param_index: usize,
+        output_param_index: usize,
+    ) -> Self {
+        self.canonical_format_etc = Some(CanonicalFormatEtcContract {
+            input_param_index,
+            output_param_index,
+        });
+        self
+    }
+
     fn validate_registration(
         &self,
         interface_iid: GUID,
         method_name: &str,
         vtable_index: usize,
     ) -> result::Result<()> {
+        if let Some(effect) = self.context_effect {
+            borrowed::validate_effect_signature(
+                self,
+                effect,
+                interface_iid,
+                method_name,
+                vtable_index,
+            )?;
+        }
         const IID_IDISPATCH: GUID = GUID::from_u128(0x00020400_0000_0000_c000_000000000046);
         if matches!(self.return_plan, ComReturnPlan::EnumeratorNextHResult) {
             let exact_contract = interface_iid != GUID::zeroed()
@@ -5660,6 +6381,13 @@ impl MethodSignature {
     }
 
     fn build(self, vtable_index: usize) -> result::Result<RegisteredMethod> {
+        let context_hresult_plan = if self.context_effect.is_some() {
+            let mut captured = self.clone();
+            captured.context_effect = None;
+            Some(captured.preserve_hresult().build(vtable_index)?.plan)
+        } else {
+            None
+        };
         for parameter in &self.parameters {
             parameter.typ.validate_outbound_aggregate_policy()?;
         }
@@ -5669,6 +6397,24 @@ impl MethodSignature {
         validate_automation_contracts(&self.parameters, &self.return_plan)?;
         validate_in_out_ownership(&self.parameters)?;
         validate_buffer_contracts(&self.parameters)?;
+        if let Some(contract) = self.canonical_format_etc {
+            let valid = contract.input_param_index == 0
+                && contract.output_param_index == 1
+                && self.parameters.len() == 2
+                && matches!(self.return_plan, ComReturnPlan::SemanticHResult)
+                && self.parameters[0].direction == ComParameterDirection::In
+                && self.parameters[1].direction == ComParameterDirection::Out
+                && self.parameters.iter().all(|parameter| {
+                    parameter.typ.abi.is_format_etc()
+                        && parameter.buffer.is_none()
+                        && !parameter.nullable
+                });
+            if !valid {
+                return Err(invalid_argument(
+                    "canonical FORMATETC results require exactly FORMATETC In/Out parameters at 0/1 and a semantic HRESULT",
+                ));
+            }
+        }
         let enumerator_buffers = self
             .parameters
             .iter()
@@ -5728,11 +6474,19 @@ impl MethodSignature {
                 cleanup: typ.output_cleanup(),
             },
         };
-        let native =
-            lower_completed_method(&self.table, vtable_index, native_parameters, native_return);
+        let native = lower_completed_method(
+            &self.table,
+            vtable_index,
+            native_parameters,
+            native_return,
+            self.canonical_format_etc
+                .map(|contract| (contract.input_param_index, contract.output_param_index)),
+        );
         Ok(RegisteredMethod {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
             callback_plan,
+            context_effect: self.context_effect,
+            context_hresult_plan,
         })
     }
 }
@@ -5794,6 +6548,34 @@ fn validate_automation_contracts(
             return Err(invalid_argument(
                 "STATSTG outputs require an HRESULT return convention",
             ));
+        }
+        if parameter.typ.abi.is_format_etc()
+            && !matches!(
+                parameter.direction,
+                ComParameterDirection::In
+                    | ComParameterDirection::Out
+                    | ComParameterDirection::OptionalOut
+            )
+        {
+            return Err(invalid_argument("FORMATETC does not support in/out"));
+        }
+        if (parameter.typ.abi.is_format_etc()
+            || parameter.typ.abi.is_stg_medium()
+            || parameter.typ.abi.is_audio_format())
+            && parameter.direction != ComParameterDirection::In
+            && !matches!(
+                return_plan,
+                ComReturnPlan::HResult | ComReturnPlan::SemanticHResult
+            )
+        {
+            return Err(invalid_argument(
+                "FORMATETC/STGMEDIUM/WAVEFORMATEX outputs require an HRESULT return convention",
+            ));
+        }
+        if parameter.typ.abi.is_audio_format()
+            && parameter.direction == ComParameterDirection::InOut
+        {
+            return Err(invalid_argument("WAVEFORMATEX does not support in/out"));
         }
         if parameter.typ.abi.is_excep_info()
             && !matches!(
@@ -6187,6 +6969,8 @@ fn require_direction(
 struct RegisteredMethod {
     plan: ComCallPlan,
     callback_plan: CallbackMethodPlan,
+    context_effect: Option<borrowed::ContextEffect>,
+    context_hresult_plan: Option<ComCallPlan>,
 }
 
 type RegisteredMethods = BTreeMap<usize, (String, Arc<RegisteredMethod>)>;
@@ -6293,6 +7077,11 @@ impl Interface {
         let mut backends = Vec::with_capacity(methods.len());
         let mut plans = Vec::with_capacity(methods.len());
         for (index, (&slot, (name, method))) in methods.iter().enumerate() {
+            if method.context_effect.is_some() {
+                return Err(invalid_argument(
+                    "Context-effect methods cannot be implemented by a language callback",
+                ));
+            }
             if slot != self.base_slot + index {
                 return Err(invalid_argument(format!(
                     "COM sink method '{name}' uses non-contiguous vtable slot {slot}",
@@ -6342,6 +7131,10 @@ impl std::fmt::Debug for MethodHandle {
 }
 
 impl MethodHandle {
+    pub fn has_context_effect(&self) -> bool {
+        self.0.context_effect.is_some()
+    }
+
     pub fn result_count(&self) -> usize {
         self.0.plan.results.len()
     }
@@ -6393,10 +7186,33 @@ impl MethodHandle {
     where
         F: FnOnce(),
     {
+        unsafe {
+            self.invoke_values_with_output_kinds_guarded(obj, args, || {
+                mark_dispatched();
+                Ok(())
+            })
+        }
+    }
+
+    /// Like the tracked invocation, but permits a final admission check after
+    /// native argument preparation (including interface QI) and before dispatch.
+    ///
+    /// # Safety
+    /// `obj` must satisfy the same live interface contract as `invoke`.
+    #[doc(hidden)]
+    pub unsafe fn invoke_values_with_output_kinds_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<Vec<(Value, PointerOutputKind)>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let values = self
             .0
             .plan
-            .invoke_values_tracked(obj, args, mark_dispatched)?;
+            .invoke_values_guarded(obj, args, before_dispatch)?;
         if values.len() != self.0.plan.results.len() {
             return Err(invalid_argument(format!(
                 "COM result plan mismatch: native call returned {} value(s), plan describes {}",
@@ -6426,6 +7242,23 @@ impl MethodHandle {
         args: &[Value],
     ) -> result::Result<DispatchInvokeResult> {
         self.0.plan.invoke_dispatch(obj, args)
+    }
+
+    /// # Safety
+    /// `obj` must satisfy the live IDispatch contract of `invoke_dispatch`.
+    #[doc(hidden)]
+    pub unsafe fn invoke_dispatch_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<DispatchInvokeResult>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
+        self.0
+            .plan
+            .invoke_dispatch_guarded(obj, args, before_dispatch)
     }
 
     /// # Safety
@@ -6584,11 +7417,14 @@ struct DynamicComSink {
     iids: Vec<GUID>,
     iid_map: Vec<(GUID, usize)>,
     callback_plans: Vec<Vec<CallbackMethodPlan>>,
+    // Present only on the private, native-only one-shot signal sink.
+    free_threaded_marshaler: Option<IUnknown>,
 }
 
 // The refcount is atomic, the vtable is immutable after publication, and the
 // callback is explicitly Send + Sync. Language bindings may impose a stricter
-// apartment/thread policy before invoking their callback.
+// apartment/thread policy before invoking their callback. The optional inner
+// is the actual free-threaded marshaler, never an apartment-bound COM object.
 unsafe impl Send for DynamicComSink {}
 unsafe impl Sync for DynamicComSink {}
 
@@ -6673,6 +7509,14 @@ impl DynamicComSink {
         interfaces: Vec<CallbackInterfaceDefinition>,
         callback: SinkCallback,
     ) -> result::Result<IUnknown> {
+        Self::create_impl(interfaces, callback, false)
+    }
+
+    fn create_impl(
+        interfaces: Vec<CallbackInterfaceDefinition>,
+        callback: SinkCallback,
+        native_signal: bool,
+    ) -> result::Result<IUnknown> {
         if interfaces.is_empty() {
             return Err(invalid_argument(
                 "COM object requires at least one interface",
@@ -6749,10 +7593,20 @@ impl DynamicComSink {
             iids,
             iid_map,
             callback_plans: all_plans,
+            free_threaded_marshaler: None,
         });
         let owner = (&mut *sink) as *mut Self;
         for view in &mut sink.interfaces {
             view.owner = owner;
+        }
+        if native_signal {
+            let raw = owner.cast();
+            let identity = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                .expect("allocated native signal identity");
+            sink.free_threaded_marshaler = Some(
+                unsafe { windows::Win32::System::Com::CoCreateFreeThreadedMarshaler(identity) }
+                    .map_err(result::Error::WindowsError)?,
+            );
         }
         Ok(unsafe { IUnknown::from_raw(Box::into_raw(sink).cast()) })
     }
@@ -6797,7 +7651,15 @@ impl DynamicComSink {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let sink = unsafe { &*owner };
-        let pointer = if *iid == IUnknown::IID {
+        if let Some(marshaler) = &sink.free_threaded_marshaler
+            && *iid == windows_core::imp::IMarshal::IID
+        {
+            return unsafe { marshaler.query(iid, result) };
+        }
+        let pointer = if *iid == IUnknown::IID
+            || (sink.free_threaded_marshaler.is_some()
+                && *iid == windows_core::imp::IAgileObject::IID)
+        {
             owner.cast()
         } else if let Some((_, index)) = sink.iid_map.iter().find(|(candidate, _)| candidate == iid)
         {
@@ -6865,6 +7727,16 @@ impl DynamicComSink {
         catch_unwind(AssertUnwindSafe(|| {
             let view = unsafe { Self::view_from_ptr(this) };
             let sink = unsafe { &*view.owner };
+            let _in_flight = if sink.free_threaded_marshaler.is_some() {
+                let identity = view.owner.cast();
+                Some(
+                    unsafe { IUnknown::from_raw_borrowed(&identity) }
+                        .expect("native signal identity")
+                        .clone(),
+                )
+            } else {
+                None
+            };
             let callback = sink.callback.clone();
             let values = [unsafe { Self::borrowed_interface(value) }];
             let result = callback(
@@ -10481,6 +11353,244 @@ mod tests {
             .invoke_values((&mut object as *mut FakeComObject).cast(), args)
     }
 
+    static LAST_STG_MEDIUM_HANDLE: AtomicUsize = AtomicUsize::new(0);
+    static REPLACED_STG_MEDIUM_HANDLE: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "system" fn write_hglobal_medium(
+        _this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if format.is_null()
+            || medium.is_null()
+            || unsafe { (*format).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let handle = unsafe {
+            windows::Win32::System::Memory::GlobalAlloc(
+                windows::Win32::System::Memory::GMEM_MOVEABLE
+                    | windows::Win32::System::Memory::GMEM_ZEROINIT,
+                4,
+            )
+        }
+        .unwrap();
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        unsafe {
+            std::ptr::copy_nonoverlapping([1u8, 2, 3, 4].as_ptr(), data.cast::<u8>(), 4);
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+            medium.write(windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            });
+        }
+        LAST_STG_MEDIUM_HANDLE.store(handle.0.addr(), Ordering::SeqCst);
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_hglobal_medium_then_fail(
+        this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        let result = unsafe { write_hglobal_medium(this, format, medium) };
+        if result.is_err() {
+            result
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
+    unsafe extern "system" fn fill_hglobal_medium(
+        _this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if format.is_null()
+            || medium.is_null()
+            || unsafe { (*format).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+            || unsafe { (*medium).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let handle = unsafe { (*medium).u.hGlobal };
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() || unsafe { windows::Win32::System::Memory::GlobalSize(handle) } < 4 {
+            return HRESULT(0x80030070u32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping([9u8, 8, 7, 6].as_ptr(), data.cast::<u8>(), 4);
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn replace_hglobal_medium(
+        _this: *mut c_void,
+        _format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if medium.is_null() {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let original = unsafe { (*medium).u.hGlobal };
+        let replacement = unsafe {
+            windows::Win32::System::Memory::GlobalAlloc(
+                windows::Win32::System::Memory::GMEM_MOVEABLE
+                    | windows::Win32::System::Memory::GMEM_ZEROINIT,
+                4,
+            )
+        }
+        .unwrap();
+        LAST_STG_MEDIUM_HANDLE.store(original.0.addr(), Ordering::SeqCst);
+        REPLACED_STG_MEDIUM_HANDLE.store(replacement.0.addr(), Ordering::SeqCst);
+        unsafe {
+            (*medium).u.hGlobal = replacement;
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_canonical_format(
+        _this: *mut c_void,
+        input: *const windows::Win32::System::Com::FORMATETC,
+        output: *mut windows::Win32::System::Com::FORMATETC,
+    ) -> HRESULT {
+        if input.is_null() || output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        unsafe {
+            output.write(windows::Win32::System::Com::FORMATETC {
+                cfFormat: (*input).cfFormat,
+                ptd: std::ptr::null_mut(),
+                dwAspect: (*input).dwAspect,
+                lindex: (*input).lindex,
+                tymed: (*input).tymed,
+            });
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn inspect_audio_format(
+        _this: *mut c_void,
+        format: *const c_void,
+    ) -> HRESULT {
+        if format.is_null() {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let header = unsafe { std::slice::from_raw_parts(format.cast::<u8>(), WAVEFORMATEX_SIZE) };
+        if u16::from_le_bytes([header[0], header[1]]) != 1
+            || u16::from_le_bytes([header[2], header[3]]) != 2
+            || u32::from_le_bytes(header[4..8].try_into().unwrap()) != 48_000
+            || u16::from_le_bytes([header[16], header[17]]) != 0
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        let bytes = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        let allocation =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.bytes().len()) };
+        if allocation.is_null() {
+            return HRESULT(0x8007000eu32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.bytes().as_ptr(),
+                allocation.cast(),
+                bytes.bytes().len(),
+            );
+            output.write(allocation);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_audio_format_then_fail(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        let result = unsafe { write_audio_format(this, output) };
+        if result.is_err() {
+            result
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
+    unsafe extern "system" fn write_invalid_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        let bytes =
+            AudioFormatValue::wave_format_ex(2, 2, 48_000, 192_000, 4, 16, vec![0; 21]).unwrap();
+        let allocation =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.bytes().len()) };
+        if allocation.is_null() {
+            return HRESULT(0x8007000eu32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.bytes().as_ptr(),
+                allocation.cast(),
+                bytes.bytes().len(),
+            );
+            allocation.cast::<u16>().write(0xfffe);
+            output.write(allocation);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_pcm_with_ignored_extra_size(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        let result = unsafe { write_audio_format(this, output) };
+        if result.is_ok() {
+            unsafe {
+                (*output)
+                    .cast::<u8>()
+                    .add(16)
+                    .cast::<u16>()
+                    .write_unaligned(u16::MAX);
+            }
+        }
+        result
+    }
+
+    unsafe extern "system" fn write_null_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if !output.is_null() {
+            unsafe {
+                output.write(std::ptr::null_mut());
+            }
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn require_null_audio_format_output(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            HRESULT(0)
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
     fn invoke_test_stat_stg(function: *mut c_void, flags: u32) -> result::Result<Vec<Value>> {
         let table = MetadataTable::new();
         invoke_test_pod(
@@ -13335,6 +14445,521 @@ mod tests {
             error
                 .message()
                 .contains("STATSTG outputs require an HRESULT")
+        );
+    }
+
+    #[test]
+    fn format_etc_and_stg_medium_hglobal_calls_copy_and_release_native_storage() {
+        let table = MetadataTable::new();
+        assert!(FormatEtcValue::hglobal(13, 0, -1).is_err());
+        assert!(FormatEtcValue::hglobal(13, 3, -1).is_err());
+        assert!(FormatEtcValue::hglobal(13, 16, -1).is_err());
+        assert!(FormatEtcValue::hglobal(0, 1, -1).is_err());
+        assert!(StgMediumValue::hglobal(Vec::new()).is_err());
+        let format = FormatEtcValue::hglobal(13, 1, -1).unwrap();
+        let error = invoke_test_pod(
+            write_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::WinRt(WinRTValue::I32(13))],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("FORMATETC"));
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let output = invoke_test_pod(
+            write_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::FormatEtc(format.clone())],
+        )
+        .unwrap();
+        let Value::StgMedium(medium) = &output[0] else {
+            panic!("expected STGMEDIUM output");
+        };
+        assert_eq!(medium.bytes(), [1, 2, 3, 4]);
+        let released = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(released) },
+            0
+        );
+
+        let input_medium = StgMediumValue::hglobal(vec![0; 4]).unwrap();
+        let output = invoke_test_pod(
+            fill_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_in_out(Type::stg_medium()),
+            &[
+                Value::FormatEtc(format.clone()),
+                Value::StgMedium(input_medium),
+            ],
+        )
+        .unwrap();
+        let Value::StgMedium(medium) = &output[0] else {
+            panic!("expected STGMEDIUM in/out result");
+        };
+        assert_eq!(medium.bytes(), [9, 8, 7, 6]);
+
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        REPLACED_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let error = invoke_test_pod(
+            replace_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_in_out(Type::stg_medium()),
+            &[
+                Value::FormatEtc(format.clone()),
+                Value::StgMedium(StgMediumValue::hglobal(vec![0; 4]).unwrap()),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("was replaced by the callee"));
+        let original = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(original) },
+            0
+        );
+        let replacement =
+            windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+                REPLACED_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+            ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(replacement) },
+            4
+        );
+        unsafe {
+            let _ = windows::Win32::Foundation::GlobalFree(Some(replacement));
+        }
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(replacement) },
+            0
+        );
+
+        let output = invoke_test_pod(
+            write_canonical_format as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc()),
+            &[Value::FormatEtc(format.clone())],
+        )
+        .unwrap();
+        let Value::FormatEtc(canonical) = &output[0] else {
+            panic!("expected FORMATETC output");
+        };
+        assert_eq!(canonical, &format);
+
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let error = invoke_test_pod(
+            write_hglobal_medium_then_fail as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::FormatEtc(format)],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        let released = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(released) },
+            0
+        );
+    }
+
+    #[test]
+    fn audio_format_nullable_inputs_preserve_null_slots_and_required_contracts() {
+        #[repr(C)]
+        struct AudioInputs {
+            vtable: *const *mut c_void,
+            calls: u32,
+            fail: bool,
+        }
+
+        unsafe extern "system" fn observe(
+            this: *mut c_void,
+            first: *const c_void,
+            second: *const c_void,
+        ) -> HRESULT {
+            let state = unsafe { &mut *this.cast::<AudioInputs>() };
+            state.calls += 1;
+            if state.fail {
+                return HRESULT(0x80004005u32 as i32);
+            }
+            for pointer in [first, second] {
+                if !pointer.is_null() {
+                    let status = unsafe { inspect_audio_format(this, pointer) };
+                    if status.is_err() {
+                        return status;
+                    }
+                }
+            }
+            HRESULT(i32::from(first.is_null()) | (i32::from(second.is_null()) << 1))
+        }
+
+        let table = MetadataTable::new();
+        let method = MethodSignature::new(&table)
+            .add_nullable_in(Type::audio_format())
+            .add_nullable_in(Type::audio_format())
+            .preserve_hresult()
+            .build(0)
+            .unwrap();
+        let required = MethodSignature::new(&table)
+            .add_in(Type::audio_format())
+            .add_nullable_in(Type::audio_format())
+            .preserve_hresult()
+            .build(0)
+            .unwrap();
+        let vtable = [observe as *mut c_void];
+        let mut state = AudioInputs {
+            vtable: vtable.as_ptr(),
+            calls: 0,
+            fail: false,
+        };
+        let format = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        let original = format.bytes().to_vec();
+        for mask in 0..4 {
+            let arguments = (0..2)
+                .map(|index| {
+                    if mask & (1 << index) != 0 {
+                        Value::WinRt(WinRTValue::Null)
+                    } else {
+                        Value::AudioFormat(format.clone())
+                    }
+                })
+                .collect::<Vec<_>>();
+            let output = method
+                .plan
+                .invoke_values((&mut state as *mut AudioInputs).cast(), &arguments)
+                .unwrap();
+            assert!(
+                matches!(output.as_slice(), [Value::WinRt(WinRTValue::HResult(hr))] if hr.0 == mask)
+            );
+        }
+        assert_eq!(state.calls, 4);
+        let null = || Value::WinRt(WinRTValue::Null);
+        let error = required
+            .plan
+            .invoke_values((&mut state as *mut AudioInputs).cast(), &[null(), null()])
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("required COM parameter 0 cannot be null")
+        );
+        for invalid in [
+            Value::WinRt(WinRTValue::I32(0)),
+            Value::WinRt(WinRTValue::RawPtr(std::ptr::null_mut())),
+        ] {
+            assert!(
+                method
+                    .plan
+                    .invoke_values((&mut state as *mut AudioInputs).cast(), &[invalid, null()])
+                    .is_err()
+            );
+        }
+        assert_eq!(state.calls, 4);
+        state.fail = true;
+        let error = method
+            .plan
+            .invoke_values(
+                (&mut state as *mut AudioInputs).cast(),
+                &[null(), Value::AudioFormat(format.clone())],
+            )
+            .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        assert_eq!(state.calls, 5);
+        assert_eq!(format.bytes(), original);
+    }
+
+    #[test]
+    fn audio_format_calls_validate_variable_storage_and_cotaskmem_ownership() {
+        let table = MetadataTable::new();
+        let format = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        assert_eq!(format.format_tag(), 1);
+        assert_eq!(format.channels(), 2);
+        assert_eq!(format.samples_per_second(), 48_000);
+        assert_eq!(format.average_bytes_per_second(), 192_000);
+        assert_eq!(format.block_align(), 4);
+        assert_eq!(format.bits_per_sample(), 16);
+        assert!(format.extra_data().is_empty());
+        assert_eq!(format.bytes().len(), WAVEFORMATEX_SIZE);
+        assert!(AudioFormatValue::pcm(2, 48_000, 12).is_err());
+        assert!(AudioFormatValue::from_wave_format_ex(vec![0; 17]).is_err());
+        let mut wrong_size = format.bytes().to_vec();
+        wrong_size[16..18].copy_from_slice(&1u16.to_le_bytes());
+        assert!(AudioFormatValue::from_wave_format_ex(wrong_size).is_err());
+
+        invoke_test_pod(
+            inspect_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_in(Type::audio_format()),
+            &[Value::AudioFormat(format.clone())],
+        )
+        .unwrap();
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let output = invoke_test_pod(
+            write_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap();
+        let Value::AudioFormat(output) = &output[0] else {
+            panic!("expected WAVEFORMATEX output");
+        };
+        assert_eq!(output, &format);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let output = invoke_test_pod(
+            write_pcm_with_ignored_extra_size as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap();
+        let Value::AudioFormat(output) = &output[0] else {
+            panic!("expected normalized PCM WAVEFORMATEX output");
+        };
+        assert_eq!(output, &format);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let error = invoke_test_pod(
+            write_invalid_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("at least 22 extension bytes"));
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let error = invoke_test_pod(
+            write_audio_format_then_fail as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        let output = invoke_test_pod(
+            write_null_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_optional_out(Type::audio_format()),
+            &[Value::WinRt(WinRTValue::Bool(true))],
+        )
+        .unwrap();
+        assert!(matches!(
+            output.as_slice(),
+            [Value::WinRt(WinRTValue::Null)]
+        ));
+
+        let output = invoke_test_pod(
+            require_null_audio_format_output as *mut c_void,
+            MethodSignature::new(&table).add_optional_out(Type::audio_format()),
+            &[Value::WinRt(WinRTValue::Bool(false))],
+        )
+        .unwrap();
+        assert!(matches!(
+            output.as_slice(),
+            [Value::WinRt(WinRTValue::Null)]
+        ));
+
+        let error = invoke_test_pod(
+            write_null_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("required WAVEFORMATEX output was null")
+        );
+    }
+
+    #[test]
+    fn canonical_format_etc_result_rules_preserve_status_and_cleanup() {
+        use windows::Win32::Foundation::{DATA_S_SAMEFORMATETC, S_OK};
+        use windows::Win32::System::Com::{CoTaskMemAlloc, DVTARGETDEVICE, FORMATETC};
+
+        #[repr(C)]
+        struct CanonicalCall {
+            vtable: *const *mut c_void,
+            status: HRESULT,
+            write_output: bool,
+            target_device: bool,
+            clipboard_format: u16,
+            aspect: u32,
+            tymed: u32,
+        }
+
+        unsafe extern "system" fn canonical(
+            this: *mut c_void,
+            input: *const FORMATETC,
+            output: *mut FORMATETC,
+        ) -> HRESULT {
+            let call = unsafe { &*this.cast::<CanonicalCall>() };
+            if input.is_null() || output.is_null() {
+                return HRESULT(0x80004003u32 as i32);
+            }
+            if call.write_output {
+                let target = if call.target_device {
+                    let target = unsafe { CoTaskMemAlloc(size_of::<DVTARGETDEVICE>()) };
+                    if target.is_null() {
+                        return HRESULT(0x8007000eu32 as i32);
+                    }
+                    unsafe {
+                        std::ptr::write_bytes(target.cast::<u8>(), 0, size_of::<DVTARGETDEVICE>())
+                    };
+                    target.cast()
+                } else {
+                    std::ptr::null_mut()
+                };
+                unsafe {
+                    output.write(FORMATETC {
+                        cfFormat: call.clipboard_format,
+                        ptd: target,
+                        dwAspect: call.aspect,
+                        lindex: -1,
+                        tymed: call.tymed,
+                    });
+                }
+            }
+            call.status
+        }
+
+        let table = MetadataTable::new();
+        let input = FormatEtcValue::hglobal(13, 1, -1).unwrap();
+        let ordinary = || {
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+        };
+        let method = ordinary()
+            .canonical_format_etc_result(0, 1)
+            .build(0)
+            .unwrap();
+        let vtable = [canonical as *mut c_void];
+        let mut call = CanonicalCall {
+            vtable: vtable.as_ptr(),
+            status: S_OK,
+            write_output: true,
+            target_device: false,
+            clipboard_format: 1,
+            aspect: 2,
+            tymed: 0,
+        };
+        let invoke = |call: &mut CanonicalCall| {
+            method.plan.invoke_values(
+                (call as *mut CanonicalCall).cast(),
+                &[Value::FormatEtc(input.clone())],
+            )
+        };
+        for tymed in [0, u32::MAX] {
+            call.tymed = tymed;
+            let result = invoke(&mut call).unwrap();
+            assert!(matches!(&result[0], Value::WinRt(WinRTValue::HResult(hr)) if *hr == S_OK));
+            let Value::FormatEtc(format) = &result[1] else {
+                panic!("expected canonical FORMATETC value");
+            };
+            assert_eq!(format.clipboard_format(), 1);
+            assert_eq!(format.aspect(), 2);
+            assert_eq!(format.tymed(), input.tymed());
+        }
+
+        call.status = DATA_S_SAMEFORMATETC;
+        call.clipboard_format = 0;
+        call.aspect = 0;
+        for write_output in [false, true] {
+            call.write_output = write_output;
+            let result = invoke(&mut call).unwrap();
+            assert!(
+                matches!(&result[0], Value::WinRt(WinRTValue::HResult(hr)) if *hr == DATA_S_SAMEFORMATETC)
+            );
+            assert!(matches!(&result[1], Value::FormatEtc(format) if format == &input));
+        }
+
+        call.write_output = true;
+        call.clipboard_format = 1;
+        call.aspect = 2;
+        call.tymed = 0;
+        call.target_device = true;
+        for (status, message) in [
+            (S_OK, "target-device output is not supported"),
+            (HRESULT(0x80004005u32 as i32), "80004005"),
+            (HRESULT(1), "unexpected canonical FORMATETC success HRESULT"),
+        ] {
+            call.status = status;
+            crate::native_call::reset_co_task_mem_test_frees();
+            let error = invoke(&mut call).unwrap_err();
+            assert!(error.message().contains(message), "{}", error.message());
+            assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+        }
+
+        call.status = S_OK;
+        call.target_device = false;
+        let error = ordinary()
+            .build(0)
+            .unwrap()
+            .plan
+            .invoke_values(
+                (&mut call as *mut CanonicalCall).cast(),
+                &[Value::FormatEtc(input)],
+            )
+            .unwrap_err();
+        assert!(error.message().contains("only TYMED_HGLOBAL"));
+    }
+
+    #[test]
+    fn canonical_format_etc_signature_rejects_other_shapes() {
+        let table = MetadataTable::new();
+        let valid = || {
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+        };
+        for (input, output) in [(1, 0), (0, 0), (0, usize::MAX)] {
+            assert!(
+                valid()
+                    .canonical_format_etc_result(input, output)
+                    .build(0)
+                    .is_err()
+            );
+        }
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
+        );
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(Type::stg_medium())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
+        );
+        assert!(
+            MethodSignature::new(&table)
+                .add_nullable_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
         );
     }
 
