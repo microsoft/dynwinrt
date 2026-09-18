@@ -38,6 +38,17 @@ Private scalar-validation, array-element identity rules, and native callback
 storage are shared where their contracts are identical. The WinRT host never
 registers its methods in the Classic COM registry.
 
+Outbound WinRT `MetadataTable::register_interface` uses the IID as its identity,
+not the supplied display name. Independently generated packages can register
+interfaces with the same short name and different IIDs without sharing method
+tables. Different names for the same IID share the existing table; repeated
+method registration retains the originally published method and its slot.
+Callers must still supply the same metadata contract in vtable order for a
+given IID. Interface names are not inserted into the private name index used
+for structs, enums, and runtime classes, so an interface cannot alias or replace
+one of those named types. JavaScript and Python use this same core registry;
+generated public names and the separate Classic COM registry are unchanged.
+
 ## Native object model
 
 The canonical identity is an IInspectable-rooted allocation. Every interface
@@ -203,3 +214,26 @@ CLSID activation, COM server hosting, package identity/deployment, and task
 registration are separate concerns and are not performed by this facility.
 
 See [the Node.js and Python usage guide](../guides/windows/winrt-interface-implementations.md).
+
+## Independent-package registration regression
+
+`tests\e2e\registration_identity_test.ps1` separately generates
+`Windows.UI.Xaml.Data.INotifyPropertyChanged` and
+`Microsoft.UI.Xaml.Data.INotifyPropertyChanged` in JavaScript and Python.
+It runs each package alone and both package orders in fresh processes. Each
+case creates a generated implementation, subscribes and unsubscribes through
+the native interface, and deterministically releases the retained delegate
+view and implementation owner. No XAML activation or bootstrap DLL is needed.
+
+Run it against built bindings and codegen, with an installed Python runtime
+and an existing WinAppSDK metadata reference list (one absolute path per line):
+
+```powershell
+.\tests\e2e\registration_identity_test.ps1 `
+    -WinuiWinmd <path-to-Microsoft.UI.Xaml.winmd> -RefList <winmd-list.txt> `
+    -Python <python-with-dynwinrt.exe>
+```
+
+`-Codegen` and `-JsRuntime` select alternate built artifacts. The script never
+restores metadata or installs tools; generated packages and a JSON process
+report remain under `tests\e2e\e2e_generated\registration_identity`.
