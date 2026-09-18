@@ -34,7 +34,7 @@ pub fn generate_class(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
-    let context = context.for_class_module(class, &used_structs, shared_iids);
+    let context = context.for_class_module(class, &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
@@ -277,45 +277,21 @@ pub fn generate_class(
     out.push('\n');
 
     // Interface registrations
-    if let Some(ref iface) = class.default_interface {
+    for iface in class.all_interfaces() {
         let symbol = interface_symbol(context, iface);
         out.push_str(&py_generate_interface_registration(
             iface,
-            &format!("_{symbol}"),
-            &symbol,
-        ));
-        out.push('\n');
-    }
-    for iface in &class.factory_interfaces {
-        let symbol = interface_symbol(context, iface);
-        out.push_str(&py_generate_interface_registration(
-            iface,
-            &format!("_{symbol}"),
-            &symbol,
-        ));
-        out.push('\n');
-    }
-    for iface in &class.static_interfaces {
-        let symbol = interface_symbol(context, iface);
-        out.push_str(&py_generate_interface_registration(
-            iface,
-            &format!("_{symbol}"),
-            &symbol,
-        ));
-        out.push('\n');
-    }
-    for iface in &class.required_interfaces {
-        let symbol = interface_symbol(context, iface);
-        out.push_str(&py_generate_interface_registration(
-            iface,
-            &format!("_{symbol}"),
+            &context.registration_symbol(iface),
             &symbol,
         ));
         out.push('\n');
     }
     // IActivationFactory for default constructor
     if class.has_default_activation() {
-        out.push_str("_IActivationFactory = DynWinRTType.register_interface(\n");
+        out.push_str(&format!(
+            "{} = DynWinRTType.register_interface(\n",
+            context.activation_factory_symbol(class),
+        ));
         out.push_str(
             "    'IActivationFactory', WinGUID.parse('00000035-0000-0000-c000-000000000046')) \\\n",
         );
@@ -424,8 +400,8 @@ pub fn generate_class(
             context.class_name(class)
         ));
         out.push_str(&format!(
-            "        return {}._from_native(_IActivationFactory.method(6).invoke(DynWinRTValue.activation_factory('{}'), []))\n",
-            context.class_name(class), class.full_name
+            "        return {}._from_native({}.method(6).invoke(DynWinRTValue.activation_factory('{}'), []))\n",
+            context.class_name(class), context.activation_factory_symbol(class), class.full_name
         ));
         out.push('\n');
     }
@@ -682,7 +658,7 @@ pub fn generate_class(
                     &instance_method_names,
                 );
                 let overload = InstanceOverload {
-                    iface_var: format!("_{iface_symbol}"),
+                    iface_var: context.registration_symbol(iface),
                     obj_expr: obj_expr.clone(),
                     method,
                     sibling_methods: Some(iface.methods.as_slice()),
@@ -867,7 +843,7 @@ pub fn generate_class(
         if imported_names.contains(&symbol) {
             continue;
         }
-        let reg_var = format!("_{symbol}");
+        let reg_var = context.registration_symbol(req_iface);
         out.push('\n');
         if let Some(mixin) = interface_kind(req_iface).and_then(runtime_mixin) {
             out.push_str(&format!("\nclass {symbol}({mixin}):\n"));
@@ -1130,7 +1106,8 @@ fn build_ctor_candidates<'a>(
                         .collect::<Vec<_>>()
                         .join(", ");
                     let composed_call_expr = format!(
-                        "_{factory}.method({vtable}).invoke_composed_with_overrides({class}._get_f_{factory}(), [{wrapped_args}], {outer_index}, {inner_output_index}, {instance_output_index}, {agile}, _override_interfaces)",
+                        "{registration}.method({vtable}).invoke_composed_with_overrides({class}._get_f_{factory}(), [{wrapped_args}], {outer_index}, {inner_output_index}, {instance_output_index}, {agile}, _override_interfaces)",
+                        registration = context.registration_symbol(factory),
                         factory = interface_symbol(context, factory),
                         class = context.class_name(class),
                         vtable = method.vtable_index,

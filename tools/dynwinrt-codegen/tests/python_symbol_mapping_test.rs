@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -1113,6 +1113,674 @@ fn imported_symbol(source: &str, module: &str, declaration: &str) -> String {
             (words.first().copied() == Some(declaration)).then(|| words.last().unwrap().to_string())
         })
         .unwrap_or_else(|| panic!("missing {declaration} from {module}:\n{source}"))
+}
+
+fn registration_metadata(path: &Path, initial_collision: bool) -> (InterfaceMeta, Vec<TypeMeta>) {
+    let mut file = writer::File::new("PythonRegistrationSymbols");
+    structure(&mut file, "Alpha", "URLValue", &[("Value", Type::I32)]);
+    structure(&mut file, "Beta", "UrlValue", &[("Other", Type::I64)]);
+    let name = if initial_collision {
+        "pack_url_value"
+    } else {
+        "pack_beta_url_value_struct"
+    };
+    interface(&mut file, "Audit", name, 0x51931500);
+    let alpha = Type::named("Alpha", "URLValue");
+    method(
+        &mut file,
+        "EchoAlpha",
+        alpha.clone(),
+        &[("value", alpha, ParamAttributes::In)],
+    );
+    if !initial_collision {
+        let beta = Type::named("Beta", "UrlValue");
+        method(
+            &mut file,
+            "EchoBeta",
+            beta.clone(),
+            &[("value", beta, ParamAttributes::In)],
+        );
+    }
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
+    let interface = meta::parse_interfaces(path.to_str().unwrap(), "Audit")
+        .pop()
+        .unwrap();
+    let structures = interface
+        .methods
+        .iter()
+        .map(|method| method.return_type.clone().unwrap())
+        .collect();
+    (interface, structures)
+}
+
+fn unused_registration_identities() -> impl Iterator<Item = TypeIdentity> {
+    ["unpack_url_value", "URLValue_TYPE", "IActivationFactory"]
+        .into_iter()
+        .map(|name| TypeIdentity::named(TypeIdentityKind::Interface, "Unrelated", name))
+}
+
+fn registration_bindings(source: &str, expected: &[&str]) -> BTreeMap<String, String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut registrations = BTreeMap::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(symbol) = line.strip_suffix(" = DynWinRTType.register_interface(") else {
+            continue;
+        };
+        assert!(!symbol.starts_with(char::is_whitespace), "{line}");
+        let arguments = lines[index + 1].trim();
+        let quote = arguments.chars().next().unwrap();
+        assert!(matches!(quote, '\'' | '"'), "{arguments}");
+        let name = arguments[1..].split(quote).next().unwrap();
+        assert!(
+            registrations
+                .insert(name.to_string(), symbol.to_string())
+                .is_none(),
+            "duplicate registration for {name}:\n{source}"
+        );
+        let assignments = lines
+            .iter()
+            .filter(|line| {
+                line.starts_with(&format!("{symbol} = "))
+                    || line.starts_with(&format!("def {symbol}("))
+                    || line.starts_with(&format!("class {symbol}:"))
+                    || line.starts_with(&format!("class {symbol}("))
+            })
+            .count();
+        let imports = lines
+            .iter()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("from ")?
+                    .split_once(" import ")
+                    .map(|(_, names)| names)
+            })
+            .flat_map(|names| names.split('#').next().unwrap().split(','))
+            .filter(|name| name.split_whitespace().last() == Some(symbol))
+            .count();
+        assert_eq!(
+            assignments + imports,
+            1,
+            "native registration {symbol} must not share its binding with any helper or type:\n{source}"
+        );
+        assert!(
+            source.contains(&format!("{symbol}.method(")),
+            "generated calls must reference their allocated registration {symbol}:\n{source}"
+        );
+    }
+    assert_eq!(
+        registrations
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        expected.iter().copied().collect(),
+        "reserve exactly the registrations this module actually emits:\n{source}",
+    );
+    registrations
+}
+
+fn registration_struct_modules(
+    package: &Path,
+    context: &python::PythonProjectionContext,
+    structures: &[TypeMeta],
+) {
+    let isolated = python::PythonProjectionContext::new(
+        structures.iter().map(TypeMeta::type_identity),
+        context.is_packaged(),
+    )
+    .unwrap();
+    for structure in structures {
+        let source = python::generate_struct(context, structure).unwrap();
+        let stub = python_stub::generate_struct_stub(context, structure).unwrap();
+        assert_eq!(
+            source,
+            python::generate_struct(&isolated, structure).unwrap(),
+            "non-emitted interface registrations must not alter an owning struct's public API"
+        );
+        assert_eq!(
+            stub,
+            python_stub::generate_struct_stub(&isolated, structure).unwrap()
+        );
+        module(
+            package,
+            &context.implementation_module_for_type(structure),
+            source,
+            stub,
+        );
+    }
+}
+
+#[test]
+fn python_native_registration_interface_symbols_do_not_shadow_struct_helpers() {
+    for packaged in [true, false] {
+        for initial_collision in [true, false] {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let (interface, structures) = registration_metadata(
+                &fixture.0.join("metadata").join("Input.winmd"),
+                initial_collision,
+            );
+            let identities = structures
+                .iter()
+                .map(TypeMeta::type_identity)
+                .chain([interface.type_identity()])
+                .collect::<Vec<_>>();
+            let context =
+                python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+            let reordered =
+                python::PythonProjectionContext::new(identities.iter().rev().cloned(), packaged)
+                    .unwrap();
+            let unrelated = python::PythonProjectionContext::new(
+                identities
+                    .into_iter()
+                    .chain(unused_registration_identities()),
+                packaged,
+            )
+            .unwrap();
+            let source = python::generate_interface(&context, &interface);
+            let stub = python_stub::generate_interface_stub(&context, &interface);
+            for alternative in [&reordered, &unrelated] {
+                assert_eq!(source, python::generate_interface(alternative, &interface));
+                assert_eq!(
+                    stub,
+                    python_stub::generate_interface_stub(alternative, &interface)
+                );
+            }
+            let registrations = registration_bindings(&source, &[&interface.name]);
+            let owner_module = context.implementation_module_for_interface(&interface);
+            module(&package, &owner_module, source, stub);
+            registration_struct_modules(&package, &unrelated, &structures);
+            support(
+                &package,
+                if packaged {
+                    std::slice::from_ref(&owner_module)
+                } else {
+                    &[]
+                },
+            );
+            let alpha_module = context.implementation_module_for_type(&structures[0]);
+            let payload_module = if packaged {
+                &alpha_module
+            } else {
+                &owner_module
+            };
+            let mut imports = format!(
+                "from pyviews.{owner_module} import {name} as Projection\n\
+                 from pyviews.{payload_module} import URLValue as Alpha\n",
+                name = context.projected_name_for_interface(&interface),
+            );
+            let mut beta_check = String::new();
+            let mut beta_runtime = String::new();
+            let mut beta_public = String::new();
+            if let Some(beta) = structures.get(1) {
+                let beta_module = context.implementation_module_for_type(beta);
+                let payload_module = if packaged {
+                    &beta_module
+                } else {
+                    &owner_module
+                };
+                imports.push_str(&format!(
+                    "from pyviews.{payload_module} import UrlValue as Beta\n"
+                ));
+                beta_check.push_str("    assert_type(value.echo_beta(Beta(2**40)), Beta)\n");
+                beta_runtime
+                    .push_str("    assert view.echo_beta(Beta(2**40)) == Beta(2**40 + 1)\n");
+                beta_public = format!(
+                    "from pyviews.{beta_module} import UrlValue as CanonicalBeta, pack_url_value as pack_beta, unpack_url_value as unpack_beta\n\
+                     assert unpack_beta(pack_beta(CanonicalBeta(2**40)).to_value()) == CanonicalBeta(2**40)\n"
+                );
+            }
+            typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+def check(value: Projection) -> None:
+    assert_type(value.echo_alpha(Alpha(17)), Alpha)
+{beta_check}
+"#
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+def reject(value: Projection) -> None:
+    value.echo_alpha(17)
+    wrong: str = value.echo_alpha(Alpha(17))
+"#
+                ),
+                &["[arg-type]", "[assignment]"],
+            );
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+import importlib
+import struct
+import typing
+import dynwinrt as dw
+from pyviews.{alpha_module} import URLValue as CanonicalAlpha, URLValue_TYPE, pack_url_value as pack_alpha, unpack_url_value as unpack_alpha
+assert struct.calcsize("P") == 8
+assert isinstance(URLValue_TYPE, dw.DynWinRTType)
+assert typing.get_type_hints(pack_alpha)["v"] is CanonicalAlpha
+assert typing.get_type_hints(unpack_alpha)["return"] is CanonicalAlpha
+assert unpack_alpha(pack_alpha(CanonicalAlpha(17)).to_value()) == CanonicalAlpha(17)
+{beta_public}
+owner = importlib.import_module("pyviews.{owner_module}")
+registrations = {registrations}
+for symbol in registrations.values():
+    assert isinstance(getattr(owner, symbol), dw.DynWinRTType)
+class Handler:
+    def __init__(self): self.calls = []
+    def echo_alpha(self, value):
+        self.calls.append(("alpha", value.value))
+        return type(value)(value.value + 1)
+    def echo_beta(self, value):
+        self.calls.append(("beta", value.other))
+        return type(value)(value.other + 1)
+handler = Handler()
+with dw.RoApartment(1), Projection.implement(handler) as implementation:
+    view = implementation.value
+    assert view.echo_alpha(Alpha(17)) == Alpha(18)
+{beta_runtime}
+assert handler.calls == {expected_calls}
+for symbol in registrations.values():
+    assert isinstance(getattr(owner, symbol), dw.DynWinRTType)
+"#,
+                    registrations = serde_json::to_string(&registrations).unwrap(),
+                    expected_calls = if initial_collision {
+                        "[('alpha', 17)]"
+                    } else {
+                        "[('alpha', 17), ('beta', 2**40)]"
+                    },
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn python_native_registration_class_routes_reserve_all_emitted_interfaces() {
+    for packaged in [true, false] {
+        for initial_collision in [true, false] {
+            for shared_required in [true, false] {
+                let fixture = Fixture::new();
+                let package = fixture.package();
+                let (default, structures) = registration_metadata(
+                    &fixture.0.join("metadata").join("Input.winmd"),
+                    initial_collision,
+                );
+                let mut required = default.clone();
+                required.name = "unpack_alpha_url_value_struct".into();
+                required.iid = "51931501-6281-4900-b782-040302010910".into();
+                for method in &mut required.methods {
+                    method.name = format!("Required{}", method.name);
+                    method.raw_name = method.name.clone();
+                }
+                let mut statics = default.clone();
+                statics.name = "unpack_beta_url_value_struct".into();
+                statics.iid = "51931502-6281-4900-b782-040302010910".into();
+                for method in &mut statics.methods {
+                    method.name = format!("Static{}", method.name);
+                    method.raw_name = method.name.clone();
+                }
+                let factory = InterfaceMeta {
+                    namespace: "Audit".into(),
+                    name: "pack_alpha_url_value_struct".into(),
+                    iid: "51931503-6281-4900-b782-040302010910".into(),
+                    methods: vec![MethodMeta {
+                        name: "CreateWrapper".into(),
+                        raw_name: "CreateWrapper".into(),
+                        vtable_index: 6,
+                        params: structures
+                            .iter()
+                            .enumerate()
+                            .map(|(index, typ)| ParamMeta {
+                                name: format!("value{index}"),
+                                typ: typ.clone(),
+                                direction: ParamDirection::In,
+                            })
+                            .collect(),
+                        return_type: Some(class_type("Audit", "Wrapper")),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let wrapper = ClassMeta {
+                    namespace: "Audit".into(),
+                    name: "Wrapper".into(),
+                    full_name: "Audit.Wrapper".into(),
+                    default_interface: Some(default.clone()),
+                    required_interfaces: vec![required.clone()],
+                    static_interfaces: vec![statics.clone()],
+                    factory_interfaces: vec![factory.clone()],
+                    constructors: vec![ConstructorMeta {
+                        kind: ConstructorKind::FactoryActivation,
+                        factory_interface: Some(TypeRef {
+                            namespace: factory.namespace.clone(),
+                            name: factory.name.clone(),
+                            kind: TypeKind::Interface,
+                        }),
+                    }],
+                    ..Default::default()
+                };
+                let identities = structures
+                    .iter()
+                    .map(TypeMeta::type_identity)
+                    .chain(wrapper.all_interfaces().map(InterfaceMeta::type_identity))
+                    .chain([class_identity(&wrapper)])
+                    .collect::<Vec<_>>();
+                let context =
+                    python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+                let reordered = python::PythonProjectionContext::new(
+                    identities.iter().rev().cloned(),
+                    packaged,
+                )
+                .unwrap();
+                let unrelated = python::PythonProjectionContext::new(
+                    identities
+                        .into_iter()
+                        .chain(unused_registration_identities()),
+                    packaged,
+                )
+                .unwrap();
+                let shared_iids = if shared_required {
+                    HashSet::from([required.iid.clone()])
+                } else {
+                    HashSet::new()
+                };
+                let source = python::generate_class(&context, &wrapper, &shared_iids);
+                let stub = python_stub::generate_class_stub(&context, &wrapper, &shared_iids);
+                let required_module = context.implementation_module_for_interface(&required);
+                let required_symbol = context.reference_name(&required.type_identity());
+                if shared_required {
+                    assert_eq!(
+                        imported_symbol(
+                            &source,
+                            &required_module,
+                            &context.projected_name_for_interface(&required)
+                        ),
+                        required_symbol,
+                    );
+                    assert!(
+                        !source.contains(&format!("\nclass {required_symbol}:")),
+                        "{source}"
+                    );
+                } else {
+                    assert!(
+                        source.contains(&format!("\nclass {required_symbol}:")),
+                        "{source}"
+                    );
+                    assert!(
+                        stub.contains(&format!("\nclass {required_symbol}:")),
+                        "{stub}"
+                    );
+                    assert!(
+                        !source.contains(&format!("from .{required_module} import ")),
+                        "{source}"
+                    );
+                }
+                for alternative in [&reordered, &unrelated] {
+                    assert_eq!(
+                        source,
+                        python::generate_class(alternative, &wrapper, &shared_iids)
+                    );
+                    assert_eq!(
+                        stub,
+                        python_stub::generate_class_stub(alternative, &wrapper, &shared_iids)
+                    );
+                }
+                let expected = wrapper
+                    .all_interfaces()
+                    .map(|interface| interface.name.as_str())
+                    .collect::<Vec<_>>();
+                let registrations = registration_bindings(&source, &expected);
+                assert!(!registrations.contains_key("IActivationFactory"));
+                for interface in wrapper.all_interfaces() {
+                    let iid = format!("IID_{}", context.reference_name(&interface.type_identity()));
+                    assert!(
+                        source.contains(&format!("\"{}\", {iid})", interface.name)),
+                        "{source}"
+                    );
+                    assert!(source.contains(&interface.iid), "{source}");
+                }
+                assert!(
+                    source.contains("activation_factory('Audit.Wrapper')"),
+                    "{source}"
+                );
+                let wrapper_module = context.implementation_module(&class_identity(&wrapper));
+                module(&package, &wrapper_module, source, stub);
+                for interface in [&default, &required] {
+                    module(
+                        &package,
+                        &context.implementation_module_for_interface(interface),
+                        python::generate_interface(&context, interface),
+                        python_stub::generate_interface_stub(&context, interface),
+                    );
+                }
+                registration_struct_modules(&package, &unrelated, &structures);
+                let implementation_modules = [&default, &required]
+                    .map(|interface| context.implementation_module_for_interface(interface));
+                support(
+                    &package,
+                    if packaged {
+                        &implementation_modules
+                    } else {
+                        &[]
+                    },
+                );
+                let alpha_module = context.implementation_module_for_type(&structures[0]);
+                let payload_module = if packaged {
+                    &alpha_module
+                } else {
+                    &wrapper_module
+                };
+                let mut imports = format!(
+                    "from pyviews.{wrapper_module} import Wrapper\n\
+                 from pyviews.{payload_module} import URLValue as Alpha\n",
+                );
+                let mut beta_check = String::new();
+                let mut beta_runtime = String::new();
+                let mut beta_constructor = String::new();
+                if let Some(beta) = structures.get(1) {
+                    let beta_module = context.implementation_module_for_type(beta);
+                    let payload_module = if packaged {
+                        &beta_module
+                    } else {
+                        &wrapper_module
+                    };
+                    imports.push_str(&format!(
+                        "from pyviews.{payload_module} import UrlValue as Beta\n"
+                    ));
+                    beta_check = "    assert_type(value.echo_beta(Beta(2**40)), Beta)\n    assert_type(value.required_echo_beta(Beta(2**40)), Beta)\n    assert_type(Wrapper.static_echo_beta(Beta(2**40)), Beta)\n".into();
+                    beta_runtime = "        assert value.echo_beta(Beta(2**40)) == Beta(2**40 + 1)\n        assert value.required_echo_beta(Beta(2**40)) == Beta(2**40 + 2)\n".into();
+                    beta_constructor = ", Beta(2**40)".into();
+                }
+                typecheck(
+                    &fixture.0,
+                    &format!(
+                        r#"{imports}
+from typing import assert_type
+def check(value: Wrapper) -> None:
+    assert_type(value.echo_alpha(Alpha(17)), Alpha)
+    assert_type(value.required_echo_alpha(Alpha(17)), Alpha)
+    assert_type(Wrapper.static_echo_alpha(Alpha(17)), Alpha)
+    assert_type(Wrapper(Alpha(17){beta_constructor}), Wrapper)
+{beta_check}
+"#
+                    ),
+                );
+                reject_consumer(
+                    &fixture.0,
+                    &format!(
+                        r#"{imports}
+def reject(value: Wrapper) -> None:
+    value.echo_alpha("wrong")
+    value.required_echo_alpha("wrong")
+"#
+                    ),
+                    &["[arg-type]", "[arg-type]"],
+                );
+                runtime(
+                    &fixture.0,
+                    &format!(
+                        r#"{imports}
+import importlib
+import struct
+import dynwinrt as dw
+from pyviews.{default_module} import {default_name} as DefaultProjection
+from pyviews.{required_module} import {required_name} as RequiredProjection
+assert struct.calcsize("P") == 8
+owner = importlib.import_module("pyviews.{wrapper_module}")
+registrations = {registrations}
+for symbol in registrations.values():
+    assert isinstance(getattr(owner, symbol), dw.DynWinRTType)
+class DefaultHandler:
+    def __init__(self): self.calls = []
+    def echo_alpha(self, value):
+        self.calls.append(("alpha", value.value))
+        return type(value)(value.value + 1)
+    def echo_beta(self, value):
+        self.calls.append(("beta", value.other))
+        return type(value)(value.other + 1)
+class RequiredHandler:
+    def __init__(self): self.calls = []
+    def required_echo_alpha(self, value):
+        self.calls.append(("alpha", value.value))
+        return type(value)(value.value + 2)
+    def required_echo_beta(self, value):
+        self.calls.append(("beta", value.other))
+        return type(value)(value.other + 2)
+default, required = DefaultHandler(), RequiredHandler()
+with dw.RoApartment(1), DefaultProjection.implement(default, interfaces=[(RequiredProjection, required)]) as implementation:
+    value = Wrapper._from_native(implementation.value._obj)
+    try:
+        assert value.echo_alpha(Alpha(17)) == Alpha(18)
+        assert value.required_echo_alpha(Alpha(17)) == Alpha(19)
+{beta_runtime}
+    finally:
+        dw.release_projected(value)
+assert default.calls == {expected_calls}
+assert required.calls == {expected_calls}
+for symbol in registrations.values():
+    assert isinstance(getattr(owner, symbol), dw.DynWinRTType)
+"#,
+                        default_module = implementation_modules[0],
+                        required_module = implementation_modules[1],
+                        default_name = context.projected_name_for_interface(&default),
+                        required_name = context.projected_name_for_interface(&required),
+                        registrations = serde_json::to_string(&registrations).unwrap(),
+                        expected_calls = if initial_collision {
+                            "[('alpha', 17)]"
+                        } else {
+                            "[('alpha', 17), ('beta', 2**40)]"
+                        },
+                    ),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn python_native_registration_activation_factory_reserves_only_when_emitted() {
+    for packaged in [true, false] {
+        let fixture = Fixture::new();
+        let package = fixture.package();
+        let kind = enumeration("Kinds", "_IActivationFactory");
+        let mut owner = class(
+            "Audit",
+            "ActivationOwner",
+            vec![echo("EchoKind", kind.clone(), 6)],
+            0x51931510,
+        );
+        owner.has_default_constructor = true;
+        let identities = [
+            class_identity(&owner),
+            owner.default_interface.as_ref().unwrap().type_identity(),
+            kind.type_identity(),
+        ];
+        let context = python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+        let unrelated = python::PythonProjectionContext::new(
+            identities
+                .into_iter()
+                .chain(unused_registration_identities()),
+            packaged,
+        )
+        .unwrap();
+        let kind_module = context.implementation_module_for_type(&kind);
+        let inactive = python::generate_class(&context, &owner, &Default::default());
+        let inactive_stub = python_stub::generate_class_stub(&context, &owner, &Default::default());
+        assert_eq!(
+            inactive,
+            python::generate_class(&unrelated, &owner, &Default::default())
+        );
+        assert_eq!(
+            inactive_stub,
+            python_stub::generate_class_stub(&unrelated, &owner, &Default::default())
+        );
+        assert_eq!(
+            imported_symbol(&inactive, &kind_module, "_IActivationFactory"),
+            "_IActivationFactory"
+        );
+        assert_eq!(
+            imported_symbol(&inactive_stub, &kind_module, "_IActivationFactory"),
+            "_IActivationFactory"
+        );
+        registration_bindings(&inactive, &["IActivationOwner"]);
+        owner.constructors.push(ConstructorMeta {
+            kind: ConstructorKind::DefaultActivation,
+            factory_interface: None,
+        });
+        let source = python::generate_class(&context, &owner, &Default::default());
+        let stub = python_stub::generate_class_stub(&context, &owner, &Default::default());
+        let registrations =
+            registration_bindings(&source, &["IActivationOwner", "IActivationFactory"]);
+        let kind_symbol = imported_symbol(&source, &kind_module, "_IActivationFactory");
+        assert_ne!(registrations["IActivationFactory"], kind_symbol);
+        assert!(
+            source.contains("00000035-0000-0000-c000-000000000046"),
+            "{source}"
+        );
+        let owner_module = context.implementation_module(&class_identity(&owner));
+        module(&package, &owner_module, source, stub);
+        module(
+            &package,
+            &kind_module,
+            python::generate_enum(&context, &kind).unwrap(),
+            python_stub::generate_enum_stub(&context, &kind).unwrap(),
+        );
+        support(&package, &[]);
+        typecheck(
+            &fixture.0,
+            &format!(
+                r#"
+from typing import assert_type
+from pyviews.{owner_module} import ActivationOwner
+from pyviews.{kind_module} import _IActivationFactory as Kind
+def check(value: ActivationOwner) -> None:
+    assert_type(value.echo_kind(Kind.Unknown), Kind)
+    assert_type(ActivationOwner(), ActivationOwner)
+"#
+            ),
+        );
+        runtime(
+            &fixture.0,
+            &format!(
+                r#"
+import importlib
+import dynwinrt as dw
+from pyviews.{kind_module} import _IActivationFactory as Kind
+owner = importlib.import_module("pyviews.{owner_module}")
+for symbol in {registrations}.values():
+    assert isinstance(getattr(owner, symbol), dw.DynWinRTType)
+assert Kind.Unknown.value == 0
+"#,
+                registrations = serde_json::to_string(&registrations).unwrap()
+            ),
+        );
+    }
 }
 
 fn cross_role_metadata(path: &Path, enum_fields: bool) -> (InterfaceMeta, [TypeMeta; 3]) {

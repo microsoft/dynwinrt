@@ -575,7 +575,7 @@ pub fn generate_class_stub(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
-    let context = context.for_class_module(class, &used_structs, shared_iids);
+    let context = context.for_class_module(class, &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);

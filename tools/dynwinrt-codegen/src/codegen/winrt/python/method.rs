@@ -201,10 +201,11 @@ fn method_call_expr(
     method: &MethodMeta,
     obj_expr: &str,
     args_expr: &str,
+    context: &PythonProjectionContext,
 ) -> String {
     let invoke = if py_method_abi_output_count(method) > 1 {
         "invoke_all"
-    } else if winui::call_behavior(iface_var.trim_start_matches('_'), &method.name)
+    } else if winui::call_behavior(&context.registration_call_name(iface_var), &method.name)
         == WinUiCallBehavior::BlockingReentrant
     {
         "invoke_detached"
@@ -305,10 +306,11 @@ fn generate_factory_method_invoke_named(
     let args_expr = py_build_method_args_expr(&in_params, context);
     let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
-        &format!("_{iface_symbol}"),
+        &context.registration_symbol(iface),
         method,
         &format!("{}._get_f_{iface_symbol}()", context.class_name(class)),
         &args_expr,
+        context,
     );
     let result_expr = if py_method_abi_output_count(method) > 1 {
         out.push_str(&format!("        _results = {}\n", call_expr));
@@ -379,7 +381,13 @@ fn generate_static_method_invoke_named(
             prop_name, py_return
         ));
         out.push_str(&method_pydoc(method, &in_params));
-        let call_expr = method_call_expr(&format!("_{iface_symbol}"), method, &statics_call, "");
+        let call_expr = method_call_expr(
+            &context.registration_symbol(iface),
+            method,
+            &statics_call,
+            "",
+            context,
+        );
         emit_method_result(&mut out, &call_expr, method, context);
     } else {
         out.push_str("    @staticmethod\n");
@@ -397,10 +405,11 @@ fn generate_static_method_invoke_named(
         out.push_str(&method_pydoc(method, &in_params));
         let args_expr = py_build_method_args_expr(&in_params, context);
         let call_expr = method_call_expr(
-            &format!("_{iface_symbol}"),
+            &context.registration_symbol(iface),
             method,
             &statics_call,
             &args_expr,
+            context,
         );
         emit_method_result(&mut out, &call_expr, method, context);
     }
@@ -776,7 +785,7 @@ pub(crate) fn generate_method_body(
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
         out.push_str(&method_pydoc(method, &in_params));
-        let call_expr = method_call_expr(iface_var, method, obj_expr, "");
+        let call_expr = method_call_expr(iface_var, method, obj_expr, "", context);
         emit_method_result(&mut out, &call_expr, method, context);
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
@@ -838,7 +847,7 @@ pub(crate) fn generate_method_body(
         out.push_str(&method_pydoc(method, &in_params));
 
         let args_expr = py_build_method_args_expr(&in_params, context);
-        let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr);
+        let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr, context);
         emit_method_result(&mut out, &call_expr, method, context);
     }
 

@@ -126,6 +126,12 @@ The allocator also compares helpers with actual local and imported type/marker
 symbols, not unrelated types elsewhere in the package. If a foreign type
 collides with an owning struct's public helper or type constant, the foreign
 import is aliased instead; the struct's isolated public API stays unchanged.
+Actual native registration variables also participate in module allocation:
+the interface registration, or a class's default/factory/static/required
+registrations and its activation factory only when emitted. Registration
+declarations and invocation sites read the same symbol roles, independently of
+type aliases, so neither an existing helper nor a newly qualified helper alias
+can overwrite a registration object.
 Enum declarations, namespace exports, defaults, and runtime conversions use the
 same projected name, including named/closed-generic collisions; native enum
 descriptors continue to use the original metadata identity.

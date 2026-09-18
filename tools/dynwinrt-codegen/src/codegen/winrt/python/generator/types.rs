@@ -75,6 +75,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     let type_imports = collect_iface_type_imports_by_identity(iface);
     let context = context.for_interface_module(iface, &used_structs);
     let context = context.as_ref();
+    let registration_symbol = context.registration_symbol(iface);
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
     let iface = &projected_iface;
@@ -238,7 +239,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     // Interface registration
     out.push_str(&py_generate_interface_registration(
         iface,
-        &format!("_{}", iface.name),
+        &registration_symbol,
         &iface.name,
     ));
     out.push('\n');
@@ -567,7 +568,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
 
     // Instance methods (reorder so @property comes before @x.setter)
-    let iface_var = format!("_{}", iface.name);
+    let iface_var = registration_symbol;
     let obj_expr = if observable_vector.is_some() {
         "self._observable_obj"
     } else {
