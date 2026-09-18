@@ -73,7 +73,7 @@ pub fn generate_enum(context: &PythonProjectionContext, en: &TypeMeta) -> Option
 pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
     let used_structs = collect_used_structs_from_iface(iface);
     let type_imports = collect_iface_type_imports_by_identity(iface);
-    let context = context.with_local_types(Some(iface.type_identity()), &used_structs);
+    let context = context.for_interface_module(iface, &used_structs);
     let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);

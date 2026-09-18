@@ -134,7 +134,7 @@ pub fn generate_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> 
     let dependencies = collect_used_structs_from_struct(s);
     let mut module_structs = dependencies.clone();
     module_structs.push(s.clone());
-    let context = context.with_local_types(Some(s.type_identity()), &module_structs);
+    let context = context.for_struct_module(s, &module_structs);
     let context = context.as_ref();
 
     let mut out = String::new();
@@ -219,7 +219,7 @@ pub fn generate_enum_stub(context: &PythonProjectionContext, en: &TypeMeta) -> O
 pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
     let used_structs = collect_used_structs_from_iface(iface);
     let type_imports = collect_iface_type_imports_by_identity(iface);
-    let context = context.with_local_types(Some(iface.type_identity()), &used_structs);
+    let context = context.for_interface_module(iface, &used_structs);
     let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
@@ -575,12 +575,7 @@ pub fn generate_class_stub(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
-    let identity = crate::types::TypeIdentity::named(
-        crate::types::TypeIdentityKind::Class,
-        &class.namespace,
-        &class.name,
-    );
-    let context = context.with_local_types(Some(identity), &used_structs);
+    let context = context.for_class_module(class, &used_structs, shared_iids);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
@@ -758,13 +753,12 @@ pub fn generate_class_stub(
                 base.namespace.clone(),
                 base.name.clone(),
             );
-            let name = context.reference_name(&identity);
             out.push_str(&format!(
                 "from .{} import {}  # noqa: F401\n",
                 context.implementation_module(&identity),
                 context.symbol_import(&identity, super::naming::PythonSymbol::Identity)
             ));
-            format!("_{name}Identity")
+            context.symbol_reference(&identity, super::naming::PythonSymbol::Identity)
         });
     for req_iface in &class.required_interfaces {
         let symbol = interface_symbol(context, req_iface);

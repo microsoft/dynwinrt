@@ -53,7 +53,7 @@ pub fn generate_struct(context: &PythonProjectionContext, s: &TypeMeta) -> Optio
     let dependencies = collect_used_structs_from_struct(s);
     let mut module_structs = dependencies.clone();
     module_structs.push(s.clone());
-    let context = context.with_local_types(Some(s.type_identity()), &module_structs);
+    let context = context.for_struct_module(s, &module_structs);
     let context = context.as_ref();
 
     let mut out = String::new();

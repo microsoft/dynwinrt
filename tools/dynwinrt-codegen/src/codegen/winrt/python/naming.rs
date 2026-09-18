@@ -641,11 +641,129 @@ impl PythonProjectionContext {
         self.packaged
     }
 
+    fn imported_type_symbols(
+        &self,
+        references: impl IntoIterator<Item = TypeRef>,
+        generics: impl IntoIterator<Item = PythonTypeIdentity>,
+    ) -> Vec<(PythonTypeIdentity, PythonSymbol)> {
+        let mut symbols = Vec::new();
+        for reference in references {
+            if !self.is_known_ref(&reference) {
+                continue;
+            }
+            let kind = match reference.kind {
+                TypeKind::Class => TypeIdentityKind::Class,
+                TypeKind::Enum => TypeIdentityKind::Enum,
+                TypeKind::Interface => TypeIdentityKind::Interface,
+            };
+            let identity = self.normalize_identity(&TypeIdentity::named(
+                kind,
+                reference.namespace,
+                reference.name,
+            ));
+            if identity.kind() == Some(TypeIdentityKind::Delegate) {
+                continue;
+            }
+            symbols.push((identity.clone(), PythonSymbol::Type));
+            if kind == TypeIdentityKind::Class {
+                symbols.push((identity, PythonSymbol::Like));
+            }
+        }
+        for identity in generics {
+            let identity = self.normalize_identity(&identity);
+            if identity.kind() != Some(TypeIdentityKind::Delegate) {
+                symbols.push((identity, PythonSymbol::Type));
+            }
+        }
+        symbols
+    }
+
+    pub(super) fn for_class_module(
+        &self,
+        class: &crate::meta::ClassMeta,
+        structs: &[TypeMeta],
+        shared_iids: &HashSet<String>,
+    ) -> Cow<'_, Self> {
+        use crate::codegen::winrt::shared::imports::{
+            collect_class_type_imports_by_identity, collect_used_generic_identities_from_class,
+        };
+        let mut references = collect_class_type_imports_by_identity(class);
+        references.extend(class.required_interfaces.iter().filter_map(|interface| {
+            (interface.generic_piid.is_none()
+                && !interface.iid.is_empty()
+                && shared_iids.contains(&interface.iid))
+            .then(|| TypeRef {
+                namespace: interface.namespace.clone(),
+                name: interface.name.clone(),
+                kind: TypeKind::Interface,
+            })
+        }));
+        let mut imports = self.imported_type_symbols(
+            references,
+            collect_used_generic_identities_from_class(class),
+        );
+        if let Some(base) = class
+            .base_class
+            .as_ref()
+            .filter(|base| self.is_known_ref(base))
+        {
+            imports.push((
+                TypeIdentity::named(TypeIdentityKind::Class, &base.namespace, &base.name),
+                PythonSymbol::Identity,
+            ));
+        }
+        self.with_local_types(
+            Some(TypeIdentity::named(
+                TypeIdentityKind::Class,
+                &class.namespace,
+                &class.name,
+            )),
+            structs,
+            imports,
+        )
+    }
+
+    pub(super) fn for_interface_module(
+        &self,
+        interface: &InterfaceMeta,
+        structs: &[TypeMeta],
+    ) -> Cow<'_, Self> {
+        use crate::codegen::winrt::shared::imports::{
+            collect_iface_type_imports_by_identity, collect_used_generic_identities_from_methods,
+        };
+        let mut generics = collect_used_generic_identities_from_methods(&interface.methods);
+        for delegate in &interface.implementation_metadata.delegates {
+            generics.extend(collect_used_generic_identities_from_methods(
+                std::slice::from_ref(&delegate.invoke),
+            ));
+        }
+        self.with_local_types(
+            Some(interface.type_identity()),
+            structs,
+            self.imported_type_symbols(collect_iface_type_imports_by_identity(interface), generics),
+        )
+    }
+
+    pub(super) fn for_struct_module(&self, typ: &TypeMeta, structs: &[TypeMeta]) -> Cow<'_, Self> {
+        use crate::codegen::winrt::shared::imports::{
+            collect_struct_field_type_imports, collect_used_generic_identities_from_type,
+        };
+        self.with_local_types(
+            Some(typ.type_identity()),
+            structs,
+            self.imported_type_symbols(
+                collect_struct_field_type_imports(typ),
+                collect_used_generic_identities_from_type(typ),
+            ),
+        )
+    }
+
     /// Bind local declarations and imported conversion helpers in one module.
-    pub(super) fn with_local_types(
+    fn with_local_types(
         &self,
         owner: Option<PythonTypeIdentity>,
         structs: &[TypeMeta],
+        imports: impl IntoIterator<Item = (PythonTypeIdentity, PythonSymbol)>,
     ) -> Cow<'_, Self> {
         let declarations = owner
             .iter()
@@ -669,25 +787,62 @@ impl PythonProjectionContext {
                 projection.reference_name = declaration_name;
             }
         }
-        let mut groups = BTreeMap::<String, Vec<(PythonTypeIdentity, PythonSymbol)>>::new();
+        let mut symbols = BTreeMap::new();
         for typ in structs {
             let identity = self.identity_for_type(typ);
             for role in STRUCT_SYMBOLS {
-                let name = context.symbol_reference(&identity, role);
-                let group = groups.entry(name).or_default();
-                let key = (identity.clone(), role);
-                if !group.contains(&key) {
-                    group.push(key);
+                if role != PythonSymbol::Type || super::native_types::foundation_type(typ).is_none()
+                {
+                    symbols.insert(
+                        (identity.clone(), role),
+                        context.symbol_reference(&identity, role),
+                    );
                 }
             }
         }
+        for (identity, role) in imports {
+            let identity = self.normalize_identity(&identity);
+            if owner.as_ref() != Some(&identity) {
+                symbols.insert(
+                    (identity.clone(), role),
+                    context.symbol_reference(&identity, role),
+                );
+            }
+        }
+        if let Some(identity) = &owner
+            && identity.kind() != Some(TypeIdentityKind::Struct)
+        {
+            let mut roles = vec![PythonSymbol::Type];
+            if identity.kind() == Some(TypeIdentityKind::Class) {
+                roles.extend([PythonSymbol::Like, PythonSymbol::Identity]);
+            }
+            for role in roles {
+                symbols.insert(
+                    (identity.clone(), role),
+                    context.symbol_reference(identity, role),
+                );
+            }
+        }
+        let mut groups = BTreeMap::<String, Vec<(PythonTypeIdentity, PythonSymbol)>>::new();
+        for (key, name) in &symbols {
+            groups.entry(name.clone()).or_default().push(key.clone());
+        }
         let mut reserved = groups.keys().cloned().collect::<HashSet<_>>();
-        reserved.extend(self.projections.values().map(|p| p.reference_name.clone()));
-        for group in groups.values_mut().filter(|group| group.len() > 1) {
-            group.sort();
+        if groups.values().any(|group| group.len() > 1) {
+            // Freeze each visible role before changing a type alias: its Like and
+            // identity imports may keep their existing, independently valid names.
+            context.to_mut().module_symbols.extend(symbols);
+        }
+        for group in groups.values().filter(|group| group.len() > 1) {
+            let owns_struct_symbol = group.iter().any(|(identity, _)| {
+                owner.as_ref() == Some(identity)
+                    && identity.kind() == Some(TypeIdentityKind::Struct)
+            });
             for (identity, role) in group {
-                // Keep the owning struct's public helpers stable; alias its dependencies.
-                if owner.as_ref() == Some(identity) || *role == PythonSymbol::Type {
+                let is_struct_helper = identity.kind() == Some(TypeIdentityKind::Struct)
+                    && *role != PythonSymbol::Type;
+                // Prefer aliasing helpers, except for an owning struct's public API.
+                if owner.as_ref() == Some(identity) || (!is_struct_helper && !owns_struct_symbol) {
                     continue;
                 }
                 let candidate = role.named(&semantic_qualifier(identity));
@@ -946,6 +1101,12 @@ impl PythonProjectionContext {
 
     pub fn reference_name(&self, identity: &PythonTypeIdentity) -> String {
         let identity = self.normalize_identity(identity);
+        if let Some(name) = self
+            .module_symbols
+            .get(&(identity.clone(), PythonSymbol::Type))
+        {
+            return name.clone();
+        }
         self.projections
             .get(&identity)
             .map(|projection| projection.reference_name.clone())
@@ -1180,10 +1341,10 @@ mod tests {
             PythonProjectionContext::packaged([alpha.type_identity(), beta.type_identity()])
                 .unwrap();
         let forward = context
-            .with_local_types(None, &[alpha.clone(), beta.clone()])
+            .with_local_types(None, &[alpha.clone(), beta.clone()], [])
             .into_owned();
         let reverse = context
-            .with_local_types(None, &[beta.clone(), alpha.clone()])
+            .with_local_types(None, &[beta.clone(), alpha.clone()], [])
             .into_owned();
         for role in [
             PythonSymbol::Pack,
@@ -1219,7 +1380,11 @@ mod tests {
             "pack_url_value"
         );
         let owned = context
-            .with_local_types(Some(alpha.type_identity()), &[alpha.clone(), beta.clone()])
+            .with_local_types(
+                Some(alpha.type_identity()),
+                &[alpha.clone(), beta.clone()],
+                [],
+            )
             .into_owned();
         assert_eq!(
             owned.struct_symbol(&alpha, PythonSymbol::Pack),
@@ -1228,6 +1393,69 @@ mod tests {
         assert_ne!(
             owned.struct_symbol(&beta, PythonSymbol::Pack),
             "pack_url_value"
+        );
+    }
+
+    #[test]
+    fn cross_role_aliases_use_visible_imports_and_preserve_owned_struct_exports() {
+        let typ = TypeMeta::Struct {
+            namespace: "Alpha".into(),
+            name: "URLValue".into(),
+            fields: vec![],
+        };
+        let class = TypeIdentity::named(TypeIdentityKind::Class, "Kinds", "pack_url_value");
+        let enum_type = TypeIdentity::named(TypeIdentityKind::Enum, "Kinds", "URLValue_TYPE");
+        let context = PythonProjectionContext::packaged([
+            typ.type_identity(),
+            class.clone(),
+            enum_type.clone(),
+        ])
+        .unwrap();
+        let structs = std::slice::from_ref(&typ);
+        let unrelated = context.with_local_types(None, structs, []);
+        assert_eq!(
+            unrelated.struct_symbol(&typ, PythonSymbol::Pack),
+            "pack_url_value"
+        );
+        assert_eq!(
+            unrelated.struct_symbol(&typ, PythonSymbol::TypeConstant),
+            "URLValue_TYPE"
+        );
+        let imports = [
+            (class.clone(), PythonSymbol::Type),
+            (class.clone(), PythonSymbol::Like),
+            (enum_type.clone(), PythonSymbol::Type),
+        ];
+        let consumer = context.with_local_types(None, structs, imports.clone());
+        assert_ne!(
+            consumer.struct_symbol(&typ, PythonSymbol::Pack),
+            "pack_url_value"
+        );
+        assert_ne!(
+            consumer.struct_symbol(&typ, PythonSymbol::TypeConstant),
+            "URLValue_TYPE"
+        );
+        assert_eq!(consumer.reference_name(&class), "pack_url_value");
+        assert_eq!(consumer.reference_name(&enum_type), "URLValue_TYPE");
+
+        let owned = context.with_local_types(Some(typ.type_identity()), structs, imports);
+        assert_eq!(
+            owned.struct_symbol(&typ, PythonSymbol::Pack),
+            "pack_url_value"
+        );
+        assert_eq!(
+            owned.struct_symbol(&typ, PythonSymbol::TypeConstant),
+            "URLValue_TYPE"
+        );
+        assert_ne!(owned.reference_name(&class), "pack_url_value");
+        assert_ne!(owned.reference_name(&enum_type), "URLValue_TYPE");
+        assert_eq!(
+            owned.symbol_reference(&class, PythonSymbol::Like),
+            "pack_url_valueLike",
+        );
+        assert_eq!(
+            owned.symbol_import(&class, PythonSymbol::Type),
+            format!("pack_url_value as {}", owned.reference_name(&class)),
         );
     }
 

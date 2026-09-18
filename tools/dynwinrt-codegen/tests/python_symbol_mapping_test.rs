@@ -1115,6 +1115,412 @@ fn imported_symbol(source: &str, module: &str, declaration: &str) -> String {
         .unwrap_or_else(|| panic!("missing {declaration} from {module}:\n{source}"))
 }
 
+fn cross_role_metadata(path: &Path, enum_fields: bool) -> (InterfaceMeta, [TypeMeta; 3]) {
+    let mut file = writer::File::new("PythonCrossRoleSymbols");
+    let mut fields = vec![("Value", Type::I32)];
+    if enum_fields {
+        fields.extend([
+            ("PackKind", Type::named("Kinds", "pack_url_value")),
+            ("TypeKind", Type::named("Kinds", "URLValue_TYPE")),
+        ]);
+    }
+    structure(&mut file, "Alpha", "URLValue", &fields);
+    for name in ["pack_url_value", "URLValue_TYPE"] {
+        let base = file.TypeRef("System", "Enum");
+        file.TypeDef(
+            "Kinds",
+            name,
+            writer::TypeDefOrRef::TypeRef(base),
+            TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+        );
+        file.Field(
+            "value__",
+            &Type::I32,
+            FieldAttributes::Public | FieldAttributes::SpecialName | FieldAttributes::RTSpecialName,
+        );
+        let member = file.Field(
+            "Unknown",
+            &Type::named("Kinds", name),
+            FieldAttributes::Public
+                | FieldAttributes::Static
+                | FieldAttributes::Literal
+                | FieldAttributes::HasDefault,
+        );
+        file.Constant(writer::HasConstant::Field(member), &Value::I32(0));
+    }
+    interface(&mut file, "Audit", "IUse", 0x51931400);
+    for (name, typ) in [
+        ("Echo", Type::named("Alpha", "URLValue")),
+        ("EchoPackKind", Type::named("Kinds", "pack_url_value")),
+        ("EchoTypeKind", Type::named("Kinds", "URLValue_TYPE")),
+    ] {
+        method(
+            &mut file,
+            name,
+            typ.clone(),
+            &[("value", typ, ParamAttributes::In)],
+        );
+    }
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
+    let interface = meta::parse_interfaces(path.to_str().unwrap(), "Audit")
+        .pop()
+        .unwrap();
+    let types = std::array::from_fn(|index| interface.methods[index].return_type.clone().unwrap());
+    (interface, types)
+}
+
+fn cross_role_modules(
+    package: &Path,
+    context: &python::PythonProjectionContext,
+    types: &[TypeMeta; 3],
+) {
+    write_structs(package, context, &types[..1]);
+    for enumeration in &types[1..] {
+        module(
+            package,
+            &context.implementation_module_for_type(enumeration),
+            python::generate_enum(context, enumeration).unwrap(),
+            python_stub::generate_enum_stub(context, enumeration).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn python_cross_role_imported_enums_do_not_shadow_struct_helpers() {
+    for packaged in [true, false] {
+        let fixture = Fixture::new();
+        let package = fixture.package();
+        let (interface, types) =
+            cross_role_metadata(&fixture.0.join("metadata").join("Input.winmd"), false);
+        let identities = types
+            .iter()
+            .map(TypeMeta::type_identity)
+            .chain([interface.type_identity()])
+            .collect::<Vec<_>>();
+        let baseline = python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+        let context = python::PythonProjectionContext::new(
+            identities
+                .into_iter()
+                .chain([enumeration("Unrelated", "unpack_url_value").type_identity()]),
+            packaged,
+        )
+        .unwrap();
+        let owner_module = context.implementation_module_for_interface(&interface);
+        let struct_module = context.implementation_module_for_type(&types[0]);
+        let pack_kind_module = context.implementation_module_for_type(&types[1]);
+        let type_kind_module = context.implementation_module_for_type(&types[2]);
+        let source = python::generate_interface(&context, &interface);
+        let stub = python_stub::generate_interface_stub(&context, &interface);
+        assert_eq!(
+            source,
+            python::generate_interface(&baseline, &interface),
+            "a non-imported similarly named type must not change module symbols"
+        );
+        assert_eq!(
+            stub,
+            python_stub::generate_interface_stub(&baseline, &interface)
+        );
+        let pack_kind_alias = imported_symbol(&source, &pack_kind_module, "pack_url_value");
+        let type_kind_alias = imported_symbol(&source, &type_kind_module, "URLValue_TYPE");
+        if packaged {
+            assert_eq!(
+                imported_symbol(&source, &struct_module, "unpack_url_value"),
+                "unpack_url_value"
+            );
+        } else {
+            assert!(source.contains("def unpack_url_value("), "{source}");
+        }
+        module(&package, &owner_module, source, stub);
+        cross_role_modules(&package, &context, &types);
+        support(
+            &package,
+            if packaged {
+                std::slice::from_ref(&owner_module)
+            } else {
+                &[]
+            },
+        );
+        let payload_module = if packaged {
+            &struct_module
+        } else {
+            &owner_module
+        };
+        let imports = format!(
+            "from pyviews.{owner_module} import IUse\n\
+             from pyviews.{payload_module} import URLValue\n\
+             from pyviews.{pack_kind_module} import pack_url_value as PackKind\n\
+             from pyviews.{type_kind_module} import URLValue_TYPE as TypeKind\n",
+        );
+        typecheck(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+from typing import assert_type
+def check(value: IUse) -> None:
+    assert_type(value.echo(URLValue(17)), URLValue)
+    assert_type(value.echo_pack_kind(PackKind.Unknown), PackKind)
+    assert_type(value.echo_type_kind(TypeKind.Unknown), TypeKind)
+"#
+            ),
+        );
+        reject_consumer(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+def reject(value: IUse) -> None:
+    value.echo(PackKind.Unknown)
+    value.echo_pack_kind(URLValue(17))
+    wrong: TypeKind = value.echo_pack_kind(PackKind.Unknown)
+"#
+            ),
+            &["[arg-type]", "[arg-type]", "[assignment]"],
+        );
+        runtime(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+import typing
+import dynwinrt as dw
+from pyviews.{struct_module} import URLValue as Canonical, pack_url_value, unpack_url_value, URLValue_TYPE
+assert isinstance(URLValue_TYPE, dw.DynWinRTType)
+assert unpack_url_value(pack_url_value(Canonical(17)).to_value()) == Canonical(17)
+assert typing.get_type_hints(pack_url_value)["v"] is Canonical
+assert typing.get_type_hints(unpack_url_value)["return"] is Canonical
+foreign = {{"{pack_kind_alias}": PackKind, "{type_kind_alias}": TypeKind}}
+assert typing.get_type_hints(IUse.echo)["return"] is URLValue
+assert typing.get_type_hints(IUse.echo_pack_kind, localns=foreign)["return"] is PackKind
+assert typing.get_type_hints(IUse.echo_type_kind, localns=foreign)["return"] is TypeKind
+class Handler:
+    def echo(self, value): return value
+    def echo_pack_kind(self, value): return value
+    def echo_type_kind(self, value): return value
+with dw.RoApartment(1), IUse.implement(Handler()) as implementation:
+    assert implementation.value.echo(URLValue(17)) == URLValue(17)
+    assert implementation.value.echo_pack_kind(PackKind.Unknown) is PackKind.Unknown
+    assert implementation.value.echo_type_kind(TypeKind.Unknown) is TypeKind.Unknown
+"#
+            ),
+        );
+    }
+}
+
+#[test]
+fn python_cross_role_class_owners_keep_self_bindings_and_qualified_helpers() {
+    for packaged in [true, false] {
+        for (index, name) in ["pack_url_value", "URLValue_TYPE"].into_iter().enumerate() {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let (_, types) =
+                cross_role_metadata(&fixture.0.join("metadata").join("Input.winmd"), false);
+            let owner = class(
+                "Owners",
+                name,
+                vec![
+                    echo("EchoSelf", class_type("Owners", name), 6),
+                    echo("EchoPayload", types[0].clone(), 7),
+                    MethodMeta {
+                        name: "GetSelf".into(),
+                        raw_name: "GetSelf".into(),
+                        vtable_index: 8,
+                        return_type: Some(class_type("Owners", name)),
+                        ..Default::default()
+                    },
+                ],
+                0x51931410 + index as u32,
+            );
+            let identities = [
+                class_identity(&owner),
+                types[0].type_identity(),
+                owner.default_interface.as_ref().unwrap().type_identity(),
+            ];
+            let baseline =
+                python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+            let context = python::PythonProjectionContext::new(
+                identities
+                    .into_iter()
+                    .chain([enumeration("Unrelated", "unpack_url_value").type_identity()]),
+                packaged,
+            )
+            .unwrap();
+            let owner_module = context.implementation_module(&class_identity(&owner));
+            let struct_module = context.implementation_module_for_type(&types[0]);
+            let source = python::generate_class(&context, &owner, &Default::default());
+            let stub = python_stub::generate_class_stub(&context, &owner, &Default::default());
+            assert_eq!(
+                source,
+                python::generate_class(&baseline, &owner, &Default::default())
+            );
+            assert_eq!(
+                stub,
+                python_stub::generate_class_stub(&baseline, &owner, &Default::default())
+            );
+            assert!(source.contains(&format!("class {name}:")), "{source}");
+            module(&package, &owner_module, source, stub);
+            write_structs(&package, &context, &types[..1]);
+            support(&package, &[]);
+            let payload_module = if packaged {
+                &struct_module
+            } else {
+                &owner_module
+            };
+            let imports = format!(
+                "from pyviews.{owner_module} import {name} as Owner\n\
+                 from pyviews.{payload_module} import URLValue\n",
+            );
+            typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+def check(value: Owner) -> None:
+    assert_type(value.echo_self(value), Owner | None)
+    assert_type(value.get_self(), Owner | None)
+    assert_type(value.echo_payload(URLValue(17)), URLValue)
+"#
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+def reject(value: Owner, payload: URLValue) -> None:
+    value.echo_self(payload)
+    value.echo_payload(value)
+"#
+                ),
+                &["[arg-type]", "[arg-type]"],
+            );
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+import typing
+from pyviews.{struct_module} import URLValue as Canonical, pack_url_value, unpack_url_value
+assert isinstance(Owner, type)
+assert Owner.__name__ == "{name}"
+assert typing.get_type_hints(Owner.get_self)["return"] == Owner | None
+assert typing.get_type_hints(Owner.echo_payload)["return"] is URLValue
+assert typing.get_type_hints(pack_url_value)["v"] is Canonical
+assert typing.get_type_hints(unpack_url_value)["return"] is Canonical
+assert unpack_url_value(pack_url_value(Canonical(17)).to_value()) == Canonical(17)
+"#
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn python_cross_role_owning_struct_preserves_public_helpers_and_aliases_field_enums() {
+    for packaged in [true, false] {
+        let fixture = Fixture::new();
+        let package = fixture.package();
+        let (interface, types) =
+            cross_role_metadata(&fixture.0.join("metadata").join("Input.winmd"), true);
+        let identities = types
+            .iter()
+            .map(TypeMeta::type_identity)
+            .chain([interface.type_identity()])
+            .collect::<Vec<_>>();
+        let baseline = python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+        let context = python::PythonProjectionContext::new(
+            identities
+                .into_iter()
+                .chain([enumeration("Unrelated", "unpack_url_value").type_identity()]),
+            packaged,
+        )
+        .unwrap();
+        let struct_module = context.implementation_module_for_type(&types[0]);
+        let pack_kind_module = context.implementation_module_for_type(&types[1]);
+        let type_kind_module = context.implementation_module_for_type(&types[2]);
+        let source = python::generate_struct(&context, &types[0]).unwrap();
+        let stub = python_stub::generate_struct_stub(&context, &types[0]).unwrap();
+        assert_eq!(
+            source,
+            python::generate_struct(&baseline, &types[0]).unwrap()
+        );
+        assert_eq!(
+            stub,
+            python_stub::generate_struct_stub(&baseline, &types[0]).unwrap()
+        );
+        for text in [&source, &stub] {
+            assert!(
+                text.contains("def pack_url_value(") && text.contains("def unpack_url_value("),
+                "{text}"
+            );
+            assert_ne!(
+                imported_symbol(text, &pack_kind_module, "pack_url_value"),
+                "pack_url_value",
+                "the owning struct's public pack helper must win over a foreign field type"
+            );
+            assert_ne!(
+                imported_symbol(text, &type_kind_module, "URLValue_TYPE"),
+                "URLValue_TYPE",
+                "the owning struct's public type constant must win over a foreign field type"
+            );
+        }
+        let pack_kind_alias = imported_symbol(&source, &pack_kind_module, "pack_url_value");
+        let type_kind_alias = imported_symbol(&source, &type_kind_module, "URLValue_TYPE");
+        cross_role_modules(&package, &context, &types);
+        support(&package, &[]);
+        let imports = format!(
+            "from pyviews.{struct_module} import URLValue, pack_url_value, unpack_url_value, URLValue_TYPE\n\
+             from pyviews.{pack_kind_module} import pack_url_value as PackKind\n\
+             from pyviews.{type_kind_module} import URLValue_TYPE as TypeKind\n",
+        );
+        typecheck(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+from typing import assert_type
+from dynwinrt import DynWinRTType
+assert_type(URLValue_TYPE, DynWinRTType)
+assert_type(URLValue().pack_kind, PackKind)
+assert_type(URLValue().type_kind, TypeKind)
+assert_type(unpack_url_value(pack_url_value(URLValue()).to_value()), URLValue)
+"#
+            ),
+        );
+        reject_consumer(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+def reject(value: URLValue) -> None:
+    pack_url_value(PackKind.Unknown)
+    value.pack_kind = TypeKind.Unknown
+    value.type_kind = PackKind.Unknown
+"#
+            ),
+            &["[arg-type]", "[assignment]", "[assignment]"],
+        );
+        runtime(
+            &fixture.0,
+            &format!(
+                r#"{imports}
+import typing
+import dynwinrt as dw
+foreign = {{"{pack_kind_alias}": PackKind, "{type_kind_alias}": TypeKind}}
+hints = typing.get_type_hints(URLValue.__init__, localns=foreign)
+assert hints["pack_kind"] is PackKind
+assert hints["type_kind"] is TypeKind
+assert typing.get_type_hints(pack_url_value)["v"] is URLValue
+assert typing.get_type_hints(unpack_url_value)["return"] is URLValue
+assert isinstance(URLValue_TYPE, dw.DynWinRTType)
+default = URLValue()
+assert type(default.pack_kind) is PackKind
+assert type(default.type_kind) is TypeKind
+value = URLValue(17, PackKind.Unknown, TypeKind.Unknown)
+result = unpack_url_value(pack_url_value(value).to_value())
+assert result == value
+assert type(result.pack_kind) is PackKind
+assert type(result.type_kind) is TypeKind
+"#
+            ),
+        );
+    }
+}
+
 #[test]
 fn python_normalized_struct_helpers_round_trip_nested_fields_arrays_and_delegates() {
     for packaged in [false, true] {
