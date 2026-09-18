@@ -6,8 +6,13 @@ import { join, win32 } from 'node:path'
 
 /** @typedef {{ dll: string, symbols: (string | number)[] }} PeImport */
 
-/** Read ordinary PE imports from the file, not the process-wide loaded-module list. */
-export function readPeImports(/** @type {Buffer} */ bytes) {
+/**
+ * Read PE imports from the file, not the process-wide loaded-module list.
+ * Ordinary imports remain the default for eager-loading checks.
+ * @param {Buffer} bytes
+ * @param {{ includeDelayImports?: boolean }} options
+ */
+export function readPeImports(bytes, { includeDelayImports = false } = {}) {
   if (!Buffer.isBuffer(bytes)) throw new TypeError('PE input must be a Buffer')
   const invalid = (/** @type {string} */ reason) => new Error(`Invalid PE import table: ${reason}`)
   const range = (/** @type {number} */ offset, /** @type {number} */ size, /** @type {string} */ label) => {
@@ -106,20 +111,41 @@ export function readPeImports(/** @type {Buffer} */ bytes) {
 
   /** @type {PeImport[]} */
   const imports = []
-  if (directoryCount < 2) return imports
-  const importRva = bytes.readUInt32LE(optional + directories + 8)
-  const importSize = bytes.readUInt32LE(optional + directories + 12)
-  if (importRva === 0 && importSize === 0) return imports
-  if (!importRva || importSize < 20) throw invalid('invalid import directory')
-  const { offset } = map(importRva, importSize, 'import directory')
-  for (let descriptor = offset; descriptor + 20 <= offset + importSize; descriptor += 20) {
-    const fields = Array.from({ length: 5 }, (_, index) => bytes.readUInt32LE(descriptor + index * 4))
-    if (fields.every((field) => field === 0)) return imports
-    const [lookup, , , name, addressTable] = fields
+  const readDirectory = (
+    /** @type {number} */ index,
+    /** @type {number} */ stride,
+    /** @type {string} */ label,
+    /** @type {(fields: number[]) => void} */ inspect,
+  ) => {
+    if (directoryCount <= index) return
+    const rva = bytes.readUInt32LE(optional + directories + index * 8)
+    const size = bytes.readUInt32LE(optional + directories + index * 8 + 4)
+    if (rva === 0 && size === 0) return
+    if (!rva || size < stride) throw invalid(`invalid ${label}`)
+    const { offset } = map(rva, size, label)
+    for (let descriptor = offset; descriptor + stride <= offset + size; descriptor += stride) {
+      const fields = Array.from({ length: stride / 4 }, (_, field) => bytes.readUInt32LE(descriptor + field * 4))
+      if (fields.every((field) => field === 0)) return
+      inspect(fields)
+    }
+    throw invalid(`unterminated ${label}`)
+  }
+  readDirectory(1, 20, 'import directory', ([lookup, , , name, addressTable]) => {
     if (!addressTable) throw invalid('missing import address table')
     imports.push({ dll: string(name, 'DLL name'), symbols: symbols(lookup || addressTable) })
+  })
+  if (includeDelayImports) {
+    readDirectory(13, 32, 'delay import directory', ([attributes, name, , addressTable, lookup]) => {
+      // ImgDelayDescr.dlattrRva: legacy VA descriptors and unknown flags fail closed.
+      if (attributes !== 1) throw invalid(`unsupported delay import attributes: 0x${attributes.toString(16)}`)
+      if (!addressTable) throw invalid('missing delay import address table')
+      // The delay IAT contains helper addresses, not a fallback name table.
+      if (!lookup) throw invalid('missing delay import name table')
+      map(addressTable, width, 'delay import address table')
+      imports.push({ dll: string(name, 'DLL name'), symbols: symbols(lookup) })
+    })
   }
-  throw invalid('unterminated import directory')
+  return imports
 }
 
 const optionalSubsystemDlls = new Set(['mapi32.dll', 'gdiplus.dll', 'ws2_32.dll', 'mfplat.dll'])
@@ -154,12 +180,32 @@ export function assertNoEagerWin32Imports(imports, { testHooks = false } = {}) {
 }
 
 /**
- * Inspect every shipped architecture without loading the addon. A caller allowing
- * a local test-hooks addon must positively identify its native fixture export.
+ * @param {PeImport[]} imports
+ */
+export function assertNoDispatcherQueueImports(imports) {
+  const violations = imports.filter(
+    ({ dll, symbols }) =>
+      win32.basename(dll).toLowerCase() === 'coremessaging.dll' ||
+      symbols.some((symbol) => typeof symbol === 'string' && /CreateDispatcherQueueController/i.test(symbol)),
+  )
+  if (violations.length) {
+    throw new Error(
+      `DispatcherQueue must resolve CoreMessaging.dll!CreateDispatcherQueueController dynamically; PE imports:\n${violations
+        .map(
+          ({ dll, symbols }) =>
+            `${dll}: ${symbols.map((symbol) => (typeof symbol === 'number' ? `#${symbol}` : symbol)).join(', ')}`,
+        )
+        .join('\n')}`,
+    )
+  }
+}
+
+/**
  * @param {string} directory
+ * @param {(bytes: Buffer, addon: string) => void} inspect
  * @param {{ testHooksAddon?: string }} options
  */
-export function verifyAddonImports(directory, { testHooksAddon } = {}) {
+function verifyAddonFiles(directory, inspect, { testHooksAddon } = {}) {
   const addons = readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.node'))
     .map((entry) => entry.name)
@@ -170,12 +216,31 @@ export function verifyAddonImports(directory, { testHooksAddon } = {}) {
   }
   for (const addon of addons) {
     try {
-      assertNoEagerWin32Imports(readPeImports(readFileSync(join(directory, addon))), {
-        testHooks: addon === testHooksAddon,
-      })
+      inspect(readFileSync(join(directory, addon)), addon)
     } catch (error) {
       throw new Error(`${addon}: ${error instanceof Error ? error.message : error}`, { cause: error })
     }
   }
   return addons
+}
+
+/**
+ * Inspect every shipped architecture without loading the addon. A caller allowing
+ * a local test-hooks addon must positively identify its native fixture export.
+ * @param {string} directory
+ * @param {{ testHooksAddon?: string }} options
+ */
+export function verifyAddonImports(directory, { testHooksAddon } = {}) {
+  return verifyAddonFiles(
+    directory,
+    (bytes, addon) => assertNoEagerWin32Imports(readPeImports(bytes), { testHooks: addon === testHooksAddon }),
+    { testHooksAddon },
+  )
+}
+
+/** @param {string} directory */
+export function verifyDispatcherQueueImports(directory) {
+  return verifyAddonFiles(directory, (bytes) =>
+    assertNoDispatcherQueueImports(readPeImports(bytes, { includeDelayImports: true })),
+  )
 }

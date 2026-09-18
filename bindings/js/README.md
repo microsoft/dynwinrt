@@ -34,10 +34,19 @@ helper. Apartment, message-pumping, and shutdown requirements are unchanged.
 This is not a general older-Windows compatibility or addon feature-isolation
 guarantee.
 
-`npm run test:imports` checks every built addon's PE imports and measures root
-and `/com` imports in separate fresh processes with a 10-second limit. Loaded-DLL
-reports omit network enumeration and DNS on Node versions that support
-`process.report.excludeNetwork`; failures include report/import phase timings.
+`npm run test:imports` checks every `.node` file in `dist` directly, including
+x64 and ARM64 artifacts, without loading it or requiring Visual Studio discovery
+or `dumpbin`. It rejects CoreMessaging DLL imports (including ordinal imports)
+and named CreateDispatcherQueueController imports in both ordinary and
+RVA-based delay-import tables. Malformed tables, legacy VA-based delay
+descriptors, and unknown delay-descriptor flags fail explicitly rather than
+being ignored. The separate optional-Win32 eager-import check remains
+ordinary-import-only.
+
+The same test measures root and `/com` imports in separate fresh processes with
+a 10-second limit. Loaded-DLL reports omit network enumeration and DNS on Node
+versions that support `process.report.excludeNetwork`; failures include
+report/import phase timings.
 
 ## Quick start
 

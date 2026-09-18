@@ -5,7 +5,13 @@ import test from 'ava'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { assertNoEagerWin32Imports, readPeImports, verifyAddonImports } from '../scripts/pe-imports.mjs'
+import {
+  assertNoDispatcherQueueImports,
+  assertNoEagerWin32Imports,
+  readPeImports,
+  verifyAddonImports,
+  verifyDispatcherQueueImports,
+} from '../scripts/pe-imports.mjs'
 
 function fixture(wide: boolean) {
   const bytes = Buffer.alloc(0x800)
@@ -65,6 +71,40 @@ function fixture(wide: boolean) {
 const expected = [
   { dll: 'KERNEL32.dll', symbols: ['GetTickCount', 17] },
   { dll: 'MFPLAT.DLL', symbols: ['MFStartup'] },
+]
+
+function delayFixture(wide: boolean) {
+  const image = fixture(wide)
+  const { bytes, directory, width, writeThunk } = image
+  const delayDirectory = directory + 13 * 8
+  bytes.writeUInt32LE(0x2120, delayDirectory)
+  bytes.writeUInt32LE(96, delayDirectory + 4)
+  for (const [descriptor, name, module, address, lookup] of [
+    [0x320, 0x2250, 0x2220, 0x21c0, 0x2180],
+    [0x340, 0x2290, 0x2228, 0x21e0, 0x21a0],
+  ]) {
+    bytes.writeUInt32LE(1, descriptor)
+    bytes.writeUInt32LE(name, descriptor + 4)
+    bytes.writeUInt32LE(module, descriptor + 8)
+    bytes.writeUInt32LE(address, descriptor + 12)
+    bytes.writeUInt32LE(lookup, descriptor + 16)
+  }
+  writeThunk(0x380, 0x22d0n)
+  writeThunk(0x380 + width, (1n << BigInt(width * 8 - 1)) | 23n)
+  writeThunk(0x3a0, 0x2320n)
+  // Delay IAT entries are helper addresses, not import names.
+  writeThunk(0x3c0, 0x12345678n)
+  writeThunk(0x3e0, 0x12345678n)
+  bytes.write('USER32.dll\0', 0x450)
+  bytes.write('OLE32.dll\0', 0x490)
+  bytes.write('MessageBeep\0', 0x4d2)
+  bytes.write('CoInitializeEx\0', 0x522)
+  return { ...image, delayDirectory }
+}
+
+const delayExpected = [
+  { dll: 'USER32.dll', symbols: ['MessageBeep', 23] },
+  { dll: 'OLE32.dll', symbols: ['CoInitializeEx'] },
 ]
 
 for (const wide of [false, true]) {
@@ -184,6 +224,143 @@ for (const wide of [false, true]) {
   }
 }
 
+for (const wide of [false, true]) {
+  const format = wide ? 'PE32+' : 'PE32'
+  const options = { includeDelayImports: true }
+
+  test(`Win32 ${format} parser optionally includes named and ordinal delay imports`, (t) => {
+    const { bytes } = delayFixture(wide)
+    t.deepEqual(readPeImports(bytes), expected)
+    t.deepEqual(readPeImports(bytes, { includeDelayImports: false }), expected)
+    t.deepEqual(readPeImports(bytes, options), [...expected, ...delayExpected])
+  })
+
+  test(`Win32 ${format} delay inspection handles absent ordinary and delay directories independently`, (t) => {
+    const { bytes, directory, delayDirectory } = delayFixture(wide)
+    bytes.writeUInt32LE(0, directory + 8)
+    bytes.writeUInt32LE(0, directory + 12)
+    t.deepEqual(readPeImports(bytes, options), delayExpected)
+    bytes.writeUInt32LE(0, delayDirectory)
+    bytes.writeUInt32LE(0, delayDirectory + 4)
+    t.deepEqual(readPeImports(bytes, options), [])
+    const counted = delayFixture(wide)
+    counted.bytes.writeUInt32LE(13, counted.directory - 4)
+    t.deepEqual(readPeImports(counted.bytes, options), expected)
+    counted.bytes.writeUInt32LE(0, counted.directory - 4)
+    t.deepEqual(readPeImports(counted.bytes, options), [])
+  })
+
+  test(`Win32 ${format} delay inspection ignores incidental forbidden DLL and symbol strings`, (t) => {
+    const { bytes } = delayFixture(wide)
+    bytes.write('CoreMessaging.dll\0CreateDispatcherQueueController\0', 0x600)
+    t.deepEqual(readPeImports(bytes, options), [...expected, ...delayExpected])
+    t.notThrows(() => assertNoDispatcherQueueImports(readPeImports(bytes, options)))
+  })
+
+  const malformed: [string, (image: ReturnType<typeof delayFixture>) => void, RegExp][] = [
+    ['legacy VA descriptors', ({ bytes }) => bytes.writeUInt32LE(0, 0x320), /unsupported delay import attributes: 0x0/],
+    ['unknown flags', ({ bytes }) => bytes.writeUInt32LE(3, 0x320), /unsupported delay import attributes: 0x3/],
+    [
+      'zero RVA',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(0, delayDirectory),
+      /invalid delay import directory/,
+    ],
+    [
+      'zero size',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(0, delayDirectory + 4),
+      /invalid delay import directory/,
+    ],
+    [
+      'short descriptor',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(31, delayDirectory + 4),
+      /invalid delay import directory/,
+    ],
+    [
+      'missing terminator',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(64, delayDirectory + 4),
+      /unterminated delay import directory/,
+    ],
+    [
+      'partial terminator',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(80, delayDirectory + 4),
+      /unterminated delay import directory/,
+    ],
+    [
+      'unmapped directory',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(0x3000, delayDirectory),
+      /unmapped.*delay import directory/,
+    ],
+    [
+      'directory bounds',
+      ({ bytes, delayDirectory }) => bytes.writeUInt32LE(0x400, delayDirectory + 4),
+      /delay import directory is not file-backed/,
+    ],
+    ['missing address table', ({ bytes }) => bytes.writeUInt32LE(0, 0x32c), /missing delay import address table/],
+    [
+      'unmapped address table',
+      ({ bytes }) => bytes.writeUInt32LE(0x3000, 0x32c),
+      /unmapped.*delay import address table/,
+    ],
+    ['missing name table', ({ bytes }) => bytes.writeUInt32LE(0, 0x330), /missing delay import name table/],
+    ['unmapped name table', ({ bytes }) => bytes.writeUInt32LE(0x3000, 0x330), /unmapped.*import thunk/],
+    ['unmapped DLL name', ({ bytes }) => bytes.writeUInt32LE(0x3000, 0x324), /unmapped.*DLL name/],
+    ['empty DLL name', ({ bytes }) => bytes.writeUInt8(0, 0x450), /empty DLL name/],
+    ['empty symbol', ({ bytes }) => bytes.writeUInt8(0, 0x4d2), /empty import symbol/],
+    [
+      'thunk terminator',
+      ({ bytes, width, writeThunk }) => {
+        bytes.writeUInt32LE(0x2500 - width, 0x330)
+        writeThunk(0x700 - width, 0x22d0n)
+      },
+      /unterminated import thunk/,
+    ],
+    [
+      'symbol terminator',
+      ({ bytes, writeThunk }) => {
+        writeThunk(0x380, 0x40fan)
+        bytes.fill(65, 0x7fc)
+      },
+      /unterminated import symbol/,
+    ],
+    [
+      'ordinal reserved bits',
+      ({ width, writeThunk }) => writeThunk(0x380, (1n << BigInt(width * 8 - 1)) | 0x10017n),
+      /reserved ordinal thunk bits/,
+    ],
+  ]
+  for (const [name, corrupt, message] of malformed) {
+    test(`Win32 ${format} delay parser rejects malformed ${name} only when requested`, (t) => {
+      const image = delayFixture(wide)
+      corrupt(image)
+      t.deepEqual(readPeImports(image.bytes), expected)
+      t.throws(() => readPeImports(image.bytes, options), { message })
+    })
+  }
+
+  for (const delayed of [false, true]) {
+    const kind = delayed ? 'delay' : 'ordinary'
+    test(`Win32 ${format} DispatcherQueue policy rejects prohibited ${kind} DLL and symbol imports`, (t) => {
+      const image = delayFixture(wide)
+      const { bytes, width, writeThunk } = image
+      const name = delayed ? 0x490 : 0x760
+      const symbol = delayed ? 0x522 : 0x782
+      const lookup = delayed ? 0x3a0 : 0x2a0
+      t.notThrows(() => assertNoDispatcherQueueImports(readPeImports(bytes, options)))
+      bytes.write('C:\\Windows\\System32\\CoReMeSsAgInG.DlL\0', name)
+      writeThunk(lookup, (1n << BigInt(width * 8 - 1)) | 17n)
+      t.throws(() => assertNoDispatcherQueueImports(readPeImports(bytes, options)), {
+        message: /CoReMeSsAgInG\.DlL: #17/,
+      })
+      writeThunk(lookup, 0n)
+      t.throws(() => assertNoDispatcherQueueImports(readPeImports(bytes, options)), { message: /CoReMeSsAgInG\.DlL:/ })
+      bytes.write('other.dll\0', name)
+      writeThunk(lookup, BigInt(delayed ? 0x2320 : 0x4080))
+      bytes.write('_cReAtEdIsPaTcHeRqUeUeCoNtRoLlEr@12\0', symbol)
+      t.throws(() => assertNoDispatcherQueueImports(readPeImports(bytes, options)), { message: /other\.dll: _cReAtE/ })
+    })
+  }
+}
+
 test('Win32 PE parser rejects truncated buffers and oversized PE32+ name RVAs', (t) => {
   const { bytes, writeThunk } = fixture(true)
   for (const length of [0, 2, 63, 0x90, 0x100, 0x7ff]) {
@@ -192,6 +369,39 @@ test('Win32 PE parser rejects truncated buffers and oversized PE32+ name RVAs', 
   writeThunk(0x280, 0x100004040n)
   t.throws(() => readPeImports(bytes), { message: /import name RVA overflow/ })
   t.throws(() => readPeImports('not a Buffer' as unknown as Buffer), { instanceOf: TypeError })
+  const delayed = delayFixture(true)
+  delayed.writeThunk(0x380, 0x1000022d0n)
+  t.throws(() => readPeImports(delayed.bytes, { includeDelayImports: true }), { message: /import name RVA overflow/ })
+  for (const length of [0, 2, 63, 0x90, 0x100, 0x7ff]) {
+    t.throws(() => readPeImports(delayed.bytes.subarray(0, length), { includeDelayImports: true }), {
+      message: /^Invalid PE import table:/,
+    })
+  }
+})
+
+test('Win32 DispatcherQueue import policy normalizes DLL paths/case and rejects named exports from any DLL', (t) => {
+  for (const dll of [
+    'coremessaging.dll',
+    'COREMESSAGING.DLL',
+    'C:\\Windows\\CoreMessaging.dll',
+    'C:/Windows/CoreMessaging.dll',
+  ]) {
+    for (const symbols of [['SafeExport'], [17], []]) {
+      t.throws(() => assertNoDispatcherQueueImports([{ dll, symbols }]), { message: /must resolve.*dynamically/ })
+    }
+  }
+  for (const symbol of [
+    'CreateDispatcherQueueController',
+    'createdispatcherqueuecontroller',
+    '_CreateDispatcherQueueController@12',
+  ]) {
+    t.throws(() => assertNoDispatcherQueueImports([{ dll: 'other.dll', symbols: [symbol] }]), {
+      message: /other\.dll:/,
+    })
+  }
+  t.notThrows(() =>
+    assertNoDispatcherQueueImports([{ dll: 'kernel32.dll', symbols: ['LoadLibraryExW', 'GetProcAddress', 17] }]),
+  )
 })
 
 test('Win32 production import policy bans optional DLLs, including ordinals, regardless of case or path', (t) => {
@@ -258,6 +468,44 @@ test('Win32 artifact import verification checks every shipped architecture witho
     t.throws(() => verifyAddonImports(directory), { message: /arm64-msvc\.node:.*eager PE imports/ })
     writeFileSync(join(directory, arm64), safe.bytes)
     t.throws(() => verifyAddonImports(directory), { message: /x64-msvc\.node: Invalid PE import table/ })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Win32 DispatcherQueue verification scans every addon including ARM64 delay imports without loading binaries', (t) => {
+  const directory = mkdtempSync(fileURLToPath(new URL('../target-pe-imports-', import.meta.url)))
+  const x64 = 'dynwinrt.win32-x64-msvc.node'
+  const arm64 = 'dynwinrt.win32-arm64-msvc.node'
+  const extra = 'EXTRA.NODE'
+  const safe = delayFixture(true)
+  const forbidden = delayFixture(true)
+  const eager = fixture(true)
+  forbidden.bytes.writeUInt16LE(0xaa64, 0x84)
+  forbidden.bytes.write('CreateDispatcherQueueController\0', 0x522)
+  eager.bytes.write('CoreMessaging.dll\0', 0x760)
+  try {
+    t.throws(() => verifyDispatcherQueueImports(directory), { message: /No native addons/ })
+    writeFileSync(join(directory, x64), safe.bytes)
+    writeFileSync(join(directory, 'ignored.txt'), forbidden.bytes)
+    t.deepEqual(verifyDispatcherQueueImports(directory), [x64])
+    writeFileSync(join(directory, arm64), forbidden.bytes)
+    t.throws(() => verifyDispatcherQueueImports(directory), { message: /arm64-msvc\.node:.*must resolve/ })
+    forbidden.bytes.write('CoInitializeEx\0', 0x522)
+    writeFileSync(join(directory, arm64), forbidden.bytes)
+    t.deepEqual(verifyDispatcherQueueImports(directory), [arm64, x64])
+    writeFileSync(join(directory, x64), eager.bytes)
+    t.throws(() => verifyDispatcherQueueImports(directory), { message: /x64-msvc\.node:.*must resolve/ })
+    writeFileSync(join(directory, x64), safe.bytes)
+    writeFileSync(join(directory, extra), eager.bytes)
+    t.throws(() => verifyDispatcherQueueImports(directory), { message: /EXTRA\.NODE:.*must resolve/ })
+    forbidden.bytes.writeUInt32LE(0, 0x320)
+    writeFileSync(join(directory, extra), forbidden.bytes)
+    t.throws(() => verifyDispatcherQueueImports(directory), {
+      message: /EXTRA\.NODE:.*unsupported delay import attributes/,
+    })
+    writeFileSync(join(directory, extra), Buffer.from('MZ'))
+    t.throws(() => verifyDispatcherQueueImports(directory), { message: /EXTRA\.NODE: Invalid PE import table/ })
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
