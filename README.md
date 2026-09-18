@@ -1,6 +1,6 @@
 # dynwinrt
 
-**Call Windows Runtime (WinRT) APIs from JavaScript, TypeScript, or Python — without writing a native extension.**
+**Typed Windows Runtime bindings for JavaScript and Python.**
 
 [![@microsoft/dynwinrt](https://img.shields.io/npm/v/@microsoft/dynwinrt.svg?label=%40microsoft%2Fdynwinrt)](https://www.npmjs.com/package/@microsoft/dynwinrt)
 [![@microsoft/dynwinrt-codegen](https://img.shields.io/npm/v/@microsoft/dynwinrt-codegen.svg?label=%40microsoft%2Fdynwinrt-codegen)](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen)
@@ -8,57 +8,119 @@
 [![dynwinrt-codegen on PyPI](https://img.shields.io/pypi/v/dynwinrt-codegen.svg?label=PyPI%20dynwinrt-codegen)](https://pypi.org/project/dynwinrt-codegen/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Why dynwinrt?
+Use Windows Runtime (WinRT) APIs from Node.js, Electron, and Python without
+writing a native extension for each API. `dynwinrt-codegen` generates typed
+bindings from `.winmd` metadata, and `dynwinrt` provides the prebuilt native
+runtime that invokes those APIs.
 
-If you've ever tried to call a modern Windows API (WinAppSDK, Windows AI, notifications, file pickers, sensors, …) from an Electron, Node, or Python app, you've probably hit one of these walls:
+Codegen reads metadata from the Windows SDK, Windows App SDK, or custom WinRT
+components ahead of time. The generated JavaScript or Python wrappers register
+interface signatures with the shared Rust runtime. The runtime marshals values
+and invokes native methods dynamically, using direct-call fast paths where
+available and libffi for the general case. This avoids compiling a native
+extension for each API; published prebuilt packages let you generate and use
+bindings without Rust, MSBuild, or `node-gyp`.
 
-- **Writing a native extension for each API surface** — needs C++, Rust, or C#, the matching Windows SDK, and language-specific build tooling.
-- **Bridging through another runtime** — adds deployment dependencies and a hand-maintained wrapper for every API you expose.
-- **Waiting for an official projection** — Windows ships `.winmd` metadata months before any JavaScript- or Python-friendly projection appears in a published package.
+## Features
 
-`dynwinrt` reads the same `.winmd` metadata shipped by the Windows SDK and WinAppSDK, then calls the underlying COM vtables **dynamically at runtime via libffi**. The codegen emits typed `.js` + `.d.ts` or `.py` + `.pyi` wrappers; the matching native runtime invokes them. Consuming applications do not need MSBuild, `node-gyp`, Cargo, or a native compiler.
+WinRT bindings include constructors, properties, collections, structs, enums,
+delegates, and events. JavaScript gets camelCase APIs, TypeScript declarations,
+and Promise-based async operations; Python gets snake_case APIs, type stubs,
+and asyncio-compatible operations. Both support async progress and cancellation.
 
-> **Scope** — `dynwinrt` primarily targets **data-style WinRT APIs**. WinUI
-> `Application + Window` hosting is also supported on a caller-managed STA UI
-> thread. Classic COM has a separate preview surface described below.
+| API family | Languages | Scope |
+| --- | --- | --- |
+| **WinRT** | JS/TS, Python | Typed bindings for Windows SDK, Windows App SDK, and custom WinRT APIs. |
+| **Classic COM (preview)** | JS/TS | A validated subset of interfaces from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/com`. |
+| **Win32 (unreleased, experimental)** | JS/TS | Selected DLL exports from `Windows.Win32.winmd`, through `@microsoft/dynwinrt/win32`. |
 
-## Quick start
+Win32 support is available on `main` but is not yet included in published
+packages. To try it, build the JavaScript runtime and code generator
+[from source](CONTRIBUTING.md#development-setup).
+
+WinUI 3 application and window hosting is also available, with application-managed
+UI threads and lifecycle. You can also implement supported WinRT interfaces in
+JavaScript or Python and pass them to native consumers.
+
+COM and Win32 are not complete projections of every Windows API: safe generation
+requires validated ABI, layout, and ownership contracts. Win32 support is intended
+for evaluation and prototyping, with no backward-compatibility guarantee yet.
+See the [COM support guide](docs/architecture/classic-com-support.md) and
+[Win32 support guide](docs/architecture/flat-win32-contracts.md) for current
+coverage and limitations.
+
+## Getting started
+
+### Requirements
+
+- **Windows 10 or 11, x64 or ARM64.** Available APIs depend on your Windows version.
+- **Node.js 18+** for JavaScript/TypeScript, or **CPython 3.11-3.14** for Python.
+- **Windows SDK metadata** for the examples below. Codegen auto-detects an
+  installed Windows SDK; use `--winmd` to supply metadata explicitly.
+
+The examples use a built-in Windows API and do not require Windows App SDK,
+package identity, or an AI model. Additional runtime packages, permissions, or
+hardware may be needed for other APIs.
+
+Run the commands below in PowerShell from your project directory. Keep generated
+output in its own directory: codegen manages that directory's contents.
 
 ### JavaScript / TypeScript
 
-```bash
+Install the runtime and generator, then generate a binding for
+`Windows.Foundation.Uri`:
+
+```powershell
 npm install @microsoft/dynwinrt
 npm install -D @microsoft/dynwinrt-codegen
 
-# Generate a binding for one class (auto-detects the Windows SDK winmd)
-npx dynwinrt-codegen generate \
-  --namespace Windows.Foundation \
-  --class-name Uri \
-  --output ./generated
+npx dynwinrt-codegen generate `
+  --namespace Windows.Foundation `
+  --class-name Uri `
+  --output .\generated
 ```
+
+Save this as `example.cjs`:
 
 ```js
 const { roInitialize } = require('@microsoft/dynwinrt');
 const { Uri } = require('./generated');
+const { releaseProjected } = require('./generated/lifetime');
 
-roInitialize(1);                                       // MTA
+roInitialize(1); // Initialize WinRT on this thread (MTA).
 const uri = new Uri('https://example.com/path?q=1');
-console.log(uri.host);                                 // "example.com"
+try {
+  console.log(uri.host); // "example.com"
+} finally {
+  releaseProjected(uri);
+}
 ```
+
+```powershell
+node .\example.cjs
+```
+
+The generated `.js` files run directly; accompanying `.d.ts` files provide
+IntelliSense and TypeScript type checking.
 
 ### Python
 
-```powershell
-python -m pip install --pre dynwinrt dynwinrt-codegen
+Install the generator in your Python environment, generate a package, and
+install it. The generated package installs its matching `dynwinrt` runtime:
 
-# Generate and install one typed projection package.
+```powershell
+python -m pip install --pre dynwinrt-codegen
+
 dynwinrt-codegen generate `
   --namespace Windows.Foundation `
   --class-name Uri `
   --lang py `
   --output .\generated_uri
+
 python -m pip install .\generated_uri
 ```
+
+Save this as `example.py`:
 
 ```python
 from dynwinrt import RoApartment, projected_lifetime_scope
@@ -69,263 +131,63 @@ with RoApartment(1), projected_lifetime_scope():
     print(uri.host)  # "example.com"
 ```
 
-Initialize one apartment per thread that uses WinRT. Use `RoApartment(1)` for a
-normal MTA thread and `RoApartment(0)` for an STA UI thread. The projection
-lifetime scope releases generated wrappers before the apartment closes.
-
-## Generated API
-
-Both projections expose public WinRT activation metadata as normal
-constructors, preserve static factory methods, and generate properties,
-overloads, async operations with progress, collections, structs, enums,
-delegates, and events. JavaScript uses camelCase names; Python uses snake_case
-names, native Python values, asyncio-compatible awaitables, and type stubs.
-
-- [JavaScript/TypeScript codegen package guide](tools/dynwinrt-codegen/npm/README.md)
-- [Python codegen package guide](tools/dynwinrt-codegen/python/README.md)
-- [Python runtime guide](bindings/py/README.md)
-
-### Implementing WinRT interfaces
-
-Node.js and Python can supply synchronous handlers for complete non-generic
-WinRT interfaces. Generated `.implementation(...)` descriptors compose multiple
-interfaces into a standalone IInspectable object, and `.implement(...)` creates
-its management handle. `impl.value` is a stable typed primary interface, and
-`impl.dispose()` manages cleanup (Python also supports `with ... as impl`).
-Public typed interface views can be passed to ordinary native
-consumers without a WinUI composable base or OS registration.
-
-The first release is non-agile and owner-thread-only. Reference release and
-object-wide callback disposal are separate operations. See
-[WinRT interface implementations](docs/guides/windows/winrt-interface-implementations.md)
-for both language APIs, supported method/property/event/array/output contracts,
-ownership, and the separate IBackgroundTask deployment concerns.
-
-### WinUI `Application + Window`
-
-When `Microsoft.UI.Xaml.Application` is selected, codegen emits helpers for
-WinUI metadata and `XamlControlsResources`. The application remains responsible
-for package identity, framework bootstrap, UI-thread ownership, and lifecycle.
-For JavaScript:
-
-```js
-const { initWinappsdk, roInitialize } = require('@microsoft/dynwinrt');
-const { Application, Button, Window } = require('./generated');
-
-initWinappsdk(2, 2);
-roInitialize(0); // STA
-
-async function main() {
-  let app;
-  await Application.startScheduled(() => {
-    app = Application.create(() => {
-      const window = new Window();
-      window.content = new Button();
-      window.activate();
-    });
-    app.requestedTheme = 1; // Dark
-  });
-}
-
-main().catch(console.error);
+```powershell
+python .\example.py
 ```
 
-`Application.startScheduled()` enters the WinUI dispatcher loop after the
-current JavaScript callback unwinds and resolves when the application exits.
-This keeps WinUI async completions and JavaScript Promise checkpoints working
-while XAML owns the thread. `Application.start()` remains available when the
-exact blocking WinRT call is required, but it pauses the Node event loop.
+`RoApartment(1)` initializes WinRT on the current thread. The lifetime scope
+releases generated wrappers before the apartment closes.
 
-Python uses `Application.start()` inside `RoApartment(0)` and
-`projected_lifetime_scope()`. See the
-[Python WinUI hello-world sample](samples/python/winui-hello-world/) and
-[Python-defined WinUI control sample](samples/python/winui-tic-tac-toe/).
+## Examples
 
-In an unpackaged process,
-set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
-`Microsoft.WindowsAppRuntime.Bootstrap.dll` before calling JavaScript
-`initWinappsdk()` or Python `init_winappsdk()`.
-`Application.create()` resolves the bootstrapped framework resources and
-configures its UI thread for Per-Monitor V2 DPI awareness. Packaged processes
-can omit the bootstrap call.
+| Build something with | Example |
+| --- | --- |
+| WinUI 3 controls and events | [JavaScript Tic-Tac-Toe](samples/js/winui-tic-tac-toe/README.md), [Python Hello World](samples/python/winui-hello-world/README.md) |
+| Image OCR | [Windows AI in Node.js](samples/js/ocr/README.md), [Windows OCR in Python](samples/python/ocr-image/README.md) |
+| Local AI inference | [Aion Instruct chat in Electron](samples/js/electron-aion-chat/README.md) |
+| WinRT and Classic COM interop | [Windows Hello in Electron](samples/js/windows-hello/README.md) |
+| Async file operations | [Python file I/O](samples/python/async-file-io/README.md) |
+| Win32 DLL exports (unreleased) | [System information, Registry, and async file I/O](samples/js/win32/README.md) |
 
-## Classic COM (Preview)
+Each sample documents its Windows version, SDK, package identity, and hardware
+requirements. Browse all [JavaScript/Electron samples](samples/js/README.md) or
+[Python samples](samples/python/README.md) for setup instructions and more examples.
 
-Classic COM support is functional and tested, but remains a **preview under
-active development**. It targets a conservatively validated subset of
-`IUnknown`- and `IInspectable`-rooted interfaces from `Windows.Win32.winmd`; it
-is not a general Automation or native Win32 projection, and it does not provide
-general flat DLL export projection.
+### Examples with WinApp CLI
 
-The current CI baseline against
-`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,721 of 7,929
-eligible interfaces (72.15%)** with complete safe code generation. Supported
-contracts include generated coclass activation and QueryInterface views,
-managed interface ownership, native POD layouts, typed counted buffers,
-BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, the
-target-device-independent `TYMED_HGLOBAL` FORMATETC/STGMEDIUM subset,
-variable-length WAVEFORMATEX audio formats with exact CoTaskMem outputs, and
-synchronous JavaScript implementations of fully supported callback interfaces.
-Separate bounded one-shot audio activation and owned-copy transactions are
-also available; copy-only facades are not counted as complete interfaces.
-Seventeen stock-Windows Node E2E runners exercise representative Shell,
-Automation, stream, callback, HWND, and WinRT interop scenarios.
+WinApp CLI integrates with dynwinrt to restore SDK dependencies and generate
+typed bindings. It also simplifies SDK package management, package identity
+setup for local development, and MSIX packaging and signing. See its
+[Electron JavaScript guides](https://github.com/microsoft/winappCli/blob/main/docs/guides/electron/index.md#2-call-windows-apis-from-javascript)
+for notifications, file pickers, Phi Silica, and WinML provider integration.
 
-Safety takes priority over coverage. If metadata does not fully describe an
-interface's ABI, layout, ownership, allocator, or cleanup contract, generation
-fails before emitting a partial wrapper. Material gaps still include several
-common graphics, advanced audio, WMI, non-HGLOBAL/device-specific clipboard and
-drag-and-drop, derived Automation, union, BYREF/InOut, and output-ownership
-shapes.
+## Documentation
 
-Classic COM generation currently emits JavaScript and TypeScript only. It uses
-the separate `@microsoft/dynwinrt/com` public surface; generated wrappers call
-`@microsoft/dynwinrt/com/unsafe` internally after codegen validates the ABI.
-Generated COM modules use the same lowercase/kebab namespace layout as WinRT
-under `com/`, while the COM barrel keeps globally unique short exports.
-COM-only generated packages also require the explicit `com/` entrypoint; the
-generated package root and `@microsoft/dynwinrt` runtime root remain
-WinRT-only.
+| Task | Guide |
+| --- | --- |
+| Generate typed bindings | [CLI reference](tools/dynwinrt-codegen/README.md), [JavaScript/TypeScript](tools/dynwinrt-codegen/npm/README.md), [Python](tools/dynwinrt-codegen/python/README.md) |
+| Use the runtime and manage object lifetimes | [JavaScript](bindings/js/README.md), [Python](bindings/py/README.md) |
+| Implement WinRT interfaces in JavaScript or Python | [Interface implementations](docs/guides/windows/winrt-interface-implementations.md) |
+| Use Classic COM APIs | [Usage guide](docs/guides/windows/classic-com-usage.md) |
+| Use Win32 functions | [Capabilities and contract boundaries](docs/architecture/flat-win32-contracts.md) |
+| Configure package identity and deployment | [Node.js development](docs/guides/node/dev-mode.md), [MSIX packaging](docs/guides/windows/msix-packaging.md) |
 
-`projectAs(value, InterfaceClass)` safely queries a borrowed managed native
-value or generated wrapper into a separately owned wrapper of a registered
-generated safe COM interface; it accepts neither raw pointers nor unsafe
-target classes. `IMMDevice` now supports typed `activate(InterfaceClass)` for
-the documented in-process, null-parameter audio endpoint subset and
-`getId(): string`. The usage guide shows endpoint discovery through
-`activate(IAudioClient)` and `DynComAudioFormat.pcm()` format negotiation,
-without a per-interface native adapter.
+## Development
 
-Existing distinguishable overloads keep their APIs unchanged. Otherwise fully
-validated normal COM overload groups with colliding JavaScript signatures or
-projected buffers now expose every member as
-`<camelName>AtSlot<absoluteVtableSlot>`, with no ambiguous unsuffixed method.
-This naming-only projection promotes 24 interfaces; it does not guess ABI
-contracts or provide a universal overload parser. See the
-[overload usage and limits](docs/guides/windows/classic-com-usage.md#58-explicit-overload-names).
+The [core runtime](crates/dynwinrt/) is written in Rust, with
+[Node-API bindings](bindings/js/) and [PyO3 bindings](bindings/py/).
+The [code generator](tools/dynwinrt-codegen/) is shared by both languages.
 
-- [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
-- [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)
+To build the core and generator from source, install Rust, the MSVC C++ build
+tools, and the Windows SDK, then run from the repository root:
 
-## Repository layout
-
-```
-dynwinrt/
-├── .github/
-│   └── workflows/            # CI, coverage, and Python wheel assembly
-├── .pipelines/               # Official 1ES npm, PyPI, and GitHub release pipeline
-├── crates/dynwinrt/          # Shared WinRT + Classic COM ABI/libffi runtime
-├── bindings/
-│   ├── js/                   # @microsoft/dynwinrt npm runtime (N-API)
-│   └── py/                   # dynwinrt PyPI runtime (PyO3)
-├── tools/
-│   └── dynwinrt-codegen/     # npm + PyPI WinRT/Classic COM codegen CLI
-├── tests/
-│   └── e2e/                  # JavaScript, Python, and Classic COM E2E suites
-├── benchmarks/
-│   ├── electron/             # Electron IPC benchmark app
-│   └── js/                   # Dynamic and static JS/native benchmarks
-├── samples/
-│   ├── js/                   # JavaScript/TypeScript samples
-│   └── python/               # Python samples
-├── docs/                     # Architecture, benchmark, guide, and status docs
-└── eng/
-    ├── coverage/             # Mixed Rust/JavaScript/Python coverage tooling
-    └── release/python/       # Python release preparation and verification
+```powershell
+cargo build -p dynwinrt -p dynwinrt-codegen
+cargo test -p dynwinrt -p dynwinrt-codegen
 ```
 
-## Build from source
-
-```bash
-# Core library
-cargo build -p dynwinrt
-cargo test  -p dynwinrt
-
-# JS bindings (napi-rs)
-cd bindings/js && npm install && npm run build
-
-# Python bindings (PyO3 + maturin)
-cd bindings/py && python -m maturin develop && python -m pytest
-
-# Codegen tool
-cargo build -p dynwinrt-codegen --release
-cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
-```
-
-Python [`dynwinrt`](https://pypi.org/project/dynwinrt/) runtime wheels target
-CPython 3.11–3.14 on Windows x64 and ARM64. The standalone
-[`dynwinrt-codegen`](https://pypi.org/project/dynwinrt-codegen/) wheel includes
-the prebuilt generator and requires no Rust installation.
-
-Python runtime, codegen, packaging, and WinUI readiness are tracked in
-[`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
-
-Python samples cover
-[files, OCR, cryptography, devices, AppLifecycle, text-to-speech, app
-notifications, WinUI, and custom WinMD generation](samples/python/README.md).
-
-JavaScript samples include:
-
-- [WinUI Tic-Tac-Toe](samples/js/winui-tic-tac-toe/README.md) — XAML
-  loading, typed projection, generated controls, events, and Mica.
-- [WinUI Tic-Tac-Toe (code-only)](samples/js/winui-tic-tac-toe-code-only/README.md)
-  — a programmatic WinUI application without XAML.
-- [Windows Hello](samples/js/windows-hello/README.md) — WinRT async APIs and
-  HWND-bound Classic COM interop.
-- [Windows AI OCR](samples/js/ocr/README.md) — a standalone Node.js sample with
-  generated TextRecognizer bindings, image picker or `--image`, and private
-  WinApp CLI identity.
-- [Aion Instruct chat](samples/js/electron-aion-chat/README.md) — local
-  Snapdragon NPU inference with streaming progress, cancellation, and
-  multi-turn context in Electron.
-- [Share UI](samples/js/electron-share-ui/README.md) — typed WinRT and
-  `IDataTransferManagerInterop`.
-- [System Media Controls](samples/js/electron-smtc/README.md) — interactive,
-  end-to-end SMTC publication and GSMTC loopback control with playlist,
-  artwork, live timeline, session discovery, and automated validation.
-
-For deployment, see
-[Package a dynwinrt Node.js application as MSIX](docs/guides/windows/msix-packaging.md).
-
-## Codegen CLI reference
-
-| Argument | Required | Description |
-|---|---|---|
-| `--winmd PATH[;PATH...]` | No | Path to `.winmd` file(s) (auto-detects Windows SDK if omitted) |
-| `--winmd-list FILE` | No | Newline-separated `.winmd` paths to emit |
-| `--folder PATH` | No | Directory containing `.winmd` files |
-| `--namespace NAMESPACE` | No | WinRT namespace to generate (omit for all non-`Windows.*` namespaces) |
-| `--class-name NAME[,NAME...]` | No | Specific classes or public interfaces; dependencies are resolved transitively |
-| `--ref PATH[;PATH...]` | No | Additional `.winmd` files for type resolution only (no code emitted) |
-| `--ref-list FILE` | No | Newline-separated reference metadata paths |
-| `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py` + `.pyi` and `py.typed`) |
-| `--import-name NAME` | No | JavaScript runtime import name (default `@microsoft/dynwinrt`) |
-| `--pyi` | No | Explicitly request the default Python type stubs |
-| `--no-pyi` | No | With `--lang py`, emit implementation files without type stubs |
-| `--output DIR` | No | Output directory (default `./generated`) |
-| `--dry-run` | No | Validate input, don't write files |
-
-For the complete language-specific behavior and examples, see the
-[JavaScript/TypeScript](tools/dynwinrt-codegen/npm/README.md) and
-[Python](tools/dynwinrt-codegen/python/README.md) codegen package guides.
-
-## JavaScript local development — fix generated imports
-
-Generated files import from `'@microsoft/dynwinrt'`. When iterating against a locally-built runtime, rewrite imports to the relative path:
-
-```bash
-find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/winrt.js'|g" {} +
-```
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `cargo build` fails with libffi errors | Ensure you have a C compiler (MSVC) and the Windows SDK installed |
-| `cargo test -p dynwinrt` fails | Windows SDK must be installed at the default path with `Windows.winmd` |
-| JS bindings won't build | Run `npm install` first; requires Node.js 18+ |
-| Python bindings won't build | Requires CPython 3.11–3.14 and `maturin` (`python -m pip install maturin`) |
-| Codegen snapshot tests fail after an intentional change | Set `DYNWINRT_UPDATE_SNAPSHOTS=1` for JavaScript snapshots or `DYNWINRT_UPDATE_PY_SNAPSHOTS=1` for Python snapshots, then rerun the affected test |
+See [Development Setup](CONTRIBUTING.md#development-setup) for language-binding
+builds, test suites, and contribution guidelines.
 
 ## Contributing
 
