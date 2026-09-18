@@ -34,6 +34,11 @@ helper. Apartment, message-pumping, and shutdown requirements are unchanged.
 This is not a general older-Windows compatibility or addon feature-isolation
 guarantee.
 
+`npm run test:imports` checks every built addon's PE imports and measures root
+and `/com` imports in separate fresh processes with a 10-second limit. Loaded-DLL
+reports omit network enumeration and DNS on Node versions that support
+`process.report.excludeNetwork`; failures include report/import phase timings.
+
 ## Quick start
 
 `@microsoft/dynwinrt` is the **runtime**. You generate the typed bindings ahead of time with [`@microsoft/dynwinrt-codegen`](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen), then import them at runtime:
