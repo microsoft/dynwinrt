@@ -5,9 +5,9 @@
 
 use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
-use crate::types::{FieldMeta, TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta};
+use crate::types::{FieldMeta, TypeMeta};
 
-use super::naming::{PythonProjectionContext, to_snake_case};
+use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
@@ -16,73 +16,7 @@ use super::type_helpers::{
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
-pub(super) fn format_py_type_import(
-    context: &PythonProjectionContext,
-    namespace: &str,
-    name: &str,
-    kind: TypeKind,
-) -> String {
-    let identity_kind = match kind {
-        TypeKind::Class => TypeIdentityKind::Class,
-        TypeKind::Enum => TypeIdentityKind::Enum,
-        TypeKind::Interface => TypeIdentityKind::Interface,
-    };
-    let identity = TypeIdentity::named(identity_kind, namespace, name);
-    let module = context.implementation_module(&identity);
-    let projected_name = context.projected_name(&identity);
-    let reference_name = context.reference_name(&identity);
-    let imported = |name: &str, alias: &str| {
-        if name == alias {
-            name.to_string()
-        } else {
-            format!("{name} as {alias}")
-        }
-    };
-    if kind == TypeKind::Interface {
-        format!(
-            "from .{module} import {}, {}  # noqa: F401\n",
-            imported(
-                &format!("IID_{projected_name}"),
-                &format!("IID_{reference_name}")
-            ),
-            imported(&projected_name, &reference_name)
-        )
-    } else if kind == TypeKind::Class {
-        format!(
-            "from .{module} import {}, {}  # noqa: F401\n",
-            imported(&projected_name, &reference_name),
-            imported(
-                &format!("{projected_name}Like"),
-                &format!("{reference_name}Like")
-            )
-        )
-    } else {
-        format!(
-            "from .{module} import {}  # noqa: F401\n",
-            imported(&projected_name, &reference_name)
-        )
-    }
-}
-
-pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
-    match s {
-        TypeMeta::Struct { name, .. } => {
-            let snake = to_snake_case(name);
-            let mut names = if foundation_type(s).is_none() {
-                vec![name.clone()]
-            } else {
-                Vec::new()
-            };
-            names.extend([
-                format!("{}_TYPE", name),
-                format!("pack_{}", snake),
-                format!("unpack_{}", snake),
-            ]);
-            names
-        }
-        _ => vec![],
-    }
-}
+pub(super) use super::naming::{format_py_type_import, py_struct_export_names};
 
 pub(super) fn generate_struct_stub_imports(
     context: &PythonProjectionContext,
@@ -91,18 +25,14 @@ pub(super) fn generate_struct_stub_imports(
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct { name, .. } = typ else {
+            let TypeMeta::Struct { .. } = typ else {
                 return None;
             };
-            let names = py_struct_export_names(typ)
-                .into_iter()
-                .map(|export| {
-                    if export == *name {
-                        context.struct_type_import(typ, &export)
-                    } else {
-                        export
-                    }
-                })
+            let names = STRUCT_SYMBOLS[..4]
+                .iter()
+                .copied()
+                .filter(|role| *role != PythonSymbol::Type || foundation_type(typ).is_none())
+                .map(|role| context.symbol_import(&typ.type_identity(), role))
                 .collect::<Vec<_>>();
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
@@ -117,19 +47,18 @@ pub(super) fn generate_struct_stub_imports(
 }
 
 pub(super) fn emit_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> String {
+    let pack = context.struct_symbol(s, PythonSymbol::Pack);
+    let unpack = context.struct_symbol(s, PythonSymbol::Unpack);
+    let type_constant = context.struct_symbol(s, PythonSymbol::TypeConstant);
     if let Some(kind) = foundation_type(s) {
-        let TypeMeta::Struct { name, .. } = s else {
-            unreachable!()
-        };
-        let snake_name = to_snake_case(name);
         let native_type = match kind {
             FoundationType::DateTime => "datetime",
             FoundationType::TimeSpan => "timedelta",
         };
         return format!(
-            "\ndef unpack_{snake_name}(v: DynWinRTValue) -> {native_type}: ...\n\
-             {name}_TYPE: 'DynWinRTType'\n\
-             def pack_{snake_name}(v: {native_type}) -> DynWinRTStruct: ...\n"
+            "\ndef {unpack}(v: DynWinRTValue) -> {native_type}: ...\n\
+             {type_constant}: 'DynWinRTType'\n\
+             def {pack}(v: {native_type}) -> DynWinRTStruct: ...\n"
         );
     }
 
@@ -142,7 +71,6 @@ pub(super) fn emit_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) 
         _ => return String::new(),
     };
     let mut out = String::new();
-    let snake_name = to_snake_case(name);
     let slot_names = fields.iter().map(py_struct_slot_name).collect::<Vec<_>>();
 
     out.push_str(&format!("\nclass {}:\n", name));
@@ -191,15 +119,9 @@ pub(super) fn emit_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) 
     out.push_str("    def __repr__(self) -> str: ...\n");
     out.push('\n');
 
-    out.push_str(&format!(
-        "def unpack_{}(v: DynWinRTValue) -> {}: ...\n",
-        snake_name, name
-    ));
-    out.push_str(&format!("{}_TYPE: 'DynWinRTType'\n", name));
-    out.push_str(&format!(
-        "def pack_{}(v: {}) -> DynWinRTStruct: ...\n",
-        snake_name, name
-    ));
+    out.push_str(&format!("def {unpack}(v: DynWinRTValue) -> {name}: ...\n",));
+    out.push_str(&format!("{type_constant}: 'DynWinRTType'\n"));
+    out.push_str(&format!("def {pack}(v: {name}) -> DynWinRTStruct: ...\n",));
     out
 }
 

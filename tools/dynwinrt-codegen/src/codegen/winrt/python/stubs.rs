@@ -14,8 +14,8 @@ use crate::types::{TypeKind, TypeMeta};
 use crate::codegen::winrt::extensions::winui;
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports_by_identity, collect_struct_field_type_imports,
-    collect_type_imports, collect_used_generic_identities_from_class,
-    collect_used_generic_identities_from_methods, collect_used_generic_identities_from_type,
+    collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
+    collect_used_generic_identities_from_type,
 };
 use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -131,15 +131,17 @@ pub fn generate_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> 
     if name == "HResult" {
         return None;
     }
+    let dependencies = collect_used_structs_from_struct(s);
+    let mut module_structs = dependencies.clone();
+    module_structs.push(s.clone());
+    let context = context.for_struct_module(s, &module_structs);
+    let context = context.as_ref();
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
-    out.push_str(&generate_struct_stub_imports(
-        context,
-        &collect_used_structs_from_struct(s),
-    ));
+    out.push_str(&generate_struct_stub_imports(context, &dependencies));
 
     let mut imports = collect_struct_field_type_imports(s)
         .into_iter()
@@ -173,24 +175,18 @@ pub fn generate_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> 
 }
 
 /// Generate a `.pyi` stub for an enum. Returns `None` for non-enum TypeMeta.
-pub fn generate_enum_stub(_context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
-    let (name, members, is_flags, doc, deprecated) = match en {
+pub fn generate_enum_stub(context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
+    let (members, is_flags, doc, deprecated) = match en {
         TypeMeta::Enum {
-            name,
             members,
             is_flags,
             doc,
             deprecated,
             ..
-        } => (
-            name,
-            members,
-            *is_flags,
-            doc.as_deref(),
-            deprecated.as_deref(),
-        ),
+        } => (members, *is_flags, doc.as_deref(), deprecated.as_deref()),
         _ => return None,
     };
+    let name = context.projected_name_for_type(en);
     let mut out = String::new();
     out.push_str(HEADER);
     let enum_base = if is_flags { "IntFlag" } else { "IntEnum" };
@@ -223,7 +219,7 @@ pub fn generate_enum_stub(_context: &PythonProjectionContext, en: &TypeMeta) -> 
 pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
     let used_structs = collect_used_structs_from_iface(iface);
     let type_imports = collect_iface_type_imports_by_identity(iface);
-    let context = context.with_local_types(Some(iface), &used_structs);
+    let context = context.for_interface_module(iface, &used_structs);
     let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
@@ -513,14 +509,24 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     }
 
     if iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory" {
-        out.push_str(
+        let class_reference = |name| {
+            context.reference_name(&crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                &iface.namespace,
+                name,
+            ))
+        };
+        let get_args = class_reference("ElementFactoryGetArgs");
+        let recycle_args = class_reference("ElementFactoryRecycleArgs");
+        let element = class_reference("UIElement");
+        out.push_str(&format!(
             "\n    @staticmethod\n\
              \x20   def create(\n\
-             \x20       get_element: Callable[['ElementFactoryGetArgs'], 'UIElement'],\n\
-             \x20       recycle_element: Callable[['ElementFactoryRecycleArgs'], object],\n\
+             \x20       get_element: Callable[['{get_args}'], '{element}'],\n\
+             \x20       recycle_element: Callable[['{recycle_args}'], object],\n\
              \x20   ) -> 'IElementFactory': ...\n\
              \x20   def release_callbacks(self) -> None: ...\n",
-        );
+        ));
     }
 
     for methods in super::overloads::grouped_methods(reorder_getters_before_setters(&iface.methods))
@@ -569,7 +575,7 @@ pub fn generate_class_stub(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
-    let context = context.with_local_types(None, &used_structs);
+    let context = context.for_class_module(class, &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
@@ -707,7 +713,8 @@ pub fn generate_class_stub(
         out.push_str(&format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
-    let imports = collect_type_imports(class);
+    let imports =
+        crate::codegen::winrt::shared::imports::collect_class_type_imports_by_identity(class);
     let mut sorted_imports: Vec<_> = imports.iter().collect();
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
@@ -746,13 +753,12 @@ pub fn generate_class_stub(
                 base.namespace.clone(),
                 base.name.clone(),
             );
-            let name = context.reference_name(&identity);
             out.push_str(&format!(
-                "from .{} import _{}Identity  # noqa: F401\n",
+                "from .{} import {}  # noqa: F401\n",
                 context.implementation_module(&identity),
-                name
+                context.symbol_import(&identity, super::naming::PythonSymbol::Identity)
             ));
-            format!("_{name}Identity")
+            context.symbol_reference(&identity, super::naming::PythonSymbol::Identity)
         });
     for req_iface in &class.required_interfaces {
         let symbol = interface_symbol(context, req_iface);
@@ -829,7 +835,7 @@ pub fn generate_class_stub(
     if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
         instance_stub_body.push_str("    def to_bytes(self) -> bytes: ...\n");
     }
-    let identity_name = format!("_{}Identity", class.name);
+    let identity_name = format!("_{}Identity", context.class_name(class));
     let mut identity_bases = base_identity.into_iter().collect::<Vec<_>>();
     identity_bases.push("Protocol".into());
     out.push_str(&format!(
@@ -854,7 +860,7 @@ pub fn generate_class_stub(
 
     out.push_str(&format!(
         "\nclass {}Like({identity_name}, Protocol):\n",
-        class.name
+        context.class_name(class)
     ));
     if instance_stub_body.is_empty() {
         out.push_str("    pass\n");
@@ -865,14 +871,18 @@ pub fn generate_class_stub(
     let bases = collection_base
         .as_ref()
         .map(|base| vec![identity_name, base.clone()])
-        .unwrap_or_else(|| vec![format!("{}Like", class.name)]);
+        .unwrap_or_else(|| vec![format!("{}Like", context.class_name(class))]);
     let mut bases = bases;
     if projectable {
         bases.push("_DynWinRTRuntimeClass".into());
     } else if native_projectable {
         bases.push("_DynWinRTProjectableClass".into());
     }
-    out.push_str(&format!("\nclass {}({}):\n", class.name, bases.join(", ")));
+    out.push_str(&format!(
+        "\nclass {}({}):\n",
+        context.class_name(class),
+        bases.join(", ")
+    ));
     out.push_str(&super::docs::format_pydoc(
         &crate::codegen::winrt::shared::docs::DocText {
             summary: class.doc.as_deref(),
@@ -915,7 +925,8 @@ pub fn generate_class_stub(
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
             "    def {}() -> '{}': ...\n",
-            ctor_name, class.name
+            ctor_name,
+            context.class_name(class)
         ));
     }
 
@@ -932,10 +943,14 @@ pub fn generate_class_stub(
         .collect::<Vec<_>>();
     for group in grouped_static_stubs(&static_methods) {
         out.push('\n');
-        out.push_str(&emit_static_stub_group(&class.name, &group, context));
+        out.push_str(&emit_static_stub_group(
+            &context.class_name(class),
+            &group,
+            context,
+        ));
     }
     out.push_str(&emit_static_compatibility_alias_stubs(
-        &class.name,
+        &context.class_name(class),
         static_methods.iter().copied(),
         context,
         4,
@@ -964,7 +979,10 @@ pub fn generate_class_stub(
     if has_create_instance_alias {
         out.push('\n');
         out.push_str("    @staticmethod\n");
-        out.push_str(&format!("    def create() -> '{}': ...\n", class.name));
+        out.push_str(&format!(
+            "    def create() -> '{}': ...\n",
+            context.class_name(class)
+        ));
     }
 
     if let Some(bootstrap) = winui_bootstrap {
@@ -973,12 +991,12 @@ pub fn generate_class_stub(
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
             "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
-            class.name,
+            context.class_name(class),
         ));
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
             "    def create(on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
-            class.name
+            context.class_name(class)
         ));
     }
 
@@ -1176,7 +1194,7 @@ fn emit_class_instance_stubs(
         out.push_str("    def close(self) -> None: ...\n");
         out.push_str(&format!(
             "    def __enter__(self) -> '{}': ...\n",
-            class.name
+            context.class_name(class)
         ));
         out.push_str(
             "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
@@ -1199,15 +1217,20 @@ fn emit_class_instance_stubs(
              \x20       **kwargs: object,\n\
              \x20   ) -> _DispatchResultT: ...\n",
         );
-        out.push_str(
+        let priority = context.reference_name(&crate::types::TypeIdentity::named(
+            crate::types::TypeIdentityKind::Enum,
+            &class.namespace,
+            "DispatcherQueuePriority",
+        ));
+        out.push_str(&format!(
             "\n    async def enqueue_with_priority_async(\n\
              \x20       self,\n\
-             \x20       priority: 'DispatcherQueuePriority',\n\
+             \x20       priority: '{priority}',\n\
              \x20       callback: Callable[..., _DispatchResultT],\n\
              \x20       *args: object,\n\
              \x20       **kwargs: object,\n\
              \x20   ) -> _DispatchResultT: ...\n",
-        );
+        ));
     }
 
     out
@@ -1618,7 +1641,7 @@ pub fn generate_index_stub(
     let mut sorted_classes: Vec<_> = classes.iter().collect();
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
-        if seen.insert(class.name.clone()) {
+        if seen.insert(context.class_name(class)) {
             let identity = crate::types::TypeIdentity::named(
                 crate::types::TypeIdentityKind::Class,
                 class.namespace.clone(),
@@ -1633,7 +1656,7 @@ pub fn generate_index_stub(
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
     sorted_ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     for iface in sorted_ifaces {
-        if !seen.insert(iface.name.clone()) {
+        if !seen.insert(context.projected_name_for_interface(iface)) {
             continue;
         }
         let is_delegate = iface.is_delegate();
@@ -1671,8 +1694,8 @@ pub fn generate_index_stub(
         na.cmp(nb)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
-            if seen.insert(name.clone()) {
+        if let TypeMeta::Enum { .. } = en {
+            if seen.insert(context.projected_name_for_type(en)) {
                 let identity = en.type_identity();
                 let module = context.implementation_module(&identity);
                 let name = context.projected_name(&identity);
@@ -1695,7 +1718,7 @@ pub fn generate_public_index_stub(
     let mut classes = classes.iter().collect::<Vec<_>>();
     classes.sort_by(|left, right| left.name.cmp(&right.name));
     for class in classes {
-        if seen.insert(class.name.clone()) {
+        if seen.insert(context.class_name(class)) {
             let identity = crate::types::TypeIdentity::named(
                 crate::types::TypeIdentityKind::Class,
                 class.namespace.clone(),
@@ -1715,7 +1738,7 @@ pub fn generate_public_index_stub(
     interfaces.sort_by(|left, right| left.name.cmp(&right.name));
     for interface in interfaces {
         let is_delegate = interface.is_delegate();
-        if !is_delegate && seen.insert(interface.name.clone()) {
+        if !is_delegate && seen.insert(context.projected_name_for_interface(interface)) {
             let identity = interface.type_identity();
             let name = context.projected_name(&identity);
             out.push_str(&format!(
@@ -1739,10 +1762,10 @@ pub fn generate_public_index_stub(
         _ => "",
     });
     for typ in enums {
-        let TypeMeta::Enum { name, .. } = typ else {
+        let TypeMeta::Enum { .. } = typ else {
             continue;
         };
-        if seen.insert(name.clone()) {
+        if seen.insert(context.projected_name_for_type(typ)) {
             let identity = typ.type_identity();
             let name = context.projected_name(&identity);
             out.push_str(&format!(

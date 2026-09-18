@@ -12,8 +12,8 @@ use crate::types::TypeMeta;
 
 use super::collections::{CollectionKind, is_mapping_input, type_kind};
 use super::docs::format_pydoc;
-use super::naming::PythonProjectionContext;
 use super::naming::to_snake_case;
+use super::naming::{PythonProjectionContext, PythonSymbol};
 use super::native_types::{FoundationType, foundation_type};
 
 /// Build the Python docstring for a method body. Uses snake_case param display
@@ -95,7 +95,10 @@ fn py_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
         TypeMeta::Char16 => "str".to_string(),
         TypeMeta::Guid => "UUID".to_string(),
         TypeMeta::RuntimeClass { .. } => {
-            format!("'{}Like'", context.reference_name_for_type(typ))
+            format!(
+                "'{}'",
+                context.symbol_reference(&typ.type_identity(), PythonSymbol::Like)
+            )
         }
         TypeMeta::Enum { .. } | TypeMeta::Interface { .. } => {
             format!("'{}'", context.reference_name_for_type(typ))
@@ -411,7 +414,10 @@ fn py_array_param_type(inner: &TypeMeta, context: &PythonProjectionContext) -> S
 fn py_native_param_element_type(inner: &TypeMeta, context: &PythonProjectionContext) -> String {
     match inner {
         TypeMeta::RuntimeClass { name, .. } if context.is_known_type(inner) => {
-            format!("'{}Like'", context.reference_name_for_type(inner))
+            format!(
+                "'{}'",
+                context.symbol_reference(&inner.type_identity(), PythonSymbol::Like)
+            )
         }
         _ => py_native_element_type(inner, context),
     }

@@ -227,6 +227,19 @@ pub(crate) fn collect_type_imports(class: &ClassMeta) -> HashSet<TypeRef> {
     imports
 }
 
+pub(crate) fn collect_class_type_imports_by_identity(class: &ClassMeta) -> HashSet<TypeRef> {
+    let mut imports = HashSet::new();
+    for iface in class.all_interfaces() {
+        collect_methods_type_imports(&iface.methods, "", true, &mut imports);
+    }
+    imports.retain(|reference| {
+        reference.kind != TypeKind::Class
+            || reference.namespace != class.namespace
+            || reference.name != class.name
+    });
+    imports
+}
+
 pub(crate) fn collect_struct_field_type_imports(typ: &TypeMeta) -> HashSet<TypeRef> {
     let TypeMeta::Struct { name, fields, .. } = typ else {
         return HashSet::new();
