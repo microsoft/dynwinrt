@@ -530,6 +530,7 @@ pub(super) fn project_collection_create(
     if piid == PIID_IVECTOR && iface.generic_args.len() == 1 {
         let elem_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
         let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+        let item_wrap = wrap_arg(context, "i", &iface.generic_args[0]);
         members.push(ProjectedMember::Method(ProjectedMethod {
             name: "create".into(),
             doc: Some(DocInfo {
@@ -550,7 +551,7 @@ pub(super) fn project_collection_create(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "new {}(DynWinRtValue.createVector(items.map(i => _unwrap(i)), {}))",
+                "new {}(DynWinRtValue.createVector(items.map(i => {item_wrap}), {}))",
                 iface.name, elem_type
             )),
             async_convert_v: None,
@@ -564,6 +565,7 @@ pub(super) fn project_collection_create(
     } else if piid == PIID_IOBSERVABLE_VECTOR && iface.generic_args.len() == 1 {
         let elem_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
         let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+        let item_wrap = wrap_arg(context, "i", &iface.generic_args[0]);
         let vector_name = context.projected_parameterized_name(
             crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
             "IVector",
@@ -631,7 +633,7 @@ pub(super) fn project_collection_create(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const value = DynWinRtValue.createVector(items.map(i => _unwrap(i)), {elem_type}); const observable = new {observable}(value); const vector = new {vector}(value); Object.defineProperties(vector, {{ asVector: {{ value: observable.asVector.bind(observable) }}, onVectorChanged: {{ value: observable.onVectorChanged.bind(observable) }}, onceVectorChanged: {{ value: observable.onceVectorChanged.bind(observable) }}, offVectorChanged: {{ value: observable.offVectorChanged.bind(observable) }} }}); return vector; }})()",
+                "(() => {{ const value = DynWinRtValue.createVector(items.map(i => {item_wrap}), {elem_type}); const observable = new {observable}(value); const vector = new {vector}(value); Object.defineProperties(vector, {{ asVector: {{ value: observable.asVector.bind(observable) }}, onVectorChanged: {{ value: observable.onVectorChanged.bind(observable) }}, onceVectorChanged: {{ value: observable.onceVectorChanged.bind(observable) }}, offVectorChanged: {{ value: observable.offVectorChanged.bind(observable) }} }}); return vector; }})()",
                 observable = iface.name,
                 vector = ref_marker(&vector_name),
             )),
@@ -646,6 +648,8 @@ pub(super) fn project_collection_create(
     } else if piid == PIID_IMAP && iface.generic_args.len() == 2 {
         let key_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
         let val_type = ts_dynwinrt_type(context, &iface.generic_args[1]);
+        let key_wrap = wrap_arg(context, "k", &iface.generic_args[0]);
+        let val_wrap = wrap_arg(context, "v", &iface.generic_args[1]);
         let key_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
         let key_ts = if key_ts == "DynWinRtValue" {
             "unknown".to_string()
@@ -674,7 +678,7 @@ pub(super) fn project_collection_create(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "new {}(DynWinRtValue.createMap(keys.map(k => _unwrap(k)), values.map(v => _unwrap(v)), {}, {}))",
+                "new {}(DynWinRtValue.createMap(keys.map(k => {key_wrap}), values.map(v => {val_wrap}), {}, {}))",
                 iface.name, key_type, val_type
             )),
             async_convert_v: None,

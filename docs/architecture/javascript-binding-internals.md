@@ -38,6 +38,18 @@ moved into a core native operation.
 
 ## Value carriers
 
+Generated WinRT collection factories convert each element (and both map keys
+and values) using the same metadata-directed argument projection as ordinary
+methods. Native `createVector`/`createMap` receive managed `DynWinRtValue`
+carriers, not unconverted JavaScript primitives. Conversion does not expand
+the native producer's supported ABI or ownership boundary.
+
+With the JS addon built, run `npm run test:collection-factories` from
+`bindings/js` for generated SDK factory roundtrips. `DYNWINRT_CODEGEN` selects
+a prebuilt generator, `DYNWINRT_JS_PACKAGE` selects a built runtime package,
+and `DYNWINRT_WINDOWS_WINMD` overrides the SDK metadata path. Missing inputs
+fail explicitly.
+
 `value.rs` defines `DynWinRTValue` with named WinRT data, independent call storage,
 and the private `com_value.rs` sidecar. Callers use constructors and accessors,
 not positional tuple fields.
