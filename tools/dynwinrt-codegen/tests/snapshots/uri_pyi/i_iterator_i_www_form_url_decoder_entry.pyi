@@ -17,7 +17,7 @@ IID_IIterator_IWwwFormUrlDecoderEntry: WinGUID
 
 
 class _IIterator_IWwwFormUrlDecoderEntryIdentity(Protocol):
-    def _dynwinrt_iid_windows_foundation_collections_iiterator_iwwwformurldecoderentry(self) -> None: ...
+    def _dynwinrt_iid_g2bb0b33cef11eb455ace3197fce2b56f216f6802e23b208c88ebad8f950f8628(self) -> None: ...
 
 class IIterator_IWwwFormUrlDecoderEntry(_IIterator_IWwwFormUrlDecoderEntryIdentity, Iterator[IWwwFormUrlDecoderEntry | None]):
     # Windows.Foundation.Collections.IIterator_IWwwFormUrlDecoderEntry cannot be implemented: generic interface implementations are not supported
