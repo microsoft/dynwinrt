@@ -170,6 +170,11 @@ After `--no-pyi`, include the earlier types when regenerating with stubs enabled
 (or fully regenerate the package). A typed append fails rather than publishing
 imports of missing retained declarations or dropping interfaces from the union.
 
+Closed generic Python interface markers also require a one-time
+[stub migration](python/README.md#closed-generic-stub-migration): regenerate
+complete affected packages together rather than mixing old projection-name
+markers with new semantic-identity markers, even for the same closed interface.
+
 The npm wrapper accepts the legacy `--source-map`, `--declaration`, and
 `--no-declaration` flags as no-ops. The Rust command accepts only `js` and `py`
 for `--lang`.
