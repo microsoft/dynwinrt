@@ -132,6 +132,26 @@ The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the
 complete output.
 
+### Closed-generic stub migration
+
+Python stubs now identify closed generic interfaces by their complete semantic
+identity instead of a local projection name. This prevents different type
+arguments from becoming interchangeable when their short names collide.
+
+Stubs generated before this fix and regenerated stubs are not type-compatible
+for the same closed interface in either direction. This is a typing migration:
+the generated `.py` runtime code and native interface IIDs are unchanged.
+
+Regenerate the **complete output of every generated Python package exchanging
+these interfaces** with the fixed generator, including runtime classes that
+implement or require them, then rebuild/reinstall the affected packages.
+Use a fresh codegen-owned output directory with all original type selections
+and metadata/reference inputs. An incremental append that retains old `.pyi`
+declarations is not sufficient. Do not copy individual marker declarations or
+add legacy fallbacks: they can restore the incorrect cross-interface acceptance.
+The new markers agree across independently regenerated packages for the same
+closed identity, even when their local projection names differ.
+
 ## Platform and limitations
 
 - The standalone generator has `py3-none-win_amd64` and
