@@ -117,16 +117,35 @@ Common Python reverse-conversion helpers live once in each generated package's
 generated code, not excluded coverage support. Method-specific ABI plans and
 typed conversions remain with their interface.
 
-Python handler, delegate, and result annotations share the enclosing module's
-type-name mapping with ordinary projected members. Self-interface references use
-the locally declared class name; imported structs use the same collision alias
-in `.py` and `.pyi`. Types with identical short names in other namespaces remain
-distinct imports, including references nested in arrays or delegate signatures.
-Self-import filtering compares canonical identities, so a closed generic such
-as `IBox<String>` cannot hide a distinct named `IBox_String` in the same namespace.
-Standalone interface and runtime-class modules use the actual declared metadata
-names for embedded struct helpers, even when their cross-module projected names
-are disambiguated; standalone struct modules retain aliases for imported fields.
+Python declarations, annotations, imports, and conversion helpers share a
+module-local symbol mapping keyed by canonical `TypeIdentity` and symbol role.
+Self-class and self-interface references use the actual local declaration;
+foreign class `Like` and identity markers import the defining module's symbol
+and alias it to the consuming module's reference name. Handler, delegate, array,
+and result-dictionary conversions use the same mapping as ordinary members.
+Self-import filtering distinguishes namespaces, kinds, and named versus closed
+generic types, so `IBox<String>` cannot hide a distinct named `IBox_String`.
+
+Struct modules retain their public `pack_*`, `unpack_*`, and `*_TYPE` names.
+When different struct names normalize to the same helper name (for example,
+`URLValue` and `UrlValue`), consumers import those helpers under distinct
+identity-qualified aliases. Standalone interface and runtime-class modules keep
+embedded struct class names and disambiguate only colliding helper symbols;
+standalone struct modules retain aliases for imported fields. The existing
+fail-closed guard for identical raw struct names in one closure remains.
+The allocator also compares helpers with actual local and imported type/marker
+symbols, not unrelated types elsewhere in the package. If a foreign type
+collides with an owning struct's public helper or type constant, the foreign
+import is aliased instead; the struct's isolated public API stays unchanged.
+Actual native registration variables also participate in module allocation:
+the interface registration, or a class's default/factory/static/required
+registrations and its activation factory only when emitted. Registration
+declarations and invocation sites read the same symbol roles, independently of
+type aliases, so neither an existing helper nor a newly qualified helper alias
+can overwrite a registration object.
+Enum declarations, namespace exports, defaults, and runtime conversions use the
+same projected name, including named/closed-generic collisions; native enum
+descriptors continue to use the original metadata identity.
 
 Language bindings additionally gate dispatch on their environment/interpreter
 lifetime. Callback roots belong to the native object, not merely the original

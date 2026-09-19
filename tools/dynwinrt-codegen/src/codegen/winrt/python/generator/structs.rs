@@ -5,27 +5,16 @@
 
 use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::*;
+use crate::codegen::winrt::python::naming::{PythonSymbol, STRUCT_SYMBOLS};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::python::type_helpers::py_optional_type;
 use crate::types::FieldMeta;
 
+pub(super) use super::super::naming::py_struct_export_names;
+
 // ======================================================================
 // Struct helpers: Python dataclass-style + _unpack/_pack functions
 // ======================================================================
-
-fn struct_runtime_import_names(s: &TypeMeta) -> Vec<String> {
-    let TypeMeta::Struct { name, .. } = s else {
-        return Vec::new();
-    };
-    let snake = to_snake_case(name);
-    let mut names = py_struct_export_names(s);
-    names.extend([
-        format!("_{name}_TYPE"),
-        format!("_pack_{snake}"),
-        format!("_unpack_{snake}"),
-    ]);
-    names
-}
 
 pub(super) fn generate_struct_imports(
     context: &PythonProjectionContext,
@@ -34,18 +23,13 @@ pub(super) fn generate_struct_imports(
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct { name, .. } = typ else {
+            let TypeMeta::Struct { .. } = typ else {
                 return None;
             };
-            let names = struct_runtime_import_names(typ)
+            let names = STRUCT_SYMBOLS
                 .into_iter()
-                .map(|export| {
-                    if export == *name {
-                        context.struct_type_import(typ, &export)
-                    } else {
-                        export
-                    }
-                })
+                .filter(|role| *role != PythonSymbol::Type || foundation_type(typ).is_none())
+                .map(|role| context.symbol_import(&typ.type_identity(), role))
                 .collect::<Vec<_>>();
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
@@ -66,13 +50,17 @@ pub fn generate_struct(context: &PythonProjectionContext, s: &TypeMeta) -> Optio
     if name == "HResult" {
         return None;
     }
+    let dependencies = collect_used_structs_from_struct(s);
+    let mut module_structs = dependencies.clone();
+    module_structs.push(s.clone());
+    let context = context.for_struct_module(s, &module_structs);
+    let context = context.as_ref();
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
 
-    let dependencies = collect_used_structs_from_struct(s);
     out.push_str(&generate_struct_imports(context, &dependencies));
     if has_ireference_struct_field(std::slice::from_ref(s)) {
         out.push_str(IREFERENCE_HELPER);
@@ -110,7 +98,7 @@ pub fn generate_struct(context: &PythonProjectionContext, s: &TypeMeta) -> Optio
 
 pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &TypeMeta) -> String {
     if let Some(kind) = foundation_type(s) {
-        return generate_foundation_struct_helpers(s, kind);
+        return generate_foundation_struct_helpers(context, s, kind);
     }
 
     let (namespace, name, fields) = match s {
@@ -122,7 +110,12 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
         _ => return String::new(),
     };
     let mut out = String::new();
-    let snake_name = to_snake_case(name);
+    let pack = context.struct_symbol(s, PythonSymbol::Pack);
+    let unpack = context.struct_symbol(s, PythonSymbol::Unpack);
+    let private_pack = context.struct_symbol(s, PythonSymbol::PrivatePack);
+    let private_unpack = context.struct_symbol(s, PythonSymbol::PrivateUnpack);
+    let type_constant = context.struct_symbol(s, PythonSymbol::TypeConstant);
+    let private_type_constant = context.struct_symbol(s, PythonSymbol::PrivateTypeConstant);
     let field_names = py_struct_field_names(fields);
     let slot_names = fields.iter().map(py_struct_slot_name).collect::<Vec<_>>();
 
@@ -207,10 +200,7 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
     out.push('\n');
 
     // unpack function
-    out.push_str(&format!(
-        "\ndef unpack_{}(v: DynWinRTValue) -> {}:\n",
-        snake_name, name
-    ));
+    out.push_str(&format!("\ndef {unpack}(v: DynWinRTValue) -> {name}:\n",));
     out.push_str("    s = v.as_struct()\n");
     let field_args: Vec<String> = fields
         .iter()
@@ -225,33 +215,29 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
         .collect();
     out.push_str(&format!("    return {}({})\n", name, field_args.join(", ")));
     // Internal alias
-    out.push_str(&format!("_unpack_{0} = unpack_{0}\n", snake_name));
+    out.push_str(&format!("{private_unpack} = {unpack}\n"));
 
     // Type constant
     let full_name = format!("{}.{}", namespace, name);
     let field_types: Vec<String> = fields.iter().map(|f| py_dynwinrt_type(&f.typ)).collect();
     out.push_str(&format!(
-        "{}_TYPE = DynWinRTType.struct_type('{}', [{}])\n",
-        name,
+        "{type_constant} = DynWinRTType.struct_type('{}', [{}])\n",
         full_name,
         field_types.join(", ")
     ));
-    out.push_str(&format!("_{0}_TYPE = {0}_TYPE\n", name));
+    out.push_str(&format!("{private_type_constant} = {type_constant}\n"));
 
     // pack function
-    out.push_str(&format!(
-        "\ndef pack_{}(v: {}) -> DynWinRTStruct:\n",
-        snake_name, name
-    ));
-    out.push_str(&format!("    s = DynWinRTStruct.create({}_TYPE)\n", name));
+    out.push_str(&format!("\ndef {pack}(v: {name}) -> DynWinRTStruct:\n",));
+    out.push_str(&format!("    s = DynWinRTStruct.create({type_constant})\n"));
     for (i, f) in fields.iter().enumerate() {
         out.push_str(&format!(
             "    {}\n",
-            py_struct_field_setter(&f.typ, i, &format!("v.{}", to_snake_case(&f.name)))
+            py_struct_field_setter(context, &f.typ, i, &format!("v.{}", to_snake_case(&f.name)))
         ));
     }
     out.push_str("    return s\n");
-    out.push_str(&format!("_pack_{0} = pack_{0}\n", snake_name));
+    out.push_str(&format!("{private_pack} = {pack}\n"));
 
     out
 }
@@ -315,7 +301,11 @@ fn py_struct_repr_expr(field_names: &[String]) -> String {
     format!("f'{{type(self).__name__}}({fields})'")
 }
 
-fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> String {
+fn generate_foundation_struct_helpers(
+    context: &PythonProjectionContext,
+    s: &TypeMeta,
+    kind: FoundationType,
+) -> String {
     let TypeMeta::Struct {
         namespace,
         name,
@@ -324,7 +314,12 @@ fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> Str
     else {
         unreachable!()
     };
-    let snake_name = to_snake_case(name);
+    let pack = context.struct_symbol(s, PythonSymbol::Pack);
+    let unpack = context.struct_symbol(s, PythonSymbol::Unpack);
+    let private_pack = context.struct_symbol(s, PythonSymbol::PrivatePack);
+    let private_unpack = context.struct_symbol(s, PythonSymbol::PrivateUnpack);
+    let type_constant = context.struct_symbol(s, PythonSymbol::TypeConstant);
+    let private_type_constant = context.struct_symbol(s, PythonSymbol::PrivateTypeConstant);
     let native_type = match kind {
         FoundationType::DateTime => "datetime",
         FoundationType::TimeSpan => "timedelta",
@@ -343,17 +338,17 @@ fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> Str
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "\ndef unpack_{snake_name}(v: DynWinRTValue) -> {native_type}:\n\
+        "\ndef {unpack}(v: DynWinRTValue) -> {native_type}:\n\
          \x20   return {from_ticks}(v.as_struct().get_i64(0))\n\
-         _unpack_{snake_name} = unpack_{snake_name}\n\
-         {name}_TYPE = DynWinRTType.struct_type('{namespace}.{name}', [{field_types}])\n\
-         _{name}_TYPE = {name}_TYPE\n\
+         {private_unpack} = {unpack}\n\
+         {type_constant} = DynWinRTType.struct_type('{namespace}.{name}', [{field_types}])\n\
+         {private_type_constant} = {type_constant}\n\
          \n\
-         def pack_{snake_name}(v: {native_type}) -> DynWinRTStruct:\n\
-         \x20   s = DynWinRTStruct.create({name}_TYPE)\n\
+         def {pack}(v: {native_type}) -> DynWinRTStruct:\n\
+         \x20   s = DynWinRTStruct.create({type_constant})\n\
          \x20   s.set_i64(0, {to_ticks}(v))\n\
          \x20   return s\n\
-         _pack_{snake_name} = pack_{snake_name}\n"
+         {private_pack} = {pack}\n"
     )
 }
 
@@ -375,10 +370,10 @@ pub(super) fn py_default_value(context: &PythonProjectionContext, typ: &TypeMeta
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64 => "0".to_string(),
-        TypeMeta::Enum { name, .. } => format!(
+        TypeMeta::Enum { .. } => format!(
             "_dynwinrt_enum('{}', '{}', 0)",
             context.implementation_module_for_type(typ),
-            name
+            context.projected_name_for_type(typ)
         ),
         TypeMeta::Char16 => "'\\0'".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "0.0".to_string(),
@@ -395,26 +390,5 @@ fn py_struct_constructor_field_type(context: &PythonProjectionContext, typ: &Typ
             py_optional_type(py_struct_field_type(context, typ))
         }
         _ => py_struct_field_type(context, typ),
-    }
-}
-
-/// Returns the exported names for struct helpers (for Python index).
-pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
-    match s {
-        TypeMeta::Struct { name, .. } => {
-            let snake = to_snake_case(name);
-            let mut names = if foundation_type(s).is_none() {
-                vec![name.clone()]
-            } else {
-                Vec::new()
-            };
-            names.extend([
-                format!("{}_TYPE", name),
-                format!("pack_{}", snake),
-                format!("unpack_{}", snake),
-            ]);
-            names
-        }
-        _ => vec![],
     }
 }
