@@ -8,6 +8,8 @@
 
 use std::collections::HashSet;
 
+use sha2::{Digest, Sha256};
+
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta};
 
@@ -113,7 +115,16 @@ fn identity_marker(prefix: &str, namespace: &str, name: &str) -> String {
 }
 
 fn interface_marker(interface: &InterfaceMeta) -> String {
-    identity_marker("iid", &interface.namespace, &interface.name)
+    if interface.generic_piid.is_some() {
+        // Projection aliases depend on which other types a package contains.
+        // Hash the full, case-sensitive semantic identity, including nested arguments.
+        format!(
+            "_dynwinrt_iid_g{:x}",
+            Sha256::digest(interface.type_identity().canonical_key().as_bytes())
+        )
+    } else {
+        identity_marker("iid", &interface.namespace, &interface.name)
+    }
 }
 
 fn interface_symbol(context: &PythonProjectionContext, interface: &InterfaceMeta) -> String {
@@ -223,6 +234,11 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     let context = context.as_ref();
     let mut projected_iface = iface.clone();
     projected_iface.name = context.projected_name_for_interface(iface);
+    let marker = interface_marker(if iface.generic_piid.is_some() {
+        iface
+    } else {
+        &projected_iface
+    });
     let iface = &projected_iface;
     let is_delegate = iface.is_delegate();
     if is_delegate {
@@ -417,10 +433,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
             });
     let identity_name = format!("_{}Identity", iface.name);
     out.push_str(&format!("\nclass {identity_name}(Protocol):\n"));
-    out.push_str(&format!(
-        "    def {}(self) -> None: ...\n",
-        interface_marker(iface)
-    ));
+    out.push_str(&format!("    def {marker}(self) -> None: ...\n"));
 
     let mut bases = vec![identity_name];
     if is_protocol {
