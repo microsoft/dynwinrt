@@ -512,6 +512,9 @@ jobs:
       - name: Test JS binding
         working-directory: bindings/js
         run: npm test
+      - name: Test generated JS collection factories
+        working-directory: bindings/js
+        run: npm run test:collection-factories
       - name: Install prebuilt Python binding
         shell: pwsh
         run: |

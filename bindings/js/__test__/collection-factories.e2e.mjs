@@ -1,0 +1,173 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+import assert from 'node:assert/strict'
+import { after, before, test } from 'node:test'
+import { mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runCodegen } from '../scripts/run-codegen.mjs'
+
+const require = createRequire(import.meta.url)
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const runtimeRoot = resolve(process.env.DYNWINRT_JS_PACKAGE ?? packageRoot)
+const winmd =
+  process.env.DYNWINRT_WINDOWS_WINMD ??
+  String.raw`C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`
+let output
+let generated
+
+before(() => {
+  assert.ok(statSync(winmd).isFile(), 'Windows SDK metadata is required')
+  require(runtimeRoot).roInitialize(1)
+  output = mkdtempSync(join(tmpdir(), 'dynwinrt-collection-factories-'))
+  const generation = runCodegen(
+    [
+      'generate',
+      '--winmd',
+      winmd,
+      '--class-name',
+      'Windows.Storage.StorageFile,Windows.UI.Notifications.NotificationData,Windows.ApplicationModel.Contacts.ContactPicker,Windows.UI.Xaml.Data.ICollectionView',
+      '--output',
+      output,
+    ],
+    { cwd: resolve(packageRoot, '..', '..'), encoding: 'utf8', windowsHide: true, timeout: 120_000 },
+  )
+  assert.equal(generation.status, 0, `${generation.error ?? ''}\n${generation.stderr}`)
+  const scope = join(output, 'node_modules', '@microsoft')
+  mkdirSync(scope, { recursive: true })
+  symlinkSync(runtimeRoot, join(scope, 'dynwinrt'), 'junction')
+  generated = require(output)
+})
+
+after(() => {
+  if (output) {
+    rmSync(output, { recursive: true, force: true })
+    for (const suffix of ['dynwinrt-generation.lock', 'dynwinrt-lock']) {
+      rmSync(join(dirname(output), `.${basename(output)}.${suffix}`), { force: true })
+    }
+  }
+})
+
+function own(t) {
+  const values = new Set()
+  const release = (value) => {
+    if ('_obj' in value) generated.releaseProjected(value)
+    else value.release()
+    values.delete(value)
+  }
+  t.after(() => {
+    for (const value of [...values].reverse()) release(value)
+  })
+  const keep = (value) => {
+    if (value !== null) values.add(value)
+    return value
+  }
+  keep.release = release
+  return keep
+}
+
+function collection(prefix) {
+  const names = Object.keys(generated).filter((name) => name.startsWith(prefix))
+  assert.equal(names.length, 1, `Expected one metadata projection for ${prefix}: ${names}`)
+  assert.equal(typeof generated[names[0]].create, 'function')
+  return generated[names[0]]
+}
+
+test('generated string vector factory accepts nonempty Unicode strings', (t) => {
+  const keep = own(t)
+  const items = ['alpha', '\u03bb', '\ud83d\ude00', '', 'embedded\0nul']
+  const vector = keep(generated.IVector_String.create(items))
+  assert.deepEqual(vector.toArray(), items)
+  assert.equal(vector.indexOf('\u03bb'), 1)
+  const view = keep(vector.getView())
+  keep.release(vector)
+  assert.deepEqual(view.toArray(), items)
+})
+
+test('generated string map factory converts both keys and values', (t) => {
+  const keep = own(t)
+  const keys = ['first', '\u03bb', '\ud83d\ude00']
+  const values = ['alpha', '\ud83d\ude00', '\u03bb']
+  const map = keep(generated.IMap_String_String.create(keys, values))
+  assert.equal(map.size, keys.length)
+  keys.forEach((key, index) => assert.equal(map.lookup(key), values[index]))
+  assert.throws(() => generated.IMap_String_String.create(['mismatch'], []), /same length/)
+})
+
+test('typed empty factories still support append and insert', (t) => {
+  const keep = own(t)
+  const vector = keep(generated.IVector_String.create([]))
+  const map = keep(generated.IMap_String_String.create([], []))
+  assert.equal(vector.size, 0)
+  assert.equal(map.size, 0)
+  vector.append('alpha')
+  vector.append('\u03bb')
+  map.insert('first', 'alpha')
+  map.insert('second', '\u03bb')
+  assert.deepEqual(vector.toArray(), ['alpha', '\u03bb'])
+  assert.equal(map.lookup('first'), 'alpha')
+  assert.equal(map.lookup('second'), '\u03bb')
+})
+
+test('generated enum vector factory uses the declared scalar projection', (t) => {
+  const keep = own(t)
+  const Vector = collection('IVector_WindowsApplicationModelContactsContactFieldType_')
+  const items = [generated.ContactFieldType.Email, generated.ContactFieldType.PhoneNumber]
+  const vector = keep(Vector.create(items))
+  assert.deepEqual(vector.toArray(), items)
+})
+
+test('mixed map and observable vector factories preserve wrappers and null references', (t) => {
+  const keep = own(t)
+  const uri = keep(generated.Uri.createUri('https://example.invalid/collection'))
+  const map = keep(generated.IMap_String_Object.create(['uri', 'null'], [uri, null]))
+  const vector = keep(generated.IObservableVector_Object.create([uri, null]))
+  const fromMap = keep(map.lookup('uri'))
+  const fromVector = keep(vector.getAt(0))
+  assert.equal(keep(generated.projectAs(fromMap, generated.Uri)).host, 'example.invalid')
+  assert.equal(keep(generated.projectAs(fromVector, generated.Uri)).host, 'example.invalid')
+  assert.equal(map.lookup('null'), null)
+  assert.equal(vector.getAt(1), null)
+  assert.equal(vector.size, 2)
+})
+
+test('runtime-class vector factories retain projected and managed inputs', (t) => {
+  const keep = own(t)
+  const Vector = collection('IVector_WindowsApplicationModelContactsContactDate_')
+  const date = keep(generated.ContactDate.create())
+  date.month = 3
+  const vector = keep(Vector.create([date, date._obj]))
+  keep.release(date)
+  assert.equal(keep(vector.getAt(0)).month, 3)
+  assert.equal(keep(vector.getAt(1)).month, 3)
+})
+
+test('nested collection arguments use supported small-struct packing', (t) => {
+  const keep = own(t)
+  const Map = collection('IMap_String_WindowsFoundationCollectionsIVectorView_WindowsDataTextTextSegment_')
+  const segments = [
+    { startPosition: 1, length: 2 },
+    { startPosition: 5, length: 3 },
+  ]
+  if (process.arch === 'ia32') {
+    assert.throws(() => Map.create(['ranges'], [segments]), /struct|ABI/i)
+  } else {
+    const map = keep(Map.create(['ranges'], [segments]))
+    const view = keep(map.lookup('ranges'))
+    assert.deepEqual(view.toArray(), segments)
+    const copied = keep(Map.create(['ranges'], [view]))
+    assert.deepEqual(keep(copied.lookup('ranges')).toArray(), segments)
+  }
+})
+
+test('generated factories keep rejecting unsupported owned structs', () => {
+  const Vector = collection('IVector_WindowsStorageSearchSortEntry_')
+  assert.throws(() => Vector.create([]), /struct|ownership|HSTRING/i)
+  assert.throws(
+    () => Vector.create([{ propertyName: 'System.ItemNameDisplay', ascendingOrder: true }]),
+    /struct|ownership|HSTRING/i,
+  )
+})
