@@ -200,6 +200,48 @@ export function assertNoDispatcherQueueImports(imports) {
   }
 }
 
+const uiHelperSymbols = new Set([
+  'deleteobject',
+  'destroyicon',
+  'createwindowexw',
+  'aredpiawarenesscontextsequal',
+  'getdpiawarenesscontextforprocess',
+  'setprocessdpiawarenesscontext',
+  'setthreaddpiawarenesscontext',
+])
+
+/**
+ * Production binaries must resolve the scoped GDI/USER32 helpers dynamically.
+ * This is a direct-import guarantee, not an OS/host transitive DLL-load guarantee.
+ * @param {PeImport[]} imports
+ */
+export function assertNoUiHelperImports(imports) {
+  const violations = imports.filter(
+    ({ dll, symbols }) =>
+      ['gdi32.dll', 'user32.dll'].includes(win32.basename(dll).toLowerCase()) ||
+      symbols.some(
+        (symbol) =>
+          typeof symbol === 'string' &&
+          uiHelperSymbols.has(
+            symbol
+              .toLowerCase()
+              .replace(/^(__imp_)?_?/, '')
+              .replace(/@\d+$/, ''),
+          ),
+      ),
+  )
+  if (violations.length) {
+    throw new Error(
+      `Production GDI/USER32 helpers must resolve dynamically; PE imports:\n${violations
+        .map(
+          ({ dll, symbols }) =>
+            `${dll}: ${symbols.map((symbol) => (typeof symbol === 'number' ? `#${symbol}` : symbol)).join(', ')}`,
+        )
+        .join('\n')}`,
+    )
+  }
+}
+
 /**
  * @param {string} directory
  * @param {(bytes: Buffer, addon: string) => void} inspect
@@ -242,5 +284,12 @@ export function verifyAddonImports(directory, { testHooksAddon } = {}) {
 export function verifyDispatcherQueueImports(directory) {
   return verifyAddonFiles(directory, (bytes) =>
     assertNoDispatcherQueueImports(readPeImports(bytes, { includeDelayImports: true })),
+  )
+}
+
+/** @param {string} directory */
+export function verifyUiHelperImports(directory) {
+  return verifyAddonFiles(directory, (bytes) =>
+    assertNoUiHelperImports(readPeImports(bytes, { includeDelayImports: true })),
   )
 }

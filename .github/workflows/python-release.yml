@@ -11,6 +11,8 @@ on:
       - 'bindings/py/**'
       - 'crates/dynwinrt/**'
       - 'crates/dynwinrt-com-contracts/**'
+      - 'bindings/js/scripts/pe-imports.mjs'
+      - 'bindings/js/scripts/check-ui-helper-imports.mjs'
       - 'eng/release/python/prepare_python_release.py'
       - 'eng/release/python/test_python_*_wheel.ps1'
       - 'eng/release/python/verify_python_release.py'
@@ -334,6 +336,9 @@ jobs:
         with:
           name: python-runtime-${{ matrix.tag }}-x64
           path: artifacts\runtime
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v4
         with:
           name: python-codegen-x64
@@ -370,6 +375,9 @@ jobs:
         with:
           name: python-runtime-${{ matrix.tag }}-arm64
           path: artifacts\runtime
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v4
         with:
           name: python-codegen-arm64

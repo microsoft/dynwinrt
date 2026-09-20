@@ -579,6 +579,17 @@ impl DynComRaw {
 #[napi]
 pub struct DynComRawCleanup;
 
+fn cleanup_external_ui_handle(
+  pointer: &mut DynComRawPointer,
+  operation: &str,
+  cleanup: impl FnOnce(usize) -> windows::core::Result<()>,
+) -> napi::Result<()> {
+  let address = pointer.external_cleanup_address(operation)?;
+  cleanup(address).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+  pointer.consume_external_cleanup();
+  Ok(())
+}
+
 #[napi]
 impl DynComRawCleanup {
   #[napi]
@@ -728,31 +739,25 @@ impl DynComRawCleanup {
 
   #[napi]
   pub fn destroy_icon(pointer: &mut DynComRawPointer) -> napi::Result<()> {
-    let address = pointer.external_cleanup_address("destroyIcon")?;
-    unsafe {
-      windows::Win32::UI::WindowsAndMessaging::DestroyIcon(
-        windows::Win32::UI::WindowsAndMessaging::HICON(std::ptr::with_exposed_provenance_mut(
-          address,
-        )),
-      )
-    }
-    .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-    pointer.consume_external_cleanup();
-    Ok(())
+    cleanup_external_ui_handle(pointer, "destroyIcon", |address| unsafe {
+      dynwinrt::system_helpers::destroy_icon(windows::Win32::UI::WindowsAndMessaging::HICON(
+        std::ptr::with_exposed_provenance_mut(address),
+      ))
+    })
   }
 
   #[napi]
   pub fn delete_object(pointer: &mut DynComRawPointer) -> napi::Result<()> {
-    let address = pointer.external_cleanup_address("deleteObject")?;
-    unsafe {
-      windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(
-        std::ptr::with_exposed_provenance_mut(address),
-      ))
-    }
-    .ok()
-    .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-    pointer.consume_external_cleanup();
-    Ok(())
+    cleanup_external_ui_handle(pointer, "deleteObject", |address| {
+      let deleter = dynwinrt::system_helpers::GdiObjectDeleter::resolve()?;
+      unsafe {
+        deleter
+          .delete(windows::Win32::Graphics::Gdi::HGDIOBJ(
+            std::ptr::with_exposed_provenance_mut(address),
+          ))
+          .ok()
+      }
+    })
   }
 }
 
@@ -6116,6 +6121,34 @@ mod tests {
     let mut brush_pointer = external_pointer(brush.0 as usize);
     DynComRawCleanup::delete_object(&mut brush_pointer).unwrap();
     assert!(DynComRawCleanup::delete_object(&mut brush_pointer).is_err());
+
+    let mut invalid_icon = DynComRawPointer::null();
+    assert!(DynComRawCleanup::destroy_icon(&mut invalid_icon).is_err());
+    assert!(invalid_icon.address().is_ok());
+    let mut invalid_object = DynComRawPointer::null();
+    assert!(DynComRawCleanup::delete_object(&mut invalid_object).is_err());
+    assert!(invalid_object.address().is_ok());
+  }
+
+  #[test]
+  fn raw_ui_cleanup_resolution_failure_retains_provenance_for_retry() {
+    for operation in ["destroyIcon", "deleteObject"] {
+      let mut pointer = external_pointer(0x1234);
+      let error = cleanup_external_ui_handle(&mut pointer, operation, |_| {
+        Err(windows::core::Error::from_hresult(
+          windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_PROC_NOT_FOUND.0),
+        ))
+      })
+      .unwrap_err();
+      assert!(!error.reason.is_empty());
+      assert_eq!(pointer.external_cleanup_address(operation).unwrap(), 0x1234);
+      cleanup_external_ui_handle(&mut pointer, operation, |address| {
+        assert_eq!(address, 0x1234);
+        Ok(())
+      })
+      .unwrap();
+      assert!(pointer.external_cleanup_address(operation).is_err());
+    }
   }
 
   #[test]

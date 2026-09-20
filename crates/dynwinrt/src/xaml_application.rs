@@ -11,10 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::Threading::GetCurrentProcess;
-use windows::Win32::UI::HiDpi::{
-    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-    GetDpiAwarenessContextForProcess, SetProcessDpiAwarenessContext, SetThreadDpiAwarenessContext,
-};
+use windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::com_helpers::{E_FAIL, E_NOINTERFACE, E_NOTIMPL, E_POINTER, IInspectableVtbl, S_OK};
@@ -1152,17 +1149,16 @@ fn query_interface(object: &IUnknown, iid: &GUID) -> windows_core::Result<IUnkno
 }
 
 fn enable_per_monitor_v2() -> windows_core::Result<()> {
+    let api = crate::system_helpers::DpiApi::resolve()?;
     // WinUI popup hosts consult the process context, so it must match the UI thread.
-    let process_context = unsafe { GetDpiAwarenessContextForProcess(GetCurrentProcess()) };
+    let process_context = unsafe { (api.process_context)(GetCurrentProcess()) };
     if !unsafe {
-        AreDpiAwarenessContextsEqual(process_context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-            .as_bool()
+        (api.contexts_equal)(process_context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).as_bool()
     } {
-        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
+        unsafe { (api.set_process_context)(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).ok()? };
     }
 
-    let previous =
-        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let previous = unsafe { (api.set_thread_context)(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if previous.0.is_null() {
         Err(windows_core::Error::from_thread())
     } else {
@@ -1855,15 +1851,14 @@ mod tests {
     fn enables_per_monitor_v2_on_the_process_and_ui_thread() {
         enable_per_monitor_v2().unwrap();
 
-        let process = unsafe { GetDpiAwarenessContextForProcess(GetCurrentProcess()) };
+        let api = crate::system_helpers::DpiApi::resolve().unwrap();
+        let process = unsafe { (api.process_context)(GetCurrentProcess()) };
         let current = unsafe { GetThreadDpiAwarenessContext() };
         assert!(unsafe {
-            AreDpiAwarenessContextsEqual(process, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-                .as_bool()
+            (api.contexts_equal)(process, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).as_bool()
         });
         assert!(unsafe {
-            AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-                .as_bool()
+            (api.contexts_equal)(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).as_bool()
         });
     }
 }

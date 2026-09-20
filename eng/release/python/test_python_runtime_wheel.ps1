@@ -27,6 +27,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     --find-links $CodegenWheelDirectory "dynwinrt-codegen==$Version"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$native = @(Get-ChildItem (Join-Path $root 'venv\Lib\site-packages\dynwinrt') -Filter *.pyd -File)
+if ($native.Count -ne 1) { throw 'Expected exactly one installed production Python extension' }
+& (Get-Command node -ErrorAction Stop).Source `
+    (Join-Path $repoRoot 'bindings\js\scripts\check-ui-helper-imports.mjs') $native[0].FullName
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 $scripts = Join-Path $root 'venv\Scripts'
 $env:PATH = "$scripts;$env:SystemRoot\System32;$env:SystemRoot"
 $env:PYTHONPATH = ''

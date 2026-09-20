@@ -6,7 +6,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { verifyAddonImports } from './pe-imports.mjs'
+import { verifyAddonImports, verifyUiHelperImports } from './pe-imports.mjs'
 
 const args = process.argv.slice(2)
 if (args.length !== 1 && !(args.length === 2 && args[1] === '--test-hooks')) {
@@ -20,6 +20,7 @@ const require = createRequire(join(artifact, 'artifact-consumer.cjs'))
 const modules = new Map()
 const testHooksAddon = args[1] === '--test-hooks' ? `dynwinrt.win32-${process.arch}-msvc.node` : undefined
 const addons = verifyAddonImports(artifact, { testHooksAddon })
+if (!testHooksAddon) verifyUiHelperImports(artifact)
 if (testHooksAddon) {
   assert.equal(
     typeof require(join(artifact, testHooksAddon)).DynComBorrowedCopyTestFixture,

@@ -525,6 +525,13 @@ jobs:
           $wheels = @(Get-ChildItem artifacts\python-x64\payload -Filter *.whl -File)
           if ($wheels.Count -ne 1) { throw 'Expected exactly the verified CPython 3.12 x64 wheel' }
           & $python -m pip install $wheels[0].FullName --no-deps --no-index --quiet
+      - name: Check prebuilt Python native imports
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $native = @(Get-ChildItem bindings\py\.venv\Lib\site-packages\dynwinrt -Filter *.pyd -File)
+          if ($native.Count -ne 1) { throw 'Expected exactly one installed production Python extension' }
+          node bindings\js\scripts\check-ui-helper-imports.mjs $native[0].FullName
       - name: Test Python binding
         run: |
           .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q

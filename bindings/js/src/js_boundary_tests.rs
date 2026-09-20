@@ -42,6 +42,7 @@ fn progress_type_validation_allows_structs_and_rejects_unsupported_shapes() {
 
 #[test]
 fn failed_explicit_bitmap_release_preserves_owner_for_retry() {
+  dynwinrt::system_helpers::GdiObjectDeleter::resolve().unwrap();
   let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
   assert!(!bitmap.is_invalid());
   let pointer = bitmap.0;
@@ -78,6 +79,7 @@ fn failed_explicit_bitmap_release_preserves_owner_for_retry() {
 
 #[test]
 fn actual_delete_object_failure_preserves_generic_owner() {
+  dynwinrt::system_helpers::GdiObjectDeleter::resolve().unwrap();
   let pointer = std::ptr::with_exposed_provenance_mut(1);
   let mut value = DynWinRTValue::from_com_result(
     dynwinrt::WinRTValue::RawPtr(pointer),

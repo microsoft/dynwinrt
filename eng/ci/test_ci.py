@@ -324,6 +324,45 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class NativeImportGateTests(unittest.TestCase):
+    def test_prebuilt_python_gate_uses_node_and_installed_no_hooks_extension(self):
+        steps = JOBS["e2e-runtime"]["steps"]
+        node = next(index for index, step in enumerate(steps)
+                    if step.get("uses") == "actions/setup-node@v4")
+        gate = next(index for index, step in enumerate(steps)
+                    if step.get("name") == "Check prebuilt Python native imports")
+        install = next(index for index, step in enumerate(steps)
+                       if step.get("name") == "Install prebuilt Python binding")
+        self.assertLess(node, gate)
+        self.assertLess(install, gate)
+        self.assertEqual(steps[node]["with"]["node-version"], 24)
+        self.assertIn(r"site-packages\dynwinrt", steps[gate]["run"])
+        self.assertIn("-Filter *.pyd", steps[gate]["run"])
+        self.assertIn(r"bindings\js\scripts\check-ui-helper-imports.mjs", steps[gate]["run"])
+        self.assertNotIn("test-hooks", steps[gate]["run"])
+
+    def test_shipping_runtime_wheels_use_the_same_gate_without_rebuilding(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "python-release.yml").read_text(encoding="utf-8")
+        )
+        for architecture in ("x64", "arm64"):
+            steps = workflow["jobs"][f"consume-runtime-{architecture}"]["steps"]
+            node = next(index for index, step in enumerate(steps)
+                        if step.get("uses") == "actions/setup-node@v4")
+            consumer = next(index for index, step in enumerate(steps)
+                            if "test_python_runtime_wheel.ps1" in step.get("run", ""))
+            self.assertLess(node, consumer)
+            self.assertEqual(steps[node]["with"]["node-version"], 24)
+        script = (ROOT / "eng" / "release" / "python" / "test_python_runtime_wheel.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(r"venv\Lib\site-packages\dynwinrt", script)
+        self.assertIn(r"bindings\js\scripts\check-ui-helper-imports.mjs", script)
+        self.assertLess(script.index("check-ui-helper-imports.mjs"), script.index("$env:PATH ="))
+        self.assertNotIn("maturin", script)
+        self.assertNotIn("cargo", script)
+
+
 class ArtifactTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="dynwinrt-ci-artifact-")

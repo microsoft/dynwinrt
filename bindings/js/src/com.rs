@@ -312,7 +312,7 @@ pub(crate) fn apartment_bound_com_object(value: IUnknown) -> napi::Result<DynWin
 
 fn create_test_hwnd() -> napi::Result<BigInt> {
   use std::sync::atomic::{AtomicUsize, Ordering};
-  use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WINDOW_EX_STYLE, WS_POPUP};
+  use windows::Win32::UI::WindowsAndMessaging::{WINDOW_EX_STYLE, WS_POPUP};
 
   static CACHED_HWND: AtomicUsize = AtomicUsize::new(0);
   let cached = CACHED_HWND.load(Ordering::Acquire);
@@ -322,7 +322,7 @@ fn create_test_hwnd() -> napi::Result<BigInt> {
   let class_name: Vec<u16> = "STATIC".encode_utf16().chain(Some(0)).collect();
   let title: Vec<u16> = "dynwinrt-test-hwnd\0".encode_utf16().collect();
   let hwnd = unsafe {
-    CreateWindowExW(
+    dynwinrt::system_helpers::create_window_ex(
       WINDOW_EX_STYLE(0),
       windows::core::PCWSTR(class_name.as_ptr()),
       windows::core::PCWSTR(title.as_ptr()),
@@ -2941,10 +2941,11 @@ impl DynComOwnedHandle {
     let succeeded = match cleanup {
       dynwinrt::com::OwnedHandleCleanup::DeleteObject if force_failure => false,
       dynwinrt::com::OwnedHandleCleanup::DeleteObject => unsafe {
-        windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(
-          std::ptr::with_exposed_provenance_mut(address),
-        ))
-        .as_bool()
+        dynwinrt::system_helpers::GdiObjectDeleter::prepared()
+          .delete(windows::Win32::Graphics::Gdi::HGDIOBJ(
+            std::ptr::with_exposed_provenance_mut(address),
+          ))
+          .as_bool()
       },
     };
     if succeeded {
@@ -6568,6 +6569,7 @@ mod tests {
 
   #[test]
   fn delete_object_owned_handle_consumes_exact_provenance_and_releases_once() {
+    dynwinrt::system_helpers::GdiObjectDeleter::resolve().unwrap();
     let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
     assert!(!bitmap.is_invalid());
     let ptr = bitmap.0;
@@ -6597,6 +6599,7 @@ mod tests {
 
   #[test]
   fn delete_object_owned_handle_drop_releases_bitmap() {
+    dynwinrt::system_helpers::GdiObjectDeleter::resolve().unwrap();
     let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
     assert!(!bitmap.is_invalid());
     let pointer = bitmap.0;

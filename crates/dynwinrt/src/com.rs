@@ -35,6 +35,9 @@ pub mod borrowed;
 #[path = "com_completion.rs"]
 #[doc(hidden)]
 pub mod completion;
+#[cfg(test)]
+#[path = "com_gdi_cleanup_tests.rs"]
+mod gdi_cleanup_tests;
 pub use automation::{
     DispatchParamsValue, ExcepInfoValue, PropVariantData, PropVariantType, PropVariantValue,
     PropVariantVector, PropVariantVectorType, SafeArrayBound, SafeArrayElementType,

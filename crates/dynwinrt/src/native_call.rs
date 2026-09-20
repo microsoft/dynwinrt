@@ -135,7 +135,7 @@ impl OutputCleanup {
             Self::PropVariantClear => crate::com::automation::cleanup_propvariant(ptr),
             Self::DeleteObject => {
                 unsafe {
-                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(
+                    let _ = crate::system_helpers::GdiObjectDeleter::prepared().delete(
                         windows::Win32::Graphics::Gdi::HGDIOBJ(
                             std::ptr::with_exposed_provenance_mut(ptr.addr()),
                         ),
@@ -978,6 +978,17 @@ impl AbiMethodSignature {
                 CallStrategy::Libffi(system_cif(types, self.return_kind.libffi_type()))
             };
 
+        let needs_gdi_cleanup = self
+            .parameters
+            .iter()
+            .any(|parameter| parameter.output_cleanup == OutputCleanup::DeleteObject)
+            || matches!(
+                self.return_kind,
+                MethodReturn::Value {
+                    cleanup: OutputCleanup::DeleteObject,
+                    ..
+                }
+            );
         Method {
             info: MethodInfo {
                 index,
@@ -987,6 +998,7 @@ impl AbiMethodSignature {
                 return_kind: self.return_kind,
             },
             strategy,
+            needs_gdi_cleanup,
         }
     }
 }
@@ -1061,6 +1073,7 @@ enum CallStrategy {
 pub struct Method {
     info: MethodInfo,
     strategy: CallStrategy,
+    needs_gdi_cleanup: bool,
 }
 
 fn expected_object_iid(typ: &TypeHandle) -> Option<GUID> {
@@ -1525,6 +1538,13 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
 }
 
 impl Method {
+    fn prepare_output_cleanup(&self) -> windows_core::Result<()> {
+        if self.needs_gdi_cleanup {
+            crate::system_helpers::GdiObjectDeleter::resolve()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn parameter_type(&self, parameter_index: usize) -> &ParameterType {
         &self.info.parameters[parameter_index].typ
     }
@@ -1813,6 +1833,7 @@ impl Method {
         }
         let mut mark_dispatched = Some(mark_dispatched);
         let mut mark_dispatched = || {
+            self.prepare_output_cleanup()?;
             mark_dispatched
                 .take()
                 .expect("native dispatch marker must run exactly once")()
@@ -2335,7 +2356,10 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
-            mark_dispatched,
+            || {
+                self.prepare_output_cleanup()?;
+                mark_dispatched()
+            },
         )
         .map(|values| {
             values
@@ -2380,7 +2404,10 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
-            before_dispatch,
+            || {
+                self.prepare_output_cleanup()?;
+                before_dispatch()
+            },
         )
     }
 }

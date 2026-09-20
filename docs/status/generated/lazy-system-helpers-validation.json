@@ -1,0 +1,3446 @@
+{
+  "baseCommit": "34eb6246627c671113a501c00edc8e3317fc8b3d",
+  "afterSource": "Scoped runtime sources in this PR; production release builds with no test-hooks",
+  "platform": "Windows ARM64; x64 and i686 native tests ran under Windows-on-ARM emulation, not physical x64/i686 hardware",
+  "tools": {
+    "rustc": "1.97.1",
+    "node": "24.15.0 ARM64",
+    "python": "3.13.15 ARM64",
+    "maturin": "1.14.1"
+  },
+  "observer": "Separate ARM64 PowerShell K32EnumProcessModulesEx/K32GetModuleFileNameExW, child-reported PID and stdin/stdout handshake; no observer code injected into Node/Python",
+  "controls": {
+    "minimumModuleCount": 10,
+    "requiredModule": "ntdll.dll",
+    "phasesTimeoutSeconds": 30,
+    "naturalExitTimeoutSeconds": 15,
+    "independentPeControl": "MSVC 14.51.36231 dumpbin /imports",
+    "unchangedJsRuntimeSources": 16,
+    "unchangedPythonPackageSources": 4
+  },
+  "binaries": [
+    {
+      "stage": "before",
+      "filename": "baseline.node",
+      "sha256": "456506e8a2404fd699e261d3d8b9537b94f0cf0e46f079eb2261daf4725b3cb8",
+      "machine": "ARM64",
+      "profile": "release",
+      "testHooks": false,
+      "ordinary": [
+        {
+          "dll": "oleaut32.dll",
+          "symbols": [
+            "SafeArrayGetUBound",
+            "SafeArrayGetLBound",
+            "SafeArrayUnaccessData",
+            "SafeArrayGetIID",
+            "SafeArrayGetDim",
+            "SafeArrayGetVartype",
+            "VariantCopy",
+            "GetErrorInfo",
+            "CreateErrorInfo",
+            "SafeArrayCreateEx",
+            "VariantInit",
+            "SafeArrayCreate",
+            "SafeArrayCopy",
+            "SysAllocStringLen",
+            "SysFreeString",
+            "SafeArrayAccessData",
+            "SysStringLen",
+            "SetErrorInfo",
+            "SafeArrayGetElemsize",
+            "VariantClear",
+            "SafeArrayDestroy"
+          ]
+        },
+        {
+          "dll": "kernel32.dll",
+          "symbols": [
+            "GlobalSize",
+            "CancelIoEx",
+            "GlobalAlloc",
+            "CreateIoCompletionPort",
+            "GetQueuedCompletionStatus",
+            "GetOverlappedResult",
+            "WriteFile",
+            "ReadFile",
+            "HeapAlloc",
+            "LocalFree",
+            "GetCurrentProcess",
+            "GetWindowsDirectoryW",
+            "WaitForSingleObjectEx",
+            "LoadLibraryA",
+            "GetCurrentProcessId",
+            "CreateMutexA",
+            "ReleaseMutex",
+            "GetComputerNameW",
+            "GetFullPathNameW",
+            "SetLastError",
+            "GetCurrentThread",
+            "SetThreadStackGuarantee",
+            "GetModuleHandleA",
+            "CreateFileW",
+            "GetFileInformationByHandle",
+            "FindFirstFileExW",
+            "FindClose",
+            "GetFileInformationByHandleEx",
+            "LoadLibraryExA",
+            "LoadLibraryW",
+            "Sleep",
+            "VirtualAlloc",
+            "VirtualFree",
+            "VirtualQuery",
+            "WaitForSingleObject",
+            "CreateThread",
+            "GlobalLock",
+            "HeapFree",
+            "GetSystemInfo",
+            "GetCurrentThreadId",
+            "GetProcessHeap",
+            "HeapReAlloc",
+            "LoadLibraryExW",
+            "GetModuleHandleW",
+            "FormatMessageW",
+            "SwitchToThread",
+            "CloseHandle",
+            "GetModuleHandleExW",
+            "GetProcAddress",
+            "GetLastError",
+            "FreeLibrary",
+            "GetSystemTimeAsFileTime",
+            "DisableThreadLibraryCalls",
+            "GlobalFree",
+            "GlobalUnlock"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-synch-l1-2-0.dll",
+          "symbols": [
+            "WakeByAddressAll",
+            "WaitOnAddress",
+            "WakeByAddressSingle"
+          ]
+        },
+        {
+          "dll": "combase.dll",
+          "symbols": [
+            "CoTaskMemAlloc",
+            "CoTaskMemFree",
+            "CoIncrementMTAUsage",
+            "RoGetAgileReference",
+            "CoCreateFreeThreadedMarshaler"
+          ]
+        },
+        {
+          "dll": "gdi32.dll",
+          "symbols": [
+            "DeleteObject"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoInitializeEx",
+            "ReleaseStgMedium",
+            "CoGetClassObject",
+            "CoUninitialize",
+            "CoGetMalloc",
+            "CoGetApartmentType",
+            "PropVariantClear",
+            "CoCreateInstance"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-l1-1-0.dll",
+          "symbols": [
+            "RoUninitialize",
+            "RoInitialize",
+            "RoGetActivationFactory"
+          ]
+        },
+        {
+          "dll": "api-ms-win-appmodel-runtime-l1-1-3.dll",
+          "symbols": [
+            "GetCurrentPackageInfo2"
+          ]
+        },
+        {
+          "dll": "user32.dll",
+          "symbols": [
+            "AreDpiAwarenessContextsEqual",
+            "SetProcessDpiAwarenessContext",
+            "GetDpiAwarenessContextForProcess",
+            "SetThreadDpiAwarenessContext",
+            "DestroyIcon",
+            "CreateWindowExW"
+          ]
+        },
+        {
+          "dll": "advapi32.dll",
+          "symbols": [
+            "CloseServiceHandle",
+            "RegCloseKey",
+            "CredFree"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "NtWriteFile",
+            "RtlNtStatusToDosError",
+            "NtQueryInformationFile"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-error-l1-1-0.dll",
+          "symbols": [
+            "RoOriginateErrorW"
+          ]
+        },
+        {
+          "dll": "bcryptprimitives.dll",
+          "symbols": [
+            "ProcessPrng"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "InitializeSListHead",
+            "GetConsoleMode",
+            "GetStdHandle",
+            "RtlVirtualUnwind",
+            "WideCharToMultiByte",
+            "lstrlenW",
+            "RtlLookupFunctionEntry",
+            "RtlCaptureContext",
+            "GetCurrentDirectoryW",
+            "MultiByteToWideChar",
+            "WriteConsoleW",
+            "GetEnvironmentVariableW",
+            "QueryPerformanceFrequency",
+            "QueryPerformanceCounter",
+            "FlushInstructionCache",
+            "GetConsoleOutputCP"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "memset",
+            "__std_type_info_destroy_list",
+            "memcmp",
+            "__CxxFrameHandler3",
+            "_CxxThrowException",
+            "memmove",
+            "memcpy",
+            "__C_specific_handler"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "malloc",
+            "free"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "strlen",
+            "wcslen"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_initialize_narrow_environment",
+            "_execute_onexit_table",
+            "_initterm_e",
+            "_initterm",
+            "abort",
+            "_seh_filter_dll",
+            "_configure_narrow_argv",
+            "_cexit",
+            "_initialize_onexit_table"
+          ]
+        }
+      ],
+      "delay": []
+    },
+    {
+      "stage": "before",
+      "filename": "dynwinrt.cp313-win_arm64.pyd",
+      "sha256": "7e3fe77eb0732c8e3b13ab77c5b615fbf88d480ac7ab6e5d89ae8a70632e24c5",
+      "machine": "ARM64",
+      "profile": "release",
+      "testHooks": false,
+      "ordinary": [
+        {
+          "dll": "oleaut32.dll",
+          "symbols": [
+            "SysStringLen",
+            "SafeArrayGetVartype",
+            "SafeArrayUnaccessData",
+            "SafeArrayGetIID",
+            "SafeArrayGetElemsize",
+            "SafeArrayGetLBound",
+            "VariantInit",
+            "GetErrorInfo",
+            "SafeArrayAccessData",
+            "SafeArrayDestroy",
+            "VariantClear",
+            "SafeArrayGetDim",
+            "SetErrorInfo",
+            "SysFreeString",
+            "SafeArrayGetUBound"
+          ]
+        },
+        {
+          "dll": "kernel32.dll",
+          "symbols": [
+            "SetThreadStackGuarantee",
+            "Sleep",
+            "VirtualAlloc",
+            "VirtualFree",
+            "VirtualQuery",
+            "GetModuleHandleA",
+            "GetCurrentThread",
+            "GetFileInformationByHandleEx",
+            "GetModuleHandleW",
+            "GetProcessHeap",
+            "HeapFree",
+            "LoadLibraryExA",
+            "WaitForSingleObject",
+            "FindClose",
+            "HeapReAlloc",
+            "FormatMessageW",
+            "ReleaseMutex",
+            "FindFirstFileExW",
+            "CreateMutexA",
+            "GetCurrentProcessId",
+            "LoadLibraryA",
+            "WaitForSingleObjectEx",
+            "GetCurrentThreadId",
+            "GetFileInformationByHandle",
+            "GetModuleFileNameW",
+            "GetModuleHandleExW",
+            "GlobalUnlock",
+            "GlobalLock",
+            "GlobalSize",
+            "CreateThread",
+            "GetCurrentProcess",
+            "LoadLibraryExW",
+            "DisableThreadLibraryCalls",
+            "GetLastError",
+            "HeapAlloc",
+            "LoadLibraryW",
+            "GetProcAddress",
+            "FreeLibrary",
+            "GetFullPathNameW",
+            "SetLastError",
+            "GetComputerNameW",
+            "CloseHandle",
+            "CreateFileW"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-synch-l1-2-0.dll",
+          "symbols": [
+            "WakeByAddressAll",
+            "WakeByAddressSingle",
+            "WaitOnAddress"
+          ]
+        },
+        {
+          "dll": "combase.dll",
+          "symbols": [
+            "CoCreateFreeThreadedMarshaler",
+            "CoTaskMemFree",
+            "CoIncrementMTAUsage",
+            "CoTaskMemAlloc"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-l1-1-0.dll",
+          "symbols": [
+            "RoInitialize",
+            "RoGetActivationFactory",
+            "RoUninitialize"
+          ]
+        },
+        {
+          "dll": "user32.dll",
+          "symbols": [
+            "AreDpiAwarenessContextsEqual",
+            "GetDpiAwarenessContextForProcess",
+            "SetProcessDpiAwarenessContext",
+            "SetThreadDpiAwarenessContext"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoGetApartmentType",
+            "ReleaseStgMedium",
+            "PropVariantClear"
+          ]
+        },
+        {
+          "dll": "gdi32.dll",
+          "symbols": [
+            "DeleteObject"
+          ]
+        },
+        {
+          "dll": "api-ms-win-appmodel-runtime-l1-1-3.dll",
+          "symbols": [
+            "GetCurrentPackageInfo2"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "NtWriteFile",
+            "RtlNtStatusToDosError"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-error-l1-1-0.dll",
+          "symbols": [
+            "RoOriginateErrorW"
+          ]
+        },
+        {
+          "dll": "python313.dll",
+          "symbols": [
+            "PyLong_AsLongLong",
+            "PyBytes_FromStringAndSize",
+            "PyBytes_Type",
+            "PyByteArray_Type",
+            "PyByteArray_AsString",
+            "PyByteArray_Size",
+            "PyBytes_AsString",
+            "PyBytes_Size",
+            "PyInterpreterState_Get",
+            "PyInterpreterState_Main",
+            "PyModule_Type",
+            "PyModule_GetDict",
+            "PyBaseObject_Type",
+            "PyObject_ClearWeakRefs",
+            "PyException_GetTraceback",
+            "PyTraceBack_Print",
+            "PyUnicode_Type",
+            "PyType_GetQualName",
+            "PyObject_Str",
+            "Py_IsInitialized",
+            "Py_IsFinalizing",
+            "PyGILState_Ensure",
+            "PyErr_GetRaisedException",
+            "PyUnicode_AsEncodedString",
+            "PyExc_TypeError",
+            "PyErr_SetString",
+            "PyErr_SetObject",
+            "PyType_GetName",
+            "PyExc_SystemError",
+            "PyErr_PrintEx",
+            "PyUnicode_InternInPlace",
+            "PyObject_Repr",
+            "Py_CompileStringExFlags",
+            "PyImport_AddModuleRef",
+            "PyEval_GetBuiltins",
+            "PyDict_SetDefaultRef",
+            "PyEval_EvalCode",
+            "PyException_SetCause",
+            "PyException_SetTraceback",
+            "PyObject_SetAttrString",
+            "PyType_Modified",
+            "PyExc_ValueError",
+            "PyObject_GenericGetDict",
+            "PyObject_GenericSetDict",
+            "PyType_FromSpec",
+            "PyLong_FromSsize_t",
+            "PyObject_GetItem",
+            "PyObject_SetItem",
+            "PyObject_DelItem",
+            "PyList_Type",
+            "PyObject_SetAttr",
+            "PyOS_FSPath",
+            "PyUnicode_AsWideChar",
+            "PyLong_Type",
+            "PyNumber_Index",
+            "PyLong_AsUnsignedLongLong",
+            "PyModule_GetNameObject",
+            "PyCMethod_New",
+            "PyBool_Type",
+            "PyType_GetModuleName",
+            "PyUnicode_EqualToUTF8AndSize",
+            "PyObject_IsTrue",
+            "PyDict_New",
+            "PyDict_SetItem",
+            "PyObject_VectorcallDict",
+            "PyLong_FromNativeBytes",
+            "PyLong_AsLong",
+            "_Py_TrueStruct",
+            "_Py_FalseStruct",
+            "PyCallable_Check",
+            "PyDict_Type",
+            "PyObject_CallNoArgs",
+            "_Py_NoneStruct",
+            "PyExc_OverflowError",
+            "PyExc_BaseException",
+            "PyExc_RuntimeError",
+            "PyExc_IndexError",
+            "PyErr_GivenExceptionMatches",
+            "PyExc_AttributeError",
+            "PyObject_Call",
+            "PyObject_Vectorcall",
+            "PyFloat_AsDouble",
+            "PyFloat_Type",
+            "PyTuple_Type",
+            "PyTuple_New",
+            "PyErr_WriteUnraisable",
+            "PyType_Type",
+            "PyErr_NewExceptionWithDoc",
+            "PyExc_Exception",
+            "PyLong_FromLongLong",
+            "PyLong_FromUnsignedLongLong",
+            "PyLong_FromLong",
+            "PyFloat_FromDouble",
+            "PyObject_GetAttr",
+            "PyUnicode_FromWideChar",
+            "PyGILState_Release",
+            "PyObject_GC_UnTrack",
+            "PyErr_Occurred",
+            "PyType_IsSubtype",
+            "PyIter_Next",
+            "PyObject_GetIter",
+            "PyObject_Size",
+            "PySequence_Check",
+            "PyErr_SetRaisedException",
+            "PyEval_SaveThread",
+            "PyObject_CallOneArg",
+            "PyObject_VectorcallMethod",
+            "PyList_Append",
+            "PyList_New",
+            "PyDict_Next",
+            "PyUnicode_AsUTF8AndSize",
+            "PyEval_RestoreThread",
+            "_Py_Dealloc",
+            "PyImport_Import",
+            "PyUnicode_FromStringAndSize",
+            "PyModuleDef_Init",
+            "PyExc_OSError"
+          ]
+        },
+        {
+          "dll": "bcryptprimitives.dll",
+          "symbols": [
+            "ProcessPrng"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "GetSystemInfo",
+            "InitializeSListHead",
+            "GetCurrentDirectoryW",
+            "RtlCaptureContext",
+            "FlushInstructionCache",
+            "RtlLookupFunctionEntry",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "lstrlenW",
+            "GetEnvironmentVariableW",
+            "WideCharToMultiByte",
+            "RtlVirtualUnwind",
+            "GetSystemTimeAsFileTime",
+            "GetStdHandle",
+            "GetConsoleMode",
+            "GetConsoleOutputCP",
+            "MultiByteToWideChar",
+            "WriteConsoleW"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "__std_type_info_destroy_list",
+            "__C_specific_handler",
+            "_CxxThrowException",
+            "__CxxFrameHandler3",
+            "memcpy",
+            "memcmp",
+            "memset",
+            "memmove"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "malloc",
+            "free"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "wcslen"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-math-l1-1-0.dll",
+          "symbols": [
+            "pow"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_initterm_e",
+            "_seh_filter_dll",
+            "_cexit",
+            "_initialize_narrow_environment",
+            "_initterm",
+            "abort",
+            "_configure_narrow_argv",
+            "_execute_onexit_table",
+            "_initialize_onexit_table"
+          ]
+        }
+      ],
+      "delay": []
+    },
+    {
+      "stage": "after",
+      "filename": "dynwinrt.win32-arm64-msvc.node",
+      "sha256": "0ec885b9bf959f4d74d4c8875d5c04192a6da948eeeccbaad367a38123344920",
+      "machine": "ARM64",
+      "profile": "release",
+      "testHooks": false,
+      "ordinary": [
+        {
+          "dll": "oleaut32.dll",
+          "symbols": [
+            "SafeArrayGetElemsize",
+            "SafeArrayGetLBound",
+            "SafeArrayGetUBound",
+            "SafeArrayAccessData",
+            "SafeArrayGetVartype",
+            "SafeArrayUnaccessData",
+            "SafeArrayCopy",
+            "SysAllocStringLen",
+            "VariantCopy",
+            "SysStringLen",
+            "SafeArrayCreateEx",
+            "SafeArrayCreate",
+            "VariantClear",
+            "SafeArrayDestroy",
+            "SysFreeString",
+            "SafeArrayGetDim",
+            "VariantInit",
+            "SafeArrayGetIID",
+            "SetErrorInfo",
+            "CreateErrorInfo",
+            "GetErrorInfo"
+          ]
+        },
+        {
+          "dll": "kernel32.dll",
+          "symbols": [
+            "CreateIoCompletionPort",
+            "WriteFile",
+            "ReadFile",
+            "CancelIoEx",
+            "GetFullPathNameW",
+            "SetLastError",
+            "LoadLibraryW",
+            "WaitForSingleObjectEx",
+            "LoadLibraryA",
+            "GlobalSize",
+            "CreateMutexA",
+            "ReleaseMutex",
+            "GlobalUnlock",
+            "WaitForSingleObject",
+            "GlobalLock",
+            "GetCurrentThread",
+            "SetThreadStackGuarantee",
+            "GetModuleHandleA",
+            "CreateFileW",
+            "GetFileInformationByHandle",
+            "FindFirstFileExW",
+            "FindClose",
+            "GetFileInformationByHandleEx",
+            "LoadLibraryExA",
+            "CreateThread",
+            "Sleep",
+            "VirtualAlloc",
+            "VirtualFree",
+            "VirtualQuery",
+            "GetSystemInfo",
+            "GetComputerNameW",
+            "GetCurrentThreadId",
+            "HeapReAlloc",
+            "GetModuleHandleW",
+            "SwitchToThread",
+            "GlobalAlloc",
+            "CloseHandle",
+            "FormatMessageW",
+            "GetWindowsDirectoryW",
+            "GetQueuedCompletionStatus",
+            "GetCurrentProcess",
+            "HeapAlloc",
+            "GetCurrentProcessId",
+            "LocalFree",
+            "HeapFree",
+            "GetProcessHeap",
+            "LoadLibraryExW",
+            "GetModuleHandleExW",
+            "GetProcAddress",
+            "GetLastError",
+            "FreeLibrary",
+            "GetSystemTimeAsFileTime",
+            "DisableThreadLibraryCalls",
+            "GlobalFree",
+            "GetOverlappedResult"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-synch-l1-2-0.dll",
+          "symbols": [
+            "WaitOnAddress",
+            "WakeByAddressAll",
+            "WakeByAddressSingle"
+          ]
+        },
+        {
+          "dll": "combase.dll",
+          "symbols": [
+            "CoTaskMemAlloc",
+            "CoTaskMemFree",
+            "CoCreateFreeThreadedMarshaler",
+            "RoGetAgileReference",
+            "CoIncrementMTAUsage"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoInitializeEx",
+            "CoCreateInstance",
+            "CoGetClassObject",
+            "CoUninitialize",
+            "CoGetApartmentType",
+            "CoGetMalloc",
+            "PropVariantClear",
+            "ReleaseStgMedium"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-l1-1-0.dll",
+          "symbols": [
+            "RoInitialize",
+            "RoGetActivationFactory",
+            "RoUninitialize"
+          ]
+        },
+        {
+          "dll": "api-ms-win-appmodel-runtime-l1-1-3.dll",
+          "symbols": [
+            "GetCurrentPackageInfo2"
+          ]
+        },
+        {
+          "dll": "advapi32.dll",
+          "symbols": [
+            "RegCloseKey",
+            "CloseServiceHandle",
+            "CredFree"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "RtlNtStatusToDosError",
+            "NtWriteFile",
+            "NtQueryInformationFile"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-error-l1-1-0.dll",
+          "symbols": [
+            "RoOriginateErrorW"
+          ]
+        },
+        {
+          "dll": "bcryptprimitives.dll",
+          "symbols": [
+            "ProcessPrng"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "InitializeSListHead",
+            "FlushInstructionCache",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "GetEnvironmentVariableW",
+            "WriteConsoleW",
+            "MultiByteToWideChar",
+            "GetConsoleOutputCP",
+            "GetConsoleMode",
+            "GetStdHandle",
+            "RtlVirtualUnwind",
+            "WideCharToMultiByte",
+            "lstrlenW",
+            "RtlLookupFunctionEntry",
+            "RtlCaptureContext",
+            "GetCurrentDirectoryW"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "memset",
+            "__CxxFrameHandler3",
+            "memcpy",
+            "memcmp",
+            "__std_type_info_destroy_list",
+            "__C_specific_handler",
+            "_CxxThrowException",
+            "memmove"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "malloc",
+            "free"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "wcslen",
+            "strlen"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_configure_narrow_argv",
+            "_cexit",
+            "_initialize_narrow_environment",
+            "_initialize_onexit_table",
+            "_execute_onexit_table",
+            "_seh_filter_dll",
+            "_initterm_e",
+            "_initterm",
+            "abort"
+          ]
+        }
+      ],
+      "delay": []
+    },
+    {
+      "stage": "after",
+      "filename": "dynwinrt.cp313-win_arm64.pyd",
+      "sha256": "b62df20c9b213a3c5faec32334aa61781a0e756d2782e49e8b24d76ef49e5985",
+      "machine": "ARM64",
+      "profile": "release",
+      "testHooks": false,
+      "ordinary": [
+        {
+          "dll": "oleaut32.dll",
+          "symbols": [
+            "VariantInit",
+            "SafeArrayDestroy",
+            "SafeArrayUnaccessData",
+            "SafeArrayGetElemsize",
+            "SysStringLen",
+            "GetErrorInfo",
+            "SafeArrayAccessData",
+            "SafeArrayGetVartype",
+            "SafeArrayGetUBound",
+            "SysFreeString",
+            "SafeArrayGetDim",
+            "VariantClear",
+            "SetErrorInfo",
+            "SafeArrayGetIID",
+            "SafeArrayGetLBound"
+          ]
+        },
+        {
+          "dll": "kernel32.dll",
+          "symbols": [
+            "VirtualFree",
+            "VirtualQuery",
+            "GetProcessHeap",
+            "HeapFree",
+            "VirtualAlloc",
+            "Sleep",
+            "FindClose",
+            "LoadLibraryExA",
+            "CreateThread",
+            "HeapReAlloc",
+            "FindFirstFileExW",
+            "FormatMessageW",
+            "GlobalLock",
+            "DisableThreadLibraryCalls",
+            "GetFileInformationByHandle",
+            "CreateFileW",
+            "GetModuleHandleA",
+            "SetThreadStackGuarantee",
+            "GetCurrentThread",
+            "GetModuleHandleW",
+            "GlobalSize",
+            "GetLastError",
+            "WaitForSingleObject",
+            "LoadLibraryExW",
+            "ReleaseMutex",
+            "CloseHandle",
+            "CreateMutexA",
+            "GetCurrentProcessId",
+            "LoadLibraryA",
+            "WaitForSingleObjectEx",
+            "GetCurrentThreadId",
+            "FreeLibrary",
+            "GetModuleFileNameW",
+            "GetModuleHandleExW",
+            "GlobalUnlock",
+            "SetLastError",
+            "GetCurrentProcess",
+            "HeapAlloc",
+            "GetFullPathNameW",
+            "LoadLibraryW",
+            "GetProcAddress",
+            "GetComputerNameW",
+            "GetFileInformationByHandleEx"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-synch-l1-2-0.dll",
+          "symbols": [
+            "WakeByAddressSingle",
+            "WaitOnAddress",
+            "WakeByAddressAll"
+          ]
+        },
+        {
+          "dll": "combase.dll",
+          "symbols": [
+            "CoCreateFreeThreadedMarshaler",
+            "CoTaskMemFree",
+            "CoIncrementMTAUsage",
+            "CoTaskMemAlloc"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-l1-1-0.dll",
+          "symbols": [
+            "RoUninitialize",
+            "RoGetActivationFactory",
+            "RoInitialize"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoGetApartmentType",
+            "ReleaseStgMedium",
+            "PropVariantClear"
+          ]
+        },
+        {
+          "dll": "api-ms-win-appmodel-runtime-l1-1-3.dll",
+          "symbols": [
+            "GetCurrentPackageInfo2"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "RtlNtStatusToDosError",
+            "NtWriteFile"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-error-l1-1-0.dll",
+          "symbols": [
+            "RoOriginateErrorW"
+          ]
+        },
+        {
+          "dll": "python313.dll",
+          "symbols": [
+            "PyByteArray_AsString",
+            "PyByteArray_Size",
+            "PyBytes_AsString",
+            "PyBytes_Size",
+            "PyInterpreterState_Get",
+            "PyInterpreterState_Main",
+            "PyModule_Type",
+            "PyModule_GetDict",
+            "PyBaseObject_Type",
+            "PyObject_ClearWeakRefs",
+            "PyException_GetTraceback",
+            "PyTraceBack_Print",
+            "PyUnicode_Type",
+            "PyType_GetQualName",
+            "PyObject_Str",
+            "Py_IsInitialized",
+            "Py_IsFinalizing",
+            "PyGILState_Ensure",
+            "PyErr_GetRaisedException",
+            "PyUnicode_AsEncodedString",
+            "PyExc_TypeError",
+            "PyErr_SetString",
+            "PyErr_SetObject",
+            "PyType_GetName",
+            "PyExc_SystemError",
+            "PyErr_PrintEx",
+            "PyUnicode_InternInPlace",
+            "PyObject_Repr",
+            "Py_CompileStringExFlags",
+            "PyImport_AddModuleRef",
+            "PyEval_GetBuiltins",
+            "PyDict_SetDefaultRef",
+            "PyEval_EvalCode",
+            "PyException_SetCause",
+            "PyException_SetTraceback",
+            "PyObject_SetAttrString",
+            "PyType_Modified",
+            "PyExc_ValueError",
+            "PyObject_GenericGetDict",
+            "PyObject_GenericSetDict",
+            "PyType_FromSpec",
+            "PyLong_FromSsize_t",
+            "PyObject_GetItem",
+            "PyObject_SetItem",
+            "PyObject_DelItem",
+            "PyList_Type",
+            "PyObject_SetAttr",
+            "PyOS_FSPath",
+            "PyUnicode_AsWideChar",
+            "PyLong_Type",
+            "PyNumber_Index",
+            "PyLong_AsUnsignedLongLong",
+            "PyModule_GetNameObject",
+            "PyCMethod_New",
+            "PyBool_Type",
+            "PyType_GetModuleName",
+            "PyUnicode_EqualToUTF8AndSize",
+            "PyObject_IsTrue",
+            "PyDict_New",
+            "PyDict_SetItem",
+            "PyObject_VectorcallDict",
+            "PyByteArray_Type",
+            "PyBytes_Type",
+            "PyBytes_FromStringAndSize",
+            "PyLong_AsLongLong",
+            "PyLong_FromNativeBytes",
+            "PyLong_AsLong",
+            "_Py_TrueStruct",
+            "_Py_FalseStruct",
+            "PyCallable_Check",
+            "PyDict_Type",
+            "_Py_NoneStruct",
+            "PyExc_OSError",
+            "PyExc_OverflowError",
+            "PyExc_BaseException",
+            "PyExc_RuntimeError",
+            "PyExc_IndexError",
+            "PyErr_GivenExceptionMatches",
+            "PyExc_AttributeError",
+            "PyObject_Call",
+            "PyObject_Vectorcall",
+            "PyFloat_AsDouble",
+            "PyFloat_Type",
+            "PyTuple_Type",
+            "PyTuple_New",
+            "PyErr_WriteUnraisable",
+            "PyType_Type",
+            "PyErr_NewExceptionWithDoc",
+            "PyExc_Exception",
+            "PyLong_FromLongLong",
+            "PyLong_FromUnsignedLongLong",
+            "PyLong_FromLong",
+            "PyFloat_FromDouble",
+            "PyObject_GetAttr",
+            "PyUnicode_FromWideChar",
+            "PyGILState_Release",
+            "PyObject_GC_UnTrack",
+            "PyErr_Occurred",
+            "PyType_IsSubtype",
+            "PyIter_Next",
+            "PyObject_GetIter",
+            "PyObject_Size",
+            "PySequence_Check",
+            "PyErr_SetRaisedException",
+            "PyEval_SaveThread",
+            "PyObject_CallOneArg",
+            "PyObject_VectorcallMethod",
+            "PyList_Append",
+            "PyList_New",
+            "PyDict_Next",
+            "PyUnicode_AsUTF8AndSize",
+            "PyEval_RestoreThread",
+            "_Py_Dealloc",
+            "PyImport_Import",
+            "PyUnicode_FromStringAndSize",
+            "PyModuleDef_Init",
+            "PyObject_CallNoArgs"
+          ]
+        },
+        {
+          "dll": "bcryptprimitives.dll",
+          "symbols": [
+            "ProcessPrng"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "GetSystemInfo",
+            "InitializeSListHead",
+            "GetCurrentDirectoryW",
+            "RtlCaptureContext",
+            "GetSystemTimeAsFileTime",
+            "RtlLookupFunctionEntry",
+            "lstrlenW",
+            "WideCharToMultiByte",
+            "RtlVirtualUnwind",
+            "GetStdHandle",
+            "GetConsoleMode",
+            "GetConsoleOutputCP",
+            "MultiByteToWideChar",
+            "WriteConsoleW",
+            "GetEnvironmentVariableW",
+            "QueryPerformanceFrequency",
+            "QueryPerformanceCounter",
+            "FlushInstructionCache"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "__C_specific_handler",
+            "__CxxFrameHandler3",
+            "memcpy",
+            "memcmp",
+            "memset",
+            "memmove",
+            "_CxxThrowException",
+            "__std_type_info_destroy_list"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "malloc",
+            "free"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "wcslen"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-math-l1-1-0.dll",
+          "symbols": [
+            "pow"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_initterm_e",
+            "_initterm",
+            "_configure_narrow_argv",
+            "_initialize_narrow_environment",
+            "_initialize_onexit_table",
+            "_execute_onexit_table",
+            "_cexit",
+            "abort",
+            "_seh_filter_dll"
+          ]
+        }
+      ],
+      "delay": []
+    },
+    {
+      "stage": "after",
+      "filename": "after-x64.node",
+      "sha256": "6fc3c954c6dc031a650ee3d93e1745b31a553401d3e69bc4a4c383e051b97406",
+      "machine": "x64",
+      "profile": "release",
+      "testHooks": false,
+      "ordinary": [
+        {
+          "dll": "oleaut32.dll",
+          "symbols": [
+            "SafeArrayGetElemsize",
+            "SafeArrayGetLBound",
+            "SafeArrayGetUBound",
+            "SafeArrayAccessData",
+            "SafeArrayGetVartype",
+            "SafeArrayUnaccessData",
+            "SafeArrayCopy",
+            "SysAllocStringLen",
+            "VariantCopy",
+            "SysStringLen",
+            "SafeArrayCreateEx",
+            "SafeArrayCreate",
+            "VariantClear",
+            "SysFreeString",
+            "SafeArrayGetIID",
+            "SafeArrayDestroy",
+            "VariantInit",
+            "SafeArrayGetDim",
+            "SetErrorInfo",
+            "CreateErrorInfo",
+            "GetErrorInfo"
+          ]
+        },
+        {
+          "dll": "kernel32.dll",
+          "symbols": [
+            "WriteFile",
+            "ReadFile",
+            "GetModuleHandleW",
+            "GetFullPathNameW",
+            "SetLastError",
+            "SwitchToThread",
+            "WaitForSingleObjectEx",
+            "LoadLibraryA",
+            "GetCurrentProcessId",
+            "CreateMutexA",
+            "ReleaseMutex",
+            "GetWindowsDirectoryW",
+            "HeapAlloc",
+            "LoadLibraryW",
+            "GetCurrentThread",
+            "GetComputerNameW",
+            "GetModuleHandleA",
+            "CreateFileW",
+            "GetFileInformationByHandle",
+            "GetFileInformationByHandleEx",
+            "FindFirstFileExW",
+            "FindClose",
+            "LoadLibraryExA",
+            "CreateIoCompletionPort",
+            "Sleep",
+            "VirtualAlloc",
+            "VirtualFree",
+            "VirtualQuery",
+            "WaitForSingleObject",
+            "GetOverlappedResult",
+            "LocalFree",
+            "GetCurrentProcess",
+            "CancelIoEx",
+            "CreateThread",
+            "CloseHandle",
+            "GetSystemInfo",
+            "FormatMessageW",
+            "GlobalSize",
+            "GlobalUnlock",
+            "GlobalLock",
+            "HeapReAlloc",
+            "GetQueuedCompletionStatus",
+            "SetThreadStackGuarantee",
+            "GetCurrentThreadId",
+            "HeapFree",
+            "GetProcessHeap",
+            "LoadLibraryExW",
+            "GetModuleHandleExW",
+            "GetProcAddress",
+            "GetLastError",
+            "FreeLibrary",
+            "GetSystemTimeAsFileTime",
+            "DisableThreadLibraryCalls",
+            "GlobalFree",
+            "GlobalAlloc"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-synch-l1-2-0.dll",
+          "symbols": [
+            "WakeByAddressSingle",
+            "WakeByAddressAll",
+            "WaitOnAddress"
+          ]
+        },
+        {
+          "dll": "combase.dll",
+          "symbols": [
+            "CoTaskMemFree",
+            "RoGetAgileReference",
+            "CoCreateFreeThreadedMarshaler",
+            "CoIncrementMTAUsage",
+            "CoTaskMemAlloc"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoInitializeEx",
+            "CoCreateInstance",
+            "CoGetClassObject",
+            "CoUninitialize",
+            "CoGetApartmentType",
+            "CoGetMalloc",
+            "PropVariantClear",
+            "ReleaseStgMedium"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-l1-1-0.dll",
+          "symbols": [
+            "RoGetActivationFactory",
+            "RoUninitialize",
+            "RoInitialize"
+          ]
+        },
+        {
+          "dll": "api-ms-win-appmodel-runtime-l1-1-3.dll",
+          "symbols": [
+            "GetCurrentPackageInfo2"
+          ]
+        },
+        {
+          "dll": "advapi32.dll",
+          "symbols": [
+            "CloseServiceHandle",
+            "CredFree",
+            "RegCloseKey"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "RtlNtStatusToDosError",
+            "NtWriteFile",
+            "NtQueryInformationFile"
+          ]
+        },
+        {
+          "dll": "api-ms-win-core-winrt-error-l1-1-0.dll",
+          "symbols": [
+            "RoOriginateErrorW"
+          ]
+        },
+        {
+          "dll": "bcryptprimitives.dll",
+          "symbols": [
+            "ProcessPrng"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "InitializeSListHead",
+            "RtlCaptureContext",
+            "RtlLookupFunctionEntry",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "GetEnvironmentVariableW",
+            "WriteConsoleW",
+            "MultiByteToWideChar",
+            "GetConsoleOutputCP",
+            "GetConsoleMode",
+            "GetStdHandle",
+            "WideCharToMultiByte",
+            "RtlVirtualUnwind",
+            "lstrlenW",
+            "GetCurrentDirectoryW"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "memcpy",
+            "memmove",
+            "memset",
+            "memcmp",
+            "_CxxThrowException",
+            "__C_specific_handler",
+            "__std_type_info_destroy_list",
+            "__CxxFrameHandler3"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "malloc",
+            "free"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-math-l1-1-0.dll",
+          "symbols": [
+            "trunc"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "strlen",
+            "wcslen"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_initialize_narrow_environment",
+            "_initialize_onexit_table",
+            "_configure_narrow_argv",
+            "_seh_filter_dll",
+            "_initterm_e",
+            "_initterm",
+            "abort",
+            "_execute_onexit_table",
+            "_cexit"
+          ]
+        }
+      ],
+      "delay": []
+    }
+  ],
+  "observations": [
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "host",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "winrt-data",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:primitive",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:projection-import",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:apartment",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:uri",
+          "moduleCount": 39,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "clbcatq.dll",
+            "dynwinrt.win32-arm64-msvc.node",
+            "iertutil.dll",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:cleanup",
+          "moduleCount": 39,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "clbcatq.dll",
+            "dynwinrt.win32-arm64-msvc.node",
+            "iertutil.dll",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "registration",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com-unsafe",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "com:owned-gdi-signature-registered",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "window",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com-unsafe",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "ui:hidden-window",
+          "moduleCount": 38,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "msctf.dll",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:root",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:com",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:win32",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:root,com,win32",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:com,win32,root",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "node",
+      "scenario": "imports:win32,root,com",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "python",
+      "scenario": "host",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "python",
+      "scenario": "import",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "baseline",
+      "language": "python",
+      "scenario": "winrt-data",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:primitive",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:projection-import",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:apartment",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:uri",
+          "moduleCount": 30,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "clbcatq.dll",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "iertutil.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:cleanup",
+          "moduleCount": 30,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "clbcatq.dll",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "iertutil.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "host",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "winrt-data",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:primitive",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:projection-import",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:apartment",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:uri",
+          "moduleCount": 39,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "clbcatq.dll",
+            "dynwinrt.win32-arm64-msvc.node",
+            "iertutil.dll",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "winrt:cleanup",
+          "moduleCount": 39,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "clbcatq.dll",
+            "dynwinrt.win32-arm64-msvc.node",
+            "iertutil.dll",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "registration",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com-unsafe",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "com:owned-gdi-signature-registered",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "window",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com-unsafe",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "ui:hidden-window",
+          "moduleCount": 38,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "msctf.dll",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:root",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:com",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:win32",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:root,com,win32",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:com,win32,root",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "node",
+      "scenario": "imports:win32,root,com",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 35,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:win32",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        },
+        {
+          "phase": "import:com",
+          "moduleCount": 37,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "dynwinrt.win32-arm64-msvc.node",
+            "vcruntime140.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "python",
+      "scenario": "host",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "python",
+      "scenario": "import",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "after",
+      "language": "python",
+      "scenario": "winrt-data",
+      "exit": 0,
+      "timedOut": false,
+      "phases": [
+        {
+          "phase": "host",
+          "moduleCount": 15,
+          "scopedModules": [
+            "ntdll.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": []
+        },
+        {
+          "phase": "import:root",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:primitive",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:projection-import",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:apartment",
+          "moduleCount": 28,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:uri",
+          "moduleCount": 30,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "clbcatq.dll",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "iertutil.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        },
+        {
+          "phase": "winrt:cleanup",
+          "moduleCount": 30,
+          "scopedModules": [
+            "combase.dll",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "imm32.dll",
+            "ntdll.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "user32.dll",
+            "win32u.dll",
+            "ws2_32.dll"
+          ],
+          "addedSinceHost": [
+            "_uuid.pyd",
+            "clbcatq.dll",
+            "combase.dll",
+            "dynwinrt.cp313-win_arm64.pyd",
+            "gdi32.dll",
+            "gdi32full.dll",
+            "iertutil.dll",
+            "imm32.dll",
+            "kernel.appcore.dll",
+            "msvcp_win.dll",
+            "ole32.dll",
+            "oleaut32.dll",
+            "python3.dll",
+            "user32.dll",
+            "win32u.dll"
+          ]
+        }
+      ]
+    }
+  ],
+  "regressions": [
+    {
+      "name": "ARM64 scoped native behavior",
+      "command": "cargo test --locked --offline -p dynwinrt --lib -- system_helpers com::gdi_cleanup_tests dispatcher_queue::core_messaging xaml_application::tests::enables_per_monitor_v2",
+      "result": "20 passed; 0 failed;",
+      "log": "scoped-core-tests.log",
+      "logSha256": "394b279a0883e759034d185779cd88d90be4ced969c08363ec2aaa3014aeb731"
+    },
+    {
+      "name": "x64 scoped native behavior (Windows ARM emulation)",
+      "command": "cargo test --locked --offline -p dynwinrt --target x86_64-pc-windows-msvc --lib -- system_helpers com::gdi_cleanup_tests dispatcher_queue::core_messaging xaml_application::tests::enables_per_monitor_v2",
+      "result": "20 passed; 0 failed;",
+      "log": "scoped-core-x64-emulation-tests.log",
+      "logSha256": "352623cdaddd9622f792817595f595dc49f598b8dd359484e1a9175b4eab91f1"
+    },
+    {
+      "name": "i686 scoped native behavior (Windows ARM emulation)",
+      "command": "cargo test --locked --offline -p dynwinrt --target i686-pc-windows-msvc --lib -- system_helpers com::gdi_cleanup_tests dispatcher_queue::core_messaging xaml_application::tests::enables_per_monitor_v2",
+      "result": "20 passed; 0 failed;",
+      "log": "scoped-core-i686-emulation-tests.log",
+      "logSha256": "91ce18d28d15700fc80376d1e1f4875eaecb90c0b81df392d462b5309300f2fa"
+    },
+    {
+      "name": "JS native ownership boundaries",
+      "command": "cargo test --locked --offline -p jswinrt_rs --lib -- delete_object bitmap raw_cleanup raw_ui_cleanup",
+      "result": "9 passed; 0 failed;",
+      "log": "scoped-js-native-tests.log",
+      "logSha256": "0898b53f8709f2e675b462277e60cfaf9ed532a8471eeea930fa17a50d4e15c0"
+    },
+    {
+      "name": "WinRT generated snapshots",
+      "command": "cargo test --locked --offline -p dynwinrt-codegen --test snapshot_test",
+      "result": "6 passed; 0 failed;",
+      "log": "winrt-snapshot-tests.log",
+      "logSha256": "19c9f5cfa92c4a74df1ae436586df916b9e5b773263316e798477bcdee10caf8"
+    },
+    {
+      "name": "PE reader and import policies",
+      "command": "npx --no-install ava __test__\\pe-imports.spec.ts",
+      "result": "128 tests passed",
+      "log": "pe-policy-tests.log",
+      "logSha256": "98eabf1994e9c8d64a2697c84d257e55fd46a81103aa7530688d5f178f90ed96"
+    },
+    {
+      "name": "Production import gates",
+      "command": "npx --no-install ava __test__\\native-imports.spec.ts __test__\\win32-imports.spec.ts",
+      "result": "8 tests passed",
+      "log": "production-import-gates.log",
+      "logSha256": "124fed00a8ff8a6e631950d3da1152e29c59bd856632c1ced84fcdaa0d13dd23"
+    },
+    {
+      "name": "CI environment and artifact wiring",
+      "command": "python -m unittest test_ci.WorkflowTests test_ci.NativeImportGateTests -v",
+      "result": "Ran 6 tests",
+      "log": "ci-import-gate-tests.log",
+      "logSha256": "0de7937a45e901fe3e1611570f0c1e3a300d324990f55961556ef834c17fcf53"
+    },
+    {
+      "name": "Generated stock WIC Classic COM call",
+      "command": "node .\\tests\\e2e\\runners\\com\\wic-imaging-factory.mjs",
+      "result": "wic-imaging-factory ok",
+      "log": "safe-com-e2e.log",
+      "logSha256": "cd108a59efd76f170fa5f5591a21dc2c1ca9e7a880df13ed44d7738044cbda4f"
+    },
+    {
+      "name": "Production package and flat Win32 call",
+      "command": "node .\\bindings\\js\\scripts\\verify-runtime-artifact.mjs .\\bindings\\js\\dist",
+      "result": "Verified 6 downloaded runtime entrypoints",
+      "log": "production-package-win32-e2e.log",
+      "logSha256": "c4ac0c8d42c7fcb3a5727cac0800a201de655980e2de3d92a65b85a23821bcd1"
+    }
+  ]
+}

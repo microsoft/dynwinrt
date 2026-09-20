@@ -5,7 +5,7 @@ import test from 'ava'
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { verifyDispatcherQueueImports } from '../scripts/pe-imports.mjs'
+import { verifyDispatcherQueueImports, verifyUiHelperImports } from '../scripts/pe-imports.mjs'
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url))
 const distDir = join(packageDir, 'dist')
@@ -33,6 +33,10 @@ test('fresh import timeout diagnostics retain phase output alongside the spawn e
 
 test('native addons do not statically import CoreMessaging or CreateDispatcherQueueController', (t) => {
   t.true(verifyDispatcherQueueImports(distDir).length > 0)
+})
+
+test('production native addons have no ordinary or delay GDI/USER32 helper imports', (t) => {
+  t.true(verifyUiHelperImports(distDir).length > 0)
 })
 
 for (const entrypoint of ['@microsoft/dynwinrt', '@microsoft/dynwinrt/com']) {

@@ -2,15 +2,18 @@
 // Licensed under the MIT License.
 
 import test from 'ava'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   assertNoDispatcherQueueImports,
   assertNoEagerWin32Imports,
+  assertNoUiHelperImports,
   readPeImports,
   verifyAddonImports,
   verifyDispatcherQueueImports,
+  verifyUiHelperImports,
 } from '../scripts/pe-imports.mjs'
 
 function fixture(wide: boolean) {
@@ -506,6 +509,89 @@ test('Win32 DispatcherQueue verification scans every addon including ARM64 delay
     })
     writeFileSync(join(directory, extra), Buffer.from('MZ'))
     t.throws(() => verifyDispatcherQueueImports(directory), { message: /EXTRA\.NODE: Invalid PE import table/ })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('UI helper policy rejects DLL descriptors and scoped exports without banning OLEAUT32', (t) => {
+  for (const dll of ['GDI32.dll', 'user32.dll', 'C:\\Windows\\System32\\UsEr32.DlL']) {
+    for (const symbols of [['UnrelatedExport'], [17], []]) {
+      t.throws(() => assertNoUiHelperImports([{ dll, symbols }]), { message: /GDI\/USER32.*dynamically/ })
+    }
+  }
+  for (const symbol of [
+    'DeleteObject',
+    'DestroyIcon',
+    'CreateWindowExW',
+    'AreDpiAwarenessContextsEqual',
+    'GetDpiAwarenessContextForProcess',
+    'SetProcessDpiAwarenessContext',
+    'SetThreadDpiAwarenessContext',
+  ]) {
+    for (const spelling of [symbol, symbol.toLowerCase(), `_${symbol}@8`, `__imp_${symbol}`]) {
+      t.throws(() => assertNoUiHelperImports([{ dll: 'api-alias.dll', symbols: [spelling] }]), {
+        message: /api-alias\.dll:/,
+      })
+    }
+  }
+  t.notThrows(() =>
+    assertNoUiHelperImports([
+      { dll: 'kernel32.dll', symbols: ['LoadLibraryExW', 'GetProcAddress'] },
+      { dll: 'oleaut32.dll', symbols: ['SysAllocStringLen', 'VariantClear', 'SafeArrayDestroy'] },
+      { dll: 'ole32.dll', symbols: ['CoInitializeEx'] },
+      { dll: 'combase.dll', symbols: ['RoInitialize'] },
+    ]),
+  )
+})
+
+for (const wide of [false, true]) {
+  for (const delayed of [false, true]) {
+    test(`UI helper policy inspects ${wide ? 'PE32+' : 'PE32'} ${delayed ? 'delay' : 'ordinary'} tables`, (t) => {
+      const { bytes, writeThunk, width } = delayFixture(wide)
+      // Start with unrelated DLLs in both directories.
+      bytes.write('other.dll\0', 0x450)
+      const name = delayed ? 0x490 : 0x760
+      const symbol = delayed ? 0x522 : 0x782
+      const lookup = delayed ? 0x3a0 : 0x2a0
+      const options = { includeDelayImports: true }
+      t.notThrows(() => assertNoUiHelperImports(readPeImports(bytes, options)))
+      bytes.write('gdi32.dll\0', name)
+      writeThunk(lookup, (1n << BigInt(width * 8 - 1)) | 17n)
+      t.throws(() => assertNoUiHelperImports(readPeImports(bytes, options)), { message: /gdi32\.dll: #17/ })
+      bytes.write('alias.dll\0', name)
+      writeThunk(lookup, BigInt(delayed ? 0x2320 : 0x4080))
+      bytes.write('_SetThreadDpiAwarenessContext@4\0', symbol)
+      t.throws(() => assertNoUiHelperImports(readPeImports(bytes, options)), { message: /alias\.dll: _SetThread/ })
+    })
+  }
+}
+
+test('UI helper production checks scan every architecture and Python extensions without loading them', (t) => {
+  const directory = mkdtempSync(fileURLToPath(new URL('../target-pe-imports-', import.meta.url)))
+  const safe = fixture(true)
+  safe.bytes.write('ole32.dll\0', 0x760)
+  const forbidden = delayFixture(true)
+  forbidden.bytes.writeUInt16LE(0xaa64, 0x84)
+  const x64 = 'dynwinrt.win32-x64-msvc.node'
+  const arm64 = 'dynwinrt.win32-arm64-msvc.node'
+  const script = fileURLToPath(new URL('../scripts/check-ui-helper-imports.mjs', import.meta.url))
+  const pyd = join(directory, 'dynwinrt.cp313-win_arm64.pyd')
+  try {
+    t.throws(() => verifyUiHelperImports(directory), { message: /No native addons/ })
+    writeFileSync(join(directory, x64), safe.bytes)
+    writeFileSync(join(directory, arm64), forbidden.bytes)
+    t.throws(() => verifyUiHelperImports(directory), { message: /arm64-msvc\.node:.*GDI\/USER32/ })
+    writeFileSync(join(directory, arm64), safe.bytes)
+    t.deepEqual(verifyUiHelperImports(directory), [arm64, x64])
+    writeFileSync(pyd, safe.bytes)
+    t.is(spawnSync(process.execPath, [script, pyd], { encoding: 'utf8' }).status, 0)
+    writeFileSync(pyd, forbidden.bytes)
+    const child = spawnSync(process.execPath, [script, pyd], { encoding: 'utf8' })
+    t.not(child.status, 0)
+    t.regex(child.stderr, /GDI\/USER32/)
+    writeFileSync(join(directory, arm64), Buffer.from('MZ'))
+    t.throws(() => verifyUiHelperImports(directory), { message: /arm64-msvc\.node: Invalid PE import table/ })
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

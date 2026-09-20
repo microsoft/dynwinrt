@@ -16,6 +16,8 @@ mod property_value;
 mod result;
 mod roapi;
 mod signature;
+#[doc(hidden)]
+pub mod system_helpers;
 mod value;
 pub mod win32;
 mod winapp;

@@ -9,5 +9,7 @@ export interface PeImport {
 export function readPeImports(bytes: Buffer, options?: { includeDelayImports?: boolean }): PeImport[]
 export function assertNoEagerWin32Imports(imports: PeImport[], options?: { testHooks?: boolean }): void
 export function assertNoDispatcherQueueImports(imports: PeImport[]): void
+export function assertNoUiHelperImports(imports: PeImport[]): void
 export function verifyAddonImports(directory: string, options?: { testHooksAddon?: string }): string[]
 export function verifyDispatcherQueueImports(directory: string): string[]
+export function verifyUiHelperImports(directory: string): string[]

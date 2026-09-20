@@ -24,6 +24,10 @@ Both entrypoints use the same native N-API binary and private libffi call
 machinery. Classic COM metadata, generated wrappers, ownership rules, and
 public APIs remain separate from the WinRT projection.
 
+The [lazy GDI/USER32 helper boundary](lazy-system-helpers.md) removes those
+direct production PE dependencies without changing ownership or promising
+transitive DLL isolation.
+
 The private Node storage, value-sidecar and registration boundaries are described
 in [JavaScript binding internals](javascript-binding-internals.md). Sharing JS
 backing-store protection does not share COM ownership or ABI semantics.
