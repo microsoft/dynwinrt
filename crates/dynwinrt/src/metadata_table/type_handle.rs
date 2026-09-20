@@ -58,6 +58,15 @@ impl TypeHandle {
 
     /// Add a method to this interface. Only valid for Interface types.
     /// Returns self for chaining.
+    ///
+    /// Every parameter type must belong to this interface's MetadataTable,
+    /// including when the method name is already registered. The signature's
+    /// constructor table need not match if its actual parameter types do.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this is not an interface or a parameter belongs to another
+    /// table. Foreign parameters are rejected before changing the method table.
     pub fn add_method(self, name: &str, sig: MethodSignature) -> Self {
         match self.kind {
             TypeKind::Interface(iid) => {

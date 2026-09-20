@@ -49,6 +49,23 @@ for structs, enums, and runtime classes, so an interface cannot alias or replace
 one of those named types. JavaScript and Python use this same core registry;
 generated public names and the separate Classic COM registry are unchanged.
 
+Registered method parameter types must belong to the destination
+`MetadataTable`. Passing a foreign-table parameter to `TypeHandle::add_method`
+panics before changing or locking the method table, even for a duplicate method
+name. The signature's constructor table may differ when every actual parameter
+is local; zero-parameter signatures are also accepted. Standalone
+`MethodSignature::build` calls retain their existing cross-table behavior.
+
+The registry stores local type kinds and immutable prepared ABI plans, not
+owning parameter handles. Each external `MethodHandle` binds those kinds to
+strong type handles once at lookup and keeps its registry alive, including for
+zero-parameter methods. Clones share the bound method; separate lookups share
+the prepared plan. Calls do not rebuild the CIF or hold a registry lock.
+Public type handles, signatures, and typed results retain their normal strong
+ownership. An independent registry and its prepared plans can therefore be
+released after the last external owner drops, without an internal reference
+cycle. The JavaScript and Python global registry lifetime is unchanged.
+
 ## Native object model
 
 The canonical identity is an IInspectable-rooted allocation. Every interface
