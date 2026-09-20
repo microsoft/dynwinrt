@@ -1004,6 +1004,30 @@ fn class_companion_metadata(path: &Path, peer_name: &str) {
     fs::write(path, file.into_stream()).unwrap();
 }
 
+fn inline_struct_companion_metadata(path: &Path, leaf: &str) {
+    let mut file = writer::File::new("PythonInlineStructCompanions");
+    structure(&mut file, "Audit", leaf, &[("Value", Type::I32)]);
+    structure(
+        &mut file,
+        "Audit",
+        "Holder",
+        &[("Item", Type::named("Audit", leaf))],
+    );
+    interface(&mut file, "Audit", "IWidget", 0x51931801);
+    for (name, target) in [("Echo", "Holder"), ("EchoLeaf", leaf)] {
+        let target = Type::named("Audit", target);
+        method(
+            &mut file,
+            name,
+            target.clone(),
+            &[("value", target, ParamAttributes::In)],
+        );
+    }
+    runtime_class(&mut file, "Widget", "IWidget");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
+}
+
 fn metadata(path: &Path) {
     let mut file = writer::File::new("PythonSymbolMapping");
     let alpha = Type::named("Alpha", "URLValue");
@@ -3066,6 +3090,179 @@ assert {view}._dynwinrt_interface_iid.to_string() == WinGUID.parse("{iid}").to_s
                     ),
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn python_inline_struct_companions_share_declarations_defaults_and_native_conversions() {
+    for leaf in ["WidgetLike", "_IWidgetIdentity", "WidgetPeer"] {
+        for packaged in [false, true] {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let winmd = fixture.0.join("metadata").join("Input.winmd");
+            inline_struct_companion_metadata(&winmd, leaf);
+            let class = meta::parse_class(winmd.to_str().unwrap(), "Audit", "Widget").unwrap();
+            let interface = class.default_interface.as_ref().unwrap();
+            let structs = python::package_structs(std::slice::from_ref(&class), &[]);
+            assert_eq!(structs.len(), 2);
+            let context = python::PythonProjectionContext::new(
+                [class_identity(&class), interface.type_identity()]
+                    .into_iter()
+                    .chain(structs.iter().map(TypeMeta::type_identity)),
+                packaged,
+            )
+            .unwrap();
+            if packaged {
+                generate(&winmd, &package, "Audit.Widget,Audit.IWidget");
+            } else {
+                module(
+                    &package,
+                    "audit__widget",
+                    python::generate_class(&context, &class, &Default::default()),
+                    python_stub::generate_class_stub(&context, &class, &Default::default()),
+                );
+                module(
+                    &package,
+                    "audit__i_widget",
+                    python::generate_interface(&context, interface),
+                    python_stub::generate_interface_stub(&context, interface),
+                );
+                support(&package, &[]);
+            }
+            let suffix = python::to_snake_case_filename(leaf);
+            let mut imports = String::new();
+            for (owner, label, collision, qualified) in [
+                (
+                    "audit__widget",
+                    "Class",
+                    leaf == "WidgetLike",
+                    "Audit_WidgetLike_struct",
+                ),
+                (
+                    "audit__i_widget",
+                    "Interface",
+                    leaf == "_IWidgetIdentity",
+                    "Audit_IWidgetIdentity_struct",
+                ),
+            ] {
+                let (holder_module, leaf_module, local_leaf) = if packaged {
+                    (
+                        "audit__holder".to_string(),
+                        format!("audit__{suffix}"),
+                        leaf,
+                    )
+                } else {
+                    (
+                        owner.to_string(),
+                        owner.to_string(),
+                        if collision { qualified } else { leaf },
+                    )
+                };
+                let source = fs::read_to_string(package.join(format!("{owner}.py"))).unwrap();
+                assert!(source.contains(&format!("DynWinRTType.struct_type('Audit.{leaf}'")));
+                if !packaged {
+                    assert!(
+                        source.contains(&format!(
+                            "self.item = {local_leaf}() if item is None else item"
+                        )),
+                        "{source}"
+                    );
+                }
+                imports.push_str(&format!(
+                    "from pyviews.{holder_module} import Holder as {label}Holder, pack_holder as {label}Pack, unpack_holder as {label}Unpack\n\
+                     from pyviews.{leaf_module} import {local_leaf} as {label}Leaf, pack_{suffix} as {label}LeafPack, unpack_{suffix} as {label}LeafUnpack\n",
+                ));
+            }
+            imports.push_str(
+                "from pyviews.audit__widget import Widget\n\
+                 from pyviews.audit__i_widget import IWidget\n",
+            );
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"
+from pyviews import audit__widget, audit__i_widget
+audit__widget.Holder()
+audit__i_widget.Holder()
+{imports}
+import typing
+import dynwinrt as dw
+for Holder, Leaf, pack, unpack, pack_leaf, unpack_leaf in (
+    (ClassHolder, ClassLeaf, ClassPack, ClassUnpack, ClassLeafPack, ClassLeafUnpack),
+    (InterfaceHolder, InterfaceLeaf, InterfacePack, InterfaceUnpack, InterfaceLeafPack, InterfaceLeafUnpack),
+):
+    default = Holder()
+    other = Holder()
+    assert type(default.item) is Leaf
+    assert default.item.value == 0
+    assert default.item is not other.item
+    explicit = Holder(Leaf(17))
+    for value in (default, explicit):
+        result = unpack(pack(value).to_value())
+        assert type(result) is Holder
+        assert type(result.item) is Leaf
+        assert result == value
+    assert type(unpack_leaf(pack_leaf(Leaf(23)).to_value())) is Leaf
+    assert typing.get_type_hints(Holder.__init__)["item"] == Leaf | None
+    assert typing.get_type_hints(pack)["v"] is Holder
+    assert typing.get_type_hints(unpack)["return"] is Holder
+    assert typing.get_type_hints(pack_leaf)["v"] is Leaf
+    assert typing.get_type_hints(unpack_leaf)["return"] is Leaf
+class Handler:
+    def echo(self, value):
+        assert type(value) is InterfaceHolder
+        assert type(value.item) is InterfaceLeaf
+        return value
+    def echo_leaf(self, value):
+        assert type(value) is InterfaceLeaf
+        return value
+with dw.RoApartment(1):
+    with IWidget.implement(Handler()) as implementation:
+        assert implementation.value.echo(InterfaceHolder()).item.value == 0
+        assert implementation.value.echo_leaf(InterfaceLeaf(29)).value == 29
+        owner = Widget(implementation.value._obj)
+        try:
+            result = owner.echo(ClassHolder())
+            assert type(result) is ClassHolder
+            assert type(result.item) is ClassLeaf
+            assert result.item.value == 0
+            assert type(owner.echo_leaf(ClassLeaf(31))) is ClassLeaf
+        finally:
+            dw.release_projected(owner)
+"#,
+                ),
+            );
+            strict_typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+assert_type(ClassHolder().item, ClassLeaf)
+assert_type(InterfaceHolder().item, InterfaceLeaf)
+assert_type(ClassUnpack(ClassPack(ClassHolder()).to_value()), ClassHolder)
+assert_type(InterfaceLeafUnpack(InterfaceLeafPack(InterfaceLeaf()).to_value()), InterfaceLeaf)
+def check(owner: Widget, interface: IWidget) -> None:
+    assert_type(owner.echo(ClassHolder()), ClassHolder)
+    assert_type(owner.echo_leaf(ClassLeaf()), ClassLeaf)
+    assert_type(interface.echo(InterfaceHolder()), InterfaceHolder)
+    assert_type(interface.echo_leaf(InterfaceLeaf()), InterfaceLeaf)
+"#,
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+ClassHolder(17)
+InterfaceHolder(17)
+ClassLeafPack(ClassHolder())
+def reject(owner: Widget) -> None:
+    owner.echo(ClassLeaf())
+"#,
+                ),
+                &["[arg-type]", "[arg-type]", "[arg-type]", "[arg-type]"],
+            );
         }
     }
 }

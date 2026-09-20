@@ -134,8 +134,11 @@ Struct modules retain their public `pack_*`, `unpack_*`, and `*_TYPE` names.
 When different struct names normalize to the same helper name (for example,
 `URLValue` and `UrlValue`), consumers import those helpers under distinct
 identity-qualified aliases. Standalone interface and runtime-class modules keep
-embedded struct class names and disambiguate only colliding helper symbols;
-standalone struct modules retain aliases for imported fields. The existing
+noncolliding embedded struct class names. When an embedded type conflicts with
+an owning declaration or another visible type role, its declaration, annotations,
+nested defaults, and forward/reverse conversions use the same allocated name;
+native struct descriptors retain the original metadata identity.
+Standalone struct modules retain aliases for imported fields. The existing
 fail-closed guard for identical raw struct names in one closure remains.
 The allocator also compares helpers with actual local and imported type/marker
 symbols, not unrelated types elsewhere in the package. If a foreign type
