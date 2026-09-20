@@ -239,7 +239,7 @@ pub(super) fn project_collection_helpers(
                             },
                         ],
                         argument_kinds: vec![],
-                        return_type: format!("{}[]", elem_ts),
+                        return_type: ts_array_type(&elem_ts),
                         async_kind: AsyncKind::None,
                         is_static: false,
                         invoke_expr: String::new(),
@@ -281,7 +281,7 @@ pub(super) fn project_collection_helpers(
                             }),
                             params: vec![ProjectedParam {
                                 name: "items".into(),
-                                ts_type: format!("{}[]", elem_ts),
+                                ts_type: ts_array_type(&elem_ts),
                                 optional: false,
                                 delegate_wrap: None,
                             }],
@@ -541,7 +541,7 @@ pub(super) fn project_collection_create(
             }),
             params: vec![ProjectedParam {
                 name: "items".into(),
-                ts_type: format!("{}[]", elem_ts),
+                ts_type: ts_array_type(&elem_ts),
                 optional: false,
                 delegate_wrap: None,
             }],
@@ -620,7 +620,7 @@ pub(super) fn project_collection_create(
             }),
             params: vec![ProjectedParam {
                 name: "items".into(),
-                ts_type: format!("{}[]", elem_ts),
+                ts_type: ts_array_type(&elem_ts),
                 optional: false,
                 delegate_wrap: None,
             }],
@@ -669,8 +669,8 @@ pub(super) fn project_collection_create(
                 deprecated: None, returns: None, params: vec![],
             }),
             params: vec![
-                ProjectedParam { name: "keys".into(), ts_type: format!("{}[]", key_ts), optional: false, delegate_wrap: None },
-                ProjectedParam { name: "values".into(), ts_type: format!("{}[]", val_ts), optional: false, delegate_wrap: None },
+                ProjectedParam { name: "keys".into(), ts_type: ts_array_type(&key_ts), optional: false, delegate_wrap: None },
+                ProjectedParam { name: "values".into(), ts_type: ts_array_type(&val_ts), optional: false, delegate_wrap: None },
             ],
             argument_kinds: vec![],
             return_type: iface.name.clone(),

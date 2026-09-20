@@ -101,7 +101,7 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
         return generate_foundation_struct_helpers(context, s, kind);
     }
 
-    let (namespace, name, fields) = match s {
+    let (namespace, metadata_name, fields) = match s {
         TypeMeta::Struct {
             namespace,
             name,
@@ -110,6 +110,7 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
         _ => return String::new(),
     };
     let mut out = String::new();
+    let name = context.struct_symbol(s, PythonSymbol::Type);
     let pack = context.struct_symbol(s, PythonSymbol::Pack);
     let unpack = context.struct_symbol(s, PythonSymbol::Unpack);
     let private_pack = context.struct_symbol(s, PythonSymbol::PrivatePack);
@@ -218,7 +219,7 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
     out.push_str(&format!("{private_unpack} = {unpack}\n"));
 
     // Type constant
-    let full_name = format!("{}.{}", namespace, name);
+    let full_name = format!("{}.{}", namespace, metadata_name);
     let field_types: Vec<String> = fields.iter().map(|f| py_dynwinrt_type(&f.typ)).collect();
     out.push_str(&format!(
         "{type_constant} = DynWinRTType.struct_type('{}', [{}])\n",

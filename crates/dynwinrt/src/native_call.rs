@@ -978,28 +978,16 @@ impl AbiMethodSignature {
                 CallStrategy::Libffi(system_cif(types, self.return_kind.libffi_type()))
             };
 
-        let needs_gdi_cleanup = self
-            .parameters
-            .iter()
-            .any(|parameter| parameter.output_cleanup == OutputCleanup::DeleteObject)
-            || matches!(
-                self.return_kind,
-                MethodReturn::Value {
-                    cleanup: OutputCleanup::DeleteObject,
-                    ..
-                }
-            );
-        Method {
-            info: MethodInfo {
+        Method::from_parts(
+            MethodInfo {
                 index,
                 parameters: self.parameters,
                 input_count: self.input_count,
                 out_count: self.out_count,
                 return_kind: self.return_kind,
             },
-            strategy,
-            needs_gdi_cleanup,
-        }
+            Arc::new(PreparedCall(strategy)),
+        )
     }
 }
 
@@ -1069,10 +1057,19 @@ enum CallStrategy {
     Libffi(Cif),
 }
 
+/// Owns only the completed ABI strategy, never metadata owners or call storage.
+#[derive(Debug)]
+pub(crate) struct PreparedCall(CallStrategy);
+
+// Prepared CIFs own their type graphs and are immutable after construction.
+// ffi_call only reads them; argument and output storage is invocation-local.
+unsafe impl Send for PreparedCall {}
+unsafe impl Sync for PreparedCall {}
+
 #[derive(Debug)]
 pub struct Method {
     info: MethodInfo,
-    strategy: CallStrategy,
+    strategy: Arc<PreparedCall>,
     needs_gdi_cleanup: bool,
 }
 
@@ -1545,6 +1542,35 @@ impl Method {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn prepared_call(&self) -> &Arc<PreparedCall> {
+        &self.strategy
+    }
+
+    pub(crate) fn into_parts(self) -> (MethodInfo, Arc<PreparedCall>) {
+        (self.info, self.strategy)
+    }
+
+    /// Rebind metadata without changing the completed method's ABI shape.
+    pub(crate) fn from_parts(info: MethodInfo, strategy: Arc<PreparedCall>) -> Self {
+        let needs_gdi_cleanup = info
+            .parameters
+            .iter()
+            .any(|parameter| parameter.output_cleanup == OutputCleanup::DeleteObject)
+            || matches!(
+                info.return_kind,
+                MethodReturn::Value {
+                    cleanup: OutputCleanup::DeleteObject,
+                    ..
+                }
+            );
+        Self {
+            info,
+            strategy,
+            needs_gdi_cleanup,
+        }
+    }
+
     pub(crate) fn parameter_type(&self, parameter_index: usize) -> &ParameterType {
         &self.info.parameters[parameter_index].typ
     }
@@ -1839,7 +1865,7 @@ impl Method {
                 .expect("native dispatch marker must run exactly once")()
         };
 
-        match &self.strategy {
+        match &self.strategy.0 {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
                 mark_dispatched()?;
@@ -2343,7 +2369,7 @@ impl Method {
             ));
         }
         let invocation_args = self.prepare_com_invocation_args(args)?;
-        let CallStrategy::Libffi(cif) = &self.strategy else {
+        let CallStrategy::Libffi(cif) = &self.strategy.0 else {
             return Err(invalid_argument(
                 "native POD calls must use the prepared libffi plan",
             ));
@@ -2391,7 +2417,7 @@ impl Method {
         F: FnOnce() -> windows_core::Result<()>,
     {
         let invocation_args = self.prepare_com_invocation_args(args)?;
-        let CallStrategy::Libffi(cif) = &self.strategy else {
+        let CallStrategy::Libffi(cif) = &self.strategy.0 else {
             return Err(invalid_argument(
                 "captured HRESULT calls must use the prepared libffi plan",
             ));
@@ -2564,7 +2590,7 @@ mod tests {
                 .add_out_fill_type(ParameterType::winrt(array_type.clone()))
                 .build(0);
             assert!(matches!(
-                (&method.strategy, with_scalar),
+                (&method.strategy.0, with_scalar),
                 (CallStrategy::DirectFillArray, false) | (CallStrategy::Direct1InFillArray, true)
             ));
             args.push(WinRTValue::Array(crate::array::ArrayData::from_values(

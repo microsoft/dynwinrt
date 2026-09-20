@@ -16,7 +16,7 @@ use dynwinrt::com::completion::{
   OwnerOperation, ResultArgument, StartArgument,
 };
 use napi::{
-  bindgen_prelude::{FromNapiValue, PromiseRaw, ToNapiValue},
+  bindgen_prelude::{PromiseRaw, ToNapiValue},
   sys, Env, JsError, Status,
 };
 use napi_derive::napi;
@@ -314,12 +314,13 @@ fn dispatch(token: u64, env: sys::napi_env) -> napi::Result<()> {
         DynWinRTValue::to_napi_value(env, DynWinRTValue::new(dynwinrt::WinRTValue::Null))
       }
       .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
-      let wrapped = unsafe { <&mut DynWinRTValue>::from_napi_value(env, value) }
-        .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
-      *wrapped.winrt_mut() = dynwinrt::WinRTValue::Object(object);
-      wrapped
-        .bind_current_com_apartment()
-        .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
+      unsafe {
+        crate::native_class_ref::with_mut::<DynWinRTValue, _>(env, value, |wrapped| {
+          *wrapped.winrt_mut() = dynwinrt::WinRTValue::Object(object);
+          wrapped.bind_current_com_apartment()
+        })
+      }
+      .map_err(|error| CompletionError::contract("projection", error.to_string()))?;
       Ok(value)
     });
   match result {
@@ -400,8 +401,9 @@ pub(crate) fn start_with_plan<'env>(
   Ok(PromiseRaw::new(env.raw(), promise))
 }
 
-#[napi]
-pub struct DynComAsync;
+native_class! {
+  pub struct DynComAsync;
+}
 
 #[napi]
 impl DynComAsync {

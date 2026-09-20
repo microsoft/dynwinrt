@@ -4,6 +4,8 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
+include!(concat!(env!("OUT_DIR"), "\\native_class_tag.rs"));
+
 mod com;
 pub use com::{
   initialize_com, DynCom, DynComDispatchInvokeResult, DynComDispatchParams, DynComExcepInfo,
@@ -49,6 +51,9 @@ mod initialization;
 pub use initialization::{get_winappsdk_resource_pri_path, init_winappsdk, ro_initialize};
 pub(crate) use initialization::{set_winui_dispatcher_loop_active, winui_dispatcher_loop_exited};
 mod js_numbers;
+mod native_class_ref;
+#[cfg(feature = "test-hooks")]
+mod native_class_test_hooks;
 mod property_value;
 pub use property_value::unbox_object;
 mod winrt_types;

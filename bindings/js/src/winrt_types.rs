@@ -9,8 +9,9 @@ use std::sync::Arc;
 pub(crate) static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
   std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
 
-#[napi]
-pub struct DynWinRTType(pub(crate) dynwinrt::TypeHandle);
+native_class! {
+  pub struct DynWinRTType(pub(crate) dynwinrt::TypeHandle);
+}
 
 impl DynWinRTType {
   pub(crate) fn type_handle(&self) -> dynwinrt::TypeHandle {
@@ -228,9 +229,10 @@ impl DynWinRTType {
   }
 }
 
-#[napi]
-#[derive(Debug, Clone, Copy)]
-pub struct WinGUID(pub(crate) windows::core::GUID);
+native_class! {
+  #[derive(Debug, Clone, Copy)]
+  pub struct WinGUID(pub(crate) windows::core::GUID);
+}
 
 #[napi]
 impl WinGUID {

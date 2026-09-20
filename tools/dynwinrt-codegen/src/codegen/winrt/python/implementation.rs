@@ -357,7 +357,7 @@ impl Projector<'_> {
         if self.context.is_packaged() {
             py_runtime_type_symbol(self.context, typ, name)
         } else {
-            name.clone()
+            self.context.reference_name_for_type(typ)
         }
     }
 

@@ -6,8 +6,9 @@ use napi::{bindgen_prelude::PromiseRaw, Env};
 use napi_derive::napi;
 use windows::core::{Interface, HSTRING};
 
-#[napi]
-pub struct DynWinRTMethodSig(pub(crate) dynwinrt::MethodSignature);
+native_class! {
+  pub struct DynWinRTMethodSig(pub(crate) dynwinrt::MethodSignature);
+}
 unsafe impl Send for DynWinRTMethodSig {}
 unsafe impl Sync for DynWinRTMethodSig {}
 
@@ -41,8 +42,9 @@ impl DynWinRTMethodSig {
 // MethodHandle binding
 // ======================================================================
 
-#[napi]
-pub struct DynWinRTMethodHandle(pub(crate) dynwinrt::MethodHandle);
+native_class! {
+  pub struct DynWinRTMethodHandle(pub(crate) dynwinrt::MethodHandle);
+}
 unsafe impl Send for DynWinRTMethodHandle {}
 unsafe impl Sync for DynWinRTMethodHandle {}
 

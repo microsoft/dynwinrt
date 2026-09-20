@@ -136,18 +136,20 @@ fn callback_com_value(
   env: napi::sys::napi_env,
   value: napi::sys::napi_value,
 ) -> napi::Result<dynwinrt::com::Value> {
-  let value = unsafe { <&DynWinRTValue>::from_napi_value(env, value) }?;
-  let value = value.to_com_value()?;
-  Ok(match value {
-    dynwinrt::com::Value::Buffer(buffer) => {
-      let count = buffer.count();
-      dynwinrt::com::Value::Buffer(dynwinrt::com::ComBufferValue::from_owned_bytes(
-        buffer.copy_bytes().map_err(com_error)?,
-        count,
-      ))
-    }
-    value => value,
-  })
+  unsafe {
+    crate::native_class_ref::with_ref::<DynWinRTValue, _>(env, value, |value| {
+      Ok(match value.to_com_value()? {
+        dynwinrt::com::Value::Buffer(buffer) => {
+          let count = buffer.count();
+          dynwinrt::com::Value::Buffer(dynwinrt::com::ComBufferValue::from_owned_bytes(
+            buffer.copy_bytes().map_err(com_error)?,
+            count,
+          ))
+        }
+        value => value,
+      })
+    })
+  }
 }
 
 fn create_iunknown_sink(
@@ -482,7 +484,16 @@ pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   // here would make it indistinguishable from an owned raw pointer to
   // adoptComPointer(), which can double-release the original wrapper's COM
   // object. Callers that already have raw pointer bits should pass those bits.
-  if unsafe { <&DynWinRTValue>::from_napi_value(env, raw) }.is_ok() {
+  if unsafe {
+    napi::bindgen_prelude::validate_type_tag(
+      env,
+      raw,
+      &<DynWinRTValue as napi::bindgen_prelude::TypeTag>::type_tag(),
+      "DynWinRtValue",
+    )
+  }
+  .is_ok()
+  {
     return Err(napi::Error::from_reason(
       "pointer(): DynWinRtValue inputs are not accepted; pass raw pointer bits, Buffer/Uint8Array, or null instead",
     ));
@@ -1548,11 +1559,13 @@ fn safe_array_element_type_from_name(
   })
 }
 
-#[napi]
-pub struct DynComType(pub(super) dynwinrt::com::Type);
+native_class! {
+  pub struct DynComType(pub(super) dynwinrt::com::Type);
+}
 
-#[napi]
-pub struct DynComMethodSig(dynwinrt::com::MethodSignature);
+native_class! {
+  pub struct DynComMethodSig(dynwinrt::com::MethodSignature);
+}
 
 #[napi]
 impl DynComMethodSig {
@@ -1764,8 +1777,9 @@ impl DynComMethodSig {
   }
 }
 
-#[napi]
-pub struct DynComInterface(dynwinrt::com::Interface);
+native_class! {
+  pub struct DynComInterface(dynwinrt::com::Interface);
+}
 
 #[napi]
 impl DynComInterface {
@@ -1811,8 +1825,9 @@ impl DynComInterface {
   }
 }
 
-#[napi]
-pub struct DynComUnsafeInterface(dynwinrt::com::Interface);
+native_class! {
+  pub struct DynComUnsafeInterface(dynwinrt::com::Interface);
+}
 
 #[napi]
 impl DynComUnsafeInterface {
@@ -1843,21 +1858,24 @@ impl DynComUnsafeInterface {
   }
 }
 
-#[napi]
-pub struct DynComMethodHandle(dynwinrt::com::MethodHandle);
-
-#[napi]
-pub struct DynComRawDispatchState {
-  entered: std::cell::Cell<bool>,
+native_class! {
+  pub struct DynComMethodHandle(dynwinrt::com::MethodHandle);
 }
 
-#[napi]
-pub struct DynComDispatchInvokeResult {
-  hresult: i32,
-  result: Option<DynWinRTValue>,
-  excep_info: Option<DynWinRTValue>,
-  arg_err: Option<u32>,
-  finalization_error: Option<String>,
+native_class! {
+  pub struct DynComRawDispatchState {
+    entered: std::cell::Cell<bool>,
+  }
+}
+
+native_class! {
+  pub struct DynComDispatchInvokeResult {
+    hresult: i32,
+    result: Option<DynWinRTValue>,
+    excep_info: Option<DynWinRTValue>,
+    arg_err: Option<u32>,
+    finalization_error: Option<String>,
+  }
 }
 
 #[napi]
@@ -2091,15 +2109,17 @@ impl DynComRaw {
   }
 }
 
-#[napi]
-pub struct DynCom;
+native_class! {
+  pub struct DynCom;
+}
 
-/// Explicit opt-in surface for manually declared native COM ABI contracts.
-///
-/// Supplying an invalid pointer, IID, vtable slot, direction, count relation,
-/// or ownership contract can crash the process or corrupt memory.
-#[napi]
-pub struct DynComUnsafe;
+native_class! {
+  /// Explicit opt-in surface for manually declared native COM ABI contracts.
+  ///
+  /// Supplying an invalid pointer, IID, vtable slot, direction, count relation,
+  /// or ownership contract can crash the process or corrupt memory.
+  pub struct DynComUnsafe;
+}
 
 #[napi]
 impl DynComUnsafe {
@@ -2247,16 +2267,18 @@ impl DynComUnsafe {
   }
 }
 
-#[napi]
-pub struct DynComNativeStruct {
-  descriptor: String,
-  bytes: Vec<u8>,
+native_class! {
+  pub struct DynComNativeStruct {
+    descriptor: String,
+    bytes: Vec<u8>,
+  }
 }
 
-#[napi]
-pub struct DynComNativeStructArray {
-  descriptor: String,
-  bytes: Vec<u8>,
+native_class! {
+  pub struct DynComNativeStructArray {
+    descriptor: String,
+    bytes: Vec<u8>,
+  }
 }
 
 #[napi]
@@ -2272,10 +2294,11 @@ impl DynComNativeStructArray {
   }
 }
 
-#[napi]
-pub struct DynComNativeUnion {
-  descriptor: String,
-  value: dynwinrt::com::NativeUnionValue,
+native_class! {
+  pub struct DynComNativeUnion {
+    descriptor: String,
+    value: dynwinrt::com::NativeUnionValue,
+  }
 }
 
 #[napi]
@@ -2296,10 +2319,11 @@ impl DynComNativeUnion {
   }
 }
 
-#[napi]
-pub struct DynComVariant {
-  value: Option<dynwinrt::com::VariantValue>,
-  inputs: super::com_input::InputBindings,
+native_class! {
+  pub struct DynComVariant {
+    value: Option<dynwinrt::com::VariantValue>,
+    inputs: super::com_input::InputBindings,
+  }
 }
 
 impl DynComVariant {
@@ -2539,11 +2563,12 @@ impl DynComVariant {
   }
 }
 
-#[napi]
-pub struct DynComDispatchParams {
-  owner_thread: std::thread::ThreadId,
-  value: Option<dynwinrt::com::DispatchParamsValue>,
-  inputs: super::com_input::InputBindings,
+native_class! {
+  pub struct DynComDispatchParams {
+    owner_thread: std::thread::ThreadId,
+    value: Option<dynwinrt::com::DispatchParamsValue>,
+    inputs: super::com_input::InputBindings,
+  }
 }
 
 impl DynComDispatchParams {
@@ -2648,10 +2673,11 @@ impl DynComDispatchParams {
   }
 }
 
-#[napi]
-pub struct DynComExcepInfo {
-  owner_thread: std::thread::ThreadId,
-  value: Option<dynwinrt::com::ExcepInfoValue>,
+native_class! {
+  pub struct DynComExcepInfo {
+    owner_thread: std::thread::ThreadId,
+    value: Option<dynwinrt::com::ExcepInfoValue>,
+  }
 }
 
 impl DynComExcepInfo {
@@ -2737,15 +2763,17 @@ impl DynComExcepInfo {
   }
 }
 
-#[napi]
-pub struct DynComStatStg {
-  owner_thread: std::thread::ThreadId,
-  value: Option<dynwinrt::com::StatStgValue>,
+native_class! {
+  pub struct DynComStatStg {
+    owner_thread: std::thread::ThreadId,
+    value: Option<dynwinrt::com::StatStgValue>,
+  }
 }
 
-#[napi]
-pub struct DynComFormatEtc {
-  value: dynwinrt::com::FormatEtcValue,
+native_class! {
+  pub struct DynComFormatEtc {
+    value: dynwinrt::com::FormatEtcValue,
+  }
 }
 
 #[napi]
@@ -2788,9 +2816,10 @@ impl DynComFormatEtc {
   }
 }
 
-#[napi]
-pub struct DynComStgMedium {
-  value: dynwinrt::com::StgMediumValue,
+native_class! {
+  pub struct DynComStgMedium {
+    value: dynwinrt::com::StgMediumValue,
+  }
 }
 
 #[napi]
@@ -2813,9 +2842,10 @@ impl DynComStgMedium {
   }
 }
 
-#[napi]
-pub struct DynComAudioFormat {
-  value: dynwinrt::com::AudioFormatValue,
+native_class! {
+  pub struct DynComAudioFormat {
+    value: dynwinrt::com::AudioFormatValue,
+  }
 }
 
 #[napi]
@@ -2910,11 +2940,12 @@ impl DynComAudioFormat {
   }
 }
 
-#[napi]
-#[derive(Debug)]
-pub struct DynComOwnedHandle {
-  address: Option<usize>,
-  cleanup: dynwinrt::com::OwnedHandleCleanup,
+native_class! {
+  #[derive(Debug)]
+  pub struct DynComOwnedHandle {
+    address: Option<usize>,
+    cleanup: dynwinrt::com::OwnedHandleCleanup,
+  }
 }
 
 #[cfg(test)]
@@ -3091,11 +3122,12 @@ impl DynComStatStg {
   }
 }
 
-#[napi]
-pub struct DynComAllocation {
-  owner_thread: std::thread::ThreadId,
-  allocator: Option<windows::Win32::System::Com::IMalloc>,
-  pointer: usize,
+native_class! {
+  pub struct DynComAllocation {
+    owner_thread: std::thread::ThreadId,
+    allocator: Option<windows::Win32::System::Com::IMalloc>,
+    pointer: usize,
+  }
 }
 
 impl DynComAllocation {
@@ -3329,10 +3361,11 @@ pub struct DynComSafeArrayBound {
   pub length: f64,
 }
 
-#[napi]
-pub struct DynComSafeArray {
-  value: Option<dynwinrt::com::SafeArrayValue>,
-  inputs: super::com_input::InputBindings,
+native_class! {
+  pub struct DynComSafeArray {
+    value: Option<dynwinrt::com::SafeArrayValue>,
+    inputs: super::com_input::InputBindings,
+  }
 }
 
 impl DynComSafeArray {
@@ -3793,9 +3826,10 @@ impl DynComSafeArray {
   }
 }
 
-#[napi]
-pub struct DynComPropVariant {
-  value: Option<dynwinrt::com::PropVariantValue>,
+native_class! {
+  pub struct DynComPropVariant {
+    value: Option<dynwinrt::com::PropVariantValue>,
+  }
 }
 
 impl DynComPropVariant {

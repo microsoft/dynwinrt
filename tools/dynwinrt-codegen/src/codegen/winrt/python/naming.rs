@@ -827,6 +827,8 @@ impl PythonProjectionContext {
             let mut roles = vec![PythonSymbol::Type];
             if identity.kind() == Some(TypeIdentityKind::Class) {
                 roles.extend([PythonSymbol::Like, PythonSymbol::Identity]);
+            } else if identity.kind() == Some(TypeIdentityKind::Interface) {
+                roles.push(PythonSymbol::Identity);
             }
             for role in roles {
                 symbols.insert(
@@ -862,16 +864,18 @@ impl PythonProjectionContext {
                 .iter()
                 .filter(|(identity, role)| !can_alias_helper(identity, *role))
                 .count();
-            let owns_struct_symbol = group.iter().any(|(identity, _)| {
-                owner.as_ref() == Some(identity)
-                    && identity.kind() == Some(TypeIdentityKind::Struct)
-            });
+            let fixed_type_count = group
+                .iter()
+                .filter(|(identity, role)| {
+                    !can_alias_helper(identity, *role) && !role.is_registration()
+                })
+                .count();
             for (identity, role) in group {
                 let rename = if role.is_registration() {
                     fixed_symbol_count > 1
                 } else {
                     owner.as_ref() != Some(identity)
-                        && (can_alias_helper(identity, *role) || owns_struct_symbol)
+                        && (can_alias_helper(identity, *role) || fixed_type_count > 1)
                 };
                 if !rename {
                     continue;
@@ -1384,6 +1388,119 @@ pub fn to_snake_case_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_aliases_freeze_roles_and_use_only_visible_symbols() {
+        let owner = TypeIdentity::named(TypeIdentityKind::Class, "Audit", "Widget");
+        let peer = TypeIdentity::named(TypeIdentityKind::Class, "Audit", "WidgetLike");
+        let occupied =
+            TypeIdentity::named(TypeIdentityKind::Enum, "Other", "Audit_WidgetLike_class");
+        let identities = [owner.clone(), peer.clone(), occupied.clone()];
+        let imports = [
+            (peer.clone(), PythonSymbol::Type),
+            (peer.clone(), PythonSymbol::Like),
+            (occupied.clone(), PythonSymbol::Type),
+        ];
+        for packaged in [false, true] {
+            let context = PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+            let module = context.with_local_types(Some(owner.clone()), &[], imports.clone(), []);
+            for role in [
+                PythonSymbol::Type,
+                PythonSymbol::Like,
+                PythonSymbol::Identity,
+            ] {
+                assert_eq!(
+                    module.symbol_reference(&owner, role),
+                    context.symbol_declaration(&owner, role)
+                );
+            }
+            let alias = module.reference_name(&peer);
+            assert!(alias.starts_with("Audit_WidgetLike_class_"), "{alias}");
+            assert_eq!(
+                module.symbol_reference(&peer, PythonSymbol::Like),
+                "WidgetLikeLike"
+            );
+            assert_eq!(module.reference_name(&occupied), "Audit_WidgetLike_class");
+            let reversed =
+                PythonProjectionContext::new(identities.clone().into_iter().rev(), packaged)
+                    .unwrap();
+            assert_eq!(
+                module.module_symbols,
+                reversed
+                    .with_local_types(
+                        Some(owner.clone()),
+                        &[],
+                        imports.clone().into_iter().rev(),
+                        []
+                    )
+                    .module_symbols
+            );
+            let unused = context.with_local_types(Some(owner.clone()), &[], [], []);
+            assert!(unused.module_symbols.is_empty());
+            let no_fallback = context.with_local_types(
+                Some(owner.clone()),
+                &[],
+                imports[..2].iter().cloned(),
+                [],
+            );
+            assert_eq!(no_fallback.reference_name(&peer), "Audit_WidgetLike_class");
+
+            let imported_like = context.with_local_types(
+                Some(peer.clone()),
+                &[],
+                [
+                    (owner.clone(), PythonSymbol::Type),
+                    (owner.clone(), PythonSymbol::Like),
+                ],
+                [],
+            );
+            assert_eq!(imported_like.reference_name(&owner), "Widget");
+            assert_eq!(
+                imported_like.symbol_reference(&owner, PythonSymbol::Like),
+                "Audit_Widget_classLike"
+            );
+        }
+    }
+
+    #[test]
+    fn interface_identity_declarations_and_foreign_identity_imports_are_reserved() {
+        let owner = TypeIdentity::named(TypeIdentityKind::Interface, "Audit", "IUse");
+        let peer = TypeIdentity::named(TypeIdentityKind::Class, "Audit", "_IUseIdentity");
+        let base = TypeIdentity::named(TypeIdentityKind::Class, "Audit", "Base");
+        let foreign = TypeIdentity::named(TypeIdentityKind::Enum, "Audit", "_BaseIdentity");
+        let context = PythonProjectionContext::packaged([
+            owner.clone(),
+            peer.clone(),
+            base.clone(),
+            foreign.clone(),
+        ])
+        .unwrap();
+        let module = context.with_local_types(
+            Some(owner.clone()),
+            &[],
+            [
+                (peer.clone(), PythonSymbol::Type),
+                (peer.clone(), PythonSymbol::Like),
+                (base.clone(), PythonSymbol::Identity),
+                (foreign.clone(), PythonSymbol::Type),
+            ],
+            [],
+        );
+        assert_eq!(
+            module.symbol_reference(&owner, PythonSymbol::Identity),
+            "_IUseIdentity"
+        );
+        assert_ne!(module.reference_name(&peer), "_IUseIdentity");
+        assert_eq!(
+            module.symbol_reference(&peer, PythonSymbol::Like),
+            "_IUseIdentityLike"
+        );
+        assert_eq!(
+            module.symbol_import(&base, PythonSymbol::Identity),
+            "_BaseIdentity as _Audit_Base_classIdentity"
+        );
+        assert_ne!(module.reference_name(&foreign), "_BaseIdentity");
+    }
 
     #[test]
     fn module_helper_aliases_preserve_isolated_exports_and_input_order() {

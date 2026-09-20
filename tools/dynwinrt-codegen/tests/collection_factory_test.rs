@@ -186,6 +186,34 @@ fn string_collection_factory_declarations_remain_native_js_arrays() {
 }
 
 #[test]
+fn nullable_collection_declarations_group_array_elements_in_every_role() {
+    let reference = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation".into(),
+        name: "IReference`1".into(),
+        piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+        args: vec![TypeMeta::U32],
+    };
+    let array = "(number | null | IReference_UInt32)[]";
+    for piid in [VECTOR, OBSERVABLE_VECTOR] {
+        let (_, dts) = project_factory(piid, vec![reference.clone()]);
+        assert!(
+            dts.contains(&format!("static create(items: {array}):")),
+            "{dts}"
+        );
+        if piid == VECTOR {
+            assert!(dts.contains(&format!("toArray(): {array};")), "{dts}");
+        }
+    }
+    let (_, dts) = project_factory(MAP, vec![reference.clone(), reference]);
+    assert!(
+        dts.contains(&format!(
+            "static create(keys: {array}, values: {array}): Collection;"
+        )),
+        "{dts}"
+    );
+}
+
+#[test]
 fn reference_factories_preserve_managed_nulls_before_querying_every_role() {
     let class = TypeMeta::RuntimeClass {
         namespace: "Windows.ApplicationModel.Contacts".into(),

@@ -106,6 +106,14 @@ fn available(arguments: &[&str], description: &str) -> bool {
 }
 
 fn typecheck(directory: &Path, consumer: &str) {
+    check_consumer(directory, consumer, false);
+}
+
+fn strict_typecheck(directory: &Path, consumer: &str) {
+    check_consumer(directory, consumer, true);
+}
+
+fn check_consumer(directory: &Path, consumer: &str, strict: bool) {
     if !available(
         &["-m", "mypy", "--version"],
         "whole-package Python typechecking",
@@ -124,6 +132,7 @@ fn typecheck(directory: &Path, consumer: &str) {
                 "pyviews",
                 "consumer.py",
             ])
+            .args(strict.then_some("--strict"))
             .current_dir(directory)
             .env("MYPYPATH", root().join("bindings").join("py"))
             .output()
@@ -935,6 +944,88 @@ fn method(
     for (index, (name, _, flags)) in params.iter().enumerate() {
         file.Param(name, index as u16 + 1, *flags);
     }
+}
+
+fn runtime_class(file: &mut writer::File, name: &str, default: &str) {
+    let object = file.TypeRef("System", "Object");
+    let definition = file.TypeDef(
+        "Audit",
+        name,
+        writer::TypeDefOrRef::TypeRef(object),
+        TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+    );
+    let implementation = file.InterfaceImpl(definition, &Type::named("Audit", default));
+    let attribute = file.TypeRef("Windows.Foundation.Metadata", "DefaultAttribute");
+    let constructor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![],
+        },
+        writer::MemberRefParent::TypeRef(attribute),
+    );
+    file.Attribute(
+        writer::HasAttribute::InterfaceImpl(implementation),
+        writer::AttributeType::MemberRef(constructor),
+        &[],
+    );
+}
+
+fn class_companion_metadata(path: &Path, peer_name: &str) {
+    let mut file = writer::File::new("PythonClassCompanions");
+    let peer_interface = format!("I{peer_name}");
+    for (index, (name, target)) in [("IWidget", peer_name), (peer_interface.as_str(), "Widget")]
+        .into_iter()
+        .enumerate()
+    {
+        interface(&mut file, "Audit", name, 0x51931500 + index as u32);
+        let target = Type::named("Audit", target);
+        method(
+            &mut file,
+            "Echo",
+            target.clone(),
+            &[("value", target, ParamAttributes::In)],
+        );
+    }
+    interface(&mut file, "Audit", "IUse", 0x51931502);
+    for (name, target) in [("EchoOwner", "Widget"), ("EchoPeer", peer_name)] {
+        let target = Type::named("Audit", target);
+        method(
+            &mut file,
+            name,
+            target.clone(),
+            &[("value", target, ParamAttributes::In)],
+        );
+    }
+    runtime_class(&mut file, "Widget", "IWidget");
+    runtime_class(&mut file, peer_name, &peer_interface);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
+}
+
+fn inline_struct_companion_metadata(path: &Path, leaf: &str) {
+    let mut file = writer::File::new("PythonInlineStructCompanions");
+    structure(&mut file, "Audit", leaf, &[("Value", Type::I32)]);
+    structure(
+        &mut file,
+        "Audit",
+        "Holder",
+        &[("Item", Type::named("Audit", leaf))],
+    );
+    interface(&mut file, "Audit", "IWidget", 0x51931801);
+    for (name, target) in [("Echo", "Holder"), ("EchoLeaf", leaf)] {
+        let target = Type::named("Audit", target);
+        method(
+            &mut file,
+            name,
+            target.clone(),
+            &[("value", target, ParamAttributes::In)],
+        );
+    }
+    runtime_class(&mut file, "Widget", "IWidget");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
 }
 
 fn metadata(path: &Path) {
@@ -2655,6 +2746,525 @@ fn python_files(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
     visit(directory, directory, &mut files);
     files
+}
+
+#[test]
+fn python_class_companion_aliases_preserve_cli_and_standalone_contracts() {
+    for peer in ["WidgetLike", "WidgetPeer"] {
+        for packaged in [true, false] {
+            let fixture = Fixture::new();
+            let winmd = fixture.0.join("metadata").join("Input.winmd");
+            class_companion_metadata(&winmd, peer);
+            let package = fixture.package();
+            let classes = meta::parse_namespace(winmd.to_str().unwrap(), "Audit");
+            let interfaces = meta::parse_interfaces(winmd.to_str().unwrap(), "Audit");
+            assert_eq!(classes.len(), 2);
+            assert!(
+                classes
+                    .iter()
+                    .all(|class| class.default_interface.is_some())
+            );
+            let identities = classes
+                .iter()
+                .map(class_identity)
+                .chain(interfaces.iter().map(InterfaceMeta::type_identity))
+                .collect::<Vec<_>>();
+            let context =
+                python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+            let reordered = python::PythonProjectionContext::new(
+                identities.into_iter().rev().chain([
+                    class_type("Unrelated", "WidgetLikeLike").type_identity(),
+                    class_type("Unrelated", "_WidgetIdentity").type_identity(),
+                    class_type("Unrelated", "Audit_WidgetLike_class").type_identity(),
+                ]),
+                packaged,
+            )
+            .unwrap();
+            if packaged {
+                generate(
+                    &winmd,
+                    &package,
+                    &format!("Audit.Widget,Audit.{peer},Audit.IWidget,Audit.I{peer},Audit.IUse"),
+                );
+                let reversed = fixture.0.join("reversed").join("pyviews");
+                generate(
+                    &winmd,
+                    &reversed,
+                    &format!("Audit.IUse,Audit.I{peer},Audit.IWidget,Audit.{peer},Audit.Widget"),
+                );
+                assert_eq!(python_files(&package), python_files(&reversed));
+            }
+            for class in &classes {
+                let source = python::generate_class(&context, class, &Default::default());
+                let stub = python_stub::generate_class_stub(&context, class, &Default::default());
+                assert_eq!(
+                    source,
+                    python::generate_class(&reordered, class, &Default::default())
+                );
+                assert_eq!(
+                    stub,
+                    python_stub::generate_class_stub(&reordered, class, &Default::default())
+                );
+                if !packaged {
+                    module(
+                        &package,
+                        &context.implementation_module(&class_identity(class)),
+                        source,
+                        stub,
+                    );
+                }
+            }
+            for interface in &interfaces {
+                let source = python::generate_interface(&context, interface);
+                let stub = python_stub::generate_interface_stub(&context, interface);
+                assert_eq!(source, python::generate_interface(&reordered, interface));
+                assert_eq!(
+                    stub,
+                    python_stub::generate_interface_stub(&reordered, interface)
+                );
+                if !packaged {
+                    module(
+                        &package,
+                        &context.implementation_module_for_interface(interface),
+                        source,
+                        stub,
+                    );
+                }
+            }
+            if !packaged {
+                support(&package, &[]);
+            }
+            let owner_module =
+                context.implementation_module_for_type(&class_type("Audit", "Widget"));
+            let peer_module = context.implementation_module_for_type(&class_type("Audit", peer));
+            let owner_source =
+                fs::read_to_string(package.join(format!("{owner_module}.py"))).unwrap();
+            let owner_stub =
+                fs::read_to_string(package.join(format!("{owner_module}.pyi"))).unwrap();
+            let peer_stub = fs::read_to_string(package.join(format!("{peer_module}.pyi"))).unwrap();
+            let peer_alias = imported_symbol(&owner_source, &peer_module, peer);
+            assert_eq!(peer_alias, imported_symbol(&owner_stub, &peer_module, peer));
+            assert_eq!(peer_alias == peer, peer == "WidgetPeer");
+            assert_eq!(
+                imported_symbol(&owner_stub, &peer_module, &format!("{peer}Like")),
+                format!("{peer}Like"),
+                "the foreign Like role must not follow its renamed Type role"
+            );
+            assert_eq!(
+                imported_symbol(&peer_stub, &owner_module, "Widget"),
+                "Widget"
+            );
+            assert_eq!(
+                imported_symbol(&peer_stub, &owner_module, "WidgetLike") == "WidgetLike",
+                peer == "WidgetPeer",
+                "the imported Like must not shadow its consuming class"
+            );
+            assert!(owner_stub.contains("class WidgetLike(_WidgetIdentity, Protocol):"));
+            assert!(owner_stub.contains("class Widget("));
+            let imports = format!(
+                "from pyviews.{owner_module} import Widget\n\
+                 from pyviews.{peer_module} import {peer} as Peer\n\
+                 from pyviews.audit__i_use import IUse\n",
+            );
+            strict_typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+def check(owner: Widget, peer: Peer, use: IUse) -> None:
+    assert_type(owner.echo(peer), Peer | None)
+    assert_type(peer.echo(owner), Widget | None)
+    assert_type(use.echo_owner(owner), Widget | None)
+    assert_type(use.echo_peer(peer), Peer | None)
+"#,
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+def reject(owner: Widget, peer: Peer, use: IUse) -> None:
+    owner.echo(owner)
+    peer.echo(peer)
+    use.echo_owner(peer)
+    use.echo_peer(owner)
+    result = owner.echo(peer)
+    if result is not None:
+        result.no_such_member()
+"#,
+                ),
+                &[
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[attr-defined]",
+                ],
+            );
+            let public_imports = if packaged {
+                format!(
+                    "from pyviews import Widget as RootOwner, {peer} as RootPeer\n\
+                     from pyviews.audit.widget import Widget as FacadeOwner\n\
+                     from pyviews.audit.{} import {peer} as FacadePeer\n\
+                     assert RootOwner is FacadeOwner is Widget\n\
+                     assert RootPeer is FacadePeer is Peer\n",
+                    python::to_snake_case_filename(peer),
+                )
+            } else {
+                String::new()
+            };
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+{public_imports}
+import typing
+import dynwinrt as dw
+from pyviews.audit__i_widget import IWidget
+from pyviews.audit__i_{peer_file} import I{peer} as IPeer
+assert Widget.__name__ == "Widget"
+assert Peer.__name__ == "{peer}"
+hints = typing.get_type_hints(Widget.echo, localns={{
+    "{peer_alias}": Peer, "{peer}Like": Peer,
+}})
+assert hints["return"] == Peer | None
+assert hints["value"] is Peer
+class Handler:
+    def echo(self, value):
+        return value
+with dw.RoApartment(1):
+    with IWidget.implement(Handler()) as owner_impl, IPeer.implement(Handler()) as peer_impl:
+        owner = Widget(owner_impl.value._obj)
+        peer = Peer(peer_impl.value._obj)
+        try:
+            echoed_peer = owner.echo(peer)
+            echoed_owner = peer.echo(owner)
+            assert type(echoed_peer) is Peer
+            assert type(echoed_owner) is Widget
+            dw.release_projected(echoed_peer)
+            dw.release_projected(echoed_owner)
+        finally:
+            dw.release_projected(owner)
+            dw.release_projected(peer)
+"#,
+                    peer_file = python::to_snake_case_filename(peer),
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn python_companion_aliases_cover_inherited_identities_and_required_views() {
+    for packaged in [false, true] {
+        for shared in [false, true] {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let kind = enumeration("Kinds", "_Base_Widget_classIdentity");
+            let base = class("Base", "Widget", vec![], 0x51931600);
+            let mut owner = class(
+                "Audit",
+                "Widget",
+                vec![echo("EchoKind", kind.clone(), 6)],
+                0x51931601,
+            );
+            owner.base_class = Some(TypeRef {
+                namespace: base.namespace.clone(),
+                name: base.name.clone(),
+                kind: TypeKind::Class,
+            });
+            let required = InterfaceMeta {
+                namespace: "Views".into(),
+                name: "WidgetLike".into(),
+                iid: "51931602-6281-4900-b782-040302010910".into(),
+                methods: vec![echo("EchoNumber", TypeMeta::I32, 6)],
+                ..Default::default()
+            };
+            owner.required_interfaces.push(required.clone());
+            let context = python::PythonProjectionContext::new(
+                [
+                    class_identity(&base),
+                    class_identity(&owner),
+                    kind.type_identity(),
+                    required.type_identity(),
+                ],
+                packaged,
+            )
+            .unwrap();
+            let shared_iids = if shared {
+                HashSet::from([required.iid.clone()])
+            } else {
+                HashSet::new()
+            };
+            let owner_module = context.implementation_module(&class_identity(&owner));
+            let base_module = context.implementation_module(&class_identity(&base));
+            let required_module = context.implementation_module_for_interface(&required);
+            let kind_module = context.implementation_module_for_type(&kind);
+            let source = python::generate_class(&context, &owner, &shared_iids);
+            let stub = python_stub::generate_class_stub(&context, &owner, &shared_iids);
+            let base_identity = imported_symbol(&stub, &base_module, "_WidgetIdentity");
+            assert_ne!(base_identity, "_Base_Widget_classIdentity");
+            assert!(
+                stub.contains(&format!(
+                    "class _WidgetIdentity({base_identity}, Protocol):"
+                )),
+                "{stub}"
+            );
+            let view = "Views_WidgetLike_interface";
+            for text in [&source, &stub] {
+                assert!(text.contains(view), "{text}");
+                if shared {
+                    assert_eq!(imported_symbol(text, &required_module, "WidgetLike"), view);
+                } else {
+                    assert!(text.contains(&format!("class {view}:")), "{text}");
+                }
+                assert_ne!(
+                    imported_symbol(text, &kind_module, "_Base_Widget_classIdentity"),
+                    "_Base_Widget_classIdentity"
+                );
+            }
+            assert!(stub.contains("class WidgetLike(_WidgetIdentity, Protocol):"));
+            module(&package, &owner_module, source, stub);
+            module(
+                &package,
+                &base_module,
+                python::generate_class(&context, &base, &Default::default()),
+                python_stub::generate_class_stub(&context, &base, &Default::default()),
+            );
+            module(
+                &package,
+                &required_module,
+                python::generate_interface(&context, &required),
+                python_stub::generate_interface_stub(&context, &required),
+            );
+            module(
+                &package,
+                &kind_module,
+                python::generate_enum(&context, &kind).unwrap(),
+                python_stub::generate_enum_stub(&context, &kind).unwrap(),
+            );
+            support(&package, &[]);
+            let imports = format!(
+                "from pyviews.{owner_module} import Widget, WidgetLike\n\
+                 from pyviews.{base_module} import Widget as Base, WidgetLike as BaseLike\n\
+                 from pyviews.{kind_module} import _Base_Widget_classIdentity as Kind\n",
+            );
+            strict_typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+def check(child: Widget) -> None:
+    inherited: BaseLike = child
+    own: WidgetLike = child
+    assert_type(child.echo_kind(Kind.Unknown), Kind)
+    assert_type(child.echo_number(17), int)
+"#,
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+def reject(child: Widget, base: Base) -> None:
+    wrong: WidgetLike = base
+    child.echo_kind(0)
+    child.echo_number(Kind.Unknown.name)
+"#,
+                ),
+                &["[assignment]", "[arg-type]", "[arg-type]"],
+            );
+            if !shared {
+                runtime(
+                    &fixture.0,
+                    &format!(
+                        r#"
+from pyviews.{owner_module} import Widget, {view}
+from dynwinrt import WinGUID
+assert Widget.__name__ == "Widget"
+assert {view}.__name__ == "{view}"
+assert Widget is not {view}
+assert {view}._dynwinrt_interface_iid.to_string() == WinGUID.parse("{iid}").to_string()
+"#,
+                        iid = required.iid,
+                    ),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn python_inline_struct_companions_share_declarations_defaults_and_native_conversions() {
+    for leaf in ["WidgetLike", "_IWidgetIdentity", "WidgetPeer"] {
+        for packaged in [false, true] {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let winmd = fixture.0.join("metadata").join("Input.winmd");
+            inline_struct_companion_metadata(&winmd, leaf);
+            let class = meta::parse_class(winmd.to_str().unwrap(), "Audit", "Widget").unwrap();
+            let interface = class.default_interface.as_ref().unwrap();
+            let structs = python::package_structs(std::slice::from_ref(&class), &[]);
+            assert_eq!(structs.len(), 2);
+            let context = python::PythonProjectionContext::new(
+                [class_identity(&class), interface.type_identity()]
+                    .into_iter()
+                    .chain(structs.iter().map(TypeMeta::type_identity)),
+                packaged,
+            )
+            .unwrap();
+            if packaged {
+                generate(&winmd, &package, "Audit.Widget,Audit.IWidget");
+            } else {
+                module(
+                    &package,
+                    "audit__widget",
+                    python::generate_class(&context, &class, &Default::default()),
+                    python_stub::generate_class_stub(&context, &class, &Default::default()),
+                );
+                module(
+                    &package,
+                    "audit__i_widget",
+                    python::generate_interface(&context, interface),
+                    python_stub::generate_interface_stub(&context, interface),
+                );
+                support(&package, &[]);
+            }
+            let suffix = python::to_snake_case_filename(leaf);
+            let mut imports = String::new();
+            for (owner, label, collision, qualified) in [
+                (
+                    "audit__widget",
+                    "Class",
+                    leaf == "WidgetLike",
+                    "Audit_WidgetLike_struct",
+                ),
+                (
+                    "audit__i_widget",
+                    "Interface",
+                    leaf == "_IWidgetIdentity",
+                    "Audit_IWidgetIdentity_struct",
+                ),
+            ] {
+                let (holder_module, leaf_module, local_leaf) = if packaged {
+                    (
+                        "audit__holder".to_string(),
+                        format!("audit__{suffix}"),
+                        leaf,
+                    )
+                } else {
+                    (
+                        owner.to_string(),
+                        owner.to_string(),
+                        if collision { qualified } else { leaf },
+                    )
+                };
+                let source = fs::read_to_string(package.join(format!("{owner}.py"))).unwrap();
+                assert!(source.contains(&format!("DynWinRTType.struct_type('Audit.{leaf}'")));
+                if !packaged {
+                    assert!(
+                        source.contains(&format!(
+                            "self.item = {local_leaf}() if item is None else item"
+                        )),
+                        "{source}"
+                    );
+                }
+                imports.push_str(&format!(
+                    "from pyviews.{holder_module} import Holder as {label}Holder, pack_holder as {label}Pack, unpack_holder as {label}Unpack\n\
+                     from pyviews.{leaf_module} import {local_leaf} as {label}Leaf, pack_{suffix} as {label}LeafPack, unpack_{suffix} as {label}LeafUnpack\n",
+                ));
+            }
+            imports.push_str(
+                "from pyviews.audit__widget import Widget\n\
+                 from pyviews.audit__i_widget import IWidget\n",
+            );
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"
+from pyviews import audit__widget, audit__i_widget
+audit__widget.Holder()
+audit__i_widget.Holder()
+{imports}
+import typing
+import dynwinrt as dw
+for Holder, Leaf, pack, unpack, pack_leaf, unpack_leaf in (
+    (ClassHolder, ClassLeaf, ClassPack, ClassUnpack, ClassLeafPack, ClassLeafUnpack),
+    (InterfaceHolder, InterfaceLeaf, InterfacePack, InterfaceUnpack, InterfaceLeafPack, InterfaceLeafUnpack),
+):
+    default = Holder()
+    other = Holder()
+    assert type(default.item) is Leaf
+    assert default.item.value == 0
+    assert default.item is not other.item
+    explicit = Holder(Leaf(17))
+    for value in (default, explicit):
+        result = unpack(pack(value).to_value())
+        assert type(result) is Holder
+        assert type(result.item) is Leaf
+        assert result == value
+    assert type(unpack_leaf(pack_leaf(Leaf(23)).to_value())) is Leaf
+    assert typing.get_type_hints(Holder.__init__)["item"] == Leaf | None
+    assert typing.get_type_hints(pack)["v"] is Holder
+    assert typing.get_type_hints(unpack)["return"] is Holder
+    assert typing.get_type_hints(pack_leaf)["v"] is Leaf
+    assert typing.get_type_hints(unpack_leaf)["return"] is Leaf
+class Handler:
+    def echo(self, value):
+        assert type(value) is InterfaceHolder
+        assert type(value.item) is InterfaceLeaf
+        return value
+    def echo_leaf(self, value):
+        assert type(value) is InterfaceLeaf
+        return value
+with dw.RoApartment(1):
+    with IWidget.implement(Handler()) as implementation:
+        assert implementation.value.echo(InterfaceHolder()).item.value == 0
+        assert implementation.value.echo_leaf(InterfaceLeaf(29)).value == 29
+        owner = Widget(implementation.value._obj)
+        try:
+            result = owner.echo(ClassHolder())
+            assert type(result) is ClassHolder
+            assert type(result.item) is ClassLeaf
+            assert result.item.value == 0
+            assert type(owner.echo_leaf(ClassLeaf(31))) is ClassLeaf
+        finally:
+            dw.release_projected(owner)
+"#,
+                ),
+            );
+            strict_typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from typing import assert_type
+assert_type(ClassHolder().item, ClassLeaf)
+assert_type(InterfaceHolder().item, InterfaceLeaf)
+assert_type(ClassUnpack(ClassPack(ClassHolder()).to_value()), ClassHolder)
+assert_type(InterfaceLeafUnpack(InterfaceLeafPack(InterfaceLeaf()).to_value()), InterfaceLeaf)
+def check(owner: Widget, interface: IWidget) -> None:
+    assert_type(owner.echo(ClassHolder()), ClassHolder)
+    assert_type(owner.echo_leaf(ClassLeaf()), ClassLeaf)
+    assert_type(interface.echo(InterfaceHolder()), InterfaceHolder)
+    assert_type(interface.echo_leaf(InterfaceLeaf()), InterfaceLeaf)
+"#,
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+ClassHolder(17)
+InterfaceHolder(17)
+ClassLeafPack(ClassHolder())
+def reject(owner: Widget) -> None:
+    owner.echo(ClassLeaf())
+"#,
+                ),
+                &["[arg-type]", "[arg-type]", "[arg-type]", "[arg-type]"],
+            );
+        }
+    }
 }
 
 #[test]

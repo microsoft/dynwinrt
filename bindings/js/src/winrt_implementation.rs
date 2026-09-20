@@ -17,7 +17,7 @@ use dynwinrt::{
   WinRtMethodDefinition, WinRtThreadingPolicy,
 };
 use napi::{
-  bindgen_prelude::{FromNapiValue, Function, JavaScriptClassExt, ToNapiValue, Unknown},
+  bindgen_prelude::{FromNapiValue, Function, ToNapiValue, TypeTag, Unknown},
   sys, Env, JsValue,
 };
 use napi_derive::napi;
@@ -95,18 +95,9 @@ fn binding_error(error: windows::core::Error) -> napi::Error {
   napi::Error::from_reason(error.message())
 }
 
-pub(crate) fn require_instance<T: JavaScriptClassExt>(
-  value: &Unknown<'_>,
-  name: &str,
-) -> napi::Result<()> {
-  // JavaScriptClassExt uses the registered JS name (DynWinRt*). napi-rs's
-  // ValidateNapiValue derives instead look up the legacy Rust DynWinRT* name.
-  if T::instance_of(&Env::from_raw(value.value().env), value)? {
-    Ok(())
-  } else {
-    Err(napi::Error::from_reason(format!(
-      "Expected a {name} instance"
-    )))
+pub(crate) fn require_instance<T: TypeTag>(value: &Unknown<'_>, name: &str) -> napi::Result<()> {
+  unsafe {
+    napi::bindgen_prelude::validate_type_tag(value.value().env, value.raw(), &T::type_tag(), name)
   }
 }
 
@@ -119,10 +110,11 @@ pub struct DynWinRtImplementationMethod<'env> {
   pub signature: Unknown<'env>,
 }
 
-/// A standalone WinRT interface descriptor. Creation never registers a COM class
-/// or changes the outbound WinRT method registry.
-#[napi]
-pub struct DynWinRtInterfacePlan(WinRtInterfaceDefinition);
+native_class! {
+  /// A standalone WinRT interface descriptor. Creation never registers a COM class
+  /// or changes the outbound WinRT method registry.
+  pub struct DynWinRtInterfacePlan(WinRtInterfaceDefinition);
+}
 
 #[napi]
 impl DynWinRtInterfacePlan {
@@ -135,7 +127,11 @@ impl DynWinRtInterfacePlan {
   ) -> napi::Result<Self> {
     require_instance::<DynWinRTType>(&interface_type, "DynWinRtType")?;
     let interface_type = unsafe {
-      <&DynWinRTType>::from_napi_value(interface_type.value().env, interface_type.raw())
+      crate::native_class_ref::with_ref::<DynWinRTType, _>(
+        interface_type.value().env,
+        interface_type.raw(),
+        |typ| Ok(typ.type_handle()),
+      )
     }?;
     let methods = methods
       .into_iter()
@@ -143,11 +139,15 @@ impl DynWinRtInterfacePlan {
         let env = method.signature.value().env;
         let raw = method.signature.raw();
         require_instance::<DynWinRTMethodSig>(&method.signature, "DynWinRtMethodSig")?;
-        let signature = unsafe { <&DynWinRTMethodSig>::from_napi_value(env, raw) }?;
+        let signature = unsafe {
+          crate::native_class_ref::with_ref::<DynWinRTMethodSig, _>(env, raw, |signature| {
+            Ok(signature.0.clone())
+          })
+        }?;
         Ok(WinRtMethodDefinition {
           name: method.name,
           vtable_index: crate::js_numbers::js_u32(method.vtable_index, "vtableIndex")? as usize,
-          signature: signature.0.clone(),
+          signature,
         })
       })
       .collect::<napi::Result<Vec<_>>>()?;
@@ -158,12 +158,12 @@ impl DynWinRtInterfacePlan {
         let env = iid.value().env;
         let raw = iid.raw();
         require_instance::<WinGUID>(&iid, "WinGuid")?;
-        Ok(unsafe { <&WinGUID>::from_napi_value(env, raw) }?.0)
+        unsafe { crate::native_class_ref::with_ref::<WinGUID, _>(env, raw, |iid| Ok(iid.0)) }
       })
       .collect::<napi::Result<Vec<_>>>()?;
     let definition = WinRtInterfaceDefinition {
       name,
-      interface_type: interface_type.type_handle(),
+      interface_type,
       required_iids,
       methods,
     };
@@ -172,15 +172,16 @@ impl DynWinRtInterfacePlan {
   }
 }
 
-/// Owns one reference to a synchronous, non-agile WinRT implementation.
-///
-/// release()/GC drops this owner's reference only. Native references keep the
-/// callback alive. dispose() disconnects every view and breaks callback cycles.
-/// Call dispose() explicitly when a handler captures its owner or a native view;
-/// those cross-runtime cycles are not visible to JavaScript's garbage collector.
-#[napi]
-pub struct DynWinRtImplementation {
-  state: Rc<ImplementationState>,
+native_class! {
+  /// Owns one reference to a synchronous, non-agile WinRT implementation.
+  ///
+  /// release()/GC drops this owner's reference only. Native references keep the
+  /// callback alive. dispose() disconnects every view and breaks callback cycles.
+  /// Call dispose() explicitly when a handler captures its owner or a native view;
+  /// those cross-runtime cycles are not visible to JavaScript's garbage collector.
+  pub struct DynWinRtImplementation {
+    state: Rc<ImplementationState>,
+  }
 }
 
 impl Drop for DynWinRtImplementation {
@@ -206,11 +207,11 @@ impl DynWinRtImplementation {
       .map(|interface| {
         let raw = interface.raw();
         require_instance::<DynWinRtInterfacePlan>(&interface, "DynWinRtInterfacePlan")?;
-        Ok(
-          unsafe { <&DynWinRtInterfacePlan>::from_napi_value(env.raw(), raw) }?
-            .0
-            .clone(),
-        )
+        unsafe {
+          crate::native_class_ref::with_ref::<DynWinRtInterfacePlan, _>(env.raw(), raw, |plan| {
+            Ok(plan.0.clone())
+          })
+        }
       })
       .collect::<napi::Result<Vec<_>>>()?;
     let plan = WinRtImplementationPlan::new(definitions, WinRtThreadingPolicy::OwnerThread)
@@ -402,11 +403,11 @@ fn parse_outputs(env: sys::napi_env, result: sys::napi_value) -> napi::Result<Ve
         error.reason
       ))
     })?;
-    outputs.push(
-      unsafe { <&DynWinRTValue>::from_napi_value(env, raw) }?
-        .winrt()
-        .clone(),
-    );
+    outputs.push(unsafe {
+      crate::native_class_ref::with_ref::<DynWinRTValue, _>(env, raw, |value| {
+        Ok(value.winrt().clone())
+      })
+    }?);
   }
   Ok(outputs)
 }

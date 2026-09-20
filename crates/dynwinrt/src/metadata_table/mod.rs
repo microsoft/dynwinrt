@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 
 use windows_core::GUID;
 
-use crate::signature::{Method, MethodSignature};
+use crate::signature::{MethodSignature, RegisteredMethod};
 
 use append_only_arena::AppendOnlyBoxArena;
 use arena::*;
@@ -46,21 +46,15 @@ pub struct MetadataTable {
 
     // --- Methods arena ---
     //
-    // Stored in an `AppendOnlyBoxArena` so entries have heap-stable
-    // addresses that can never be invalidated: callers may take a raw
-    // `*const Method` under the read guard, drop the guard, and then
-    // invoke the method. This is essential because a method call can be
-    // `DispatcherQueue.runEventLoop`, which pumps messages and may
-    // re-enter this arena for `push_method` (requiring `.write()`); if
-    // the outer call still held the read lock during dispatch, we would
-    // deadlock.
+    // Descriptors contain local TypeKinds, not owning TypeHandles. Prepared
+    // ABI plans have no table backreference. External MethodHandles bind these
+    // descriptors to strong table owners once, outside the registry.
     //
-    // Vec growth may move the `Box<Method>` slots inside the arena's
-    // backing buffer, but the boxed `Method` itself never moves. The
-    // arena type intentionally exposes only `push` / `stable_ptr`
-    // (no `pop`/`remove`/`clear`), so the "never removed" invariant
-    // is enforced by the type system rather than by convention.
-    methods: AppendOnlyBoxArena<Method>,
+    // Boxed descriptors never move or disappear until this table drops, so
+    // lookup can release the arena lock before binding through a stable pointer.
+    // Invocation uses the bound handle and holds no registry lock, including
+    // during native calls that re-enter registration.
+    methods: AppendOnlyBoxArena<RegisteredMethod>,
 
     // --- Indexes (no data duplication, only pointers) ---
     /// IID → method table for O(1) interface method lookup.
@@ -74,12 +68,6 @@ impl std::fmt::Debug for MetadataTable {
         f.debug_struct("MetadataTable").finish_non_exhaustive()
     }
 }
-
-// Safety: MetadataTable is protected by RwLock internally.
-// The non-Send/Sync raw pointers come from libffi Cif objects inside Method,
-// which are only accessed through &self methods behind the RwLock.
-unsafe impl Send for MetadataTable {}
-unsafe impl Sync for MetadataTable {}
 
 impl MetadataTable {
     pub fn new() -> Arc<Self> {

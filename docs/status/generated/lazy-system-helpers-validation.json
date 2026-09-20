@@ -1,6 +1,45 @@
 {
   "baseCommit": "34eb6246627c671113a501c00edc8e3317fc8b3d",
-  "afterSource": "Scoped runtime sources in this PR; production release builds with no test-hooks",
+  "afterSource": "Initial scoped runtime at 1a84b31a43c07874d21af17864d5bf69963d9fb1 with import-policy correction at 7cc049a9e787892092b5ce2b2522c00a2ae1a5ce; production release builds with no test-hooks",
+  "mergeValidation": {
+    "mainCommit": "f446adbf994e91decdf1ab6a242ca02d374f41f3",
+    "previousReviewedHead": "7cc049a9e787892092b5ce2b2522c00a2ae1a5ce",
+    "platform": "Native Windows ARM64; no new x64/i686 execution claimed",
+    "resolution": "Preserve Arc<PreparedCall> and recompute GDI cleanup admission from completed contracts in Method::from_parts for both construction and rebinding, without loading DLLs",
+    "productionBinaries": [
+      {
+        "filename": "dynwinrt.win32-arm64-msvc.node",
+        "sha256": "34cc2a3a415067ea7eef67bafb80e7a945f519b3f954a4b3949bcf97978b9f33",
+        "profile": "release",
+        "testHooks": false,
+        "gdi32User32OrdinaryOrDelayImports": []
+      },
+      {
+        "filename": "dynwinrt.cp313-win_arm64.pyd",
+        "sha256": "abdb66fa38e6df7cd90b9856a6166307211ba8c7400a3ad0d2a38fea2ccf2538",
+        "profile": "release",
+        "testHooks": false,
+        "gdi32User32OrdinaryOrDelayImports": []
+      }
+    ],
+    "checks": {
+      "scopedCoreTests": 21,
+      "metadataLifetimeTests": 17,
+      "jsNativeOwnershipAndIdentityTests": 10,
+      "nativeClassBoundaryChildProcesses": 8,
+      "pePolicyAndProductionImportTests": 137,
+      "calibratedColdProcessObservations": 13
+    },
+    "logs": [
+      "merge-core-tests.log",
+      "merge-metadata-lifetime-tests.log",
+      "merge-js-native-tests.log",
+      "merge-native-class-e2e.log",
+      "merge-import-gates.log",
+      "merge-pe-imports.json",
+      "merge-loaded-modules.json"
+    ]
+  },
   "platform": "Windows ARM64; x64 and i686 native tests ran under Windows-on-ARM emulation, not physical x64/i686 hardware",
   "tools": {
     "rustc": "1.97.1",

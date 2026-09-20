@@ -52,6 +52,10 @@ fast calls, libffi calls, the COM-value path, and direct returns. Failure
 prevents native execution and therefore cannot strand a newly produced owned
 output.
 
+Building or rebinding a shared prepared call recomputes this requirement from
+the completed cleanup contracts without resolving a DLL. Rebinding therefore
+preserves both the shared call-plan lifetime and pre-dispatch cleanup admission.
+
 Partial outputs on failed HRESULTs, native result-extraction failures,
 COM post-call validation failures, and JS owners/finalizers use the already
 prepared, permanently backed GDI deleter. They never attempt a fallible first
@@ -105,6 +109,12 @@ imports. Production checks do not grant those fixtures an exception.
 records before/after production PE tables and hashes, calibrated cold-process
 module observations, and regression-log digests. The baseline is
 `34eb6246627c671113a501c00edc8e3317fc8b3d`.
+
+The original measurements below cover runtime commit `1a84b31a` with the
+import-policy correction at `7cc049a9`. The report's `mergeValidation` entry
+separately records ARM64 rebuilds and focused checks after merging main
+`f446adbf`, including call-plan rebinding and metadata lifetime regressions.
+The earlier x64/i686 measurements are not relabeled as tests of that merge.
 
 | Observation | Before | After |
 | --- | --- | --- |

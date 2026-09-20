@@ -1,10 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use napi::{
-  bindgen_prelude::{FromNapiValue, Unknown},
-  JsValue,
-};
+use napi::{bindgen_prelude::Unknown, JsValue};
 use napi_derive::napi;
 use windows::core::{IInspectable, IUnknown, Interface, GUID};
 
@@ -13,14 +10,15 @@ use crate::{winrt_implementation::require_instance, DynWinRTMethodSig, DynWinRTV
 type DelegateCall =
   dyn Fn(&IUnknown, &[dynwinrt::WinRTValue]) -> windows::core::Result<Vec<dynwinrt::WinRTValue>>;
 
-/// A prepared caller for a metadata-described WinRT delegate's Invoke method.
-/// Delegates derive from IUnknown, so Invoke is slot 3, not IInspectable slot 6.
-/// Supply the full delegate signature and its concrete IID (including generic
-/// type arguments). This does not register an interface or use the COM planner.
-#[napi]
-pub struct DynWinRtDelegateMethod {
-  iid: GUID,
-  call: Box<DelegateCall>,
+native_class! {
+  /// A prepared caller for a metadata-described WinRT delegate's Invoke method.
+  /// Delegates derive from IUnknown, so Invoke is slot 3, not IInspectable slot 6.
+  /// Supply the full delegate signature and its concrete IID (including generic
+  /// type arguments). This does not register an interface or use the COM planner.
+  pub struct DynWinRtDelegateMethod {
+    iid: GUID,
+    call: Box<DelegateCall>,
+  }
 }
 
 fn clone_arguments(args: Vec<Unknown<'_>>) -> napi::Result<Vec<dynwinrt::WinRTValue>> {
@@ -28,11 +26,13 @@ fn clone_arguments(args: Vec<Unknown<'_>>) -> napi::Result<Vec<dynwinrt::WinRTVa
     .into_iter()
     .map(|value| {
       require_instance::<DynWinRTValue>(&value, "DynWinRtValue")?;
-      Ok(
-        unsafe { <&DynWinRTValue>::from_napi_value(value.value().env, value.raw()) }?
-          .winrt()
-          .clone(),
-      )
+      unsafe {
+        crate::native_class_ref::with_ref::<DynWinRTValue, _>(
+          value.value().env,
+          value.raw(),
+          |value| Ok(value.winrt().clone()),
+        )
+      }
     })
     .collect()
 }
@@ -83,7 +83,9 @@ impl DynWinRtDelegateMethod {
   ) -> napi::Result<Self> {
     require_instance::<WinGUID>(&iid, "WinGuid")?;
     require_instance::<DynWinRTMethodSig>(&signature, "DynWinRtMethodSig")?;
-    let iid = unsafe { <&WinGUID>::from_napi_value(iid.value().env, iid.raw()) }?.0;
+    let iid = unsafe {
+      crate::native_class_ref::with_ref::<WinGUID, _>(iid.value().env, iid.raw(), |iid| Ok(iid.0))
+    }?;
     if [
       GUID::zeroed(),
       IUnknown::IID,
@@ -99,9 +101,14 @@ impl DynWinRtDelegateMethod {
         "A WinRT delegate caller requires a delegate IID, not an infrastructure IID",
       ));
     }
-    let signature =
-      unsafe { <&DynWinRTMethodSig>::from_napi_value(signature.value().env, signature.raw()) }?;
-    let method = signature.0.clone().build(3);
+    let signature = unsafe {
+      crate::native_class_ref::with_ref::<DynWinRTMethodSig, _>(
+        signature.value().env,
+        signature.raw(),
+        |signature| Ok(signature.0.clone()),
+      )
+    }?;
+    let method = signature.build(3);
     Ok(Self {
       iid,
       // Keep the native facade's unnameable prepared Method type opaque.
@@ -121,9 +128,16 @@ impl DynWinRtDelegateMethod {
     #[napi(ts_arg_type = "DynWinRtValue[]")] args: Vec<Unknown<'_>>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
     require_instance::<DynWinRTValue>(&value, "DynWinRtValue")?;
-    let value = unsafe { <&DynWinRTValue>::from_napi_value(value.value().env, value.raw()) }?;
-    value.ensure_existing_com_apartment()?;
-    let target = value.winrt().clone();
+    let target = unsafe {
+      crate::native_class_ref::with_ref::<DynWinRTValue, _>(
+        value.value().env,
+        value.raw(),
+        |value| {
+          value.ensure_existing_com_apartment()?;
+          Ok(value.winrt().clone())
+        },
+      )
+    }?;
     let args = clone_arguments(args)?;
     self.invoke_native(target, &args)
   }

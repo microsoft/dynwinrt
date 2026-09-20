@@ -176,6 +176,49 @@ fn gdi_cleanup_admission_is_lazy_retryable_and_precedes_every_dispatch_path() {
     }
 }
 
+#[test]
+fn gdi_cleanup_admission_survives_prepared_call_rebinding() {
+    let table = MetadataTable::new();
+    let mut cases = output_cases(&table);
+    cases.push((
+        MethodSignature::new(&table).returns(owned()),
+        return_bitmap as *mut c_void,
+        vec![],
+    ));
+    let expected = HRESULT::from_win32(ERROR_PROC_NOT_FOUND.0);
+    let _denied = ResolutionFailure::new(expected);
+    for (signature, function, args) in cases {
+        let resolutions = resolution_calls();
+        let mut registered = signature.build(0).unwrap();
+        let (info, prepared) = registered.plan.native.into_parts();
+        registered.plan.native = NativeMethod::from_parts(info, Arc::clone(&prepared));
+        assert!(Arc::ptr_eq(
+            registered.plan.native.prepared_call(),
+            &prepared
+        ));
+        assert_eq!(resolution_calls(), resolutions);
+
+        let vtable = [function];
+        let mut call = BitmapCall::new(&vtable, HRESULT(0));
+        let dispatched = Cell::new(false);
+        let before = delete_calls();
+        let error = registered
+            .plan
+            .invoke_values_guarded((&mut call as *mut BitmapCall).cast(), &args, || {
+                dispatched.set(true);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, result::Error::WindowsError(ref error) if error.code() == expected)
+        );
+        assert!(!dispatched.get());
+        assert_eq!(call.calls.get(), 0);
+        assert!(call.output.get().is_null());
+        assert_eq!(delete_calls(), before);
+    }
+}
+
 unsafe extern "system" fn write_null(_: *mut c_void, output: *mut *mut c_void) -> HRESULT {
     unsafe { *output = std::ptr::null_mut() };
     HRESULT(0)

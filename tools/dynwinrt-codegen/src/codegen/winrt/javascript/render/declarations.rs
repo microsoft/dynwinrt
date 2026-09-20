@@ -12,6 +12,7 @@
 //! - Enums as `export enum` (not `Object.freeze`)
 
 use crate::codegen::winrt::javascript::ir::*;
+use crate::codegen::winrt::javascript::method::ts_array_type;
 
 /// Render a projected file as a `.d.ts` declaration.
 pub fn render(file: &ProjectedFile) -> String {
@@ -526,7 +527,10 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                 ));
             }
             SymbolKind::CollectionToArray { element_type } => {
-                out.push_str(&format!("\n    toArray(): {}[];\n", element_type));
+                out.push_str(&format!(
+                    "\n    toArray(): {};\n",
+                    ts_array_type(element_type)
+                ));
             }
             SymbolKind::IteratorNext { element_type } => {
                 out.push_str(&format!(
