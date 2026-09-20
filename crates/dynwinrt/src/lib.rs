@@ -36,6 +36,9 @@ pub mod metadata_table;
 mod reference;
 pub mod vector;
 
+#[cfg(test)]
+mod test_apartment;
+
 pub use crate::array::ArrayData;
 pub use crate::composition::{
     LocalOverrideAbi, LocalOverrideInterface, LocalOverrideSizeCallback, LocalOverrideVoidCallback,

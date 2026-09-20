@@ -1212,8 +1212,7 @@ mod tests {
     #[test]
     fn test_vector_basic_operations() {
         // Create a vector of IUnknown items using Uri objects
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1278,9 +1277,7 @@ mod tests {
     fn test_observable_vector_notifications() {
         use std::sync::Arc;
 
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
         let table = MetadataTable::new();
         let object_type = table.object();
         let iids = table.vector_iids(&object_type);
@@ -1406,9 +1403,7 @@ mod tests {
             atomic::{AtomicI64, AtomicUsize, Ordering},
         };
 
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
         let vector = checked_object_vector(Vec::new(), iids.clone());
@@ -1567,8 +1562,7 @@ mod tests {
 
     #[test]
     fn test_vector_append_and_clear() {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1609,8 +1603,7 @@ mod tests {
 
     #[test]
     fn test_vector_iterator() {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1658,8 +1651,7 @@ mod tests {
     #[test]
     fn test_vector_qi_vector_view() {
         // DynVector must support QI for IVectorView (like C++/WinRT's single_threaded_vector)
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1697,8 +1689,7 @@ mod tests {
     fn test_vector_get_view_returns_vector_view_ptr() {
         // get_view() must return an IVectorView pointer, not IIterable.
         // This was the root cause of ImageObjectExtractor E_NOINTERFACE.
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1744,8 +1735,7 @@ mod tests {
     #[test]
     fn test_vector_get_view_ref_counting() {
         // Verify ref counting: get_view returns ref=1, Release frees correctly.
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
@@ -1837,8 +1827,7 @@ mod tests {
     /// Accessing from multiple threads should not panic.
     #[test]
     fn test_vector_thread_safety() {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());

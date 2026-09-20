@@ -652,8 +652,7 @@ mod tests {
 
     #[test]
     fn test_map_basic_operations() {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.map_iids(&table.hstring(), &table.object());
@@ -696,6 +695,7 @@ mod tests {
 
     #[test]
     fn test_object_keys_compare_boxed_strings_by_value() {
+        crate::test_apartment::initialize_mta();
         let first =
             windows::Foundation::PropertyValue::CreateString(windows_core::h!("same")).unwrap();
         let second =
@@ -722,8 +722,7 @@ mod tests {
 
     #[test]
     fn test_key_value_pair() {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        crate::test_apartment::initialize_mta();
 
         let table = MetadataTable::new();
         let iids = table.map_iids(&table.hstring(), &table.object());
