@@ -97,6 +97,47 @@ test('generated string map factory converts both keys and values', (t) => {
   assert.throws(() => generated.IMap_String_String.create(['mismatch'], []), /same length/)
 })
 
+test('generated map factory keeps the last duplicate value and first key order', (t) => {
+  const keep = own(t)
+  const duplicate = keep(generated.IMap_String_String.create(['same', 'same'], ['first', 'second']))
+  assert.equal(duplicate.size, 1)
+  assert.equal(duplicate.lookup('same'), 'second')
+  duplicate.remove('same')
+  assert.equal(duplicate.size, 0)
+  assert.equal(duplicate.hasKey('same'), false)
+
+  const map = keep(generated.IMap_String_String.create(['A', 'B', 'A'], ['first', 'middle', 'last']))
+  const control = keep(generated.IMap_String_String.create([], []))
+  assert.equal(control.insert('A', 'first'), false)
+  assert.equal(control.insert('B', 'middle'), false)
+  assert.equal(control.insert('A', 'last'), true)
+  const view = keep(map.getView())
+  const iterableNames = Object.keys(generated).filter((name) =>
+    name.startsWith('IIterable_WindowsFoundationCollectionsIKeyValuePair_String_String_'),
+  )
+  assert.equal(iterableNames.length, 1)
+  assert.equal(map.size, 2)
+  for (const source of [map, control, view]) {
+    assert.equal(source.lookup('A'), 'last')
+    assert.equal(source.lookup('B'), 'middle')
+    const iterable = keep(new generated[iterableNames[0]](source._obj))
+    const iterator = keep(iterable.first())
+    const entries = []
+    while (iterator.hasCurrent) {
+      const pair = keep(iterator.current)
+      entries.push([pair.key, pair.value])
+      iterator.moveNext()
+    }
+    assert.deepEqual(entries, [
+      ['A', 'last'],
+      ['B', 'middle'],
+    ])
+  }
+  map.clear()
+  assert.equal(view.size, 2)
+  assert.equal(view.lookup('A'), 'last')
+})
+
 test('typed empty factories still support append and insert', (t) => {
   const keep = own(t)
   const vector = keep(generated.IVector_String.create([]))
@@ -202,6 +243,7 @@ test('collection-valued map factories preserve managed nulls without weakening n
   const uri = keep(generated.Uri.createUri('https://example.invalid/wrong-collection'))
   for (const invalid of [uri, uri._obj, {}, { isNull: () => true }, null, undefined]) {
     assert.throws(() => Map.create(['invalid'], [invalid]), /QueryInterface|cast/)
+    assert.throws(() => Map.create(['duplicate', 'duplicate'], [nil, invalid]), /QueryInterface|cast/)
   }
   let reads = 0
   const wrappedNull = {

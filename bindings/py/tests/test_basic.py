@@ -124,6 +124,32 @@ def test_create_map_round_trips_values_and_validates_lengths():
         )
 
 
+def test_create_map_duplicate_keys_keep_the_last_value():
+    key_type = DynWinRTType.hstring()
+    value_type = DynWinRTType.i32_type()
+    reader = _collection_map_reader(key_type, value_type)
+    keys = [DynWinRTValue.from_hstring(key) for key in ["A", "B", "A"]]
+    values = [DynWinRTValue.from_i32(value) for value in [1, 2, 3]]
+    mapping = DynWinRTValue.create_map(keys, values, key_type, value_type)
+    try:
+        assert _invoke_collection_reader(reader, mapping, 7, []).to_u32() == 2
+        for key, expected in [("A", 3), ("B", 2)]:
+            assert _invoke_collection_reader(
+                reader, mapping, 6, [DynWinRTValue.from_hstring(key)]
+            ).to_int() == expected
+        assert keys[0].to_string() == "A"
+        assert values[0].to_int() == 1
+        with pytest.raises(OSError):
+            DynWinRTValue.create_map(
+                [keys[0], keys[0]],
+                [values[0], DynWinRTValue.from_hstring("invalid later duplicate")],
+                key_type,
+                value_type,
+            )
+    finally:
+        mapping.release()
+
+
 def test_guid_parse():
     """WinGUID.parse should parse valid GUIDs."""
     guid = WinGUID.parse("9e365e57-48b2-4160-956f-c7385120bbfc")

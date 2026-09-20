@@ -47,6 +47,12 @@ Runtime-class and collection-reference conversions preserve managed null
 carriers without querying an interface; non-null carriers still query the
 declared interface before being passed to native code.
 
+Typed map construction uses the same key equality as `Insert`. For duplicate
+keys, the last value wins while the first key and its insertion position are
+retained. All keys and values are validated before publishing the map, including
+values that will be replaced. This policy is shared by the Rust, JavaScript and
+Python typed constructors.
+
 With the JS addon built, run `npm run test:collection-factories` from
 `bindings/js` for generated SDK factory roundtrips. `DYNWINRT_CODEGEN` selects
 a prebuilt generator, `DYNWINRT_JS_PACKAGE` selects a built runtime package,

@@ -11,7 +11,7 @@ use core::ffi::c_void;
 use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
-use crate::collection_element::{CollectionElementPlan, CollectionStorage};
+use crate::collection_element::{CollectionElementPlan, CollectionStorage, PreparedCollectionItem};
 use crate::com_helpers::{E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK};
 #[allow(unused_imports)]
 use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
@@ -85,18 +85,21 @@ unsafe fn find_key_index(
     key: *mut c_void,
     storage: CollectionStorage,
 ) -> Option<usize> {
-    let key = key as usize;
+    find_key_position(entries.iter().map(|(key, _)| *key), key as usize, storage)
+}
+
+unsafe fn find_key_position(
+    mut keys: impl Iterator<Item = usize>,
+    key: usize,
+    storage: CollectionStorage,
+) -> Option<usize> {
     if !storage.is_hstring()
         && !storage.is_value_type()
         && let Some(search) = boxed_hstring(key)
     {
-        return entries
-            .iter()
-            .position(|(stored, _)| boxed_hstring(*stored).is_some_and(|value| value == search));
+        return keys.position(|stored| boxed_hstring(stored).is_some_and(|value| value == search));
     }
-    entries
-        .iter()
-        .position(|(stored, _)| stored_items_equal(storage, *stored, key))
+    keys.position(|stored| stored_items_equal(storage, stored, key))
 }
 
 unsafe fn boxed_hstring(raw: usize) -> Option<windows_core::HSTRING> {
@@ -575,6 +578,8 @@ pub unsafe fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> I
 ///
 /// Keys and values must use the same metadata table. Large values are unsupported
 /// even in an empty map; reference values are queried for the declared interface.
+/// Duplicate keys use the same equality as `Insert`: the last value wins while
+/// retaining the first key and its position. Every input pair is validated.
 pub fn create_map_from_values(
     entries: &[(crate::WinRTValue, crate::WinRTValue)],
     key_type: &crate::TypeHandle,
@@ -599,7 +604,23 @@ pub fn create_map_from_values(
             Ok((key_plan.prepare(key)?, value_plan.prepare(value)?))
         })
         .collect::<crate::Result<Vec<_>>>()?;
-    let entries = prepared
+    let mut unique: Vec<(PreparedCollectionItem, PreparedCollectionItem)> =
+        Vec::with_capacity(prepared.len());
+    for (key, value) in prepared {
+        let index = unsafe {
+            find_key_position(
+                unique.iter().map(|(key, _)| key.as_raw()),
+                key.as_raw(),
+                key_plan.storage,
+            )
+        };
+        if let Some(index) = index {
+            unique[index].1 = value;
+        } else {
+            unique.push((key, value));
+        }
+    }
+    let entries = unique
         .into_iter()
         .map(|(key, value)| (key.into_raw(), value.into_raw()))
         .collect();
@@ -627,6 +648,10 @@ fn new_map(
 // ======================================================================
 // Tests
 // ======================================================================
+
+#[cfg(test)]
+#[path = "map_constructor_tests.rs"]
+mod constructor_tests;
 
 #[cfg(test)]
 #[allow(unused_must_use)]
