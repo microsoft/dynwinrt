@@ -121,7 +121,11 @@ Python declarations, annotations, imports, and conversion helpers share a
 module-local symbol mapping keyed by canonical `TypeIdentity` and symbol role.
 Self-class and self-interface references use the actual local declaration;
 foreign class `Like` and identity markers import the defining module's symbol
-and alias it to the consuming module's reference name. Handler, delegate, array,
+and alias it to the consuming module's reference name. Owning class, `Like`,
+and identity declarations keep their public names; conflicting foreign imports
+or inline required-interface views receive identity-qualified aliases. Each
+role is allocated independently, so aliasing an imported class does not rename
+its noncolliding `Like` or identity import. Handler, delegate, array,
 and result-dictionary conversions use the same mapping as ordinary members.
 Self-import filtering distinguishes namespaces, kinds, and named versus closed
 generic types, so `IBox<String>` cannot hide a distinct named `IBox_String`.
