@@ -102,8 +102,14 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         py.contains("_dynwinrt_symbol('i_vector_object', 'IVector_Object')._set_native(self, obj)")
     );
     assert!(py.contains("self._observable_obj = obj.cast(IID_IObservableVector_Object)"));
-    assert!(py.contains("def create(items: Iterable['DynWinRTValue'])"));
-    assert!(py.contains("_dynwinrt_new_vector(items,"));
+    let create_signature = "def create(items: Iterable['DynWinRTValue | _DynWinRTObject']) -> 'IObservableVector_Object':";
+    assert!(py.contains(create_signature), "{py}");
+    assert!(
+        py.contains(
+            "_dynwinrt_new_vector(items, lambda item: getattr(item, '_obj', item), DynWinRTType.object())"
+        ),
+        "{py}"
+    );
     assert!(py.contains("def as_vector(self) -> 'IVector_Object':"));
     assert!(py.contains("def on_vector_changed(self, callback: Callable[["));
     assert!(py.contains("'IObservableVector_Object'"));
@@ -121,6 +127,11 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
     assert!(pyi.contains(
         "from .windows__foundation__collections__i_vector_changed_event_args import IVectorChangedEventArgs"
     ));
+    assert!(pyi.contains(&format!("{create_signature} ...")), "{pyi}");
+    assert!(
+        pyi.contains("def __getitem__(self, index: int) -> DynWinRTValue | None: ..."),
+        "{pyi}"
+    );
     assert!(pyi.contains("def as_vector(self) -> 'IVector_Object': ..."));
     assert!(pyi.contains("def on_vector_changed(self, callback: Callable[["));
 }
