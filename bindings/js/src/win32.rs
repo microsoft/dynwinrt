@@ -480,8 +480,9 @@ impl DynWin32CallResult {
   }
 }
 
-#[napi]
-pub struct DynWin32;
+native_class! {
+  pub struct DynWin32;
+}
 
 #[napi]
 impl DynWin32 {
@@ -651,17 +652,18 @@ impl DynWin32 {
         "Win32 handles and structs are not managed COM references",
       ));
     }
-    let value = boundary::managed_com_value(&value)?;
-    let iid = WinGUID(
-      windows::core::GUID::try_from(iid.as_str())
-        .map_err(|_| napi::Error::from_reason("Invalid COM interface IID"))?,
-    );
-    let owner = com::with_win32_input_leases(&[value], |validate_inputs| {
-      let owner = com::try_cast(value, &iid)?.ok_or_else(|| {
-        napi::Error::from_reason("Managed object does not implement the required Win32 interface")
-      })?;
-      validate_inputs()?;
-      Ok(owner)
+    let owner = boundary::with_managed_com_value(&value, |value| {
+      let iid = WinGUID(
+        windows::core::GUID::try_from(iid.as_str())
+          .map_err(|_| napi::Error::from_reason("Invalid COM interface IID"))?,
+      );
+      com::with_win32_input_leases(&[value], |validate_inputs| {
+        let owner = com::try_cast(value, &iid)?.ok_or_else(|| {
+          napi::Error::from_reason("Managed object does not implement the required Win32 interface")
+        })?;
+        validate_inputs()?;
+        Ok(owner)
+      })
     })?;
     let pointer = owner
       .winrt()
@@ -1836,8 +1838,9 @@ fn native_ffi_field_type(typ: &serde_json::Value) -> napi::Result<(libffi::middl
   })
 }
 
-#[napi]
-pub struct DynWin32Unsafe;
+native_class! {
+  pub struct DynWin32Unsafe;
+}
 
 #[napi]
 impl DynWin32Unsafe {

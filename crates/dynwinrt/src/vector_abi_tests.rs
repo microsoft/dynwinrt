@@ -418,11 +418,12 @@ fn struct_equality_survives_mutation_snapshots_and_metadata_drop() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn struct_equality_point_map_keys_agree_with_mutators_and_snapshot() {
+fn struct_equality_point_map_duplicate_constructor_agrees_with_mutators_and_snapshot() {
     use windows_collections::IMap;
 
     let positive = Point { X: 0.0, Y: 1.0 };
     let negative = Point { X: -0.0, Y: 1.0 };
+    let different = Point { X: 2.0, Y: 3.0 };
     let (object, weak) = {
         let table = MetadataTable::new();
         let typ = table.struct_type(
@@ -431,7 +432,11 @@ fn struct_equality_point_map_keys_agree_with_mutators_and_snapshot() {
         );
         (
             crate::map::create_map_from_values(
-                &[(point_value(&typ, positive), WinRTValue::I32(7))],
+                &[
+                    (point_value(&typ, positive), WinRTValue::I32(5)),
+                    (point_value(&typ, different), WinRTValue::I32(11)),
+                    (point_value(&typ, negative), WinRTValue::I32(7)),
+                ],
                 &typ,
                 &table.i32_type(),
                 table.map_iids(&typ, &table.i32_type()),
@@ -442,12 +447,25 @@ fn struct_equality_point_map_keys_agree_with_mutators_and_snapshot() {
     };
     assert!(weak.upgrade().is_none());
     let map: IMap<Point, i32> = object.cast().unwrap();
+    assert_eq!(map.Size().unwrap(), 2);
+    assert_eq!(map.Lookup(positive).unwrap(), 7);
     assert_eq!(map.Lookup(negative).unwrap(), 7);
     assert!(map.HasKey(negative).unwrap());
     assert!(!map.HasKey(Point { X: 1.0, Y: 1.0 }).unwrap());
     let snapshot = map.GetView().unwrap();
+    let iterator = map.First().unwrap();
+    for (expected_key, expected_value) in [(positive, 7), (different, 11)] {
+        let pair = iterator.Current().unwrap();
+        let key = pair.Key().unwrap();
+        assert_eq!(key.X.to_bits(), expected_key.X.to_bits());
+        assert_eq!(key.Y.to_bits(), expected_key.Y.to_bits());
+        assert_eq!(pair.Value().unwrap(), expected_value);
+        iterator.MoveNext().unwrap();
+    }
+    assert!(!iterator.HasCurrent().unwrap());
+    drop(iterator);
     assert!(map.Insert(negative, 9).unwrap());
-    assert_eq!(map.Size().unwrap(), 1);
+    assert_eq!(map.Size().unwrap(), 2);
     assert_eq!(map.Lookup(positive).unwrap(), 9);
     assert_eq!(map.Lookup(negative).unwrap(), 9);
     assert_eq!(
@@ -462,12 +480,15 @@ fn struct_equality_point_map_keys_agree_with_mutators_and_snapshot() {
         0
     );
     map.Remove(negative).unwrap();
-    assert_eq!(map.Size().unwrap(), 0);
+    assert_eq!(map.Size().unwrap(), 1);
     assert!(!map.HasKey(positive).unwrap());
+    assert_eq!(map.Lookup(different).unwrap(), 11);
     drop(map);
     drop(object);
+    assert_eq!(snapshot.Size().unwrap(), 2);
     assert!(snapshot.HasKey(negative).unwrap());
     assert_eq!(snapshot.Lookup(negative).unwrap(), 7);
+    assert_eq!(snapshot.Lookup(different).unwrap(), 11);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -485,7 +506,10 @@ fn struct_equality_point_nan_map_key_is_not_found() {
         Y: 1.0,
     };
     let object = crate::map::create_map_from_values(
-        &[(point_value(&typ, point), WinRTValue::I32(7))],
+        &[
+            (point_value(&typ, point), WinRTValue::I32(7)),
+            (point_value(&typ, point), WinRTValue::I32(9)),
+        ],
         &typ,
         &table.i32_type(),
         table.map_iids(&typ, &table.i32_type()),
@@ -493,12 +517,13 @@ fn struct_equality_point_nan_map_key_is_not_found() {
     .unwrap();
     let map: IMap<Point, i32> = object.cast().unwrap();
     let snapshot = map.GetView().unwrap();
+    assert_eq!(snapshot.Size().unwrap(), 2);
     assert!(!map.HasKey(point).unwrap());
     assert_eq!(map.Lookup(point).unwrap_err().code(), E_BOUNDS);
     assert_eq!(map.Remove(point).unwrap_err().code(), E_BOUNDS);
     assert!(!snapshot.HasKey(point).unwrap());
     assert_eq!(snapshot.Lookup(point).unwrap_err().code(), E_BOUNDS);
-    assert_eq!(map.Size().unwrap(), 1);
+    assert_eq!(map.Size().unwrap(), 2);
     map.Clear().unwrap();
     assert_eq!(map.Size().unwrap(), 0);
 }

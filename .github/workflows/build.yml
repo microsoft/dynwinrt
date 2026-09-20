@@ -389,6 +389,7 @@ jobs:
           npx napi build --no-const-enum --platform --release --target x86_64-pc-windows-msvc --features test-hooks -o dist
           npm run build:entrypoints --silent
           node scripts\verify-runtime-artifact.mjs dist --test-hooks
+          npm run test:native-classes:hooks
       - name: Stage test-hooks artifact
         shell: pwsh
         run: |

@@ -2,12 +2,12 @@
 // Licensed under the MIT License.
 
 //! Every opaque Win32 carrier checks a native type tag before typed unwrapping.
-//! napi-rs class casts only test JavaScript prototypes, which are mutable.
+//! These opaque carriers retain their own tags, separate from napi-rs classes.
 
-use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr, sync::OnceLock};
+use std::{ffi::c_void, ptr, sync::OnceLock};
 
 use napi::{
-  bindgen_prelude::{BigInt, Buffer, FromNapiValue, Function, Unknown},
+  bindgen_prelude::{BigInt, Buffer, Function, Unknown},
   sys, Env, JsValue,
 };
 use napi_derive::napi;
@@ -17,85 +17,32 @@ use super::{
   DynWin32Resource, DynWin32SubsystemContext, DynWin32Value, DynWinRTValue,
 };
 
-thread_local! {
-  static COM_RECEIVER_GUARDS: RefCell<HashMap<usize, Vec<sys::napi_ref>>> = RefCell::new(HashMap::new());
-}
-
-#[napi(module_exports, skip_typescript)]
-fn capture_com_receiver_guard(env: Env) -> napi::Result<()> {
-  let constructor = napi::bindgen_prelude::get_class_constructor("DynWinRtValue\0")
-    .ok_or_else(|| napi::Error::from_reason("Managed COM carrier constructor is unavailable"))?;
-  let mut class = ptr::null_mut();
-  napi::check_status!(unsafe {
-    sys::napi_get_reference_value(env.raw(), constructor, &mut class)
-  })?;
-  let mut prototype = ptr::null_mut();
-  let mut method = ptr::null_mut();
-  napi::check_status!(unsafe {
-    sys::napi_get_named_property(env.raw(), class, c"prototype".as_ptr(), &mut prototype)
-  })?;
-  napi::check_status!(unsafe {
-    sys::napi_get_named_property(env.raw(), prototype, c"isNull".as_ptr(), &mut method)
-  })?;
-  let mut reference = ptr::null_mut();
-  napi::check_status!(unsafe { sys::napi_create_reference(env.raw(), method, 1, &mut reference) })?;
-  let key = env.raw() as usize;
-  let result = (|| {
-    if COM_RECEIVER_GUARDS.with(|guards| !guards.borrow().contains_key(&key)) {
-      let _hook = env.add_env_cleanup_hook(key, |key| {
-        if let Some(references) =
-          COM_RECEIVER_GUARDS.with(|guards| guards.borrow_mut().remove(&key))
-        {
-          for reference in references {
-            let _ = unsafe { sys::napi_delete_reference(key as sys::napi_env, reference) };
-          }
-        }
-      })?;
-    }
-    COM_RECEIVER_GUARDS.with(|guards| {
-      let mut guards = guards.borrow_mut();
-      let references = guards.entry(key).or_default();
-      references
-        .try_reserve_exact(1)
-        .map_err(|_| napi::Error::from_reason("Unable to retain native COM carrier validation"))?;
-      references.push(reference);
-      Ok(())
-    })
-  })();
-  if result.is_err() {
-    let _ = unsafe { sys::napi_delete_reference(env.raw(), reference) };
+pub(super) fn with_managed_com_value<R>(
+  value: &Unknown,
+  operation: impl for<'a> FnOnce(&'a DynWinRTValue) -> napi::Result<R>,
+) -> napi::Result<R> {
+  unsafe {
+    napi::bindgen_prelude::validate_type_tag(
+      value.value().env,
+      value.raw(),
+      &<DynWinRTValue as napi::bindgen_prelude::TypeTag>::type_tag(),
+      "DynWinRtValue",
+    )
   }
-  result
-}
-
-pub(super) fn managed_com_value<'a>(value: &'a Unknown) -> napi::Result<&'a DynWinRTValue> {
-  let env = value.value().env;
-  let raw = value.raw();
-  // Node's original napi_define_class method enforces its native receiver
-  // signature. Unlike instanceof, this rejects another wrapped Rust type even
-  // after prototype spoofing. Retain the method before exports are published so
-  // replacing the public prototype cannot replace this validation.
-  let references = COM_RECEIVER_GUARDS
-    .with(|guards| guards.borrow().get(&(env as usize)).cloned())
-    .ok_or_else(|| napi::Error::from_reason("Native COM carrier validation is unavailable"))?;
-  for reference in references {
-    let mut method = ptr::null_mut();
-    let mut result = ptr::null_mut();
-    napi::check_status!(unsafe { sys::napi_get_reference_value(env, reference, &mut method) })?;
-    let status = unsafe { sys::napi_call_function(env, raw, method, 0, ptr::null(), &mut result) };
-    if status == sys::Status::napi_pending_exception {
-      let mut exception = ptr::null_mut();
-      napi::check_status!(unsafe { sys::napi_get_and_clear_last_exception(env, &mut exception) })?;
-      continue;
+  .map_err(|error| {
+    if error.status == napi::Status::InvalidArg {
+      napi::Error::new(
+        error.status,
+        format!(
+          "DynWin32.comObject(): expected a native managed COM carrier: {}",
+          error.reason
+        ),
+      )
+    } else {
+      error
     }
-    napi::check_status!(status)?;
-    let mut is_null = false;
-    napi::check_status!(unsafe { sys::napi_get_value_bool(env, result, &mut is_null) })?;
-    return unsafe { <&DynWinRTValue>::from_napi_value(env, raw) };
-  }
-  Err(napi::Error::from_reason(
-    "DynWin32.comObject(): expected a native managed COM carrier",
-  ))
+  })?;
+  unsafe { crate::native_class_ref::with_ref(value.value().env, value.raw(), operation) }
 }
 
 #[repr(C)]

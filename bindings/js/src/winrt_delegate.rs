@@ -5,8 +5,9 @@ use crate::{direct_callback::*, managed_tsfn, DynWinRTType, DynWinRTValue, WinGU
 use napi_derive::napi;
 use std::sync::Arc;
 
-#[napi]
-pub struct DynWinRtDelegate(pub(crate) dynwinrt::WinRTValue);
+native_class! {
+  pub struct DynWinRtDelegate(pub(crate) dynwinrt::WinRTValue);
+}
 
 #[napi]
 impl DynWinRtDelegate {

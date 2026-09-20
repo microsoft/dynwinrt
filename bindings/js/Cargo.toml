@@ -2,6 +2,7 @@
 [package]
 authors = ["Microsoft"]
 edition = "2021"
+rust-version = "1.88"
 name = "jswinrt_rs"
 version = "0.1.0"
 license = "MIT"
@@ -15,8 +16,8 @@ crate-type = ["cdylib"]
 test-hooks = ["dynwinrt/test-hooks", "windows/Win32_System_Wmi", "windows/Win32_Media_DeviceManager", "windows/Win32_Media_Audio_Endpoints", "windows/Win32_UI_Shell_PropertiesSystem", "windows/ApplicationModel_Background"]
 
 [dependencies]
-napi = { version = "3", features = ["napi7"] }
-napi-derive = "3.0.0"
+napi = { version = "=3.12.0", features = ["napi8"] }
+napi-derive = "=3.6.1"
 dynwinrt = { path = "../../crates/dynwinrt" }
 windows-future = "0.3.2"
 windows-string = "0.0.0"
@@ -63,6 +64,16 @@ features = [
 [build-dependencies]
 cc = "1"
 napi-build = "2"
+# Keep class conversion glue paired with the pinned runtime.
+napi-derive-backend = "=6.1.0"
+sha2 = "0.10"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[[test]]
+name = "native-branding"
+path = "build_support/native_branding.rs"
 
 [profile.release]
 lto = true

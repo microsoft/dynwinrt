@@ -55,11 +55,12 @@ pub(crate) fn ensure_progress_type_supported(
   }
 }
 
-#[napi]
-pub struct DynWinRTValue {
-  winrt: dynwinrt::WinRTValue,
-  storage: Option<js_storage::CallStorage>,
-  com: com_value::ComValueState,
+native_class! {
+  pub struct DynWinRTValue {
+    winrt: dynwinrt::WinRTValue,
+    storage: Option<js_storage::CallStorage>,
+    com: com_value::ComValueState,
+  }
 }
 // Unbound WinRT bookkeeping is thread-safe. Once COM ownership is established,
 // owner checks protect apartment-local Rc state; foreign destruction leaks only

@@ -278,6 +278,8 @@ methods remain available for compatibility.
 
 Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 `null`, and generated `IReference_*` wrappers are accepted as inputs.
+Collection factories take arrays of these inputs, typed as
+`(T | null | IReference_*)[]`, not a scalar or a `null` container.
 The same projection applies when `IReference<T>` appears inside a WinRT struct;
 packing boxes the field automatically and unpacking returns the native value.
 
@@ -397,6 +399,8 @@ Floating fields use numerical equality: `+0` and `-0` match, while NaN does not
 match even the same NaN bits. This also applies to collection views; a
 NaN-containing struct map key is not found by lookup. Stored field bits are
 not normalized.
+Map construction uses the same comparison as `Insert`: the last value for an
+equal key wins, retaining the first key's field bits and iteration position.
 
 The JavaScript helpers use validated typed core factories. Rust callers can use
 the safe `create_vector_from_values` / `create_map_from_values` factories for
@@ -412,6 +416,10 @@ Complete native struct collection support is tracked in
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds
 - **Node.js** ≥ 18 (Electron, plain Node, VS Code extensions, …)
+- **Native class validation** uses N-API 8 type tags. Keep runtime facades from
+  the same installed package; native values from differently branded builds
+  are rejected rather than reinterpreted.
+- **Building from source** requires Rust 1.88 or later.
 
 ## Links
 

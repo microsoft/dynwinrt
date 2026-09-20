@@ -986,7 +986,7 @@ impl AbiMethodSignature {
                 out_count: self.out_count,
                 return_kind: self.return_kind,
             },
-            strategy,
+            strategy: Arc::new(PreparedCall(strategy)),
         }
     }
 }
@@ -1057,10 +1057,19 @@ enum CallStrategy {
     Libffi(Cif),
 }
 
+/// Owns only the completed ABI strategy, never metadata owners or call storage.
+#[derive(Debug)]
+pub(crate) struct PreparedCall(CallStrategy);
+
+// Prepared CIFs own their type graphs and are immutable after construction.
+// ffi_call only reads them; argument and output storage is invocation-local.
+unsafe impl Send for PreparedCall {}
+unsafe impl Sync for PreparedCall {}
+
 #[derive(Debug)]
 pub struct Method {
     info: MethodInfo,
-    strategy: CallStrategy,
+    strategy: Arc<PreparedCall>,
 }
 
 fn expected_object_iid(typ: &TypeHandle) -> Option<GUID> {
@@ -1525,6 +1534,20 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
 }
 
 impl Method {
+    #[cfg(test)]
+    pub(crate) fn prepared_call(&self) -> &Arc<PreparedCall> {
+        &self.strategy
+    }
+
+    pub(crate) fn into_parts(self) -> (MethodInfo, Arc<PreparedCall>) {
+        (self.info, self.strategy)
+    }
+
+    /// Rebind metadata without changing the completed method's ABI shape.
+    pub(crate) fn from_parts(info: MethodInfo, strategy: Arc<PreparedCall>) -> Self {
+        Self { info, strategy }
+    }
+
     pub(crate) fn parameter_type(&self, parameter_index: usize) -> &ParameterType {
         &self.info.parameters[parameter_index].typ
     }
@@ -1818,7 +1841,7 @@ impl Method {
                 .expect("native dispatch marker must run exactly once")()
         };
 
-        match &self.strategy {
+        match &self.strategy.0 {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
                 mark_dispatched()?;
@@ -2322,7 +2345,7 @@ impl Method {
             ));
         }
         let invocation_args = self.prepare_com_invocation_args(args)?;
-        let CallStrategy::Libffi(cif) = &self.strategy else {
+        let CallStrategy::Libffi(cif) = &self.strategy.0 else {
             return Err(invalid_argument(
                 "native POD calls must use the prepared libffi plan",
             ));
@@ -2367,7 +2390,7 @@ impl Method {
         F: FnOnce() -> windows_core::Result<()>,
     {
         let invocation_args = self.prepare_com_invocation_args(args)?;
-        let CallStrategy::Libffi(cif) = &self.strategy else {
+        let CallStrategy::Libffi(cif) = &self.strategy.0 else {
             return Err(invalid_argument(
                 "captured HRESULT calls must use the prepared libffi plan",
             ));
@@ -2537,7 +2560,7 @@ mod tests {
                 .add_out_fill_type(ParameterType::winrt(array_type.clone()))
                 .build(0);
             assert!(matches!(
-                (&method.strategy, with_scalar),
+                (&method.strategy.0, with_scalar),
                 (CallStrategy::DirectFillArray, false) | (CallStrategy::Direct1InFillArray, true)
             ));
             args.push(WinRTValue::Array(crate::array::ArrayData::from_values(

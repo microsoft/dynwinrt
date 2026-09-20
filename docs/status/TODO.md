@@ -129,11 +129,6 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **Value-type inputs to `invoke()`**. `invoke()` currently requires `DynWinRtValue` wrappers per argument (`+~0.6-1.6 µs / arg`). Accept raw JS values (`number`/`string`/`bool`) and dispatch via `in_param_types()` on `MethodHandle`.
 
-- [ ] **Method handle without an arena read lock**. `MethodHandle` stores an
-      arena index; each call briefly reads `AppendOnlyBoxArena` to obtain its
-      stable method pointer. Store a stable method handle directly if benchmark
-      results justify removing that lock.
-
 - [ ] **Stack-allocated return path**. `Ok(vec![out])` heap-allocates per call. `SmallVec<[WinRTValue; 2]>` for the common single-out shape.
 
 - [ ] **JS binding: raw `Env` lifetime discipline**. The same-thread delegate

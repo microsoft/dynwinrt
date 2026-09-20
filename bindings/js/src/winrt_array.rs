@@ -41,11 +41,12 @@ where
     .collect()
 }
 
-#[napi]
-pub struct DynWinRTArray(
-  pub(crate) dynwinrt::ArrayData,
-  pub(crate) Option<com_input::InputBindings>,
-);
+native_class! {
+  pub struct DynWinRTArray(
+    pub(crate) dynwinrt::ArrayData,
+    pub(crate) Option<com_input::InputBindings>,
+  );
+}
 
 impl DynWinRTArray {
   pub(crate) fn new(data: dynwinrt::ArrayData) -> Self {

@@ -8,7 +8,6 @@ use windows_core::GUID;
 use super::MetadataTable;
 use super::type_kind::TypeKind;
 use crate::signature::MethodSignature;
-use crate::value::WinRTValue;
 
 // ===========================================================================
 // Arena data types
@@ -130,6 +129,7 @@ impl MetadataTable {
     /// Add a method to an interface's method table. Returns the vtable index.
     /// If a method with the same name already exists, skips and returns the existing vtable index.
     pub(super) fn push_method(&self, iid: &GUID, name: &str, sig: MethodSignature) -> u32 {
+        sig.assert_parameter_owners(self, name);
         let mut iface_methods = self.interface_methods.write().unwrap();
         let table = iface_methods
             .get_mut(iid)
@@ -141,7 +141,7 @@ impl MetadataTable {
         }
 
         let vtable_index = 6 + table.method_indices.len();
-        let method = sig.build(vtable_index);
+        let method = sig.build_registered(vtable_index);
         let arena_index = self.methods.push(method);
         table.method_names.push(name.to_string());
         table.method_indices.push(arena_index);
@@ -209,26 +209,9 @@ impl MetadataTable {
             .map(|e| e.members.clone())
     }
 
-    pub(crate) fn invoke_method(
-        &self,
-        index: u32,
-        obj: *mut std::ffi::c_void,
-        args: &[WinRTValue],
-    ) -> windows_core::Result<Vec<WinRTValue>> {
-        // Grab a stable pointer to the method, then invoke. `AppendOnlyBoxArena`
-        // guarantees the pointer remains valid for the arena's lifetime, which
-        // lets us release the read lock before making the COM call. Holding the
-        // read lock across dispatch would deadlock any re-entrant `push_method`
-        // triggered from within (e.g. an event handler that touches a lazy
-        // proxy while `runEventLoop` is pumping). See the doc comment on
-        // `methods` in mod.rs for the safety argument.
-        let method_ptr: *const crate::signature::Method = self.methods.stable_ptr(index);
-        unsafe { (*method_ptr).call_dynamic(obj, args) }
-    }
-
-    /// Get a stable pointer to a Method by arena index. See the safety notes
+    /// Get a stable pointer to a registered descriptor by arena index. See the safety notes
     /// on `MetadataTable::methods` for why this is sound.
-    pub(crate) fn method_ptr(&self, index: u32) -> *const crate::signature::Method {
+    pub(crate) fn method_ptr(&self, index: u32) -> *const crate::signature::RegisteredMethod {
         self.methods.stable_ptr(index)
     }
 

@@ -447,6 +447,15 @@ pub(crate) enum PreparedCollectionItem {
 }
 
 impl PreparedCollectionItem {
+    /// Borrow the ABI word without transferring ownership.
+    pub(crate) fn as_raw(&self) -> usize {
+        match self {
+            Self::Word(word) => *word,
+            Self::HString(value) => unsafe { std::mem::transmute_copy::<HSTRING, usize>(value) },
+            Self::Object(object) => object.as_ref().map_or(0, |object| object.as_raw() as usize),
+        }
+    }
+
     pub(crate) fn into_raw(self) -> usize {
         match self {
             Self::Word(word) => word,

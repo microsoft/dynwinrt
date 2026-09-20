@@ -12,8 +12,11 @@ use std::sync::Arc;
 use windows::core::{GUID, HSTRING};
 
 use crate::{
-    metadata_table::{MetadataTable, TypeHandle},
-    native_call::{AbiMethodSignature, Method as NativeMethod, ParameterType},
+    metadata_table::{MetadataTable, TypeHandle, TypeKind},
+    native_call::{
+        AbiMethodSignature, Method as NativeMethod, MethodInfo, MethodReturn, OutputCleanup,
+        ParamKind, Parameter, ParameterType, PreparedCall,
+    },
     value::WinRTValue,
 };
 
@@ -52,6 +55,54 @@ impl MethodSignature {
         Method(self.0.build(index))
     }
 
+    pub(crate) fn assert_parameter_owners(&self, table: &MetadataTable, name: &str) {
+        for (index, parameter) in self.0.parameters().iter().enumerate() {
+            let typ = parameter.typ.as_winrt().expect("WinRT signature parameter");
+            assert!(
+                std::ptr::eq(table, typ.table().as_ref()),
+                "registered method '{name}' parameter {index} must use the same MetadataTable"
+            );
+        }
+    }
+
+    pub(crate) fn build_registered(self, index: usize) -> RegisteredMethod {
+        let (info, prepared) = self.0.build(index).into_parts();
+        let parameters = info
+            .parameters
+            .into_iter()
+            .map(|parameter| {
+                let direction = match parameter.kind {
+                    ParamKind::In => WinRtParameterDirection::In,
+                    ParamKind::Out => WinRtParameterDirection::Out,
+                    ParamKind::OutFillArray => WinRtParameterDirection::FillArray,
+                    ParamKind::OptionalOut | ParamKind::InOut => {
+                        unreachable!("WinRT signature direction")
+                    }
+                };
+                debug_assert!(parameter.canonical_format_input.is_none());
+                RegisteredParameter {
+                    typ: parameter
+                        .typ
+                        .as_winrt()
+                        .expect("WinRT signature parameter")
+                        .kind(),
+                    direction,
+                    output_cleanup: parameter.output_cleanup,
+                    value_index: parameter.value_index,
+                    input_index: parameter.input_index,
+                }
+            })
+            .collect();
+        debug_assert!(matches!(info.return_kind, MethodReturn::HResult));
+        RegisteredMethod {
+            index: info.index,
+            parameters,
+            input_count: info.input_count,
+            out_count: info.out_count,
+            prepared,
+        }
+    }
+
     pub(crate) fn implementation_parameters(
         &self,
     ) -> windows_core::Result<Vec<(TypeHandle, WinRtParameterDirection)>> {
@@ -85,9 +136,64 @@ impl MethodSignature {
 }
 
 #[derive(Debug)]
+struct RegisteredParameter {
+    typ: TypeKind,
+    direction: WinRtParameterDirection,
+    output_cleanup: OutputCleanup,
+    value_index: usize,
+    input_index: Option<usize>,
+}
+
+/// Table-local method metadata must not retain owning TypeHandles.
+#[derive(Debug)]
+pub(crate) struct RegisteredMethod {
+    index: usize,
+    parameters: Vec<RegisteredParameter>,
+    input_count: usize,
+    out_count: usize,
+    prepared: Arc<PreparedCall>,
+}
+
+impl RegisteredMethod {
+    pub(crate) fn bind(&self, table: &Arc<MetadataTable>) -> Method {
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|parameter| Parameter {
+                typ: ParameterType::winrt(table.make(parameter.typ)),
+                kind: match parameter.direction {
+                    WinRtParameterDirection::In => ParamKind::In,
+                    WinRtParameterDirection::Out => ParamKind::Out,
+                    WinRtParameterDirection::FillArray => ParamKind::OutFillArray,
+                },
+                output_cleanup: parameter.output_cleanup,
+                canonical_format_input: None,
+                value_index: parameter.value_index,
+                input_index: parameter.input_index,
+            })
+            .collect();
+        Method(NativeMethod::from_parts(
+            MethodInfo {
+                index: self.index,
+                parameters,
+                input_count: self.input_count,
+                out_count: self.out_count,
+                return_kind: MethodReturn::HResult,
+            },
+            Arc::clone(&self.prepared),
+        ))
+    }
+}
+
+#[derive(Debug)]
 pub struct Method(NativeMethod);
 
 impl Method {
+    #[cfg(test)]
+    pub(crate) fn prepared_call(&self) -> &Arc<PreparedCall> {
+        self.0.prepared_call()
+    }
+
     pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<i32> {
         self.0.call_getter_i32(obj)
     }

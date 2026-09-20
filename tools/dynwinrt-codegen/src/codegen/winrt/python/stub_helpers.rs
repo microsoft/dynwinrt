@@ -62,14 +62,10 @@ pub(super) fn emit_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) 
         );
     }
 
-    let (_namespace, name, fields) = match s {
-        TypeMeta::Struct {
-            namespace,
-            name,
-            fields,
-        } => (namespace, name, fields),
-        _ => return String::new(),
+    let TypeMeta::Struct { fields, .. } = s else {
+        return String::new();
     };
+    let name = context.struct_symbol(s, PythonSymbol::Type);
     let mut out = String::new();
     let slot_names = fields.iter().map(py_struct_slot_name).collect::<Vec<_>>();
 

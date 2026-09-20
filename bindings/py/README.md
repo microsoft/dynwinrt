@@ -150,6 +150,8 @@ Floating fields use numerical equality: `+0` and `-0` match, while NaN does not
 match even the same NaN bits. This also applies to collection views; a
 NaN-containing struct map key is not found by lookup. Stored field bits are
 not normalized.
+Map construction uses the same comparison as `Insert`: the last value for an
+equal key wins, retaining the first key's field bits and iteration position.
 
 The Python helpers use validated typed core factories. Rust callers can use
 the safe `create_vector_from_values` / `create_map_from_values` factories for

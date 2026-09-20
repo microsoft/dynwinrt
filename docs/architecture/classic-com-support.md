@@ -59,6 +59,12 @@ the same private backend, but only their respective semantic layers may decide
 what a type, parameter direction, return convention, or ownership contract
 means.
 
+The shared prepared-call allocation owns only its immutable execution strategy
+and libffi type graph, not a metadata registry. WinRT registration stores local
+type kinds and binds owning types in external method handles. Classic COM keeps
+its own owning parameter/return contracts and method registry; the WinRT
+same-table registration restriction does not apply to it.
+
 In particular:
 
 - WinRT interface methods remain in the WinRT `MetadataTable` and begin at
