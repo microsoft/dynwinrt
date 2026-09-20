@@ -46,10 +46,25 @@ fn property_named_property_does_not_shadow_the_decorator() {
     let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("_property, _weakref_ref,"));
-    assert_eq!(py.matches("    @_property\n").count(), 2);
-    assert!(py.contains("def property(self)"));
-    assert!(py.contains("def old_value(self)"));
-
     assert!(pyi.contains("import builtins"));
-    assert_eq!(pyi.matches("    @builtins.property\n").count(), 2);
+    for name in ["property", "old_value"] {
+        assert!(
+            py.contains(&format!(
+                "    @_property\n    def {name}(self) -> DynWinRTValue | None:"
+            )),
+            "{py}"
+        );
+        assert!(
+            pyi.contains(&format!(
+                "    @builtins.property\n    def {name}(self) -> DynWinRTValue | None: ..."
+            )),
+            "{pyi}"
+        );
+    }
+    assert!(
+        pyi.contains("    @builtins.property\n    def _obj(self) -> DynWinRTValue: ..."),
+        "{pyi}"
+    );
+    assert!(!py.contains("    @property\n"), "{py}");
+    assert!(!pyi.contains("    @property\n"), "{pyi}");
 }
