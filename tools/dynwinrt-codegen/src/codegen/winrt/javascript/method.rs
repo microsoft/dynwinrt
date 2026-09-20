@@ -11,6 +11,20 @@ use crate::types::TypeMeta;
 // TypeScript type annotation helpers
 // ======================================================================
 
+/// Preserve top-level union/intersection precedence without regrouping nested types.
+pub(crate) fn ts_array_type(element_type: &str) -> String {
+    let mut depth = 0usize;
+    for ch in element_type.chars() {
+        match ch {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            '|' | '&' if depth == 0 => return format!("({element_type})[]"),
+            _ => {}
+        }
+    }
+    format!("{element_type}[]")
+}
+
 fn ts_param_type(context: &JavaScriptProjectionContext, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "boolean".to_string(),
@@ -89,7 +103,7 @@ pub(crate) fn ts_param_type_dts(
             return "Uint8Array | number[]".to_string();
         }
         let elem_ts = ts_param_type_safe(context, inner, known);
-        return format!("{}[]", elem_ts);
+        return ts_array_type(&elem_ts);
     }
     if let TypeMeta::Parameterized {
         name, piid, args, ..
@@ -100,7 +114,7 @@ pub(crate) fn ts_param_type_dts(
         if is_vector_like_piid(piid) || is_vector_like_name(name) {
             if let Some(elem) = args.first() {
                 let elem_ts = ts_param_type_safe(context, elem, known);
-                return format!("{} | {}[]", base, elem_ts);
+                return format!("{} | {}", base, ts_array_type(&elem_ts));
             }
         }
         // IMap<K,V>, IMapView<K,V> → also accept Map<K,V>
@@ -306,10 +320,57 @@ pub(crate) fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<Stri
         | TypeMeta::Enum { .. } => "number[]".to_string(),
         TypeMeta::I64 | TypeMeta::U64 => "bigint[]".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "number[]".to_string(),
-        TypeMeta::Struct { name, .. } => format!("{}[]", name),
+        TypeMeta::Struct { name, .. } => ts_array_type(name),
         TypeMeta::Object => "Array<DynWinRtValue | null>".to_string(),
-        TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => format!("{}[]", name),
-        TypeMeta::Interface { name, .. } if known_types.contains(name) => format!("{}[]", name),
+        TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => ts_array_type(name),
+        TypeMeta::Interface { name, .. } if known_types.contains(name) => ts_array_type(name),
         _ => "DynWinRtValue[]".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_types_preserve_element_precedence() {
+        for (element, expected) in [
+            ("number", "number[]"),
+            ("string", "string[]"),
+            (
+                "number | null | IReference_UInt32",
+                "(number | null | IReference_UInt32)[]",
+            ),
+            ("Observable & Vector", "(Observable & Vector)[]"),
+            ("(number | null)", "(number | null)[]"),
+            ("(number | null)[]", "(number | null)[][]"),
+            ("Map<string, number | null>", "Map<string, number | null>[]"),
+            ("[number | null, string]", "[number | null, string][]"),
+            ("{ value: number | null }", "{ value: number | null }[]"),
+        ] {
+            assert_eq!(ts_array_type(element), expected);
+        }
+        assert_eq!(
+            ts_array_type(&ts_array_type("number | null")),
+            "(number | null)[][]"
+        );
+    }
+
+    #[test]
+    fn array_parameters_keep_byte_and_scalar_projections() {
+        for (element, expected) in [
+            (TypeMeta::U8, "Uint8Array | number[]"),
+            (TypeMeta::U32, "number[]"),
+            (TypeMeta::String, "string[]"),
+        ] {
+            assert_eq!(
+                ts_param_type_dts(
+                    &Default::default(),
+                    &TypeMeta::Array(Box::new(element)),
+                    &HashSet::new(),
+                ),
+                expected,
+            );
+        }
     }
 }

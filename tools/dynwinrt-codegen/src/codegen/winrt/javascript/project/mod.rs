@@ -45,7 +45,8 @@ use crate::codegen::winrt::shared::structs::{
 
 use super::ir::*;
 use super::method::{
-    ts_array_element_type, ts_param_type_dts, ts_param_type_safe, ts_return_type_safe,
+    ts_array_element_type, ts_array_type, ts_param_type_dts, ts_param_type_safe,
+    ts_return_type_safe,
 };
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{
