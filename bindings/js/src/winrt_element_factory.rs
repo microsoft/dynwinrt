@@ -14,10 +14,11 @@ struct ElementFactoryCallbackRefs {
   recycle_element: Option<Arc<napi::bindgen_prelude::FunctionRef<DynWinRTValue, ()>>>,
 }
 
-#[napi]
-pub struct DynWinRtElementFactory {
-  value: dynwinrt::WinRTValue,
-  callbacks: Arc<Mutex<ElementFactoryCallbackRefs>>,
+native_class! {
+  pub struct DynWinRtElementFactory {
+    value: dynwinrt::WinRTValue,
+    callbacks: Arc<Mutex<ElementFactoryCallbackRefs>>,
+  }
 }
 
 unsafe fn take_pending_exception_message(env: napi::sys::napi_env) -> Option<String> {
@@ -69,7 +70,7 @@ impl DynWinRtElementFactory {
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+    use napi::bindgen_prelude::ToNapiValue;
     use napi::JsValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
@@ -141,10 +142,12 @@ impl DynWinRtElementFactory {
                   "IElementFactory getElement callback failed: {detail}"
                 )));
               }
-              <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
-                .winrt()
-                .cast(&element_iid)
-                .map_err(|error| napi::Error::from_reason(error.message()))
+              crate::native_class_ref::with_ref::<DynWinRTValue, _>(raw_env, raw_result, |value| {
+                value
+                  .winrt()
+                  .cast(&element_iid)
+                  .map_err(|error| napi::Error::from_reason(error.message()))
+              })
             })();
             let call_result =
               call_result.map_err(|error| match take_pending_exception_message(raw_env) {

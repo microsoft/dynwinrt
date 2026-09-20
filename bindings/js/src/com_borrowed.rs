@@ -52,8 +52,9 @@ fn parse_contract(value: &str) -> napi::Result<BorrowedCopyContract> {
   BorrowedCopyContract::parse(value).map_err(invalid)
 }
 
-#[napi]
-pub struct DynComBorrowedCopyPlan(BorrowedCopyPlan);
+native_class! {
+  pub struct DynComBorrowedCopyPlan(BorrowedCopyPlan);
+}
 
 #[napi(object)]
 pub struct DynComCapturePacketCopy {
@@ -84,10 +85,11 @@ impl DynComBorrowedCopyPlan {
 }
 
 #[cfg(feature = "test-hooks")]
-#[napi]
-pub struct DynComBorrowedCopyTestFixture {
-  fixture: dynwinrt::com::borrowed::testing::CopyFixture,
-  owner: std::thread::ThreadId,
+native_class! {
+  pub struct DynComBorrowedCopyTestFixture {
+    fixture: dynwinrt::com::borrowed::testing::CopyFixture,
+    owner: std::thread::ThreadId,
+  }
 }
 
 #[cfg(feature = "test-hooks")]

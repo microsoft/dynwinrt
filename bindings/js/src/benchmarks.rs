@@ -4,22 +4,25 @@
 use napi_derive::napi;
 use windows::core::HSTRING;
 
-#[napi]
-pub struct RustStaticBench;
+native_class! {
+  pub struct RustStaticBench;
+}
 
 fn map_win_err(e: windows::core::Error) -> napi::Error {
   napi::Error::from_reason(e.message())
 }
 
-/// Pre-created Uri for static benchmark (stores typed interface, no QI on access).
-#[napi]
-pub struct StaticUri(windows::Foundation::Uri);
+native_class! {
+  /// Pre-created Uri for static benchmark (stores typed interface, no QI on access).
+  pub struct StaticUri(windows::Foundation::Uri);
+}
 unsafe impl Send for StaticUri {}
 unsafe impl Sync for StaticUri {}
 
-/// Pre-created opaque COM object for static benchmark (factory results).
-#[napi]
-pub struct StaticObj(#[allow(dead_code)] windows::core::IInspectable);
+native_class! {
+  /// Pre-created opaque COM object for static benchmark (factory results).
+  pub struct StaticObj(#[allow(dead_code)] windows::core::IInspectable);
+}
 unsafe impl Send for StaticObj {}
 unsafe impl Sync for StaticObj {}
 

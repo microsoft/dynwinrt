@@ -120,14 +120,19 @@ pub fn unbox_object<'env>(env: Env, value: Unknown<'env>) -> napi::Result<Unknow
     return Ok(value);
   }
 
-  let raw = unsafe {
-    <&DynWinRTValue as FromNapiValue>::from_napi_value(env.raw(), napi::JsValue::raw(&value))
-  }?;
-  match dynwinrt::unbox_property_value(raw.winrt())
-    .map_err(|error| napi::Error::from_reason(error.message()))?
-  {
-    dynwinrt::PropertyValueUnboxResult::Null => null_unknown(env),
-    dynwinrt::PropertyValueUnboxResult::NotPropertyValue => Ok(value),
-    dynwinrt::PropertyValueUnboxResult::Value(value) => property_value_to_javascript(env, value),
+  unsafe {
+    crate::native_class_ref::with_ref::<DynWinRTValue, _>(
+      env.raw(),
+      napi::JsValue::raw(&value),
+      |raw| match dynwinrt::unbox_property_value(raw.winrt())
+        .map_err(|error| napi::Error::from_reason(error.message()))?
+      {
+        dynwinrt::PropertyValueUnboxResult::Null => null_unknown(env),
+        dynwinrt::PropertyValueUnboxResult::NotPropertyValue => Ok(value),
+        dynwinrt::PropertyValueUnboxResult::Value(value) => {
+          property_value_to_javascript(env, value)
+        }
+      },
+    )
   }
 }

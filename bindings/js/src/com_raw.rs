@@ -547,8 +547,9 @@ fn managed_from_owned_com_value(value: IUnknown) -> napi::Result<DynWinRTValue> 
   Ok(value)
 }
 
-#[napi]
-pub struct DynComRaw;
+native_class! {
+  pub struct DynComRaw;
+}
 
 #[napi]
 impl DynComRaw {
@@ -576,8 +577,9 @@ impl DynComRaw {
   }
 }
 
-#[napi]
-pub struct DynComRawCleanup;
+native_class! {
+  pub struct DynComRawCleanup;
+}
 
 #[napi]
 impl DynComRawCleanup {
@@ -756,9 +758,10 @@ impl DynComRawCleanup {
   }
 }
 
-#[napi]
-pub struct DynComRawOwnedComPointer {
-  state: Arc<RawComReference>,
+native_class! {
+  pub struct DynComRawOwnedComPointer {
+    state: Arc<RawComReference>,
+  }
 }
 
 impl Drop for DynComRawOwnedComPointer {
@@ -892,10 +895,11 @@ impl DynComRawOwnedComPointer {
   }
 }
 
-#[napi]
-pub struct DynComRawStructLayout {
-  descriptor: String,
-  layout: Arc<dynwinrt::com::NativeStructLayout>,
+native_class! {
+  pub struct DynComRawStructLayout {
+    descriptor: String,
+    layout: Arc<dynwinrt::com::NativeStructLayout>,
+  }
 }
 
 #[napi]
@@ -986,10 +990,11 @@ impl DynComRawStructLayout {
   }
 }
 
-#[napi]
-pub struct DynComRawUnionLayout {
-  descriptor: String,
-  layout: Arc<dynwinrt::com::NativeUnionLayout>,
+native_class! {
+  pub struct DynComRawUnionLayout {
+    descriptor: String,
+    layout: Arc<dynwinrt::com::NativeUnionLayout>,
+  }
 }
 
 #[napi]
@@ -1105,9 +1110,10 @@ impl DynComRawUnionLayout {
   }
 }
 
-#[napi]
-pub struct DynComRawMemory {
-  allocation: Arc<RawAllocation>,
+native_class! {
+  pub struct DynComRawMemory {
+    allocation: Arc<RawAllocation>,
+  }
 }
 
 #[napi]
@@ -1479,9 +1485,10 @@ impl DynComRawMemory {
   }
 }
 
-#[napi]
-pub struct DynComRawPointer {
-  kind: RawPointerKind,
+native_class! {
+  pub struct DynComRawPointer {
+    kind: RawPointerKind,
+  }
 }
 
 impl DynComRawPointer {

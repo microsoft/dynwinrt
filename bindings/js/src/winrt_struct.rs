@@ -7,11 +7,12 @@ use napi_derive::napi;
 use std::mem;
 use windows::core::HSTRING;
 
-#[napi]
-pub struct DynWinRTStruct(
-  pub(crate) dynwinrt::ValueTypeData,
-  pub(crate) Vec<Option<com_input::InputBindings>>,
-);
+native_class! {
+  pub struct DynWinRTStruct(
+    pub(crate) dynwinrt::ValueTypeData,
+    pub(crate) Vec<Option<com_input::InputBindings>>,
+  );
+}
 unsafe impl Send for DynWinRTStruct {}
 unsafe impl Sync for DynWinRTStruct {}
 

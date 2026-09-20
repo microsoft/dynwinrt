@@ -6,6 +6,33 @@ use crate::value::ensure_progress_type_supported;
 use super::*;
 
 #[test]
+fn native_class_tags_include_the_build_brand_and_actual_rust_class() {
+  use napi::bindgen_prelude::{type_tag_from_ident, TypeTag};
+
+  let value = DynWinRTValue::type_tag();
+  assert_eq!(
+    value,
+    type_tag_from_ident(concat!(
+      env!("DYNWINRT_NATIVE_CLASS_SALT"),
+      "::jswinrt_rs::value::DynWinRTValue"
+    ))
+  );
+  for other in [
+    DynWinRTType::type_tag(),
+    DynWinRTMethodSig::type_tag(),
+    WinGUID::type_tag(),
+    DynComType::type_tag(),
+    DynComVariant::type_tag(),
+  ] {
+    assert_ne!(value, other);
+  }
+  assert_ne!(
+    value,
+    type_tag_from_ident("other-build::jswinrt_rs::value::DynWinRTValue")
+  );
+}
+
+#[test]
 fn hresult_arrays_use_the_i32_projection() {
   let array = DynWinRTArray::new(dynwinrt::ArrayData::from_values(
     TABLE.hresult(),

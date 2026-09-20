@@ -403,6 +403,10 @@ Complete native struct collection support is tracked in
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds
 - **Node.js** ≥ 18 (Electron, plain Node, VS Code extensions, …)
+- **Native class validation** uses N-API 8 type tags. Keep runtime facades from
+  the same installed package; native values from differently branded builds
+  are rejected rather than reinterpreted.
+- **Building from source** requires Rust 1.88 or later.
 
 ## Links
 
