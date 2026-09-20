@@ -144,11 +144,20 @@ I8/U8/Char16. For example, `from_i32(255)` is accepted for U8;
 queried for the declared IID; an incompatible interface raises, while
 `DynWinRTValue.null_value()` remains a null reference.
 
+For admitted POD structs, vector `IndexOf` and map key operations compare
+metadata-declared fields by value, including nested fields, and ignore padding.
+Floating fields use numerical equality: `+0` and `-0` match, while NaN does not
+match even the same NaN bits. This also applies to collection views; a
+NaN-containing struct map key is not found by lookup. Stored field bits are
+not normalized.
+
 The Python helpers use validated typed core factories. Rust callers can use
 the safe `create_vector_from_values` / `create_map_from_values` factories for
 the same checks. The metadata-free Rust `create_value_vector`, `create_vector`,
 and `create_map` constructors require `unsafe`: callers must prove the native
 ABI, ownership, element types, and complete IID set themselves.
+The metadata-free `create_value_vector` retains packed-byte equality, including
+padding, rather than metadata-directed field equality.
 Unsupported layouts raise
 `RuntimeError`; HRESULT-backed type, range, or QueryInterface failures raise
 `OSError`. Complete native struct collection support is tracked in

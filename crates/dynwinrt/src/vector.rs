@@ -15,7 +15,9 @@ use std::sync::{
 };
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
-use crate::collection_element::{CollectionElementPlan, CollectionStorage, PreparedCollectionItem};
+use crate::collection_element::{
+    CollectionElementPlan, CollectionEquality, CollectionStorage, PreparedCollectionItem,
+};
 use crate::com_helpers::{
     E_BOUNDS, E_FAIL, E_NOTIMPL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out,
     com_usize_release,
@@ -274,9 +276,13 @@ pub(crate) unsafe fn release_stored_item(storage: CollectionStorage, raw: usize)
 
 pub(crate) unsafe fn stored_items_equal(
     storage: CollectionStorage,
+    equality: &CollectionEquality,
     left: usize,
     right: usize,
 ) -> bool {
+    if let Some(equal) = equality.struct_words_equal(left, right) {
+        return equal;
+    }
     if !storage.is_hstring() {
         return if storage.is_value_type() {
             normalize_value_word(left, storage.element_size())
@@ -330,6 +336,7 @@ struct SingleThreadedVector {
     handlers: Mutex<HashMap<i64, IUnknown>>,
     next_token: AtomicI64,
     storage: CollectionStorage,
+    equality: CollectionEquality,
     iids: VectorIids,
 }
 
@@ -530,7 +537,12 @@ impl SingleThreadedVector {
             .iter()
             .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
             .collect();
-        let view = SingleThreadedVectorView::create(snapshot, me.storage, me.iids.clone());
+        let view = SingleThreadedVectorView::create(
+            snapshot,
+            me.storage,
+            me.equality.clone(),
+            me.iids.clone(),
+        );
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
         let identity = view.into_raw();
@@ -552,7 +564,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if stored_items_equal(me.storage, item, needle) {
+            if stored_items_equal(me.storage, &me.equality, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -734,7 +746,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if stored_items_equal(me.storage, item, needle) {
+            if stored_items_equal(me.storage, &me.equality, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -789,6 +801,7 @@ struct SingleThreadedVectorView {
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
     storage: CollectionStorage,
+    equality: CollectionEquality,
     iids: VectorIids,
 }
 
@@ -827,13 +840,19 @@ impl SingleThreadedVectorView {
         get_many: Self::get_many,
     };
 
-    fn create(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
+    fn create(
+        items: Vec<usize>,
+        storage: CollectionStorage,
+        equality: CollectionEquality,
+        iids: VectorIids,
+    ) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
             vtable_view: &Self::VIEW_VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
             storage,
+            equality,
             iids,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
@@ -890,7 +909,7 @@ impl SingleThreadedVectorView {
         }
         let needle = value as usize;
         for (i, &item) in me.items.iter().enumerate() {
-            if stored_items_equal(me.storage, item, needle) {
+            if stored_items_equal(me.storage, &me.equality, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -1050,6 +1069,8 @@ impl Drop for SingleThreadedIterator {
 /// Validates the complete IID set, exact element types, native argument ABI,
 /// and ownership before publication. Only word-sized POD values are stored.
 /// Some indirectly passed large POD types support empty-only vectors.
+/// Admitted struct fields compare by value, ignoring padding; floating fields
+/// use numerical equality, including equal signed zeros and unequal NaNs.
 pub fn create_vector_from_values(
     items: &[crate::WinRTValue],
     element_type: &crate::TypeHandle,
@@ -1069,7 +1090,7 @@ pub fn create_vector_from_values(
         .into_iter()
         .map(PreparedCollectionItem::into_raw)
         .collect();
-    Ok(new_vector(packed, plan.storage, iids))
+    Ok(new_vector(packed, plan.storage, plan.equality, iids))
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
@@ -1087,12 +1108,19 @@ pub unsafe fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown 
         .into_iter()
         .map(|obj| obj.into_raw() as usize)
         .collect();
-    new_vector(raw_items, CollectionStorage::Object, iids)
+    new_vector(
+        raw_items,
+        CollectionStorage::Object,
+        CollectionEquality::Storage,
+        iids,
+    )
 }
 
 /// Create an IVector<T> COM object from raw POD value bytes.
 ///
-/// Prefer [`create_vector_from_values`] for checked construction.
+/// This metadata-free constructor compares packed bytes, including padding,
+/// rather than typed struct fields. Prefer [`create_vector_from_values`] for
+/// checked construction and metadata-directed value equality.
 ///
 /// # Safety
 ///
@@ -1130,10 +1158,15 @@ pub unsafe fn create_value_vector(
             val
         })
         .collect();
-    new_vector(packed, storage, iids)
+    new_vector(packed, storage, CollectionEquality::Storage, iids)
 }
 
-fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
+fn new_vector(
+    items: Vec<usize>,
+    storage: CollectionStorage,
+    equality: CollectionEquality,
+    iids: VectorIids,
+) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
         vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
@@ -1144,6 +1177,7 @@ fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -
         handlers: Mutex::new(HashMap::new()),
         next_token: AtomicI64::new(1),
         storage,
+        equality,
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(vector) as *mut c_void) }

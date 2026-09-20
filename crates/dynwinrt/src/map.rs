@@ -11,7 +11,7 @@ use core::ffi::c_void;
 use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
-use crate::collection_element::{CollectionElementPlan, CollectionStorage};
+use crate::collection_element::{CollectionElementPlan, CollectionEquality, CollectionStorage};
 use crate::com_helpers::{E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK};
 #[allow(unused_imports)]
 use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
@@ -84,6 +84,7 @@ unsafe fn find_key_index(
     entries: &[(usize, usize)],
     key: *mut c_void,
     storage: CollectionStorage,
+    equality: &CollectionEquality,
 ) -> Option<usize> {
     let key = key as usize;
     if !storage.is_hstring()
@@ -96,7 +97,7 @@ unsafe fn find_key_index(
     }
     entries
         .iter()
-        .position(|(stored, _)| stored_items_equal(storage, *stored, key))
+        .position(|(stored, _)| stored_items_equal(storage, equality, *stored, key))
 }
 
 unsafe fn boxed_hstring(raw: usize) -> Option<windows_core::HSTRING> {
@@ -125,6 +126,7 @@ struct SingleThreadedMap {
     entries: Mutex<Vec<(usize, usize)>>,
     key_storage: CollectionStorage,
     value_storage: CollectionStorage,
+    key_equality: CollectionEquality,
     iids: MapIids,
 }
 
@@ -201,7 +203,7 @@ impl SingleThreadedMap {
     ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let entries = lock_or!(me.entries, E_FAIL);
-        match find_key_index(&entries, key, me.key_storage) {
+        match find_key_index(&entries, key, me.key_storage, &me.key_equality) {
             Some(i) => {
                 write_item_out(me.value_storage, entries[i].1, result);
                 S_OK
@@ -223,7 +225,7 @@ impl SingleThreadedMap {
     ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let entries = lock_or!(me.entries, E_FAIL);
-        *result = find_key_index(&entries, key, me.key_storage).is_some();
+        *result = find_key_index(&entries, key, me.key_storage, &me.key_equality).is_some();
         S_OK
     }
 
@@ -242,6 +244,7 @@ impl SingleThreadedMap {
             snapshot,
             me.key_storage,
             me.value_storage,
+            me.key_equality.clone(),
             me.iids.clone(),
         );
         // WinRT ABI: get_view must return an IMapView pointer (second vtable),
@@ -259,7 +262,7 @@ impl SingleThreadedMap {
     ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let mut entries = lock_or!(me.entries, E_FAIL);
-        match find_key_index(&entries, key, me.key_storage) {
+        match find_key_index(&entries, key, me.key_storage, &me.key_equality) {
             Some(i) => {
                 let old_value = entries[i].1;
                 entries[i].1 = store_abi_item(me.value_storage, value);
@@ -280,7 +283,7 @@ impl SingleThreadedMap {
     unsafe extern "system" fn remove(this: *mut c_void, key: *mut c_void) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let mut entries = lock_or!(me.entries, E_FAIL);
-        match find_key_index(&entries, key, me.key_storage) {
+        match find_key_index(&entries, key, me.key_storage, &me.key_equality) {
             Some(i) => {
                 let (key, value) = entries.remove(i);
                 release_stored_item(me.key_storage, key);
@@ -327,6 +330,7 @@ struct SingleThreadedMapView {
     entries: Vec<(usize, usize)>,
     key_storage: CollectionStorage,
     value_storage: CollectionStorage,
+    key_equality: CollectionEquality,
     iids: MapIids,
 }
 
@@ -369,6 +373,7 @@ impl SingleThreadedMapView {
         entries: Vec<(usize, usize)>,
         key_storage: CollectionStorage,
         value_storage: CollectionStorage,
+        key_equality: CollectionEquality,
         iids: MapIids,
     ) -> IUnknown {
         let view = Box::new(Self {
@@ -378,6 +383,7 @@ impl SingleThreadedMapView {
             entries,
             key_storage,
             value_storage,
+            key_equality,
             iids,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
@@ -417,7 +423,7 @@ impl SingleThreadedMapView {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        match find_key_index(&me.entries, key, me.key_storage) {
+        match find_key_index(&me.entries, key, me.key_storage, &me.key_equality) {
             Some(i) => {
                 write_item_out(me.value_storage, me.entries[i].1, result);
                 S_OK
@@ -438,7 +444,7 @@ impl SingleThreadedMapView {
         result: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        *result = find_key_index(&me.entries, key, me.key_storage).is_some();
+        *result = find_key_index(&me.entries, key, me.key_storage, &me.key_equality).is_some();
         S_OK
     }
 
@@ -568,13 +574,15 @@ pub unsafe fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> I
         .map(|(key, value)| (key.into_raw() as usize, value.into_raw() as usize))
         .collect();
     let storage = CollectionStorage::Object;
-    new_map(entries, storage, storage, iids)
+    new_map(entries, storage, storage, CollectionEquality::Storage, iids)
 }
 
 /// Create a checked map, validating element types, layouts, ownership and all IIDs.
 ///
 /// Keys and values must use the same metadata table. Large values are unsupported
 /// even in an empty map; reference values are queried for the declared interface.
+/// Admitted struct keys compare their fields by value, ignoring padding.
+/// Floating fields use numerical equality: signed zeros match, but NaNs do not.
 pub fn create_map_from_values(
     entries: &[(crate::WinRTValue, crate::WinRTValue)],
     key_type: &crate::TypeHandle,
@@ -603,13 +611,20 @@ pub fn create_map_from_values(
         .into_iter()
         .map(|(key, value)| (key.into_raw(), value.into_raw()))
         .collect();
-    Ok(new_map(entries, key_plan.storage, value_plan.storage, iids))
+    Ok(new_map(
+        entries,
+        key_plan.storage,
+        value_plan.storage,
+        key_plan.equality,
+        iids,
+    ))
 }
 
 fn new_map(
     entries: Vec<(usize, usize)>,
     key_storage: CollectionStorage,
     value_storage: CollectionStorage,
+    key_equality: CollectionEquality,
     iids: MapIids,
 ) -> IUnknown {
     let map = Box::new(SingleThreadedMap {
@@ -619,6 +634,7 @@ fn new_map(
         entries: Mutex::new(entries),
         key_storage,
         value_storage,
+        key_equality,
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(map) as *mut c_void) }
@@ -690,7 +706,14 @@ mod tests {
         let entries = vec![(stored_raw, 0)];
 
         assert_eq!(
-            unsafe { find_key_index(&entries, search.as_raw(), object_storage()) },
+            unsafe {
+                find_key_index(
+                    &entries,
+                    search.as_raw(),
+                    object_storage(),
+                    &CollectionEquality::Storage,
+                )
+            },
             Some(0)
         );
 

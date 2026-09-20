@@ -276,6 +276,258 @@ fn typed_point_size_and_integer_pair_boundaries() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn point_value(typ: &TypeHandle, point: Point) -> WinRTValue {
+    let mut value = typ.default_value();
+    value.set_field(0, point.X);
+    value.set_field(1, point.Y);
+    WinRTValue::Struct(value)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_point_signed_zero_matches_all_views() {
+    let table = MetadataTable::new();
+    let typ = table.struct_type(
+        "Windows.Foundation.Point",
+        &[table.f32_type(), table.f32_type()],
+    );
+    for zero in [0.0f32, -0.0] {
+        let stored = Point { X: zero, Y: 1.0 };
+        let opposite = Point { X: -zero, Y: 1.0 };
+        assert_eq!(stored, opposite);
+        assert_ne!(stored.X.to_bits(), opposite.X.to_bits());
+        let object =
+            create_vector_from_values(&[point_value(&typ, stored)], &typ, table.vector_iids(&typ))
+                .unwrap();
+        let vector: IVector<Point> = object.cast().unwrap();
+        let live: IVectorView<Point> = object.cast().unwrap();
+        let snapshot = vector.GetView().unwrap();
+        for (query, expected) in [
+            (stored, true),
+            (opposite, true),
+            (Point { X: 2.0, Y: 1.0 }, false),
+            (Point { X: zero, Y: 2.0 }, false),
+        ] {
+            let mut index = u32::MAX;
+            assert_eq!(vector.IndexOf(query, &mut index).unwrap(), expected);
+            assert_eq!(index, 0);
+            for view in [&live, &snapshot] {
+                index = u32::MAX;
+                assert_eq!(view.IndexOf(query, &mut index).unwrap(), expected);
+                assert_eq!(index, 0);
+            }
+        }
+        assert_eq!(vector.GetAt(0).unwrap().X.to_bits(), zero.to_bits());
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_point_nan_never_matches_even_identical_bits() {
+    let table = MetadataTable::new();
+    let typ = table.struct_type(
+        "Windows.Foundation.Point",
+        &[table.f32_type(), table.f32_type()],
+    );
+    let nan = f32::from_bits(0x7fc0_0001);
+    let other_nan = f32::from_bits(0x7fc0_0002);
+    for (stored, other) in [
+        (
+            Point { X: nan, Y: 1.0 },
+            Point {
+                X: other_nan,
+                Y: 1.0,
+            },
+        ),
+        (
+            Point { X: 1.0, Y: nan },
+            Point {
+                X: 1.0,
+                Y: other_nan,
+            },
+        ),
+    ] {
+        assert_ne!(stored, stored);
+        let object =
+            create_vector_from_values(&[point_value(&typ, stored)], &typ, table.vector_iids(&typ))
+                .unwrap();
+        let vector: IVector<Point> = object.cast().unwrap();
+        let live: IVectorView<Point> = object.cast().unwrap();
+        let snapshot = vector.GetView().unwrap();
+        for query in [stored, other] {
+            let mut index = u32::MAX;
+            assert!(!vector.IndexOf(query, &mut index).unwrap());
+            assert_eq!(index, 0);
+            for view in [&live, &snapshot] {
+                assert!(!view.IndexOf(query, &mut index).unwrap());
+                assert_eq!(index, 0);
+            }
+        }
+        let output = vector.GetAt(0).unwrap();
+        assert_eq!(output.X.to_bits(), stored.X.to_bits());
+        assert_eq!(output.Y.to_bits(), stored.Y.to_bits());
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_survives_mutation_snapshots_and_metadata_drop() {
+    let (object, weak) = {
+        let table = MetadataTable::new();
+        let typ = table.struct_type(
+            "Windows.Foundation.Point",
+            &[table.f32_type(), table.f32_type()],
+        );
+        (
+            create_vector_from_values(&[], &typ, table.vector_iids(&typ)).unwrap(),
+            std::sync::Arc::downgrade(&table),
+        )
+    };
+    assert!(weak.upgrade().is_none());
+    let vector: IVector<Point> = object.cast().unwrap();
+    let live: IVectorView<Point> = object.cast().unwrap();
+    let positive = Point { X: 0.0, Y: 1.0 };
+    let negative = Point { X: -0.0, Y: 1.0 };
+    let different = Point { X: 2.0, Y: 3.0 };
+    let mut index = u32::MAX;
+    vector.Append(positive).unwrap();
+    assert!(vector.IndexOf(negative, &mut index).unwrap());
+    assert!(live.IndexOf(negative, &mut index).unwrap());
+    let snapshot = vector.GetView().unwrap();
+    vector.SetAt(0, different).unwrap();
+    assert!(!live.IndexOf(negative, &mut index).unwrap());
+    assert!(snapshot.IndexOf(negative, &mut index).unwrap());
+    vector.InsertAt(0, negative).unwrap();
+    assert!(live.IndexOf(positive, &mut index).unwrap());
+    assert_eq!(index, 0);
+    assert_eq!(vector.GetAt(0).unwrap().X.to_bits(), (-0.0f32).to_bits());
+    vector.ReplaceAll(&[different, positive]).unwrap();
+    assert!(vector.IndexOf(negative, &mut index).unwrap());
+    assert_eq!(index, 1);
+    assert!(live.IndexOf(negative, &mut index).unwrap());
+    assert_eq!(index, 1);
+    vector.Clear().unwrap();
+    drop(live);
+    drop(vector);
+    drop(object);
+    assert!(snapshot.IndexOf(negative, &mut index).unwrap());
+    assert_eq!(index, 0);
+    assert_eq!(snapshot.GetAt(0).unwrap().X.to_bits(), 0);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_point_map_keys_agree_with_mutators_and_snapshot() {
+    use windows_collections::IMap;
+
+    let positive = Point { X: 0.0, Y: 1.0 };
+    let negative = Point { X: -0.0, Y: 1.0 };
+    let (object, weak) = {
+        let table = MetadataTable::new();
+        let typ = table.struct_type(
+            "Windows.Foundation.Point",
+            &[table.f32_type(), table.f32_type()],
+        );
+        (
+            crate::map::create_map_from_values(
+                &[(point_value(&typ, positive), WinRTValue::I32(7))],
+                &typ,
+                &table.i32_type(),
+                table.map_iids(&typ, &table.i32_type()),
+            )
+            .unwrap(),
+            std::sync::Arc::downgrade(&table),
+        )
+    };
+    assert!(weak.upgrade().is_none());
+    let map: IMap<Point, i32> = object.cast().unwrap();
+    assert_eq!(map.Lookup(negative).unwrap(), 7);
+    assert!(map.HasKey(negative).unwrap());
+    assert!(!map.HasKey(Point { X: 1.0, Y: 1.0 }).unwrap());
+    let snapshot = map.GetView().unwrap();
+    assert!(map.Insert(negative, 9).unwrap());
+    assert_eq!(map.Size().unwrap(), 1);
+    assert_eq!(map.Lookup(positive).unwrap(), 9);
+    assert_eq!(map.Lookup(negative).unwrap(), 9);
+    assert_eq!(
+        map.First()
+            .unwrap()
+            .Current()
+            .unwrap()
+            .Key()
+            .unwrap()
+            .X
+            .to_bits(),
+        0
+    );
+    map.Remove(negative).unwrap();
+    assert_eq!(map.Size().unwrap(), 0);
+    assert!(!map.HasKey(positive).unwrap());
+    drop(map);
+    drop(object);
+    assert!(snapshot.HasKey(negative).unwrap());
+    assert_eq!(snapshot.Lookup(negative).unwrap(), 7);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_point_nan_map_key_is_not_found() {
+    use windows_collections::IMap;
+
+    let table = MetadataTable::new();
+    let typ = table.struct_type(
+        "Windows.Foundation.Point",
+        &[table.f32_type(), table.f32_type()],
+    );
+    let point = Point {
+        X: f32::from_bits(0x7fc0_0001),
+        Y: 1.0,
+    };
+    let object = crate::map::create_map_from_values(
+        &[(point_value(&typ, point), WinRTValue::I32(7))],
+        &typ,
+        &table.i32_type(),
+        table.map_iids(&typ, &table.i32_type()),
+    )
+    .unwrap();
+    let map: IMap<Point, i32> = object.cast().unwrap();
+    let snapshot = map.GetView().unwrap();
+    assert!(!map.HasKey(point).unwrap());
+    assert_eq!(map.Lookup(point).unwrap_err().code(), E_BOUNDS);
+    assert_eq!(map.Remove(point).unwrap_err().code(), E_BOUNDS);
+    assert!(!snapshot.HasKey(point).unwrap());
+    assert_eq!(snapshot.Lookup(point).unwrap_err().code(), E_BOUNDS);
+    assert_eq!(map.Size().unwrap(), 1);
+    map.Clear().unwrap();
+    assert_eq!(map.Size().unwrap(), 0);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn struct_equality_raw_constructor_preserves_packed_byte_comparison() {
+    let table = MetadataTable::new();
+    let typ = table.struct_type(
+        "Windows.Foundation.Point",
+        &[table.f32_type(), table.f32_type()],
+    );
+    for x in [0.0f32, f32::from_bits(0x7fc0_0001)] {
+        let bytes = [x.to_ne_bytes(), 1.0f32.to_ne_bytes()].concat();
+        let object = unsafe { create_value_vector(vec![bytes], 8, table.vector_iids(&typ)) };
+        let vector: IVector<Point> = object.cast().unwrap();
+        let mut index = u32::MAX;
+        assert!(vector.IndexOf(Point { X: x, Y: 1.0 }, &mut index).unwrap());
+        assert_eq!(index, 0);
+        if x == 0.0 {
+            assert!(
+                !vector
+                    .IndexOf(Point { X: -0.0, Y: 1.0 }, &mut index)
+                    .unwrap()
+            );
+        }
+    }
+}
+
 #[test]
 fn typed_empty_only_uses_indirect_argument_abi() {
     let table = MetadataTable::new();
@@ -399,6 +651,62 @@ fn tracked_value(dropped: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Wi
     let source: windows::Foundation::IClosable = Tracked(dropped.clone()).into();
     // This owns the real IClosable view; collection preparation must QI to IStringable.
     WinRTValue::Object(unsafe { IUnknown::from_raw(source.into_raw()) })
+}
+
+#[test]
+fn nonstruct_collection_comparison_preserves_content_and_identity() {
+    use windows::Foundation::IStringable;
+    use windows_collections::IMap;
+
+    let table = MetadataTable::new();
+    let strings = create_vector_from_values(
+        &[WinRTValue::HString(HSTRING::from("same content"))],
+        &table.hstring(),
+        table.vector_iids(&table.hstring()),
+    )
+    .unwrap();
+    let vector: IVector<HSTRING> = strings.cast().unwrap();
+    let mut index = u32::MAX;
+    assert!(
+        vector
+            .IndexOf(&HSTRING::from("same content"), &mut index)
+            .unwrap()
+    );
+    assert_eq!(index, 0);
+    assert!(
+        !vector
+            .IndexOf(&HSTRING::from("different"), &mut index)
+            .unwrap()
+    );
+
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first: IStringable = Tracked(dropped.clone()).into();
+    let other: IStringable = Tracked(dropped.clone()).into();
+    assert_eq!(first.ToString().unwrap(), other.ToString().unwrap());
+    let typ = table.interface(IStringable::IID);
+    let value = WinRTValue::Object(first.cast().unwrap());
+    let object =
+        create_vector_from_values(std::slice::from_ref(&value), &typ, table.vector_iids(&typ))
+            .unwrap();
+    let vector: IVector<IStringable> = object.cast().unwrap();
+    assert!(vector.IndexOf(&first, &mut index).unwrap());
+    assert_eq!(index, 0);
+    assert!(!vector.IndexOf(&other, &mut index).unwrap());
+    let mapping = crate::map::create_map_from_values(
+        &[(value, WinRTValue::I32(7))],
+        &typ,
+        &table.i32_type(),
+        table.map_iids(&typ, &table.i32_type()),
+    )
+    .unwrap();
+    let map: IMap<IStringable, i32> = mapping.cast().unwrap();
+    assert_eq!(map.Lookup(&first).unwrap(), 7);
+    assert!(!map.HasKey(&other).unwrap());
+    vector.Clear().unwrap();
+    map.Clear().unwrap();
+    drop(first);
+    drop(other);
+    assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[test]

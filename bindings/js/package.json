@@ -110,7 +110,7 @@
     "lint": "oxlint",
     "test": "npm run test:types && ava",
     "test:imports": "ava __test__/native-imports.spec.ts",
-    "test:collection-factories": "node --test __test__/collection-factories.e2e.mjs",
+    "test:collection-factories": "node --test __test__/collection-factories.e2e.mjs __test__/collection-struct-equality.e2e.mjs",
     "test:generated-unsafe": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/generated-unsafe-companion.e2e.ts",
     "test:winrt-implementation": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/winrt-implementation.spec.ts",
     "test:native-completion": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/native-completion.e2e.ts",

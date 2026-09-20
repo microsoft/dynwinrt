@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::sync::Arc;
 use windows_core::{HSTRING, IUnknown, Interface};
 
 use crate::{Error, Result, TypeHandle, TypeKind, WinRTValue};
@@ -186,9 +187,127 @@ fn pod_layout(typ: &TypeHandle, depth: usize) -> Result<PodLayout> {
     })
 }
 
+#[derive(Clone)]
+pub(crate) enum CollectionEquality {
+    Storage,
+    Struct(Arc<[StructEqualityField]>),
+}
+
+pub(crate) struct StructEqualityField {
+    offset: usize,
+    kind: ScalarEqualityKind,
+}
+
+enum ScalarEqualityKind {
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+}
+
+impl StructEqualityField {
+    fn read<const N: usize>(&self, word: &[u8]) -> [u8; N] {
+        let mut bytes = [0; N];
+        bytes.copy_from_slice(&word[self.offset..self.offset + N]);
+        bytes
+    }
+
+    fn equal(&self, left: &[u8], right: &[u8]) -> bool {
+        match self.kind {
+            ScalarEqualityKind::U8 => left[self.offset] == right[self.offset],
+            ScalarEqualityKind::U16 => {
+                u16::from_ne_bytes(self.read(left)) == u16::from_ne_bytes(self.read(right))
+            }
+            ScalarEqualityKind::U32 => {
+                u32::from_ne_bytes(self.read(left)) == u32::from_ne_bytes(self.read(right))
+            }
+            ScalarEqualityKind::U64 => {
+                u64::from_ne_bytes(self.read(left)) == u64::from_ne_bytes(self.read(right))
+            }
+            ScalarEqualityKind::F32 => {
+                f32::from_ne_bytes(self.read(left)) == f32::from_ne_bytes(self.read(right))
+            }
+            ScalarEqualityKind::F64 => {
+                f64::from_ne_bytes(self.read(left)) == f64::from_ne_bytes(self.read(right))
+            }
+        }
+    }
+}
+
+impl CollectionEquality {
+    fn for_struct(typ: &TypeHandle, size: usize) -> Result<Self> {
+        let mut fields = Vec::with_capacity(size);
+        Self::collect_fields(typ, 0, size, 0, &mut fields)?;
+        Ok(Self::Struct(fields.into()))
+    }
+
+    fn collect_fields(
+        typ: &TypeHandle,
+        offset: usize,
+        size: usize,
+        depth: usize,
+        fields: &mut Vec<StructEqualityField>,
+    ) -> Result<()> {
+        let unsupported = || Error::UnsupportedCollectionElement(typ.kind());
+        if depth > 64
+            || offset
+                .checked_add(typ.size_of())
+                .is_none_or(|end| end > size)
+        {
+            return Err(unsupported());
+        }
+        let kind = match typ.kind() {
+            TypeKind::Struct(_) => {
+                if typ.field_count() == 0 {
+                    return Err(unsupported());
+                }
+                for index in 0..typ.field_count() {
+                    let field_offset = offset
+                        .checked_add(typ.field_offset(index))
+                        .ok_or_else(unsupported)?;
+                    Self::collect_fields(
+                        &typ.field_type(index),
+                        field_offset,
+                        size,
+                        depth + 1,
+                        fields,
+                    )?;
+                }
+                return Ok(());
+            }
+            TypeKind::Bool | TypeKind::I8 | TypeKind::U8 => ScalarEqualityKind::U8,
+            TypeKind::I16 | TypeKind::U16 | TypeKind::Char16 => ScalarEqualityKind::U16,
+            TypeKind::I32 | TypeKind::U32 | TypeKind::Enum(_) | TypeKind::HResult => {
+                ScalarEqualityKind::U32
+            }
+            TypeKind::I64 | TypeKind::U64 => ScalarEqualityKind::U64,
+            TypeKind::F32 => ScalarEqualityKind::F32,
+            TypeKind::F64 => ScalarEqualityKind::F64,
+            _ => return Err(unsupported()),
+        };
+        if fields.len() >= size {
+            return Err(unsupported());
+        }
+        fields.push(StructEqualityField { offset, kind });
+        Ok(())
+    }
+
+    pub(crate) fn struct_words_equal(&self, left: usize, right: usize) -> Option<bool> {
+        let Self::Struct(fields) = self else {
+            return None;
+        };
+        let left = left.to_ne_bytes();
+        let right = right.to_ne_bytes();
+        Some(fields.iter().all(|field| field.equal(&left, &right)))
+    }
+}
+
 pub(crate) struct CollectionElementPlan {
     typ: TypeHandle,
     pub(crate) storage: CollectionStorage,
+    pub(crate) equality: CollectionEquality,
 }
 
 impl CollectionElementPlan {
@@ -240,9 +359,17 @@ impl CollectionElementPlan {
         {
             return Err(unsupported());
         }
+        let equality = match (typ.kind(), storage) {
+            // Layout and argument admission precede compilation; only scalar leaves survive.
+            (TypeKind::Struct(_), CollectionStorage::Word(size)) => {
+                CollectionEquality::for_struct(typ, size).map_err(|_| unsupported())?
+            }
+            _ => CollectionEquality::Storage,
+        };
         Ok(Self {
             typ: typ.clone(),
             storage,
+            equality,
         })
     }
 
@@ -336,6 +463,164 @@ impl PreparedCollectionItem {
 mod tests {
     use super::*;
     use crate::{MetadataTable, map::create_map_from_values, vector::create_vector_from_values};
+
+    fn word(bytes: &[u8]) -> usize {
+        let mut storage = [0; size_of::<usize>()];
+        storage[..bytes.len()].copy_from_slice(bytes);
+        usize::from_ne_bytes(storage)
+    }
+
+    fn assert_fields_equal(typ: &TypeHandle, left: &[u8], right: &[u8], expected: bool) {
+        let plan = CollectionElementPlan::new(typ, false).unwrap();
+        assert_eq!(left.len(), typ.size_of());
+        assert_eq!(right.len(), typ.size_of());
+        assert_eq!(
+            plan.equality.struct_words_equal(word(left), word(right)),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn struct_equality_ignores_nested_internal_and_tail_padding() {
+        let table = MetadataTable::new();
+        let internal =
+            table.struct_type("Test.InternalPadding", &[table.u8_type(), table.u16_type()]);
+        let tail = table.struct_type("Test.TailPadding", &[table.u16_type(), table.u8_type()]);
+        for (inner, left, right, changed) in [
+            (
+                internal,
+                [7, 0, 0x34, 0x12],
+                [7, 0xff, 0x34, 0x12],
+                [8, 0, 0x34, 0x12],
+            ),
+            (
+                tail,
+                [0x34, 0x12, 7, 0],
+                [0x34, 0x12, 7, 0xff],
+                [0x34, 0x12, 8, 0],
+            ),
+        ] {
+            let nested = table.struct_type(&format!("Test.Nested{inner:?}"), &[inner]);
+            assert_fields_equal(&nested, &left, &right, true);
+            assert_fields_equal(&nested, &left, &changed, false);
+            if size_of::<usize>() > left.len() {
+                let plan = CollectionElementPlan::new(&nested, false).unwrap();
+                let mut high_bits = [0xff; size_of::<usize>()];
+                high_bits[..right.len()].copy_from_slice(&right);
+                assert_eq!(
+                    plan.equality
+                        .struct_words_equal(word(&left), usize::from_ne_bytes(high_bits)),
+                    Some(true)
+                );
+            }
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            let inner = table.struct_type("Test.OffsetInner", &[table.u16_type(), table.u8_type()]);
+            let outer = table.struct_type(
+                "Test.OffsetOuter",
+                &[table.u8_type(), inner, table.u8_type()],
+            );
+            let left = [1, 0, 2, 3, 4, 0, 5, 0];
+            let right = [1, 0xff, 2, 3, 4, 0xff, 5, 0xff];
+            assert_fields_equal(&outer, &left, &right, true);
+            for offset in [0, 2, 3, 4, 6] {
+                let mut changed = right;
+                changed[offset] ^= 1;
+                assert_fields_equal(&outer, &left, &changed, false);
+            }
+        }
+    }
+
+    #[test]
+    fn struct_equality_uses_floating_leaf_values_without_normalizing_bits() {
+        let table = MetadataTable::new();
+        let inner = table.struct_type("Test.InnerFloat", &[table.f32_type()]);
+        let typ = table.struct_type("Test.NestedFloat", &[inner]);
+        // Exercise the descriptor independently of ARM64's HFA admission rejection.
+        let plan = CollectionElementPlan::for_target(&typ, false, CollectionTarget::X64).unwrap();
+        let nan = f32::from_bits(0x7fc0_0001);
+        for (left, right, expected) in [
+            (0.0f32, -0.0f32, true),
+            (-0.0, 0.0, true),
+            (2.0, 2.0, true),
+            (2.0, 3.0, false),
+            (f32::INFINITY, f32::INFINITY, true),
+            (nan, nan, false),
+            (nan, f32::from_bits(0x7fc0_0002), false),
+        ] {
+            assert_eq!(
+                plan.equality
+                    .struct_words_equal(word(&left.to_ne_bytes()), word(&right.to_ne_bytes())),
+                Some(expected)
+            );
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            let typ = table.struct_type("Test.Double", &[table.f64_type()]);
+            let plan =
+                CollectionElementPlan::for_target(&typ, false, CollectionTarget::X64).unwrap();
+            let nan = f64::from_bits(0x7ff8_0000_0000_0001);
+            for (left, right, expected) in [
+                (0.0f64, -0.0f64, true),
+                (2.0, 2.0, true),
+                (2.0, 3.0, false),
+                (nan, nan, false),
+                (nan, f64::from_bits(0x7ff8_0000_0000_0002), false),
+            ] {
+                assert_eq!(
+                    plan.equality
+                        .struct_words_equal(word(&left.to_ne_bytes()), word(&right.to_ne_bytes())),
+                    Some(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn struct_equality_preserves_scalar_widths_and_nonstruct_plans() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CollectionEquality>();
+        let table = MetadataTable::new();
+        for field in [
+            table.bool_type(),
+            table.i8_type(),
+            table.u8_type(),
+            table.i16_type(),
+            table.u16_type(),
+            table.char16_type(),
+            table.i32_type(),
+            table.u32_type(),
+            table.hresult(),
+            table.enum_type("Test.FieldEnum", vec![]),
+            table.i64_type(),
+            table.u64_type(),
+        ] {
+            if field.size_of() > size_of::<usize>() {
+                continue;
+            }
+            let typ = table.struct_type(
+                &format!("Test.Scalar{field:?}"),
+                std::slice::from_ref(&field),
+            );
+            let zero = vec![0; typ.size_of()];
+            let mut one = zero.clone();
+            one[0] = 1;
+            assert_fields_equal(&typ, &zero, &zero, true);
+            assert_fields_equal(&typ, &zero, &one, false);
+            assert_fields_equal(&typ, &one, &one, true);
+            assert!(matches!(
+                CollectionElementPlan::new(&field, false).unwrap().equality,
+                CollectionEquality::Storage
+            ));
+        }
+        for typ in [table.hstring(), table.object()] {
+            assert!(matches!(
+                CollectionElementPlan::new(&typ, false).unwrap().equality,
+                CollectionEquality::Storage
+            ));
+        }
+    }
 
     #[test]
     fn target_argument_classification_and_empty_policy() {
