@@ -860,7 +860,13 @@ pub(super) fn project_instance_method(
         } else {
             in_params
                 .first()
-                .map(|p| ts_param_type_safe(context, &p.typ, known_types))
+                .map(|p| {
+                    if CollectionInput::from_type(&p.typ).is_some() {
+                        ts_param_type_dts(context, &p.typ, known_types)
+                    } else {
+                        ts_param_type_safe(context, &p.typ, known_types)
+                    }
+                })
                 .unwrap_or_else(|| "any".to_string())
         };
         let setter_line = setter_line(
@@ -1296,9 +1302,9 @@ fn find_setter_for_property(
         .find(|m| m.name == setter_name && m.is_property_setter)?;
     let setter_in_params = get_in_params(setter);
     let setter_ts_type = setter_in_params.first().and_then(|param| {
-        ireference_inner_type(&param.typ)
-            .is_some()
-            .then(|| ts_param_type_safe(context, &param.typ, known_types))
+        (ireference_inner_type(&param.typ).is_some()
+            || CollectionInput::from_type(&param.typ).is_some())
+        .then(|| ts_param_type_dts(context, &param.typ, known_types))
     });
     Some((
         setter_line(

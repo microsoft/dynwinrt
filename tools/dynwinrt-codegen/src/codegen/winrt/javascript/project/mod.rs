@@ -43,10 +43,11 @@ use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
 };
 
+use super::input::CollectionInput;
 use super::ir::*;
 use super::method::{
     ts_array_element_type, ts_array_type, ts_param_type_dts, ts_param_type_safe,
-    ts_return_type_safe,
+    ts_reference_input_type, ts_return_type_safe,
 };
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{

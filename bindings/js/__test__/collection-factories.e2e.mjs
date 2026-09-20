@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodegen } from '../scripts/run-codegen.mjs'
+import { checkNullableCollectionInputs } from './fixtures/nullable-collection-inputs.mjs'
 
 const require = createRequire(import.meta.url)
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -16,20 +17,31 @@ const runtimeRoot = resolve(process.env.DYNWINRT_JS_PACKAGE ?? packageRoot)
 const winmd =
   process.env.DYNWINRT_WINDOWS_WINMD ??
   String.raw`C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`
+const nullableFixture = resolve(
+  packageRoot,
+  '..',
+  '..',
+  'tools',
+  'dynwinrt-codegen',
+  'tests',
+  'fixtures',
+  'nullable_collection_inputs.winmd',
+)
 let output
 let generated
 
 before(() => {
   assert.ok(statSync(winmd).isFile(), 'Windows SDK metadata is required')
+  assert.ok(statSync(nullableFixture).isFile(), 'Nullable collection metadata fixture is required')
   require(runtimeRoot).roInitialize(1)
   output = mkdtempSync(join(tmpdir(), 'dynwinrt-collection-factories-'))
   const generation = runCodegen(
     [
       'generate',
       '--winmd',
-      winmd,
+      `${winmd};${nullableFixture}`,
       '--class-name',
-      'Windows.Storage.StorageFile,Windows.UI.Notifications.NotificationData,Windows.ApplicationModel.Contacts.ContactPicker,Windows.UI.Xaml.Data.ICollectionView',
+      'Windows.Storage.StorageFile,Windows.UI.Notifications.NotificationData,Windows.ApplicationModel.Contacts.ContactPicker,Windows.UI.Xaml.Data.ICollectionView,Tests.IProbe',
       '--output',
       output,
     ],
@@ -85,6 +97,10 @@ test('generated string vector factory accepts nonempty Unicode strings', (t) => 
   const view = keep(vector.getView())
   keep.release(vector)
   assert.deepEqual(view.toArray(), items)
+})
+
+test('generated nullable collection inputs reach the native slots without optional arguments', (t) => {
+  t.diagnostic(JSON.stringify(checkNullableCollectionInputs(generated, require(runtimeRoot))))
 })
 
 test('generated string map factory converts both keys and values', (t) => {
@@ -236,12 +252,12 @@ test('runtime-class conversion preserves nulls and still rejects invalid non-nul
   assert.equal(keep(vector.getAt(1)).month, 4)
 })
 
-test('collection-valued map factories preserve managed nulls without weakening non-null QI', (t) => {
+test('collection-valued map inputs preserve plain and managed nulls without weakening QI', (t) => {
   const keep = own(t)
   const Map = collection('IMap_String_WindowsFoundationCollectionsIVectorView_WindowsDataTextTextSegment_')
   const nil = keep(require(runtimeRoot).DynWinRtValue.nullValue())
   const uri = keep(generated.Uri.createUri('https://example.invalid/wrong-collection'))
-  for (const invalid of [uri, uri._obj, {}, { isNull: () => true }, null, undefined]) {
+  for (const invalid of [uri, uri._obj, {}, { _obj: null }, { isNull: () => true }, undefined]) {
     assert.throws(() => Map.create(['invalid'], [invalid]), /QueryInterface|cast/)
     assert.throws(() => Map.create(['duplicate', 'duplicate'], [nil, invalid]), /QueryInterface|cast/)
   }
@@ -252,15 +268,32 @@ test('collection-valued map factories preserve managed nulls without weakening n
       return nil
     },
   }
-  const map = keep(Map.create(['managed', 'wrapped'], [nil, wrappedNull]))
+  const map = keep(Map.create(['managed', 'wrapped', 'plain'], [nil, wrappedNull, null]))
   assert.equal(reads, 1)
-  assert.equal(map.size, 2)
+  assert.equal(map.size, 3)
   assert.equal(map.lookup('managed'), null)
   assert.equal(map.lookup('wrapped'), null)
+  assert.equal(map.lookup('plain'), null)
   assert.throws(() => map.insert('wrong', uri), /QueryInterface/)
+  assert.throws(() => map.insert('undefined', undefined), /cast/)
+  assert.equal(map.hasKey('wrong'), false)
+  assert.equal(map.hasKey('undefined'), false)
   map.insert('later', nil)
-  assert.equal(map.size, 3)
+  assert.equal(map.size, 4)
   assert.equal(map.lookup('later'), null)
+  map.insert('native-null', null)
+  map.set('alias-null', null)
+  assert.equal(map.size, 6)
+  assert.equal(map.lookup('native-null'), null)
+  assert.equal(map.lookup('alias-null'), null)
+  if (process.arch === 'ia32') {
+    assert.throws(() => map.insert('empty', []), /struct|ABI/i)
+  } else {
+    map.insert('empty', [])
+    const empty = keep(map.lookup('empty'))
+    assert.notEqual(empty, null)
+    assert.equal(empty.size, 0)
+  }
 })
 
 test('nested collection arguments use supported small-struct packing', (t) => {

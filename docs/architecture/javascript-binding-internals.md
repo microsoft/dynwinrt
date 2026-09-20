@@ -113,6 +113,26 @@ Runtime-class and collection-reference conversions preserve managed null
 carriers without querying an interface; non-null carriers still query the
 declared interface before being passed to native code.
 
+Generated inputs for `IVector<T>`, `IVectorView<T>`, `IIterable<T>`, `IMap<K,V>`,
+and `IMapView<K,V>` also accept ordinary JavaScript `null`. One JavaScript
+projection classification, based on the WinRT PIID and generic arity, controls
+both this conversion and the TypeScript `| null` input union. This describes
+an interface reference value, not optional parameter metadata or a guarantee
+that every API permits an absent collection. Native API errors remain visible.
+For example, the documented
+[Image Object Extractor hint contract](https://learn.microsoft.com/en-us/windows/ai/apis/image-object-extractor)
+permits `ImageObjectExtractorHint.createInstance(null, includePoints, excludePoints)`.
+No native value carrier or type assertion is needed at that call site.
+
+All positional inputs remain required, and `undefined` is not an alias for
+null in these collection conversions. An array remains an array: `[]` still
+constructs a real empty collection and obeys the existing native element ABI
+admission rules. Null collection elements/keys/values are distinct from null
+array containers; collection factory `items`, `keys`, and `values` arrays and
+native PassArray/FillArray containers stay nonnullable. Scalar and struct
+elements are not made nullable. This projection does not add support for
+previously rejected struct collection ABI shapes.
+
 Typed map construction uses the same key equality as `Insert`. For duplicate
 keys, the last value wins while the first key and its insertion position are
 retained. All keys and values are validated before publishing the map, including
@@ -124,6 +144,15 @@ With the JS addon built, run `npm run test:collection-factories` from
 a prebuilt generator, `DYNWINRT_JS_PACKAGE` selects a built runtime package,
 and `DYNWINRT_WINDOWS_WINMD` overrides the SDK metadata path. Missing inputs
 fail explicitly.
+
+The codegen `union_array_declaration_test` covers strict positive and negative
+TypeScript consumers, including collection setters and SDK constructors/
+factories. Set `DYNWINRT_REQUIRE_TSC=1` to require its compiler and SDK inputs.
+It also verifies that its metadata builder matches the small checked-in WinMD
+fixture used by `test:collection-factories`. That production-artifact E2E path
+always calls the complete generated WinRT implementation through native vtable
+dispatch to check null inputs, preserved argument roles, rejection before
+dispatch, and distinct empty collections. It does not require test hooks.
 
 `value.rs` defines `DynWinRTValue` with named WinRT data, independent call storage,
 and the private `com_value.rs` sidecar. Callers use constructors and accessors,

@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use super::JavaScriptProjectionContext;
+use super::input::CollectionInput;
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
 
@@ -88,8 +89,20 @@ pub(crate) fn ts_param_type_safe(
     }
 }
 
-/// DTS-specific parameter type: for collection types, also accept the JS-native equivalent.
-/// e.g. `IVectorView_Foo | Foo[]`, `IMap_String_Bar | Map<string, Bar>`
+pub(crate) fn ts_reference_input_type(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    known: &HashSet<String>,
+) -> String {
+    let base = ts_param_type_safe(context, typ, known);
+    if CollectionInput::from_type(typ).is_some() {
+        format!("{base} | null")
+    } else {
+        base
+    }
+}
+
+/// Collection inputs also accept their JS-native equivalent and an absent reference.
 pub(crate) fn ts_param_type_dts(
     context: &JavaScriptProjectionContext,
     typ: &TypeMeta,
@@ -102,54 +115,24 @@ pub(crate) fn ts_param_type_dts(
         if matches!(inner.as_ref(), TypeMeta::U8) {
             return "Uint8Array | number[]".to_string();
         }
-        let elem_ts = ts_param_type_safe(context, inner, known);
+        let elem_ts = ts_reference_input_type(context, inner, known);
         return ts_array_type(&elem_ts);
     }
-    if let TypeMeta::Parameterized {
-        name, piid, args, ..
-    } = typ
-    {
+    if let Some(collection) = CollectionInput::from_type(typ) {
         let base = ts_param_type_safe(context, typ, known);
-        // IVector<T>, IVectorView<T>, IIterable<T> → also accept T[]
-        if is_vector_like_piid(piid) || is_vector_like_name(name) {
-            if let Some(elem) = args.first() {
-                let elem_ts = ts_param_type_safe(context, elem, known);
-                return format!("{} | {}", base, ts_array_type(&elem_ts));
+        return match collection {
+            CollectionInput::Vector(element) => {
+                let elem_ts = ts_reference_input_type(context, element, known);
+                format!("{} | {} | null", base, ts_array_type(&elem_ts))
             }
-        }
-        // IMap<K,V>, IMapView<K,V> → also accept Map<K,V>
-        if is_map_like_piid(piid) || is_map_like_name(name) {
-            if args.len() == 2 {
-                let k_ts = ts_param_type_safe(context, &args[0], known);
-                let v_ts = ts_param_type_safe(context, &args[1], known);
-                return format!("{} | Map<{}, {}>", base, k_ts, v_ts);
+            CollectionInput::Map(key, value) => {
+                let k_ts = ts_reference_input_type(context, key, known);
+                let v_ts = ts_reference_input_type(context, value, known);
+                format!("{} | Map<{}, {}> | null", base, k_ts, v_ts)
             }
-        }
-        return base;
+        };
     }
     ts_param_type_safe(context, typ, known)
-}
-
-const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
-const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
-const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
-const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
-const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
-
-fn is_vector_like_piid(piid: &str) -> bool {
-    piid == PIID_IVECTOR || piid == PIID_IVECTOR_VIEW || piid == PIID_IITERABLE
-}
-
-fn is_vector_like_name(name: &str) -> bool {
-    name == "IVector" || name == "IVectorView" || name == "IIterable"
-}
-
-fn is_map_like_piid(piid: &str) -> bool {
-    piid == PIID_IMAP || piid == PIID_IMAP_VIEW
-}
-
-fn is_map_like_name(name: &str) -> bool {
-    name == "IMap" || name == "IMapView"
 }
 
 pub(crate) fn ts_return_type_safe(

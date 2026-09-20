@@ -14,6 +14,7 @@ const COLLECTIONS: &str = "Windows.Foundation.Collections";
 const VECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
 const OBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
 const MAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
+const VECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
 
 fn closed(namespace: &str, name: &str, generics: Vec<Type>) -> Type {
     Type::Name(TypeName {
@@ -77,6 +78,7 @@ fn fixture() -> Vec<u8> {
         .collect::<Vec<_>>(),
     );
     let reference = closed("Windows.Foundation", "IReference`1", vec![Type::U32]);
+    let vector = closed(COLLECTIONS, "IVectorView`1", vec![Type::U32]);
     for (name, typ) in [
         (
             "Vector",
@@ -102,6 +104,27 @@ fn fixture() -> Vec<u8> {
             "Keys",
             closed(COLLECTIONS, "IMap`2", vec![reference.clone(), Type::U32]),
         ),
+        (
+            "MapView",
+            closed(
+                COLLECTIONS,
+                "IMapView`2",
+                vec![Type::String, reference.clone()],
+            ),
+        ),
+        (
+            "Nested",
+            closed(COLLECTIONS, "IVector`1", vec![vector.clone()]),
+        ),
+        (
+            "NestedValues",
+            closed(COLLECTIONS, "IMap`2", vec![Type::String, vector.clone()]),
+        ),
+        (
+            "NestedKeys",
+            closed(COLLECTIONS, "IMap`2", vec![vector.clone(), Type::U32]),
+        ),
+        ("VectorArray", Type::Array(Box::new(vector))),
         ("Array", Type::Array(Box::new(reference))),
         (
             "Strings",
@@ -125,7 +148,60 @@ fn fixture() -> Vec<u8> {
         );
         file.Param("value", 1, ParamAttributes::In);
     }
+    let vector = closed(COLLECTIONS, "IVector`1", vec![Type::U32]);
+    for (name, types, return_type) in [
+        ("get_Collection", vec![], vector.clone()),
+        ("put_Collection", vec![vector.clone()], Type::Void),
+        ("put_WriteOnlyCollection", vec![vector], Type::Void),
+    ] {
+        file.MethodDef(
+            name,
+            &Signature {
+                flags: MethodCallAttributes::HASTHIS,
+                return_type,
+                types: types.clone(),
+            },
+            MethodAttributes::Public
+                | MethodAttributes::Abstract
+                | MethodAttributes::Virtual
+                | MethodAttributes::NewSlot
+                | MethodAttributes::SpecialName,
+            MethodImplAttributes::default(),
+        );
+        for index in 0..types.len() {
+            file.Param("value", index as u16 + 1, ParamAttributes::In);
+        }
+    }
+    file.MethodDef(
+        "TakePositions",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![
+                Type::U32,
+                closed(COLLECTIONS, "IVector`1", vec![Type::U32]),
+                Type::String,
+            ],
+        },
+        MethodAttributes::Public
+            | MethodAttributes::Abstract
+            | MethodAttributes::Virtual
+            | MethodAttributes::NewSlot,
+        MethodImplAttributes::default(),
+    );
+    file.Param("before", 1, ParamAttributes::In);
+    file.Param("value", 2, ParamAttributes::In);
+    file.Param("after", 3, ParamAttributes::In);
     file.into_stream()
+}
+
+#[test]
+fn native_collection_input_fixture_matches_metadata_builder() {
+    assert_eq!(
+        fixture(),
+        include_bytes!("fixtures/nullable_collection_inputs.winmd"),
+        "The production-artifact E2E must use the same metadata as the declaration test"
+    );
 }
 
 #[test]
@@ -174,13 +250,17 @@ fn sdk_backed_union_arrays_pass_strict_tsc_and_reject_scalar_containers() {
         .join(format!("union-arrays-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let input = directory.join("Input.winmd");
-    fs::write(&input, fixture()).unwrap();
+    fs::write(
+        &input,
+        include_bytes!("fixtures/nullable_collection_inputs.winmd"),
+    )
+    .unwrap();
     let generated = directory.join("generated");
     let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
             "generate",
-            "--namespace",
-            "Tests",
+            "--class-name",
+            "Tests.IProbe,Windows.UI.Notifications.NotificationData",
             "--lang",
             "js",
             "--winmd",
@@ -221,6 +301,12 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
         piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
         args: vec![TypeMeta::U32],
     };
+    let vector_view = TypeMeta::Parameterized {
+        namespace: COLLECTIONS.into(),
+        name: "IVectorView`1".into(),
+        piid: VECTOR_VIEW.into(),
+        args: vec![TypeMeta::U32],
+    };
     let imports = [
         ("Vector", "IVector", VECTOR, vec![reference.clone()]),
         (
@@ -236,6 +322,14 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
             vec![TypeMeta::String, reference.clone()],
         ),
         ("Keys", "IMap", MAP, vec![reference, TypeMeta::U32]),
+        ("Nested", "IVector", VECTOR, vec![vector_view.clone()]),
+        (
+            "NestedValues",
+            "IMap",
+            MAP,
+            vec![TypeMeta::String, vector_view.clone()],
+        ),
+        ("NestedKeys", "IMap", MAP, vec![vector_view, TypeMeta::U32]),
         ("Strings", "IVector", VECTOR, vec![TypeMeta::String]),
         ("Numbers", "IVector", VECTOR, vec![TypeMeta::U32]),
     ]
@@ -249,10 +343,13 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
     .collect::<Vec<_>>()
     .join(", ");
     let prefix = format!(
-        "import {{ IProbe, IReference_UInt32, {imports} }} from './generated/index.js';\n\
+        "import {{ IProbe, IReference_UInt32, NotificationData, {imports} }} from './generated/index.js';\n\
          declare const probe: IProbe;\n\
          declare const boxed: IReference_UInt32;\n\
-         declare const vector: Vector;\n"
+         declare const vector: Vector;\n\
+         declare const nested: Nested;\n\
+         declare const nestedKeys: NestedKeys;\n\
+         declare const nestedValues: NestedValues;\n"
     );
     let valid = format!(
         r#"{prefix}
@@ -271,9 +368,45 @@ probe.takeArray(native);
 probe.takeArray(boxes);
 probe.takeVector(native);
 probe.takeVector(vector);
+probe.takeVector(null);
 probe.takeView(native);
+probe.takeView(null);
 probe.takeView(vector.getView());
 probe.takeIterable(native);
+probe.takeIterable(null);
+probe.takeMap(null);
+probe.takeMap(new Map([['value', boxed]]));
+probe.takeKeys(null);
+probe.takeKeys(new Map([[boxed, 17]]));
+probe.takeMapView(null);
+probe.takeMapView(new Map([['value', boxed]]));
+probe.collection = null;
+probe.collection = [17];
+probe.writeOnlyCollection = null;
+probe.writeOnlyCollection = [17];
+probe.takePositions(23, null, 'tail');
+new NotificationData(null);
+new NotificationData(null, 17);
+NotificationData.createNotificationData(null);
+NotificationData.createNotificationData(null, 17);
+Nested.create([null]);
+NestedValues.create(['value'], [null]);
+NestedKeys.create([null], [17]);
+probe.takeNested([null]);
+probe.takeNestedValues(new Map([['value', null]]));
+probe.takeNestedKeys(new Map([[null, 17]]));
+probe.takeVectorArray([null]);
+nested.append(null);
+nested.indexOf(null);
+nested.replaceAll([null]);
+nestedKeys.insert(null, 17);
+nestedKeys.set(null, 17);
+nestedKeys.lookup(null);
+nestedKeys.get(null);
+nestedKeys.has(null);
+nestedKeys.delete(null);
+nestedValues.insert('value', null);
+nestedValues.set('value', null);
 vector.replaceAll(boxes);
 vector.getMany(0, boxes);
 const materialized: (number | null | IReference_UInt32)[] = vector.toArray();
@@ -298,9 +431,43 @@ probe.takeBytes([17]);
         ("probe.takeArray(17);", "2345"),
         ("probe.takeArray(null);", "2345"),
         ("probe.takeVector(17);", "2345"),
-        ("probe.takeVector(null);", "2345"),
+        ("probe.takeVector(undefined);", "2345"),
+        ("probe.takeVector();", "2554"),
         ("probe.takeView(17);", "2345"),
-        ("probe.takeIterable(null);", "2345"),
+        ("probe.takeIterable(undefined);", "2345"),
+        ("probe.takeMap(undefined);", "2345"),
+        ("probe.takeMapView(undefined);", "2345"),
+        ("probe.takeMap({});", "2345"),
+        ("probe.takeMap(new Map([['value', 'wrong']]));", "2345"),
+        ("probe.collection = undefined;", "2322"),
+        ("probe.writeOnlyCollection = undefined;", "2322"),
+        ("probe.collection = [null];", "2322"),
+        ("probe.takePositions(23, null);", "2554"),
+        ("probe.takePositions(null, null, 'tail');", "2345"),
+        ("probe.takePositions(23, undefined, 'tail');", "2345"),
+        ("probe.takePositions(23, null, null);", "2345"),
+        ("new NotificationData(undefined);", "2345"),
+        ("new NotificationData(null, undefined);", "2345"),
+        ("NotificationData.createNotificationData();", "2554"),
+        (
+            "NotificationData.createNotificationData(undefined);",
+            "2345",
+        ),
+        (
+            "NotificationData.createNotificationData(null, null);",
+            "2345",
+        ),
+        ("Nested.create(null);", "2345"),
+        ("Nested.create([undefined]);", "2322"),
+        ("NestedValues.create(['value'], null);", "2345"),
+        ("NestedKeys.create(null, [17]);", "2345"),
+        ("probe.takeVectorArray(null);", "2345"),
+        ("probe.takeVectorArray([undefined]);", "2322"),
+        ("nestedKeys.get(undefined);", "2345"),
+        ("nestedValues.set('value', undefined);", "2345"),
+        ("probe.takeNumbers([null]);", "2322"),
+        ("probe.takeStrings([null]);", "2322"),
+        ("probe.takeBytes(null);", "2345"),
         ("vector.replaceAll(17);", "2345"),
         ("vector.getMany(0, null);", "2345"),
         ("Vector.create([[17]]);", "2322"),
@@ -349,6 +516,7 @@ probe.takeBytes([17]);
     let regex = regex::Regex::new(r"^invalid\.ts\((\d+),\d+\): error TS(\d+):").unwrap();
     let actual = diagnostics
         .lines()
+        .filter(|line| !line.starts_with(' '))
         .map(|line| {
             let captures = regex
                 .captures(line)

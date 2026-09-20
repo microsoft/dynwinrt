@@ -4,6 +4,7 @@
 pub(crate) mod docs;
 pub mod generator;
 mod implementation;
+mod input;
 pub mod ir;
 pub(crate) mod method;
 pub(crate) mod naming;

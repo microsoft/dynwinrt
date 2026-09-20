@@ -10,6 +10,7 @@ use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
 use super::JavaScriptProjectionContext;
+use super::input::CollectionInput;
 use super::ir::JsArgumentKind;
 use super::naming::to_camel_case;
 
@@ -372,12 +373,7 @@ pub(crate) fn wrap_arg(
                 name
             )
         }
-        TypeMeta::Parameterized {
-            piid,
-            args,
-            name: pname,
-            ..
-        } => {
+        TypeMeta::Parameterized { .. } => {
             // For vector-like collections, auto-wrap JS arrays at runtime.
             //
             // createVector returns a SingleThreadedVector whose identity vtable
@@ -386,36 +382,30 @@ pub(crate) fn wrap_arg(
             // to that specific interface so the correct vtable pointer (with
             // the right method slots) is forwarded to WinRT — otherwise WinRT
             // reads the wrong vtable slots and the renderer crashes natively.
-            if is_vector_like(piid, pname) {
-                if let Some(elem) = args.first() {
+            match CollectionInput::from_type(typ) {
+                Some(CollectionInput::Vector(elem)) => {
                     let elem_type = ts_dynwinrt_type(context, elem);
                     let item_wrap = vector_item_wrap_expr(context, "_i", elem);
                     let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
                     let reference = nullable_reference_cast_expr(name, &target_iid_expr);
-                    return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : {reference})"
-                    );
+                    format!(
+                        "({name} === null ? DynWinRtValue.nullValue() : Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : {reference})"
+                    )
                 }
-            }
-
-            // For map-like collections, auto-wrap JS Map at runtime.
-            // Same vtable-mismatch concern as vectors: createMap returns a
-            // SingleThreadedMap whose identity vtable is IIterable
-            // <IKeyValuePair<K,V>>; we must QI to IMap<K,V> or IMapView<K,V>.
-            if is_map_like(piid, pname) {
-                if args.len() == 2 {
-                    let key_type = ts_dynwinrt_type(context, &args[0]);
-                    let val_type = ts_dynwinrt_type(context, &args[1]);
-                    let k_wrap = vector_item_wrap_expr(context, "_k", &args[0]);
-                    let v_wrap = vector_item_wrap_expr(context, "_v", &args[1]);
+                // The map producer also needs QI from its identity IIterable view.
+                Some(CollectionInput::Map(key, value)) => {
+                    let key_type = ts_dynwinrt_type(context, key);
+                    let val_type = ts_dynwinrt_type(context, value);
+                    let k_wrap = vector_item_wrap_expr(context, "_k", key);
+                    let v_wrap = vector_item_wrap_expr(context, "_v", value);
                     let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
                     let reference = nullable_reference_cast_expr(name, &target_iid_expr);
-                    return format!(
-                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : {reference})"
-                    );
+                    format!(
+                        "({name} === null ? DynWinRtValue.nullValue() : {name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : {reference})"
+                    )
                 }
+                None => format!("_unwrap({})", name),
             }
-            format!("_unwrap({})", name)
         }
         TypeMeta::Array(inner) => {
             // Accept both DynWinRtArray (.toValue()) and plain JS array.
@@ -509,24 +499,6 @@ fn wrap_reference_value(
     }
 }
 
-fn is_vector_like(piid: &str, name: &str) -> bool {
-    const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
-    const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
-    const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
-    piid == PIID_IVECTOR
-        || piid == PIID_IVECTOR_VIEW
-        || piid == PIID_IITERABLE
-        || name == "IVector"
-        || name == "IVectorView"
-        || name == "IIterable"
-}
-
-fn is_map_like(piid: &str, name: &str) -> bool {
-    const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
-    const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
-    piid == PIID_IMAP || piid == PIID_IMAP_VIEW || name == "IMap" || name == "IMapView"
-}
-
 fn nullable_reference_cast_expr(name: &str, iid: &str) -> String {
     format!(
         "((value) => value instanceof DynWinRtValue && value.isNull() ? value : value.cast({iid}))(_unwrap({name}))"
@@ -570,6 +542,11 @@ fn vector_item_wrap_expr(
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", var),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", var),
         TypeMeta::RuntimeClass { .. } => runtime_class_wrap_expr(context, var, elem),
+        typ if CollectionInput::from_type(typ).is_some() => {
+            let iid = format!("{}.iid()", ts_dynwinrt_type(context, typ));
+            let reference = nullable_reference_cast_expr(var, &iid);
+            format!("({var} === null ? DynWinRtValue.nullValue() : {reference})")
+        }
         _ => format!("_unwrap({})", var),
     }
 }
