@@ -75,6 +75,11 @@ empty and ordinal-only descriptors, plus the scoped named exports through
 other DLL names. It checks both ordinary and delay imports. OLEAUT32,
 OLE32, and COMBASE are not prohibited.
 
+The existing optional Win32 subsystem rule remains ordinary-import-only:
+MAPI/GDI+/Winsock/Media Foundation delay imports are allowed by that rule.
+The CLI passes only ordinary imports to it, while GDI/USER32 and CoreMessaging
+checks receive the combined ordinary/delay list.
+
 `npm run test:imports` and production artifact verification check every
 `.node` architecture without loading foreign-architecture binaries.
 The dependency-free CLI also checks an existing Python extension:

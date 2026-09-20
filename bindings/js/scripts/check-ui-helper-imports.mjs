@@ -16,9 +16,12 @@ for (const file of files) {
   if (!['.node', '.pyd'].includes(extname(file).toLowerCase())) {
     throw new Error(`Expected a production .node or .pyd binary: ${file}`)
   }
-  const imports = readPeImports(readFileSync(file), { includeDelayImports: true })
-  assertNoUiHelperImports(imports)
-  assertNoDispatcherQueueImports(imports)
-  assertNoEagerWin32Imports(imports)
-  console.log(`Verified production ordinary and delay native imports: ${file}`)
+  const bytes = readFileSync(file)
+  const ordinary = readPeImports(bytes)
+  const combined = readPeImports(bytes, { includeDelayImports: true })
+  assertNoUiHelperImports(combined)
+  assertNoDispatcherQueueImports(combined)
+  // The existing optional-subsystem policy permits delay imports.
+  assertNoEagerWin32Imports(ordinary)
+  console.log(`Verified production native import policies: ${file}`)
 }

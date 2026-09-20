@@ -3410,9 +3410,9 @@
     {
       "name": "PE reader and import policies",
       "command": "npx --no-install ava __test__\\pe-imports.spec.ts",
-      "result": "128 tests passed",
+      "result": "129 tests passed",
       "log": "pe-policy-tests.log",
-      "logSha256": "98eabf1994e9c8d64a2697c84d257e55fd46a81103aa7530688d5f178f90ed96"
+      "logSha256": "08948b04bcba0297fbf327e699bc3923573b9e7eec1bbaf9788bd9c4ba363061"
     },
     {
       "name": "Production import gates",

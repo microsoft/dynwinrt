@@ -596,3 +596,46 @@ test('UI helper production checks scan every architecture and Python extensions 
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('UI helper CLI permits optional Win32 delay-only imports but still rejects their ordinary imports', (t) => {
+  const directory = mkdtempSync(fileURLToPath(new URL('../target-pe-imports-', import.meta.url)))
+  const script = fileURLToPath(new URL('../scripts/check-ui-helper-imports.mjs', import.meta.url))
+  const pyd = join(directory, 'optional-subsystem.pyd')
+  try {
+    for (const wide of [false, true]) {
+      for (const [dll, symbol] of [
+        ['mapi32.dll', 'MAPIInitialize'],
+        ['gdiplus.dll', 'GdiplusStartup'],
+        ['ws2_32.dll', 'WSAStartup'],
+        ['mfplat.dll', 'MFStartup'],
+      ]) {
+        const delayed = delayFixture(wide)
+        delayed.bytes.writeUInt32LE(0, delayed.directory + 8)
+        delayed.bytes.writeUInt32LE(0, delayed.directory + 12)
+        delayed.bytes.fill(0, 0x340, 0x360)
+        delayed.bytes.write(`${dll}\0`, 0x450)
+        delayed.bytes.write(`${symbol}\0`, 0x4d2)
+        const ordinary = readPeImports(delayed.bytes)
+        const combined = readPeImports(delayed.bytes, { includeDelayImports: true })
+        t.deepEqual(ordinary, [])
+        t.deepEqual(combined, [{ dll, symbols: [symbol, 23] }])
+        t.notThrows(() => assertNoEagerWin32Imports(ordinary))
+        t.notThrows(() => assertNoUiHelperImports(combined))
+        t.notThrows(() => assertNoDispatcherQueueImports(combined))
+        writeFileSync(pyd, delayed.bytes)
+        const accepted = spawnSync(process.execPath, [script, pyd], { encoding: 'utf8' })
+        t.is(accepted.status, 0, accepted.stderr)
+
+        const eager = fixture(wide)
+        eager.bytes.write(`${dll}\0`, 0x760)
+        eager.bytes.write(`${symbol}\0`, 0x782)
+        writeFileSync(pyd, eager.bytes)
+        const rejected = spawnSync(process.execPath, [script, pyd], { encoding: 'utf8' })
+        t.not(rejected.status, 0)
+        t.regex(rejected.stderr, /Optional Win32 subsystem DLLs must load lazily/)
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
