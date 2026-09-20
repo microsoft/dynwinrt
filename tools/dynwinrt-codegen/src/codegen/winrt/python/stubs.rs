@@ -1291,6 +1291,11 @@ fn collection_protocol_stubs(
         .first()
         .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), context))
         .unwrap_or_else(|| "object".to_string());
+    let item_input = iface
+        .generic_args
+        .first()
+        .map(|typ| super::type_helpers::py_collection_input_type(typ, context))
+        .unwrap_or_else(|| "object".to_string());
     match kind {
         super::collections::CollectionKind::Iterable => {
             format!("\n{indent}def __iter__(self) -> Iterator[{item_type}]: ...\n")
@@ -1311,9 +1316,12 @@ fn collection_protocol_stubs(
             );
             if kind == super::collections::CollectionKind::MutableSequence {
                 result.push_str(&format!(
-                    "{indent}def __setitem__(self, index: int | slice, value: {item_type} | Iterable[{item_type}]) -> None: ...\n\
+                    "{indent}@overload\n\
+                     {indent}def __setitem__(self, index: int, value: {item_input}) -> None: ...\n\
+                     {indent}@overload\n\
+                     {indent}def __setitem__(self, index: slice, value: Iterable[{item_input}]) -> None: ...\n\
                      {indent}def __delitem__(self, index: int | slice) -> None: ...\n\
-                     {indent}def insert(self, index: int, value: {item_type}) -> None: ...\n"
+                     {indent}def insert(self, index: int, value: {item_input}) -> None: ...\n"
                 ));
             }
             result
@@ -1329,12 +1337,17 @@ fn collection_protocol_stubs(
             let mut result = format!(
                 "\n{indent}def __len__(self) -> int: ...\n\
                  {indent}def __iter__(self) -> Iterator[{key_type}]: ...\n\
-                 {indent}def __getitem__(self, key: {key_type}) -> {value_type}: ...\n"
+                 {indent}def __getitem__(self, key: {item_input}) -> {value_type}: ...\n"
             );
             if kind == super::collections::CollectionKind::MutableMapping {
+                let value_input = iface
+                    .generic_args
+                    .get(1)
+                    .map(|typ| super::type_helpers::py_collection_input_type(typ, context))
+                    .unwrap_or_else(|| "object".to_string());
                 result.push_str(&format!(
-                    "{indent}def __setitem__(self, key: {key_type}, value: {value_type}) -> None: ...\n\
-                     {indent}def __delitem__(self, key: {key_type}) -> None: ...\n"
+                    "{indent}def __setitem__(self, key: {item_input}, value: {value_input}) -> None: ...\n\
+                     {indent}def __delitem__(self, key: {item_input}) -> None: ...\n"
                 ));
             }
             result

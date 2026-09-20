@@ -67,6 +67,21 @@ fn has_mypy() -> bool {
     available
 }
 
+fn has_implementation_runtime() -> bool {
+    let available = Command::new(python())
+        .args(["-c", "from dynwinrt import DynWinRTImplementationHandle"])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        available || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
+        "DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME=1 but the matching runtime is unavailable"
+    );
+    if !available {
+        eprintln!("Skipping native consumers: set DYNWINRT_TEST_PYTHON to the matching runtime.");
+    }
+    available
+}
+
 fn typecheck(fixture: &Fixture, packages: &[&str], consumer: &str, errors: &[&str]) {
     fs::write(fixture.0.join("consumer.py"), consumer).unwrap();
     let installed = std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() == Ok("1");
@@ -220,7 +235,65 @@ fn generate_fixture(fixture: &Fixture, package: &str) {
         class("Unrelated", unrelated.clone()),
         class("Content", content.clone()),
     ];
-    let interfaces = [item, unrelated, closable, content];
+    let resource_type = TypeMeta::RuntimeClass {
+        namespace: "Contoso".into(),
+        name: "Resource".into(),
+        default_interface: None,
+    };
+    let mut interfaces = vec![item, unrelated, closable, content];
+    for (name, definition, piid, args) in [
+        (
+            "IVector_Object",
+            "IVector`1",
+            "913337e9-11a1-4345-a3a2-4e7f956e222d",
+            vec![TypeMeta::Object],
+        ),
+        (
+            "IVector_Resource",
+            "IVector`1",
+            "913337e9-11a1-4345-a3a2-4e7f956e222d",
+            vec![resource_type],
+        ),
+        (
+            "IMap_Object_Object",
+            "IMap`2",
+            "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+            vec![TypeMeta::Object, TypeMeta::Object],
+        ),
+    ] {
+        let methods = if definition == "IVector`1" {
+            vec![
+                MethodMeta {
+                    name: "GetAt".into(),
+                    vtable_index: 6,
+                    params: vec![ParamMeta {
+                        name: "index".into(),
+                        typ: TypeMeta::U32,
+                        direction: ParamDirection::In,
+                    }],
+                    return_type: Some(args[0].clone()),
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "Append".into(),
+                    vtable_index: 13,
+                    params: vec![parameter(args[0].clone())],
+                    ..Default::default()
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        interfaces.push(InterfaceMeta {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: name.into(),
+            generic_name: Some(definition.into()),
+            generic_piid: Some(piid.into()),
+            generic_args: args,
+            methods,
+            ..Default::default()
+        });
+    }
     let identities = classes
         .iter()
         .map(|class| TypeIdentity::named(TypeIdentityKind::Class, &class.namespace, &class.name))
@@ -297,6 +370,9 @@ from first.contoso__i_item import IItem
 from first.contoso__resource import Resource, ResourceLike
 from first.contoso__derived_resource import DerivedResource
 from first.contoso__content import Content
+from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
+from first.windows__foundation__collections__i_vector_object import IVector_Object
+from first.windows__foundation__collections__i_vector_resource import IVector_Resource
 from second.contoso__i_item import IItem as OtherItem
 from second.contoso__derived_resource import DerivedResource as OtherDerived
 
@@ -330,6 +406,24 @@ def valid(raw: DynWinRTValue, resource: Resource, derived: DerivedResource,
     content.content = raw
     content.set_object(derived)
     content.set_objects([resource, other, item, raw])
+
+def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
+                vector: IVector_Object, resources: IVector_Resource,
+                mapping: IMap_Object_Object) -> None:
+    vector[0] = resource
+    vector[1:2] = [resource, derived, raw]
+    vector.insert(0, derived)
+    vector.append(derived)
+    resources[0] = derived
+    resources[1:2] = [resource, derived]
+    resources.insert(0, derived)
+    resources.append(derived)
+    mapping[resource] = derived
+    assert_type(vector[0], DynWinRTValue | None)
+    assert_type(vector[:], list[DynWinRTValue | None])
+    assert_type(resources[0], Resource | None)
+    assert_type(mapping[resource], DynWinRTValue | None)
+    del mapping[resource]
 "#,
         &[],
     );
@@ -342,6 +436,9 @@ from first.contoso__i_unrelated import IUnrelated
 from first.contoso__resource import Resource, ResourceLike
 from first.contoso__unrelated import Unrelated
 from first.contoso__content import Content
+from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
+from first.windows__foundation__collections__i_vector_object import IVector_Object
+from first.windows__foundation__collections__i_vector_resource import IVector_Resource
 from second.contoso__unrelated import Unrelated as OtherUnrelated
 
 class WrongObject:
@@ -366,6 +463,18 @@ def invalid(raw: DynWinRTValue, resource: Resource, unrelated: Unrelated,
     content.content = Resource
     content.set_object(WrongObject())
     content.set_objects([42])
+
+def invalid_collections(resource: Resource, unrelated: Unrelated,
+                       vector: IVector_Object, resources: IVector_Resource,
+                       mapping: IMap_Object_Object) -> None:
+    vector[0] = object()
+    vector[0] = [resource]
+    vector[:] = resource
+    vector[:] = [42]
+    resources[0] = unrelated
+    resources.append(unrelated)
+    mapping[WrongObject()] = resource
+    mapping[resource] = object()
 "#,
         &[
             "[arg-type]",
@@ -379,6 +488,14 @@ def invalid(raw: DynWinRTValue, resource: Resource, unrelated: Unrelated,
             "[assignment]",
             "[arg-type]",
             "[list-item]",
+            "[call-overload]",
+            "[call-overload]",
+            "[call-overload]",
+            "[list-item]",
+            "[call-overload]",
+            "[arg-type]",
+            "[index]",
+            "[assignment]",
         ],
     );
 }
@@ -449,18 +566,135 @@ def reference(animation: ExpressionAnimation, visual: ContainerVisual) -> None:
 }
 
 #[test]
-fn native_object_inputs_keep_projection_factories_and_context_lifetimes() {
-    let available = Command::new(python())
-        .args(["-c", "from dynwinrt import DynWinRTImplementationHandle"])
+fn collection_subscripts_accept_projected_inputs_and_keep_raw_outputs() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping SDK collections: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Foundation.Collections.PropertySet,Windows.Foundation.Uri",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
         .output()
-        .is_ok_and(|output| output.status.success());
-    if !available {
-        assert_ne!(
-            std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref(),
-            Ok("1"),
-            "DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME=1 but the matching runtime is unavailable"
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    let imports = r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from sdk.windows.foundation import Uri
+from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
+from sdk.windows__foundation__collections__property_set import (
+    IMap_String_Object as EmbeddedMap, PropertySetLike,
+)
+"#;
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+def valid(uri: Uri, raw: DynWinRTValue, properties: PropertySet,
+          like: PropertySetLike, mapping: IMap_String_Object,
+          embedded: EmbeddedMap) -> None:
+    properties["uri"] = uri
+    properties["raw"] = raw
+    like["uri"] = uri
+    mapping["uri"] = uri
+    embedded["uri"] = uri
+    assert_type(properties["uri"], DynWinRTValue | None)
+    assert_type(like["uri"], DynWinRTValue | None)
+    assert_type(mapping["uri"], DynWinRTValue | None)
+    assert_type(embedded["uri"], DynWinRTValue | None)
+    del properties["uri"]
+    del mapping["uri"]
+"#
+        ),
+        &[],
+    );
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+class WrongObject:
+    _obj: int = 42
+
+def invalid(uri: Uri, properties: PropertySet, mapping: IMap_String_Object) -> None:
+    properties["plain"] = object()
+    properties["string"] = "unboxed"
+    properties["wrong"] = WrongObject()
+    mapping["number"] = 42
+    mapping["class"] = Uri
+    mapping[42] = uri
+    result: Uri = properties["uri"]
+"#
+        ),
+        &[
+            "[assignment]",
+            "[assignment]",
+            "[assignment]",
+            "[assignment]",
+            "[assignment]",
+            "[index]",
+            "[assignment]",
+        ],
+    );
+    if has_implementation_runtime() {
+        fs::write(
+            fixture.0.join("collections_runtime.py"),
+            r#"from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
+from sdk.windows.foundation import Uri
+from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
+
+with RoApartment(1), projected_lifetime_scope():
+    uri = Uri("https://example.com/collection-input")
+    properties = PropertySet()
+    mapping = IMap_String_Object.create({"uri": uri})
+    for collection in (properties, mapping):
+        collection["uri"] = uri
+        value = collection["uri"]
+        assert isinstance(value, DynWinRTValue)
+        assert value.identity_raw() == uri._obj.identity_raw()
+        value.release()
+        collection["null"] = DynWinRTValue.null_value()
+        assert collection["null"] is None
+        collection.insert("raw", uri._obj)
+        value = collection["raw"]
+        assert isinstance(value, DynWinRTValue)
+        assert value.identity_raw() == uri._obj.identity_raw()
+        value.release()
+        del collection["uri"]
+        assert not collection.has_key("uri")
+print("collection-subscript-native-ok", flush=True)
+"#,
+        )
+        .unwrap();
+        let output = Command::new(python())
+            .args(["-B", "collections_runtime.py"])
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("collection-subscript-native-ok"),
+            "{}",
+            diagnostics(&output)
         );
-        eprintln!("Skipping native consumers: set DYNWINRT_TEST_PYTHON to the matching runtime.");
+    }
+}
+
+#[test]
+fn native_object_inputs_keep_projection_factories_and_context_lifetimes() {
+    if !has_implementation_runtime() {
         return;
     }
     let fixture = Fixture::new();

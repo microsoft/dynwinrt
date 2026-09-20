@@ -143,6 +143,19 @@ pub(crate) fn py_param_type_safe(typ: &TypeMeta, context: &PythonProjectionConte
     }
 }
 
+pub(super) fn py_collection_input_type(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    let input = py_param_type_safe(typ, context);
+    // Keep the existing nullable ABC contract; only widen its projected inputs.
+    if is_nullable_reference_type(typ) {
+        py_optional_type(input)
+    } else {
+        input
+    }
+}
+
 pub(crate) fn py_return_type_safe(
     typ: Option<&TypeMeta>,
     context: &PythonProjectionContext,
@@ -692,6 +705,11 @@ mod tests {
             py_return_type_safe(Some(&TypeMeta::Object), &context),
             "DynWinRTValue | None"
         );
+        assert_eq!(
+            py_collection_input_type(&TypeMeta::Object, &context),
+            "DynWinRTValue | _DynWinRTObject | None"
+        );
+        assert_eq!(py_collection_input_type(&TypeMeta::I32, &context), "int");
     }
 
     #[test]

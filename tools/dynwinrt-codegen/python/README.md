@@ -142,6 +142,14 @@ outputs remain `DynWinRTValue | None`. Context managers retain the entered
 instance's type (`Self`), including derived wrappers passed through a base
 `Like` protocol, and still close the object without suppressing exceptions.
 
+Collection subscripts use the input contract for keys and values: for example,
+`properties["uri"] = uri` accepts a generated `Uri`, while reading the item still
+returns `DynWinRTValue | None`. Sequence item assignment, slice assignment, and
+`insert` likewise accept projected inputs without changing their read types;
+integer indices take one item and slices take an iterable of items. Existing
+nullable `collections.abc` contracts remain unchanged. To pass a native null
+reference, use `DynWinRTValue.null_value()`, not implicit `None` boxing.
+
 The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the
 complete output. Regenerate with the updated generator to pick up these
