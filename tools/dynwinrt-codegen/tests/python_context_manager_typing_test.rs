@@ -30,6 +30,7 @@ fn closable_context_manager_never_suppresses_exceptions() {
     );
 
     assert!(stub.contains("from typing import Literal"), "{stub}");
+    assert!(stub.contains("def __enter__(self) -> Self: ..."), "{stub}");
     assert!(
         stub.contains(
             "def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ..."

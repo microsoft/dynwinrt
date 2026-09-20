@@ -45,7 +45,7 @@ from ._runtime import (
     TYPE_CHECKING, UUID, WinGUID, datetime, timedelta,
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
-    _property, _weakref_ref,
+    _DynWinRTObject, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
@@ -64,7 +64,7 @@ from collections.abc import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
 )
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 from weakref import ref as _weakref_ref
 from dynwinrt import (
@@ -127,7 +127,8 @@ def _dynwinrt_can_cast(value, iid):
 
 pub fn generate_runtime_support_module() -> String {
     format!(
-        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}",
+        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}",
+        super::shared::NATIVE_OBJECT_PROTOCOL,
         super::implementation::HELPERS
     )
 }

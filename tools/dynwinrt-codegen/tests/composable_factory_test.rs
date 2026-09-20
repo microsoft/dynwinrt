@@ -161,7 +161,9 @@ fn composable_factory_returns_public_instance() {
         pyi.contains("def __init__(self) -> None: ..."),
         "Python composable constructor stub must hide the ABI-only outer argument:\n{pyi}"
     );
-    assert!(pyi.contains("def create_instance(outer: 'DynWinRTValue') -> 'Widget': ..."));
+    assert!(pyi.contains(
+        "def create_instance(outer: 'DynWinRTValue | _DynWinRTObject') -> 'Widget': ..."
+    ));
     assert!(pyi.contains(
         "native overrides are registered during construction; unsupported ABI shapes fail closed"
     ));

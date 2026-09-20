@@ -46,8 +46,11 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )\n";
+const NATIVE_OBJECT_STUB: &str = "\
+    \x20   @builtins.property\n\
+    \x20   def _obj(self) -> DynWinRTValue: ...\n";
 const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTCoroutine, WinRTCoroutineWithProgress\n";
 
 pub fn generate_typing_support_module() -> String {
@@ -59,7 +62,7 @@ from collections.abc import (\n\
     MutableSequence as MutableSequence, Sequence as Sequence,\n\
 )\n\
 from datetime import datetime as datetime, timedelta as timedelta\n\
-from typing import overload as overload\n\
+from typing import Protocol, overload as overload\n\
 from uuid import UUID as UUID\n\
 from dynwinrt import (\n\
     DynWinRTType as DynWinRTType, DynWinRTValue as DynWinRTValue,\n\
@@ -68,7 +71,8 @@ from dynwinrt import (\n\
     _DynWinRTProjector as _DynWinRTProjector,\n\
     _DynWinRTProjectableClass as _DynWinRTProjectableClass,\n\
     _DynWinRTRuntimeClass as _DynWinRTRuntimeClass,\n\
-)\n"
+)\n{}",
+        super::shared::NATIVE_OBJECT_PROTOCOL,
     )
 }
 
@@ -252,21 +256,27 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         return out;
     }
     let implementation = super::implementation::project(context, iface);
+    let collection_kind = interface_kind(iface);
+    let is_protocol = collection_kind.is_none();
+    let has_projection = !iface.iid.is_empty() || iface.generic_piid.is_some();
+    let has_factory = implementation.supported || (is_protocol && has_projection);
+    let is_buffer =
+        crate::codegen::winrt::is_ibuffer_interface(&iface.namespace, &iface.name, &iface.iid);
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if has_factory {
+        out.push_str("from abc import ABCMeta\n");
+    }
     if implementation.supported {
         out.push_str(super::implementation::IMPORTS);
-        out.push_str("from abc import ABCMeta\n");
         out.push_str("from typing import TypeVar\nfrom dynwinrt import _DynWinRTImplementationFactory\n_ImplementationHandlers = TypeVar('_ImplementationHandlers')\n");
         if context.is_packaged() {
             out.push_str("from typing import TypeAlias\nfrom ._implementation_types import _ImplementationPair as _PackageImplementationPair\n");
         }
     }
-    let collection_kind = interface_kind(iface);
-    let is_protocol = collection_kind.is_none();
     out.push_str("from typing import Protocol, Self, TypeVar\n");
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
@@ -402,16 +412,34 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     }
 
     out.push_str(&implementation.declarations);
-    let implementation_metaclass = format!("_{}ImplementationFactory", iface.name);
-    if implementation.supported {
-        if context.is_packaged() {
+    let factory_metaclass = if implementation.supported {
+        format!("_{}ImplementationFactory", iface.name)
+    } else {
+        format!("_{}Factory", iface.name)
+    };
+    if implementation.supported && context.is_packaged() {
+        out.push_str(&format!(
+            "\n_ImplementationPair: TypeAlias = tuple[_DynWinRTImplementationFactory[{handler}], {handler}]\n",
+            handler = context.implementation_helper_name(iface, "handlers", "Handlers")
+        ));
+    }
+    if has_factory {
+        out.push_str(&format!("\nclass {factory_metaclass}(ABCMeta):\n"));
+        if is_protocol && has_projection {
             out.push_str(&format!(
-                "\n_ImplementationPair: TypeAlias = tuple[_DynWinRTImplementationFactory[{handler}], {handler}]\n",
-                handler = context.implementation_helper_name(iface, "handlers", "Handlers")
+                "    def from_value(cls, obj: DynWinRTValue) -> {}: ...\n",
+                iface.name
             ));
         }
-        out.push_str(&format!("\nclass {implementation_metaclass}(ABCMeta):\n"));
-        out.push_str(&implementation.factory_declarations);
+        if is_buffer {
+            out.push_str(&format!(
+                "    def from_bytes(cls, data: bytes | bytearray) -> {}: ...\n",
+                iface.name
+            ));
+        }
+        if implementation.supported {
+            out.push_str(&implementation.factory_declarations);
+        }
     }
 
     let collection_base =
@@ -443,8 +471,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     }
     let mut seen_bases = HashSet::new();
     bases.retain(|base| seen_bases.insert(base.clone()));
-    if implementation.supported {
-        bases.push(format!("metaclass={implementation_metaclass}"));
+    if has_factory {
+        bases.push(format!("metaclass={factory_metaclass}"));
     }
     if bases.is_empty() {
         out.push_str(&format!("\nclass {}:\n", iface.name));
@@ -459,6 +487,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         },
         "    ",
     ));
+    out.push_str(NATIVE_OBJECT_STUB);
     if !implementation.supported {
         out.push_str(&implementation.factory_declarations);
     }
@@ -466,20 +495,18 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
     out.push_str(&collection_protocol_stubs(iface, context, 4));
-    if !iface.iid.is_empty() || iface.generic_piid.is_some() {
+    if has_projection {
         out.push('\n');
-        out.push_str("    @classmethod\n");
-        out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
+        if !is_protocol {
+            out.push_str("    @classmethod\n");
+            out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
+        }
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
     }
-    if crate::codegen::winrt::is_ibuffer_interface(&iface.namespace, &iface.name, &iface.iid) {
-        out.push_str(
-            "\n    @staticmethod\n\
-             \x20   def from_bytes(data: bytes | bytearray) -> 'IBuffer': ...\n\
-             \x20   def to_bytes(self) -> bytes: ...\n",
-        );
+    if is_buffer {
+        out.push_str("\n    def to_bytes(self) -> bytes: ...\n");
     }
 
     // IVector<T> / IMap<K,V> create()
@@ -1045,6 +1072,7 @@ pub fn generate_class_stub(
             out.push_str(&format!("\nclass {symbol}:\n"));
         }
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
+        out.push_str(NATIVE_OBJECT_STUB);
         out.push_str(&collection_protocol_stubs(req_iface, context, 4));
         out.push('\n');
         out.push_str("    @classmethod\n");
@@ -1102,6 +1130,9 @@ fn emit_class_instance_stubs(
     has_closable: bool,
 ) -> String {
     let mut out = String::new();
+    if super::has_native_projector(class) {
+        out.push_str(NATIVE_OBJECT_STUB);
+    }
     if let Some(collection_iface) = collection_iface {
         out.push_str(&collection_protocol_stubs(collection_iface, context, 4));
     }
@@ -1205,10 +1236,7 @@ fn emit_class_instance_stubs(
     if has_closable {
         out.push('\n');
         out.push_str("    def close(self) -> None: ...\n");
-        out.push_str(&format!(
-            "    def __enter__(self) -> '{}': ...\n",
-            context.class_name(class)
-        ));
+        out.push_str("    def __enter__(self) -> Self: ...\n");
         out.push_str(
             "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
         );

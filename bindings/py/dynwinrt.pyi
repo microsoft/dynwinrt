@@ -11,8 +11,8 @@ _Handlers_contra = TypeVar("_Handlers_contra", contravariant=True)
 
 
 class _DynWinRTProjector(Protocol[_Projected_co]):
-    @classmethod
-    def from_value(cls, obj: "DynWinRTValue") -> _Projected_co: ...
+    # Models the factory object, whose from_value method is already bound.
+    def from_value(self, obj: "DynWinRTValue") -> _Projected_co: ...
 
 
 class _DynWinRTProjectableClass: ...

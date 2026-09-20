@@ -5,15 +5,15 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )
+from abc import ABCMeta
 from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
     DynWinRTImplementationHandle,
 )
-from abc import ABCMeta
 from typing import TypeVar
 from dynwinrt import _DynWinRTImplementationFactory
 _ImplementationHandlers = TypeVar('_ImplementationHandlers')
@@ -31,6 +31,7 @@ class IWwwFormUrlDecoderEntryHandlers(Protocol):
     def get_value(self) -> str: ...
 
 class _IWwwFormUrlDecoderEntryImplementationFactory(ABCMeta):
+    def from_value(cls, obj: DynWinRTValue) -> IWwwFormUrlDecoderEntry: ...
     def implementation(cls, handlers: IWwwFormUrlDecoderEntryHandlers) -> DynWinRTImplementationDescriptor: ...
     def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IWwwFormUrlDecoderEntry]: ...
     def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IWwwFormUrlDecoderEntry: ...
@@ -40,9 +41,9 @@ class _IWwwFormUrlDecoderEntryIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iwwwformurldecoderentry(self) -> None: ...
 
 class IWwwFormUrlDecoderEntry(_IWwwFormUrlDecoderEntryIdentity, Protocol, metaclass=_IWwwFormUrlDecoderEntryImplementationFactory):
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
-    @classmethod
-    def from_value(cls, obj: DynWinRTValue) -> Self: ...
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property

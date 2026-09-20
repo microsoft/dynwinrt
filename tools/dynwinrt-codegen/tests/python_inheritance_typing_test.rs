@@ -73,7 +73,8 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         "{interface_stub}"
     );
     assert!(
-        interface_stub.contains("class IDerived(_IDerivedIdentity, Protocol):"),
+        interface_stub
+            .contains("class IDerived(_IDerivedIdentity, Protocol, metaclass=_IDerivedFactory):"),
         "{interface_stub}"
     );
 

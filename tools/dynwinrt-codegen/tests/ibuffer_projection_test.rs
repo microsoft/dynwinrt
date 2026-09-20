@@ -92,7 +92,7 @@ fn python_projects_copied_ibuffer_conversions() {
     );
     assert!(implementation.contains("def from_bytes(data: bytes | bytearray) -> 'IBuffer':"));
     assert!(implementation.contains("return IBuffer._from_native(DynWinRTValue.from_bytes(data))"));
-    assert!(stub.contains("def from_bytes(data: bytes | bytearray) -> 'IBuffer': ..."));
+    assert!(stub.contains("def from_bytes(cls, data: bytes | bytearray) -> IBuffer: ..."));
     assert!(stub.contains("def to_bytes(self) -> bytes: ..."));
 }
 

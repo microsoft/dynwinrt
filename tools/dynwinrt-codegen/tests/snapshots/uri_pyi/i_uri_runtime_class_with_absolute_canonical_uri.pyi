@@ -5,15 +5,15 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )
+from abc import ABCMeta
 from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
     DynWinRTImplementationHandle,
 )
-from abc import ABCMeta
 from typing import TypeVar
 from dynwinrt import _DynWinRTImplementationFactory
 _ImplementationHandlers = TypeVar('_ImplementationHandlers')
@@ -31,6 +31,7 @@ class IUriRuntimeClassWithAbsoluteCanonicalUriHandlers(Protocol):
     def get_display_iri(self) -> str: ...
 
 class _IUriRuntimeClassWithAbsoluteCanonicalUriImplementationFactory(ABCMeta):
+    def from_value(cls, obj: DynWinRTValue) -> IUriRuntimeClassWithAbsoluteCanonicalUri: ...
     def implementation(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers) -> DynWinRTImplementationDescriptor: ...
     def implement(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IUriRuntimeClassWithAbsoluteCanonicalUri]: ...
     def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IUriRuntimeClassWithAbsoluteCanonicalUri: ...
@@ -40,9 +41,9 @@ class _IUriRuntimeClassWithAbsoluteCanonicalUriIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iuriruntimeclasswithabsolutecanonicaluri(self) -> None: ...
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri(_IUriRuntimeClassWithAbsoluteCanonicalUriIdentity, Protocol, metaclass=_IUriRuntimeClassWithAbsoluteCanonicalUriImplementationFactory):
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
-    @classmethod
-    def from_value(cls, obj: DynWinRTValue) -> Self: ...
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property

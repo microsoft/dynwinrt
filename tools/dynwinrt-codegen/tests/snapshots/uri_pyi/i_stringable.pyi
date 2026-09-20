@@ -5,15 +5,15 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )
+from abc import ABCMeta
 from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
     DynWinRTImplementationHandle,
 )
-from abc import ABCMeta
 from typing import TypeVar
 from dynwinrt import _DynWinRTImplementationFactory
 _ImplementationHandlers = TypeVar('_ImplementationHandlers')
@@ -30,6 +30,7 @@ class IStringableHandlers(Protocol):
     def to_string(self) -> str: ...
 
 class _IStringableImplementationFactory(ABCMeta):
+    def from_value(cls, obj: DynWinRTValue) -> IStringable: ...
     def implementation(cls, handlers: IStringableHandlers) -> DynWinRTImplementationDescriptor: ...
     def implement(cls, handlers: IStringableHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IStringable]: ...
     def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IStringable: ...
@@ -39,9 +40,9 @@ class _IStringableIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_istringable(self) -> None: ...
 
 class IStringable(_IStringableIdentity, Protocol, metaclass=_IStringableImplementationFactory):
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
-    @classmethod
-    def from_value(cls, obj: DynWinRTValue) -> Self: ...
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     def to_string(self) -> str: ...

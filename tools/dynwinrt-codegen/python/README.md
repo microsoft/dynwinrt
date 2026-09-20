@@ -128,9 +128,25 @@ implement standard `collections.abc` protocols, flags use `enum.IntFlag`, and
 compatible method inputs accept native Python sequences, mappings, `bytes`,
 `bytearray`, `uuid.UUID`, `datetime.datetime`, and `datetime.timedelta`.
 
+Interface protocols describe native **instances**, including their canonical
+identity and methods, not wrapper factories. For example, `StorageFile` can be
+passed to an `IStorageFile` parameter without defining `from_value`.
+`IStorageFile.from_value(raw)` and `value.as_interface(IStorageFile)` remain
+available for explicit, IID-checked projection.
+
+WinRT `Object` inputs accept a `DynWinRTValue` or a projected native wrapper
+whose `_obj` is a `DynWinRTValue`, including interface views and runtime-class
+`Like` views. They do not implicitly box arbitrary Python objects, strings, or
+`None`; use an explicitly boxed or null `DynWinRTValue` instead. `Object`
+outputs remain `DynWinRTValue | None`. Context managers retain the entered
+instance's type (`Self`), including derived wrappers passed through a base
+`Like` protocol, and still close the object without suppressing exceptions.
+
 The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the
-complete output.
+complete output. Regenerate with the updated generator to pick up these
+consumer typing contracts, and use the matching runtime package and its stubs.
+No runtime API change or consumer cast is required.
 
 ### Closed-generic stub migration
 

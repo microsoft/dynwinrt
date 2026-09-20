@@ -5,7 +5,7 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )
 from ._typing import _DynWinRTRuntimeClass
 from typing import Protocol, Self
@@ -29,6 +29,8 @@ class _WwwFormUrlDecoderIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iwwwformurldecoderruntimeclass(self) -> None: ...
 
 class WwwFormUrlDecoderLike(_WwwFormUrlDecoderIdentity, Protocol):
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     def __len__(self) -> int: ...
     @overload
@@ -53,6 +55,8 @@ class WwwFormUrlDecoderLike(_WwwFormUrlDecoderIdentity, Protocol):
 
 class WwwFormUrlDecoder(_WwwFormUrlDecoderIdentity, Sequence[IWwwFormUrlDecoderEntry | None], _DynWinRTRuntimeClass):
     def __init__(self, query: str) -> None: ...
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     def __len__(self) -> int: ...
     @overload
@@ -81,6 +85,8 @@ class WwwFormUrlDecoder(_WwwFormUrlDecoderIdentity, Sequence[IWwwFormUrlDecoderE
 
 class IVectorView_IWwwFormUrlDecoderEntry(Sequence[IWwwFormUrlDecoderEntry | None]):
     def __init__(self, obj: DynWinRTValue) -> None: ...
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     def __len__(self) -> int: ...
     @overload
@@ -104,6 +110,8 @@ class IVectorView_IWwwFormUrlDecoderEntry(Sequence[IWwwFormUrlDecoderEntry | Non
 
 class IIterable_IWwwFormUrlDecoderEntry(Iterable[IWwwFormUrlDecoderEntry | None]):
     def __init__(self, obj: DynWinRTValue) -> None: ...
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     def __iter__(self) -> Iterator[IWwwFormUrlDecoderEntry | None]: ...
 

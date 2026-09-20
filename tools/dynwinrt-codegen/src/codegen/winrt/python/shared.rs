@@ -6,6 +6,13 @@
 
 use crate::meta::MethodMeta;
 
+pub(super) const NATIVE_OBJECT_PROTOCOL: &str = "
+
+class _DynWinRTObject(Protocol):
+    @property
+    def _obj(self) -> DynWinRTValue: ...
+";
+
 /// Reorder methods so that property getters always come before their matching setters.
 /// Python requires `@property` to appear before `@prop.setter`.
 pub(crate) fn reorder_getters_before_setters(methods: &[MethodMeta]) -> Vec<&MethodMeta> {

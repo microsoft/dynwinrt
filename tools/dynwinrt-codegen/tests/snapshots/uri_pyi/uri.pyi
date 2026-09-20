@@ -5,7 +5,7 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTProjector,
+    _DynWinRTObject, _DynWinRTProjector,
 )
 from ._typing import _DynWinRTRuntimeClass
 from typing import Protocol, Self
@@ -29,6 +29,8 @@ class _UriIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iuriruntimeclasswithabsolutecanonicaluri(self) -> None: ...
 
 class UriLike(_UriIdentity, Protocol):
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     @builtins.property
     def absolute_uri(self) -> str: ...
@@ -110,6 +112,8 @@ class Uri(UriLike, _DynWinRTRuntimeClass):
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
     def __init__(self, obj: DynWinRTValue) -> None: ...
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...
@@ -124,6 +128,8 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
 
 class IStringable:
     def __init__(self, obj: DynWinRTValue) -> None: ...
+    @builtins.property
+    def _obj(self) -> DynWinRTValue: ...
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...

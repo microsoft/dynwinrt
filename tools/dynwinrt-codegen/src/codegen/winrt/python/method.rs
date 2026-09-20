@@ -1078,7 +1078,7 @@ mod tests {
         );
 
         assert!(code.contains(
-            "def write_async(self, buffer: 'DynWinRTValue') -> WinRTCoroutineWithProgress[int, int]:"
+            "def write_async(self, buffer: 'DynWinRTValue | _DynWinRTObject') -> WinRTCoroutineWithProgress[int, int]:"
         ));
         assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsyncWithProgress("));
         assert!(code.contains("'WinRTAsyncWithProgress')"));
