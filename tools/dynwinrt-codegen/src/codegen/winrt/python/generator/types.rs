@@ -88,7 +88,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(IMPORT_LINE);
+    out.push_str(&import_line(context));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
     }

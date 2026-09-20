@@ -1005,8 +1005,17 @@ fn class_companion_metadata(path: &Path, peer_name: &str) {
 }
 
 fn inline_struct_companion_metadata(path: &Path, leaf: &str) {
+    let mut file = struct_companion_file(leaf, &[]);
+    runtime_class(&mut file, "Widget", "IWidget");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, file.into_stream()).unwrap();
+}
+
+fn struct_companion_file(leaf: &str, peers: &[&str]) -> writer::File {
     let mut file = writer::File::new("PythonInlineStructCompanions");
-    structure(&mut file, "Audit", leaf, &[("Value", Type::I32)]);
+    for name in std::iter::once(leaf).chain(peers.iter().copied()) {
+        structure(&mut file, "Audit", name, &[("Value", Type::I32)]);
+    }
     structure(
         &mut file,
         "Audit",
@@ -1021,6 +1030,36 @@ fn inline_struct_companion_metadata(path: &Path, leaf: &str) {
             name,
             target.clone(),
             &[("value", target, ParamAttributes::In)],
+        );
+    }
+    for peer in peers {
+        let target = Type::named("Audit", peer);
+        method(
+            &mut file,
+            "EchoPeer",
+            target.clone(),
+            &[("value", target, ParamAttributes::In)],
+        );
+    }
+    file
+}
+
+fn object_input_metadata(path: &Path, leaf: &str, occupied_alias: bool) {
+    let peers = if occupied_alias {
+        &["_DynWinRTObject_2"][..]
+    } else {
+        &[]
+    };
+    let mut file = struct_companion_file(leaf, peers);
+    for (name, typ) in [
+        ("SetObject", Type::Object),
+        ("SetObjects", Type::Array(Box::new(Type::Object))),
+    ] {
+        method(
+            &mut file,
+            name,
+            Type::Void,
+            &[("value", typ, ParamAttributes::In)],
         );
     }
     runtime_class(&mut file, "Widget", "IWidget");
@@ -3263,6 +3302,232 @@ def reject(owner: Widget) -> None:
                 ),
                 &["[arg-type]", "[arg-type]", "[arg-type]", "[arg-type]"],
             );
+        }
+    }
+}
+
+#[test]
+fn python_object_input_helper_preserves_packaged_metadata_names() {
+    object_input_helper_consumers(true);
+}
+
+#[test]
+fn python_object_input_helper_preserves_standalone_metadata_names() {
+    object_input_helper_consumers(false);
+}
+
+fn object_input_helper_consumers(packaged: bool) {
+    for (leaf, occupied_alias) in [
+        ("_DynWinRTObject", false),
+        ("ObjectLeaf", false),
+        ("_DynWinRTObject_2", false),
+        ("_DynWinRTObject", true),
+    ] {
+        for owner in ["Widget", "IWidget"] {
+            let fixture = Fixture::new();
+            let package = fixture.package();
+            let winmd = fixture.0.join("metadata").join("Input.winmd");
+            object_input_metadata(&winmd, leaf, occupied_alias);
+            let class = meta::parse_class(winmd.to_str().unwrap(), "Audit", "Widget").unwrap();
+            let interface = class.default_interface.as_ref().unwrap();
+            let structs = python::package_structs(std::slice::from_ref(&class), &[]);
+            assert_eq!(structs.len(), if occupied_alias { 3 } else { 2 });
+            let identities = [class_identity(&class), interface.type_identity()]
+                .into_iter()
+                .chain(structs.iter().map(TypeMeta::type_identity))
+                .collect::<Vec<_>>();
+            let context =
+                python::PythonProjectionContext::new(identities.clone(), packaged).unwrap();
+            let reordered = python::PythonProjectionContext::new(
+                identities.into_iter().rev().chain([
+                    class_type("Unused", "_DynWinRTObject_3").type_identity(),
+                    class_type("Unused", "_DynWinRTObject_4").type_identity(),
+                ]),
+                packaged,
+            )
+            .unwrap();
+            let render = |context: &python::PythonProjectionContext| {
+                if owner == "Widget" {
+                    (
+                        python::generate_class(context, &class, &Default::default()),
+                        python_stub::generate_class_stub(context, &class, &Default::default()),
+                    )
+                } else {
+                    (
+                        python::generate_interface(context, interface),
+                        python_stub::generate_interface_stub(context, interface),
+                    )
+                }
+            };
+            let (source, stub) = render(&context);
+            assert_eq!((source.clone(), stub.clone()), render(&reordered));
+            let owner_module = format!("audit__{}", python::to_snake_case_filename(owner));
+            if packaged {
+                generate(&winmd, &package, &format!("Audit.{owner}"));
+            } else {
+                module(&package, &owner_module, source.clone(), stub.clone());
+                write_structs(&package, &context, &structs);
+                support(&package, &[]);
+            }
+            let suffix = python::to_snake_case_filename(leaf);
+            let local_module = if packaged {
+                "audit__holder"
+            } else {
+                &owner_module
+            };
+            let leaf_module = if packaged {
+                format!("audit__{suffix}")
+            } else {
+                owner_module.clone()
+            };
+            let mut imports = format!(
+                "from pyviews.{owner_module} import {owner} as Owner\n\
+                 from pyviews.{local_module} import Holder, pack_holder, unpack_holder\n\
+                 from pyviews.{leaf_module} import {leaf} as Leaf, pack_{suffix} as pack_leaf, unpack_{suffix} as unpack_leaf\n\
+                 from pyviews.audit__holder import Holder as IsolatedHolder, pack_holder as isolated_pack, unpack_holder as isolated_unpack\n\
+                 from pyviews.audit__{suffix} import {leaf} as IsolatedLeaf\n",
+            );
+            if packaged {
+                imports.push_str(&format!(
+                    "from pyviews.audit.{suffix} import {leaf} as PublicLeaf\n"
+                ));
+            }
+            let peer_import = if occupied_alias {
+                let peer_module = if packaged {
+                    "audit__dyn_win_rt_object_2"
+                } else {
+                    &owner_module
+                };
+                format!("from pyviews.{peer_module} import _DynWinRTObject_2 as Peer\n")
+            } else {
+                String::new()
+            };
+            imports.push_str(&peer_import);
+            let peer_check = if occupied_alias {
+                "    assert_type(owner.echo_peer(Peer(19)), Peer)\n"
+            } else {
+                ""
+            };
+            strict_typecheck(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+from dynwinrt import DynWinRTValue
+from typing import assert_type
+assert_type(Holder().item, Leaf)
+assert_type(IsolatedHolder().item, IsolatedLeaf)
+assert_type(unpack_holder(pack_holder(Holder(Leaf(17))).to_value()), Holder)
+def check(owner: Owner, raw: DynWinRTValue) -> None:
+    assert_type(owner.echo(Holder()), Holder)
+    assert_type(owner.echo_leaf(Leaf(23)), Leaf)
+    owner.set_object(owner)
+    owner.set_object(raw)
+    owner.set_objects([owner, raw])
+{peer_check}"#,
+                ),
+            );
+            reject_consumer(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+def reject(owner: Owner) -> None:
+    owner.set_object(Leaf())
+    owner.set_object(Holder())
+    owner.set_object(object())
+    owner.set_objects([Leaf()])
+    owner.echo_leaf(owner)
+    owner.echo_leaf(object())
+Holder(17)
+"#,
+                ),
+                &[
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[list-item]",
+                    "[arg-type]",
+                    "[arg-type]",
+                    "[arg-type]",
+                ],
+            );
+            let alias = if leaf == "_DynWinRTObject" {
+                if occupied_alias {
+                    "_DynWinRTObject_3"
+                } else {
+                    "_DynWinRTObject_2"
+                }
+            } else {
+                "_DynWinRTObject"
+            };
+            let import = if alias == "_DynWinRTObject" {
+                alias.to_string()
+            } else {
+                format!("_DynWinRTObject as {alias}")
+            };
+            for text in [&source, &stub] {
+                assert!(text.contains(&format!("    {import},")), "{text}");
+                assert!(text.contains(&format!("DynWinRTValue | {alias}")), "{text}");
+                assert!(text.contains(&format!("value: '{leaf}'")), "{text}");
+            }
+            let public_check = if packaged {
+                "assert PublicLeaf is Leaf is IsolatedLeaf"
+            } else {
+                "assert Leaf.__name__ == IsolatedLeaf.__name__"
+            };
+            let peer_runtime = if occupied_alias {
+                "assert typing.get_type_hints(Owner.echo_peer)['value'] is Peer"
+            } else {
+                ""
+            };
+            runtime(
+                &fixture.0,
+                &format!(
+                    r#"{imports}
+import typing
+import dynwinrt as dw
+from pyviews._runtime import _DynWinRTObject as ObjectInput
+{public_check}
+{peer_runtime}
+assert Leaf.__name__ == '{leaf}'
+assert typing.get_type_hints(Owner.echo_leaf)['value'] is Leaf
+assert typing.get_type_hints(Owner.echo_leaf)['return'] is Leaf
+assert typing.get_type_hints(Owner.set_object)['value'] == dw.DynWinRTValue | ObjectInput
+array_hint = typing.get_type_hints(Owner.set_objects)['value']
+assert typing.get_args(typing.get_args(array_hint)[1])[0] == dw.DynWinRTValue | ObjectInput
+with dw.RoApartment(1):
+    for Container, Item, pack, unpack in (
+        (Holder, Leaf, pack_holder, unpack_holder),
+        (IsolatedHolder, IsolatedLeaf, isolated_pack, isolated_unpack),
+    ):
+        default = Container()
+        other = Container()
+        assert type(default.item) is Item
+        assert default.item.value == 0
+        assert default.item is not other.item
+        assert typing.get_type_hints(Container.__init__)['item'] == Item | None
+        assert typing.get_type_hints(pack)['v'] is Container
+        assert typing.get_type_hints(unpack)['return'] is Container
+        for value in (default, Container(Item(17))):
+            raw = pack(value).to_value()
+            try:
+                result = unpack(raw)
+                assert type(result) is Container
+                assert type(result.item) is Item
+                assert result == value
+            finally:
+                raw.release()
+    assert typing.get_type_hints(pack_leaf)['v'] is Leaf
+    assert typing.get_type_hints(unpack_leaf)['return'] is Leaf
+    raw = pack_leaf(Leaf(29)).to_value()
+    try:
+        assert type(unpack_leaf(raw)) is Leaf
+        assert unpack_leaf(raw).value == 29
+    finally:
+        raw.release()
+"#,
+                ),
+            );
+            assert!(source.contains(&format!("DynWinRTType.struct_type('Audit.{leaf}'")));
         }
     }
 }

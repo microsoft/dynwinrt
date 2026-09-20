@@ -59,7 +59,7 @@ pub fn generate_struct(context: &PythonProjectionContext, s: &TypeMeta) -> Optio
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(IMPORT_LINE);
+    out.push_str(&import_line(context));
 
     out.push_str(&generate_struct_imports(context, &dependencies));
     if has_ireference_struct_field(std::slice::from_ref(s)) {

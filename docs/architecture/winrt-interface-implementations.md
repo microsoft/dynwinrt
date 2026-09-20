@@ -167,6 +167,13 @@ registrations and its activation factory only when emitted. Registration
 declarations and invocation sites read the same symbol roles, independently of
 type aliases, so neither an existing helper nor a newly qualified helper alias
 can overwrite a registration object.
+Internal support imports use the same module-local reserved symbols and yield
+to metadata names. The Object-input protocol keeps `_DynWinRTObject` when free,
+otherwise takes the first available `_DynWinRTObject_2`, `_DynWinRTObject_3`, etc.
+Both `.py` and `.pyi` imports and Object-input annotations read that allocated
+support role, including array and collection inputs. Only symbols visible in
+the module participate; metadata declarations, public exports, and native
+descriptor identities are not renamed to make room for the protocol.
 Enum declarations, namespace exports, defaults, and runtime conversions use the
 same projected name, including named/closed-generic collisions; native enum
 descriptors continue to use the original metadata identity.

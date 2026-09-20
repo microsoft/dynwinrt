@@ -13,7 +13,7 @@ use crate::types::TypeMeta;
 use super::collections::{CollectionKind, is_mapping_input, type_kind};
 use super::docs::format_pydoc;
 use super::naming::to_snake_case;
-use super::naming::{PythonProjectionContext, PythonSymbol};
+use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use super::native_types::{FoundationType, foundation_type};
 
 /// Build the Python docstring for a method body. Uses snake_case param display
@@ -107,7 +107,10 @@ fn py_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
             format!("'{}'", context.reference_name_for_type(typ))
         }
         TypeMeta::Array(inner) => py_array_param_type(inner, context),
-        TypeMeta::Object => "'DynWinRTValue | _DynWinRTObject'".to_string(),
+        TypeMeta::Object => format!(
+            "'DynWinRTValue | {}'",
+            context.support_symbol_reference(PythonSupportSymbol::ObjectInput)
+        ),
         TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
@@ -710,6 +713,39 @@ mod tests {
             "DynWinRTValue | _DynWinRTObject | None"
         );
         assert_eq!(py_collection_input_type(&TypeMeta::I32, &context), "int");
+    }
+
+    #[test]
+    fn object_input_aliases_reach_collection_inputs_without_changing_outputs() {
+        let typ = TypeMeta::Struct {
+            namespace: "Audit".into(),
+            name: "_DynWinRTObject".into(),
+            fields: vec![],
+        };
+        let context = PythonProjectionContext::packaged([typ.type_identity()]).unwrap();
+        let context = context.for_struct_module(&typ, std::slice::from_ref(&typ));
+        let mapping = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IMap`2".into(),
+            piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            args: vec![TypeMeta::String, TypeMeta::Object],
+        };
+        assert_eq!(
+            py_param_type_safe(&mapping, &context),
+            "Mapping[str, 'DynWinRTValue | _DynWinRTObject_2']"
+        );
+        assert_eq!(
+            py_collection_input_type(&TypeMeta::Object, &context),
+            "DynWinRTValue | _DynWinRTObject_2 | None"
+        );
+        assert_eq!(
+            py_return_type_safe(Some(&TypeMeta::Object), &context),
+            "DynWinRTValue | None"
+        );
+        assert_eq!(
+            py_array_return_type(&TypeMeta::Object, &context),
+            "list[DynWinRTValue | None]"
+        );
     }
 
     #[test]
