@@ -475,13 +475,62 @@ fn sdk_array_and_enum_outputs_keep_their_metadata_until_drop() {
     let mut interface = table
         .register_interface("IPropertyValue", IPropertyValue::IID)
         .add_method("get_Type", MethodSignature::new(&table).add_out(enum_type));
-    for slot in 7..29 {
-        interface = interface.add_method(&format!("Unused{slot}"), MethodSignature::new(&table));
+    for (name, typ) in [
+        ("get_IsNumericScalar", table.bool_type()),
+        ("GetUInt8", table.u8_type()),
+        ("GetInt16", table.i16_type()),
+        ("GetUInt16", table.u16_type()),
+        ("GetInt32", table.i32_type()),
+        ("GetUInt32", table.u32_type()),
+        ("GetInt64", table.i64_type()),
+        ("GetUInt64", table.u64_type()),
+        ("GetSingle", table.f32_type()),
+        ("GetDouble", table.f64_type()),
+        ("GetChar16", table.char16_type()),
+        ("GetBoolean", table.bool_type()),
+        ("GetString", table.hstring()),
+        ("GetGuid", table.guid_type()),
+        (
+            "GetDateTime",
+            table.struct_type("Windows.Foundation.DateTime", &[table.i64_type()]),
+        ),
+        (
+            "GetTimeSpan",
+            table.struct_type("Windows.Foundation.TimeSpan", &[table.i64_type()]),
+        ),
+        (
+            "GetPoint",
+            table.struct_type(
+                "Windows.Foundation.Point",
+                &[table.f32_type(), table.f32_type()],
+            ),
+        ),
+        (
+            "GetSize",
+            table.struct_type(
+                "Windows.Foundation.Size",
+                &[table.f32_type(), table.f32_type()],
+            ),
+        ),
+        (
+            "GetRect",
+            table.struct_type(
+                "Windows.Foundation.Rect",
+                &[
+                    table.f32_type(),
+                    table.f32_type(),
+                    table.f32_type(),
+                    table.f32_type(),
+                ],
+            ),
+        ),
+        ("GetUInt8Array", table.array(&table.u8_type())),
+        ("GetInt16Array", table.array(&table.i16_type())),
+        ("GetUInt16Array", table.array(&table.u16_type())),
+        ("GetInt32Array", table.array(&table.i32_type())),
+    ] {
+        interface = interface.add_method(name, MethodSignature::new(&table).add_out(typ));
     }
-    interface = interface.add_method(
-        "GetInt32Array",
-        MethodSignature::new(&table).add_out(table.array(&table.i32_type())),
-    );
     let getter = interface.method(6).unwrap();
     let array_getter = interface.method(29).unwrap();
     drop(interface);
