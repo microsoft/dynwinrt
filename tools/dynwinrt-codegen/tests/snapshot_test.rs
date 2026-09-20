@@ -185,7 +185,9 @@ fn snapshot_uri_class() {
     assert!(uri_js.contains(
         "const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');"
     ));
-    assert!(uri_js.contains("_unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri)"));
+    assert!(uri_js.contains(
+        "value instanceof DynWinRtValue && value.isNull() ? value : value.cast(IID_ARG_Windows_Foundation_Uri))(_unwrap(pUri))"
+    ));
     assert!(
         !uri_js.contains("_unwrap(pUri).cast(DynWinRtType.runtimeClass('Windows.Foundation.Uri'")
     );

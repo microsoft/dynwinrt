@@ -43,6 +43,9 @@ and values) using the same metadata-directed argument projection as ordinary
 methods. Native `createVector`/`createMap` receive managed `DynWinRtValue`
 carriers, not unconverted JavaScript primitives. Conversion does not expand
 the native producer's supported ABI or ownership boundary.
+Runtime-class and collection-reference conversions preserve managed null
+carriers without querying an interface; non-null carriers still query the
+declared interface before being passed to native code.
 
 With the JS addon built, run `npm run test:collection-factories` from
 `bindings/js` for generated SDK factory roundtrips. `DYNWINRT_CODEGEN` selects

@@ -184,3 +184,50 @@ fn string_collection_factory_declarations_remain_native_js_arrays() {
     let (_, dts) = project_factory(MAP, vec![TypeMeta::String, TypeMeta::String]);
     assert!(dts.contains("static create(keys: string[], values: string[]): Collection;"));
 }
+
+#[test]
+fn reference_factories_preserve_managed_nulls_before_querying_every_role() {
+    let class = TypeMeta::RuntimeClass {
+        namespace: "Windows.ApplicationModel.Contacts".into(),
+        name: "ContactDate".into(),
+        default_interface: Some(Box::new(TypeMeta::Interface {
+            namespace: "Windows.ApplicationModel.Contacts".into(),
+            name: "IContactDate".into(),
+            iid: "fe98ae66-b205-4934-9174-0ff2b0565707".into(),
+        })),
+    };
+    let collection_type = |name: &str, piid: &str, args| TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: name.into(),
+        piid: piid.into(),
+        args,
+    };
+    for typ in [
+        class.clone(),
+        collection_type("IVector", VECTOR, vec![class.clone()]),
+        collection_type("IMap", MAP, vec![class.clone(), class]),
+    ] {
+        for (piid, args, variables) in [
+            (VECTOR, vec![typ.clone()], vec!["i"]),
+            (OBSERVABLE_VECTOR, vec![typ.clone()], vec!["i"]),
+            (MAP, vec![typ.clone(), typ.clone()], vec!["k", "v"]),
+        ] {
+            let (js, _) = project_factory(piid, args);
+            let factory = js.split("static create(").nth(1).unwrap();
+            let guard = "value instanceof DynWinRtValue && value.isNull() ? value : value.cast(";
+            assert!(factory.contains(guard), "{factory}");
+            for var in variables {
+                let unwrap = format!("_unwrap({var})");
+                assert_eq!(factory.matches(&unwrap).count(), 1, "{factory}");
+                assert!(factory.contains(&format!("))({unwrap})")), "{factory}");
+            }
+            // Class elements in automatically converted arrays/maps must use
+            // the same null-preserving expected-IID query as direct inputs.
+            if matches!(typ, TypeMeta::Parameterized { .. }) {
+                assert!(factory.contains(&format!(
+                    "{guard}IID_ARG_Windows_ApplicationModel_Contacts_ContactDate)"
+                )));
+            }
+        }
+    }
+}

@@ -391,8 +391,9 @@ pub(crate) fn wrap_arg(
                     let elem_type = ts_dynwinrt_type(context, elem);
                     let item_wrap = vector_item_wrap_expr(context, "_i", elem);
                     let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
+                    let reference = nullable_reference_cast_expr(name, &target_iid_expr);
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
+                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : {reference})"
                     );
                 }
             }
@@ -408,8 +409,9 @@ pub(crate) fn wrap_arg(
                     let k_wrap = vector_item_wrap_expr(context, "_k", &args[0]);
                     let v_wrap = vector_item_wrap_expr(context, "_v", &args[1]);
                     let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
+                    let reference = nullable_reference_cast_expr(name, &target_iid_expr);
                     return format!(
-                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
+                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : {reference})"
                     );
                 }
             }
@@ -525,13 +527,19 @@ fn is_map_like(piid: &str, name: &str) -> bool {
     piid == PIID_IMAP || piid == PIID_IMAP_VIEW || name == "IMap" || name == "IMapView"
 }
 
+fn nullable_reference_cast_expr(name: &str, iid: &str) -> String {
+    format!(
+        "((value) => value instanceof DynWinRtValue && value.isNull() ? value : value.cast({iid}))(_unwrap({name}))"
+    )
+}
+
 fn runtime_class_wrap_expr(
     context: &JavaScriptProjectionContext,
     name: &str,
     typ: &TypeMeta,
 ) -> String {
     runtime_class_iid_const(context, typ)
-        .map(|(iid, _)| format!("_unwrap({}).cast({})", name, iid))
+        .map(|(iid, _)| nullable_reference_cast_expr(name, &iid))
         .unwrap_or_else(|| format!("_unwrap({})", name))
 }
 

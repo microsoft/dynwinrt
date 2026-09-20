@@ -320,7 +320,7 @@ mod tests {
                 iid: "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
             })),
         };
-        let expected_cast = "_unwrap(value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)";
+        let expected_cast = "((value) => value instanceof DynWinRtValue && value.isNull() ? value : value.cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry))(_unwrap(value))";
 
         assert_eq!(
             wrap_arg("value", &geometry),
@@ -335,13 +335,13 @@ mod tests {
         };
         assert!(wrap_arg("values", &vector).contains(&format!(
             "map(_i => {})",
-            expected_cast.replace("value", "_i")
+            expected_cast.replace("_unwrap(value)", "_unwrap(_i)")
         )));
 
         let array = TypeMeta::Array(Box::new(geometry));
         assert!(wrap_arg("values", &array).contains(&format!(
             "map(_i => {})",
-            expected_cast.replace("value", "_i")
+            expected_cast.replace("_unwrap(value)", "_unwrap(_i)")
         )));
     }
 

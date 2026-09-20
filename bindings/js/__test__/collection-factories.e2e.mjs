@@ -145,6 +145,82 @@ test('runtime-class vector factories retain projected and managed inputs', (t) =
   assert.equal(keep(vector.getAt(1)).month, 3)
 })
 
+test('runtime-class vector factory preserves a managed null carrier', (t) => {
+  const keep = own(t)
+  const Vector = collection('IVector_WindowsApplicationModelContactsContactDate_')
+  const value = keep(require(runtimeRoot).DynWinRtValue.nullValue())
+  const vector = keep(Vector.create([value]))
+  assert.equal(vector.size, 1)
+  assert.equal(vector.getAt(0), null)
+  assert.equal(value.isNull(), true)
+})
+
+test('runtime-class conversion preserves nulls and still rejects invalid non-null inputs', (t) => {
+  const keep = own(t)
+  const Vector = collection('IVector_WindowsApplicationModelContactsContactDate_')
+  const { DynWinRtValue } = require(runtimeRoot)
+  const nil = keep(DynWinRtValue.nullValue())
+  const uri = keep(generated.Uri.createUri('https://example.invalid/wrong-interface'))
+  const scalar = keep(DynWinRtValue.i32(7))
+  for (const invalid of [uri, uri._obj, scalar, {}, { isNull: () => true }]) {
+    assert.throws(() => Vector.create([invalid]), /QueryInterface|cast/)
+  }
+  let reads = 0
+  const wrappedNull = {
+    get _obj() {
+      reads++
+      return nil
+    },
+  }
+  const date = keep(generated.ContactDate.create())
+  date.month = 4
+  const vector = keep(Vector.create([nil, wrappedNull, null, undefined, date, date._obj]))
+  assert.equal(reads, 1)
+  keep.release(date)
+  assert.equal(vector.size, 6)
+  for (let index = 0; index < 4; index++) assert.equal(vector.getAt(index), null)
+  assert.equal(keep(vector.getAt(4)).month, 4)
+  assert.equal(keep(vector.getAt(5)).month, 4)
+  vector.append(nil)
+  assert.equal(vector.size, 7)
+  assert.equal(vector.getAt(6), null)
+  assert.throws(() => vector.append(uri), /QueryInterface/)
+  vector.append(nil)
+  assert.equal(vector.size, 8)
+  assert.equal(vector.getAt(7), null)
+  const retained = keep(vector.getAt(4))
+  vector.replaceAll([nil, retained])
+  assert.equal(vector.size, 2)
+  assert.equal(vector.getAt(0), null)
+  assert.equal(keep(vector.getAt(1)).month, 4)
+})
+
+test('collection-valued map factories preserve managed nulls without weakening non-null QI', (t) => {
+  const keep = own(t)
+  const Map = collection('IMap_String_WindowsFoundationCollectionsIVectorView_WindowsDataTextTextSegment_')
+  const nil = keep(require(runtimeRoot).DynWinRtValue.nullValue())
+  const uri = keep(generated.Uri.createUri('https://example.invalid/wrong-collection'))
+  for (const invalid of [uri, uri._obj, {}, { isNull: () => true }, null, undefined]) {
+    assert.throws(() => Map.create(['invalid'], [invalid]), /QueryInterface|cast/)
+  }
+  let reads = 0
+  const wrappedNull = {
+    get _obj() {
+      reads++
+      return nil
+    },
+  }
+  const map = keep(Map.create(['managed', 'wrapped'], [nil, wrappedNull]))
+  assert.equal(reads, 1)
+  assert.equal(map.size, 2)
+  assert.equal(map.lookup('managed'), null)
+  assert.equal(map.lookup('wrapped'), null)
+  assert.throws(() => map.insert('wrong', uri), /QueryInterface/)
+  map.insert('later', nil)
+  assert.equal(map.size, 3)
+  assert.equal(map.lookup('later'), null)
+})
+
 test('nested collection arguments use supported small-struct packing', (t) => {
   const keep = own(t)
   const Map = collection('IMap_String_WindowsFoundationCollectionsIVectorView_WindowsDataTextTextSegment_')

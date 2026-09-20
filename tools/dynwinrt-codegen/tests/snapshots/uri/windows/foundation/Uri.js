@@ -181,7 +181,7 @@ class Uri {
         return (() => { const _m = _IUriRuntimeClass.method(20); return typeof _m.getBool === 'function' ? _m.getBool(this._obj) : _IUriRuntimeClass.method(20).invoke(this._obj, []).toBool(); })();
     }
     equals(pUri) {
-        return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri))]).toBool();
+        return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : ((value) => value instanceof DynWinRtValue && value.isNull() ? value : value.cast(IID_ARG_Windows_Foundation_Uri))(_unwrap(pUri)))]).toBool();
     }
     combineUri(relativeUri) {
         return ((v) => v.isNull() ? null : Uri._fromNative(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
