@@ -426,10 +426,10 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if has_factory {
         out.push_str(&format!("\nclass {factory_metaclass}(ABCMeta):\n"));
         if is_protocol && has_projection {
-            out.push_str(&format!(
-                "    def from_value(cls, obj: DynWinRTValue) -> {}: ...\n",
-                iface.name
-            ));
+            // Bind the result to the receiving interface class, not its metaclass.
+            out.push_str(
+                "    def from_value(cls: type[_InterfaceT], obj: DynWinRTValue) -> _InterfaceT: ...\n",
+            );
         }
         if is_buffer {
             out.push_str(&format!(

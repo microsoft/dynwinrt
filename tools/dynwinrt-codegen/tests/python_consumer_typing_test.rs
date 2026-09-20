@@ -566,6 +566,127 @@ def reference(animation: ExpressionAnimation, visual: ContainerVisual) -> None:
 }
 
 #[test]
+fn interface_factory_preserves_subclass_types_and_runtime_identity() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping SDK factories: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Storage.Streams.Buffer",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    let prelude = r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from sdk.windows.storage.streams import Buffer, IBuffer
+
+class TaggedBuffer(IBuffer):
+    def tag(self) -> str:
+        return "tagged"
+
+class SpecializedBuffer(TaggedBuffer):
+    pass
+"#;
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{prelude}
+from dynwinrt import _DynWinRTProjector
+
+def valid(raw: DynWinRTValue, buffer: Buffer, factory: type[TaggedBuffer]) -> None:
+    assert_type(IBuffer.from_value(raw), IBuffer)
+    assert_type(TaggedBuffer.from_value(raw), TaggedBuffer)
+    assert_type(SpecializedBuffer.from_value(raw), SpecializedBuffer)
+    assert_type(factory.from_value(raw), TaggedBuffer)
+    assert_type(TaggedBuffer.from_value(raw).tag(), str)
+    assert_type(buffer.as_interface(IBuffer), IBuffer)
+    assert_type(buffer.as_interface(TaggedBuffer), TaggedBuffer)
+    assert_type(buffer.as_interface(SpecializedBuffer), SpecializedBuffer)
+    projector: _DynWinRTProjector[TaggedBuffer] = TaggedBuffer
+    assert_type(projector.from_value(raw), TaggedBuffer)
+    assert_type(TaggedBuffer.from_bytes(b"static factory"), IBuffer)
+"#
+        ),
+        &[],
+    );
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{prelude}
+def invalid(raw: DynWinRTValue, buffer: Buffer) -> None:
+    TaggedBuffer.from_value(object())
+    tagged: TaggedBuffer = IBuffer.from_value(raw)
+    specialized: SpecializedBuffer = TaggedBuffer.from_value(raw)
+    IBuffer.from_value(raw).tag()
+    static_result: TaggedBuffer = TaggedBuffer.from_bytes(b"base result")
+    buffer.as_interface(Buffer)
+"#
+        ),
+        &[
+            "[arg-type]",
+            "[assignment]",
+            "[assignment]",
+            "[attr-defined]",
+            "[assignment]",
+            "[arg-type]",
+        ],
+    );
+    if has_implementation_runtime() {
+        fs::write(
+            fixture.0.join("factory_runtime.py"),
+            format!(
+                r#"{prelude}
+from dynwinrt import RoApartment, projected_lifetime_scope
+
+with RoApartment(1), projected_lifetime_scope():
+    buffer = Buffer.from_bytes(b"subclass factory")
+    base = IBuffer.from_value(buffer._obj)
+    tagged = TaggedBuffer.from_value(buffer._obj)
+    specialized = SpecializedBuffer.from_value(buffer._obj)
+    assert type(base) is IBuffer
+    assert type(tagged) is TaggedBuffer
+    assert type(specialized) is SpecializedBuffer
+    assert tagged.tag() == "tagged"
+    assert specialized.to_bytes() == b"subclass factory"
+    assert TaggedBuffer.from_value(tagged._obj) is tagged
+    assert buffer.as_interface(TaggedBuffer) is tagged
+    assert buffer.as_interface(SpecializedBuffer) is specialized
+    assert type(TaggedBuffer.from_bytes(b"static factory")) is IBuffer
+print("subclass-factory-native-ok", flush=True)
+"#
+            ),
+        )
+        .unwrap();
+        let output = Command::new(python())
+            .args(["-B", "factory_runtime.py"])
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("subclass-factory-native-ok"),
+            "{}",
+            diagnostics(&output)
+        );
+    }
+}
+
+#[test]
 fn collection_subscripts_accept_projected_inputs_and_keep_raw_outputs() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",

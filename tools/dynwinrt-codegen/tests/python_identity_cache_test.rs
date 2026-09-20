@@ -174,6 +174,22 @@ fn interface_generation_uses_projected_identity_cache() {
         py.contains("return cls._from_native(obj.cast(IID_IWidget))"),
         "from_value should reuse the cached wrapper path:\n{py}"
     );
+    let pyi = common::generate_interface_stub(
+        &iface,
+        &HashSet::from(["IWidget".to_string()]),
+        &HashSet::new(),
+    );
+    assert!(
+        pyi.contains(
+            "def from_value(cls: type[_InterfaceT], obj: DynWinRTValue) -> _InterfaceT: ..."
+        ),
+        "{pyi}"
+    );
+    let instance = pyi
+        .split("\nclass IWidget(")
+        .nth(1)
+        .expect("interface instance protocol");
+    assert!(!instance.contains("def from_value("), "{pyi}");
 }
 
 #[test]

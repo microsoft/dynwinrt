@@ -132,7 +132,11 @@ Interface protocols describe native **instances**, including their canonical
 identity and methods, not wrapper factories. For example, `StorageFile` can be
 passed to an `IStorageFile` parameter without defining `from_value`.
 `IStorageFile.from_value(raw)` and `value.as_interface(IStorageFile)` remain
-available for explicit, IID-checked projection.
+available for explicit, IID-checked projection. Inherited `from_value` factories
+retain the receiving interface subclass: `TaggedBuffer.from_value(raw)` and
+`value.as_interface(TaggedBuffer)` return `TaggedBuffer`, not `IBuffer`.
+Independent static factories such as `IBuffer.from_bytes` keep their declared
+base-interface result.
 
 WinRT `Object` inputs accept a `DynWinRTValue` or a projected native wrapper
 whose `_obj` is a `DynWinRTValue`, including interface views and runtime-class
