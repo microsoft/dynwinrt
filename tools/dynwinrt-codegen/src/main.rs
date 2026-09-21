@@ -63,7 +63,7 @@ fn resolve_dependencies_for_lang(
     if lang == "py" {
         meta::resolve_python_dependencies(winmd, classes, interfaces, enums)
     } else {
-        meta::resolve_dependencies(winmd, classes, interfaces, enums)
+        javascript::resolve_dependencies(winmd, classes, interfaces, enums)
     }
 }
 

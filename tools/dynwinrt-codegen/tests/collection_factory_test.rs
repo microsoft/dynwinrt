@@ -201,7 +201,7 @@ fn nullable_collection_declarations_group_array_elements_in_every_role() {
             "{dts}"
         );
         if piid == VECTOR {
-            assert!(dts.contains(&format!("toArray(): {array};")), "{dts}");
+            assert!(dts.contains("toArray(): (number | null)[];"), "{dts}");
         }
     }
     let (_, dts) = project_factory(MAP, vec![reference.clone(), reference]);

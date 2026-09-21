@@ -280,6 +280,9 @@ Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 `null`, and generated `IReference_*` wrappers are accepted as inputs.
 Collection factories take arrays of these inputs, typed as
 `(T | null | IReference_*)[]`, not a scalar or a `null` container.
+Automatic JavaScript array and `Map` inputs box these elements in the same
+way, including native PassArray arguments. Reads, iteration and returned
+arrays contain `T | null`, never an `IReference_*` wrapper.
 The same projection applies when `IReference<T>` appears inside a WinRT struct;
 packing boxes the field automatically and unpacking returns the native value.
 
@@ -362,6 +365,20 @@ the standard `VectorChanged` collection-change notifications. Generated
 properties, and codegen emits the paired `IVector<T>` binding automatically.
 
 ### Creating WinRT collections
+
+Generated methods accept JavaScript arrays for `IVector<T>`, `IVectorView<T>`
+and `IIterable<T>`, and JavaScript `Map` values for `IMap<K,V>` and
+`IMapView<K,V>`. A map-view input is an independently owned snapshot obtained
+through `getView()`, not a query for another interface on the mutable map.
+All five collection reference inputs also accept `null`, but not `undefined`
+or an omitted argument. Empty arrays/maps create non-null collections.
+
+**Strict TypeScript consumers:** returned collection references can be `null`,
+including getters, async results and collection-valued elements. Check for
+`null` before accessing a returned collection. A map's `get()` distinguishes
+a present `null` from a missing key's `undefined`; `at()` similarly returns
+`undefined` only outside the vector's range. Collection factories still
+return non-null wrappers, and array containers remain non-nullable.
 
 `DynWinRtValue.createVector(items, elementType)` and
 `DynWinRtValue.createMap(keys, values, keyType, valueType)` keep their public

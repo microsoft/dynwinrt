@@ -68,6 +68,9 @@ fn visit_projected_generics(
             args,
         } => {
             names.insert(context.projected_parameterized_name(namespace, name, piid, args));
+            if let Some(source) = CollectionInput::map_view_source(typ) {
+                visit_projected_generics(context, &source, names);
+            }
             for argument in args {
                 visit_projected_generics(context, argument, names);
             }

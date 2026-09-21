@@ -125,7 +125,7 @@ pub(crate) fn ts_param_type_dts(
                 let elem_ts = ts_reference_input_type(context, element, known);
                 format!("{} | {} | null", base, ts_array_type(&elem_ts))
             }
-            CollectionInput::Map(key, value) => {
+            CollectionInput::Map(key, value) | CollectionInput::MapView(key, value) => {
                 let k_ts = ts_reference_input_type(context, key, known);
                 let v_ts = ts_reference_input_type(context, value, known);
                 format!("{} | Map<{}, {}> | null", base, k_ts, v_ts)
@@ -154,6 +154,20 @@ pub(crate) fn ts_return_type_safe(
     }
 
     match typ {
+        Some(typ) if CollectionInput::from_type(typ).is_some() => {
+            let name = ts_param_type(context, typ);
+            let base = if known.contains(&name) {
+                &name
+            } else {
+                "DynWinRtValue"
+            };
+            let result = format!("{base} | null");
+            if is_async {
+                format!("Promise<{result}>")
+            } else {
+                result
+            }
+        }
         Some(TypeMeta::RuntimeClass { name, .. })
         | Some(TypeMeta::Enum { name, .. })
         | Some(TypeMeta::Interface { name, .. })
@@ -179,7 +193,7 @@ pub(crate) fn ts_return_type_safe(
             )
         }
         Some(TypeMeta::Array(inner)) => {
-            let s = ts_array_element_type(inner, known);
+            let s = ts_array_element_type(context, inner, known);
             if is_async {
                 format!("Promise<{}>", s)
             } else {
@@ -259,7 +273,7 @@ fn ts_return_type(
             return "Promise<void> & { progress(cb: (value: unknown) => void): Promise<void> & { progress: any; toPromise(): Promise<void>; cancel(): void; }; toPromise(): Promise<void>; cancel(): void; }".to_string();
         }
         Some(TypeMeta::Array(inner)) => {
-            let s = ts_array_element_type(inner, &HashSet::new());
+            let s = ts_array_element_type(context, inner, &HashSet::new());
             return if is_async {
                 format!("Promise<{}>", s)
             } else {
@@ -286,7 +300,19 @@ fn ts_return_type(
 }
 
 /// TypeScript return type annotation for an array element type.
-pub(crate) fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+pub(crate) fn ts_array_element_type(
+    context: &JavaScriptProjectionContext,
+    inner: &TypeMeta,
+    known_types: &HashSet<String>,
+) -> String {
+    if ireference_inner_type(inner).is_some() || CollectionInput::from_type(inner).is_some() {
+        return ts_array_type(&ts_return_type_safe(
+            context,
+            Some(inner),
+            false,
+            known_types,
+        ));
+    }
     match inner {
         TypeMeta::Bool => "boolean[]".to_string(),
         TypeMeta::String | TypeMeta::Guid => "string[]".to_string(),
@@ -353,6 +379,72 @@ mod tests {
                     &HashSet::new(),
                 ),
                 expected,
+            );
+        }
+    }
+
+    #[test]
+    fn collection_output_types_follow_identity_and_return_conversion() {
+        let context = JavaScriptProjectionContext::default();
+        for (piid, args) in [
+            ("913337e9-11a1-4345-a3a2-4e7f956e222d", vec![TypeMeta::U32]),
+            ("bbe1fa4c-b0e3-4583-baef-1f1b2e483e56", vec![TypeMeta::U32]),
+            ("faa585ea-6214-4217-afda-7f46de5869b3", vec![TypeMeta::U32]),
+            (
+                "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+                vec![TypeMeta::String, TypeMeta::U32],
+            ),
+            (
+                "e480ce40-a338-4ada-adcf-272272e48cb9",
+                vec![TypeMeta::String, TypeMeta::U32],
+            ),
+        ] {
+            let typ = TypeMeta::Parameterized {
+                namespace: "Tests".into(),
+                name: "Renamed".into(),
+                piid: piid.to_uppercase(),
+                args,
+            };
+            let name = ts_param_type(&context, &typ);
+            let known = HashSet::from([name.clone()]);
+            assert_eq!(
+                ts_return_type_safe(&context, Some(&typ), false, &known),
+                format!("{name} | null")
+            );
+            assert_eq!(
+                ts_return_type_safe(&context, Some(&typ), true, &known),
+                format!("Promise<{name} | null>")
+            );
+            assert_eq!(
+                ts_array_element_type(&context, &typ, &known),
+                format!("({name} | null)[]")
+            );
+            assert_eq!(
+                ts_return_type_safe(&context, Some(&typ), false, &HashSet::new()),
+                "DynWinRtValue | null"
+            );
+            assert_eq!(
+                ts_array_element_type(&context, &typ, &HashSet::new()),
+                "(DynWinRtValue | null)[]"
+            );
+        }
+        for (typ, expected) in [
+            (TypeMeta::U32, "number"),
+            (TypeMeta::String, "string"),
+            (
+                TypeMeta::Struct {
+                    namespace: "Tests".into(),
+                    name: "Point".into(),
+                    fields: vec![],
+                },
+                "Point",
+            ),
+            (TypeMeta::Array(Box::new(TypeMeta::U32)), "number[]"),
+            (TypeMeta::Array(Box::new(TypeMeta::U8)), "Buffer"),
+        ] {
+            assert_eq!(
+                ts_return_type_safe(&context, Some(&typ), false, &HashSet::new()),
+                expected
             );
         }
     }

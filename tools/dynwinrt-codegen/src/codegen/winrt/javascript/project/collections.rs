@@ -122,7 +122,8 @@ pub(super) fn project_collection_helpers(
 
     match piid {
         PIID_IVECTOR | PIID_IVECTOR_VIEW if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+            let elem_ts =
+                ts_return_type_safe(context, Some(&iface.generic_args[0]), false, known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::CollectionLength,
                 doc: Some(
@@ -304,7 +305,8 @@ pub(super) fn project_collection_helpers(
             }
         }
         PIID_IITERATOR if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+            let elem_ts =
+                ts_return_type_safe(context, Some(&iface.generic_args[0]), false, known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::IteratorNext {
                     element_type: elem_ts.clone(),
@@ -321,7 +323,8 @@ pub(super) fn project_collection_helpers(
             }));
         }
         PIID_IITERABLE if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+            let elem_ts =
+                ts_return_type_safe(context, Some(&iface.generic_args[0]), false, known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::Iterator {
                     element_type: elem_ts,
@@ -332,7 +335,8 @@ pub(super) fn project_collection_helpers(
         }
         PIID_IMAP | PIID_IMAP_VIEW if iface.generic_args.len() == 2 => {
             let key_ts = ts_reference_input_type(context, &iface.generic_args[0], known_types);
-            let val_ts = ts_param_type_safe(context, &iface.generic_args[1], known_types);
+            let val_ts =
+                ts_return_type_safe(context, Some(&iface.generic_args[1]), false, known_types);
             let val_input_ts =
                 ts_reference_input_type(context, &iface.generic_args[1], known_types);
             let key_ts = if key_ts == "DynWinRtValue" {
@@ -353,23 +357,25 @@ pub(super) fn project_collection_helpers(
             // JS Map-like aliases
             let iface_var = format!("_{}", iface.name);
             // get(key) — alias for lookup
-            if let Some(lookup_idx) = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "Lookup")
-                .map(|m| m.vtable_index)
-            {
+            if let (Some(lookup_idx), Some(has_idx)) = (
+                iface
+                    .methods
+                    .iter()
+                    .find(|m| m.name == "Lookup")
+                    .map(|m| m.vtable_index),
+                iface
+                    .methods
+                    .iter()
+                    .find(|m| m.name == "HasKey")
+                    .map(|m| m.vtable_index),
+            ) {
                 let key_wrap = wrap_arg(context, "key", &iface.generic_args[0]);
-                // A failed collection-key conversion is not a missing map entry.
-                let (key_setup, key_arg) =
-                    if CollectionInput::from_type(&iface.generic_args[0]).is_some() {
-                        (format!("const _key = {key_wrap}; "), "_key".to_string())
-                    } else {
-                        (String::new(), key_wrap)
-                    };
+                // Conversion failures must not be mistaken for missing entries.
+                let invoke =
+                    format!("{iface_var}.method({lookup_idx}).invoke({object_expr}, [_key])");
                 let return_convert = convert_return(
                     context,
-                    &format!("{iface_var}.method({lookup_idx}).invoke({object_expr}, [{key_arg}])"),
+                    &invoke,
                     Some(&iface.generic_args[1]),
                     false,
                     known_types,
@@ -395,7 +401,7 @@ pub(super) fn project_collection_helpers(
                     is_static: false,
                     invoke_expr: String::new(),
                     sync_return_expr: Some(format!(
-                        "(() => {{ {key_setup}try {{ return {}; }} catch {{ return undefined; }} }})()",
+                        "(() => {{ const _key = {key_wrap}; if (!{iface_var}.method({has_idx}).invoke({object_expr}, [_key]).toBool()) return undefined; return {}; }})()",
                         return_convert
                     )),
                     async_convert_v: None,

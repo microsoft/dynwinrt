@@ -25,6 +25,31 @@ use super::shared::implementation_symbols::{HelperOwner, allocate_helpers};
 pub use super::shared::implementation_symbols::{ImplementationHelper, interface_helpers};
 use super::shared::structs::{collect_used_structs_from_class, collect_used_structs_from_iface};
 
+pub fn resolve_dependencies(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    interfaces: &[InterfaceMeta],
+    enums: &[TypeMeta],
+) -> crate::meta::ResolvedDeps {
+    crate::meta::resolve_dependencies_with_projection(
+        winmd_paths,
+        classes,
+        interfaces,
+        enums,
+        |interface| {
+            let typ = TypeMeta::Parameterized {
+                namespace: interface.namespace.clone(),
+                name: interface.name.clone(),
+                piid: interface.generic_piid.clone().unwrap_or_default(),
+                args: interface.generic_args.clone(),
+            };
+            input::CollectionInput::map_view_source(&typ)
+                .into_iter()
+                .collect()
+        },
+    )
+}
+
 pub fn implementation_helper_records(interface: &InterfaceMeta) -> Vec<ImplementationHelper> {
     let context = JavaScriptProjectionContext::default();
     let projection = implementation::project(&context, interface, &Default::default());

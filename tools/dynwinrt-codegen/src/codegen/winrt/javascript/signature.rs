@@ -392,16 +392,35 @@ pub(crate) fn wrap_arg(
                         "({name} === null ? DynWinRtValue.nullValue() : Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : {reference})"
                     )
                 }
-                // The map producer also needs QI from its identity IIterable view.
-                Some(CollectionInput::Map(key, value)) => {
+                Some(CollectionInput::Map(key, value) | CollectionInput::MapView(key, value)) => {
                     let key_type = ts_dynwinrt_type(context, key);
                     let val_type = ts_dynwinrt_type(context, value);
                     let k_wrap = vector_item_wrap_expr(context, "_k", key);
                     let v_wrap = vector_item_wrap_expr(context, "_v", value);
                     let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
                     let reference = nullable_reference_cast_expr(name, &target_iid_expr);
+                    let map = format!(
+                        "DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type})"
+                    );
+                    let collection = if let Some(TypeMeta::Parameterized {
+                        namespace,
+                        name,
+                        piid,
+                        args,
+                    }) = CollectionInput::map_view_source(typ)
+                    {
+                        let source = ref_marker(
+                            &context.projected_parameterized_name(&namespace, &name, &piid, &args),
+                        );
+                        // GetView owns a separate snapshot; QI cannot manufacture that identity.
+                        format!(
+                            "((value) => {{ let map; try {{ map = new {source}(value); return map.getView()._obj; }} finally {{ map?._obj.release(); value.release(); }} }})({map})"
+                        )
+                    } else {
+                        format!("{map}.cast({target_iid_expr})")
+                    };
                     format!(
-                        "({name} === null ? DynWinRtValue.nullValue() : {name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : {reference})"
+                        "({name} === null ? DynWinRtValue.nullValue() : {name} instanceof Map ? {collection} : {reference})"
                     )
                 }
                 None => format!("_unwrap({})", name),
@@ -522,6 +541,9 @@ fn vector_item_wrap_expr(
     var: &str,
     elem: &TypeMeta,
 ) -> String {
+    if ireference_inner_type(elem).is_some() {
+        return wrap_arg(context, var, elem);
+    }
     match elem {
         TypeMeta::Struct { name, .. } if name == "HResult" => {
             format!("DynWinRtValue.hresult({})", var)
@@ -613,6 +635,10 @@ pub(crate) fn convert_array_return(
     known_types: &HashSet<String>,
     deferred: &HashSet<String>,
 ) -> String {
+    if ireference_inner_type(inner).is_some() {
+        let value = convert_return(context, "v", Some(inner), false, known_types, deferred);
+        return format!("{arr_expr}.toValues().map(v => {value})");
+    }
     match inner {
         TypeMeta::I8 => format!("{}.toI8Vec()", arr_expr),
         // U8 returns: hand back a Node Buffer (Uint8Array view), avoiding the

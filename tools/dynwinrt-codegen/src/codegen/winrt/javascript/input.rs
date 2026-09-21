@@ -9,6 +9,7 @@ use crate::types::TypeMeta;
 pub(crate) enum CollectionInput<'a> {
     Vector(&'a TypeMeta),
     Map(&'a TypeMeta, &'a TypeMeta),
+    MapView(&'a TypeMeta, &'a TypeMeta),
 }
 
 impl<'a> CollectionInput<'a> {
@@ -28,17 +29,25 @@ impl<'a> CollectionInput<'a> {
             {
                 Some(Self::Vector(element))
             }
-            [key, value]
-                if [
-                    "3c2925fe-8519-45c1-aa79-197b6718c1c1",
-                    "e480ce40-a338-4ada-adcf-272272e48cb9",
-                ]
-                .iter()
-                .any(|expected| piid.eq_ignore_ascii_case(expected)) =>
-            {
+            [key, value] if piid.eq_ignore_ascii_case("3c2925fe-8519-45c1-aa79-197b6718c1c1") => {
                 Some(Self::Map(key, value))
+            }
+            [key, value] if piid.eq_ignore_ascii_case("e480ce40-a338-4ada-adcf-272272e48cb9") => {
+                Some(Self::MapView(key, value))
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn map_view_source(typ: &'a TypeMeta) -> Option<TypeMeta> {
+        let Self::MapView(key, value) = Self::from_type(typ)? else {
+            return None;
+        };
+        Some(TypeMeta::Parameterized {
+            namespace: crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+            name: "IMap".into(),
+            piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            args: vec![key.clone(), value.clone()],
+        })
     }
 }

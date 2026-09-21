@@ -197,7 +197,7 @@ fn output_ts_type(
         {
             "Array<DynWinRtValue | null>".into()
         }
-        TypeMeta::Array(inner) => ts_array_element_type(inner, known_types),
+        TypeMeta::Array(inner) => ts_array_element_type(context, inner, known_types),
         _ => projected_ts_return_type(context, Some(typ), false, known_types, delegate_names),
     }
 }
@@ -517,7 +517,7 @@ pub(super) fn project_static_method(
         if is_projected_delegate_type(context, Some(elem), delegate_names) {
             "Array<DynWinRtValue | null>".into()
         } else {
-            ts_array_element_type(elem, known_types)
+            ts_array_element_type(context, elem, known_types)
         }
     } else if let Some(output) = single_out {
         output_ts_type(context, output, known_types, delegate_names)
@@ -946,7 +946,7 @@ pub(super) fn project_instance_method(
         if is_projected_delegate_type(context, Some(elem), delegate_type_names) {
             "Array<DynWinRtValue | null>".into()
         } else {
-            ts_array_element_type(elem, known_types)
+            ts_array_element_type(context, elem, known_types)
         }
     } else if let Some(output) = single_out {
         output_ts_type(context, output, known_types, delegate_type_names)

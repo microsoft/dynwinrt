@@ -24,11 +24,10 @@ fn closed(namespace: &str, name: &str, generics: Vec<Type>) -> Type {
     })
 }
 
-fn fixture() -> Vec<u8> {
-    let mut file = writer::File::new("UnionArrayDeclarations");
+fn add_interface(file: &mut writer::File, name: &str, guid_prefix: u32) {
     let interface = file.TypeDef(
         "Tests",
-        "IProbe",
+        name,
         writer::TypeDefOrRef::default(),
         TypeAttributes::Public
             | TypeAttributes::Interface
@@ -61,7 +60,7 @@ fn fixture() -> Vec<u8> {
         writer::HasAttribute::TypeDef(interface),
         writer::AttributeType::MemberRef(constructor),
         &[
-            Value::U32(0x86270e31),
+            Value::U32(guid_prefix),
             Value::U16(0x9c04),
             Value::U16(0x4fc2),
             Value::U8(0x9c),
@@ -77,6 +76,11 @@ fn fixture() -> Vec<u8> {
         .map(|value| (String::new(), value))
         .collect::<Vec<_>>(),
     );
+}
+
+fn fixture() -> Vec<u8> {
+    let mut file = writer::File::new("UnionArrayDeclarations");
+    add_interface(&mut file, "IProbe", 0x86270e31);
     let reference = closed("Windows.Foundation", "IReference`1", vec![Type::U32]);
     let vector = closed(COLLECTIONS, "IVectorView`1", vec![Type::U32]);
     for (name, typ) in [
@@ -195,6 +199,117 @@ fn fixture() -> Vec<u8> {
     file.into_stream()
 }
 
+fn output_fixture() -> Vec<u8> {
+    let mut file = writer::File::new("CollectionOutputs");
+    add_interface(&mut file, "ICollectionOutputs", 0x0f40a0d1);
+    let types = [
+        ("Vector", closed(COLLECTIONS, "IVector`1", vec![Type::U32])),
+        (
+            "View",
+            closed(COLLECTIONS, "IVectorView`1", vec![Type::U32]),
+        ),
+        (
+            "Iterable",
+            closed(COLLECTIONS, "IIterable`1", vec![Type::U32]),
+        ),
+        (
+            "Map",
+            closed(COLLECTIONS, "IMap`2", vec![Type::String, Type::U32]),
+        ),
+        (
+            "MapView",
+            closed(COLLECTIONS, "IMapView`2", vec![Type::String, Type::U32]),
+        ),
+    ];
+    for (suffix, typ) in types {
+        for (name, result) in [
+            (format!("Read{suffix}"), typ.clone()),
+            (format!("get_{suffix}"), typ.clone()),
+            (
+                format!("Read{suffix}Array"),
+                Type::Array(Box::new(typ.clone())),
+            ),
+            (
+                format!("Read{suffix}Async"),
+                closed("Windows.Foundation", "IAsyncOperation`1", vec![typ.clone()]),
+            ),
+            (
+                format!("Read{suffix}Progress"),
+                closed(
+                    "Windows.Foundation",
+                    "IAsyncOperationWithProgress`2",
+                    vec![typ.clone(), Type::U32],
+                ),
+            ),
+            (
+                format!("ReadNested{suffix}"),
+                closed(COLLECTIONS, "IVector`1", vec![typ.clone()]),
+            ),
+            (
+                format!("Read{suffix}Map"),
+                closed(COLLECTIONS, "IMap`2", vec![typ.clone(), typ.clone()]),
+            ),
+            (
+                format!("Read{suffix}Pairs"),
+                closed(
+                    COLLECTIONS,
+                    "IIterable`1",
+                    vec![closed(
+                        COLLECTIONS,
+                        "IKeyValuePair`2",
+                        vec![typ.clone(), typ.clone()],
+                    )],
+                ),
+            ),
+        ] {
+            file.MethodDef(
+                &name,
+                &Signature {
+                    flags: MethodCallAttributes::HASTHIS,
+                    return_type: result,
+                    types: vec![],
+                },
+                MethodAttributes::Public
+                    | MethodAttributes::Abstract
+                    | MethodAttributes::Virtual
+                    | MethodAttributes::NewSlot
+                    | if name.starts_with("get_") {
+                        MethodAttributes::SpecialName
+                    } else {
+                        MethodAttributes::default()
+                    },
+                MethodImplAttributes::default(),
+            );
+        }
+    }
+    add_interface(&mut file, "IMapViewProbe", 0x0f40a0d2);
+    let view = closed(COLLECTIONS, "IMapView`2", vec![Type::String, Type::U32]);
+    for (name, typ) in [
+        ("Take", view.clone()),
+        (
+            "TakeNested",
+            closed(COLLECTIONS, "IMapView`2", vec![Type::String, view.clone()]),
+        ),
+        ("TakeVector", closed(COLLECTIONS, "IVector`1", vec![view])),
+    ] {
+        file.MethodDef(
+            name,
+            &Signature {
+                flags: MethodCallAttributes::HASTHIS,
+                return_type: Type::Void,
+                types: vec![typ],
+            },
+            MethodAttributes::Public
+                | MethodAttributes::Abstract
+                | MethodAttributes::Virtual
+                | MethodAttributes::NewSlot,
+            MethodImplAttributes::default(),
+        );
+        file.Param("value", 1, ParamAttributes::In);
+    }
+    file.into_stream()
+}
+
 #[test]
 fn native_collection_input_fixture_matches_metadata_builder() {
     assert_eq!(
@@ -255,30 +370,46 @@ fn sdk_backed_union_arrays_pass_strict_tsc_and_reject_scalar_containers() {
         include_bytes!("fixtures/nullable_collection_inputs.winmd"),
     )
     .unwrap();
+    let outputs = directory.join("Outputs.winmd");
+    fs::write(&outputs, output_fixture()).unwrap();
     let generated = directory.join("generated");
     let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
             "generate",
             "--class-name",
-            "Tests.IProbe,Windows.UI.Notifications.NotificationData",
+            "Tests.IProbe,Tests.ICollectionOutputs,Tests.IMapViewProbe,Windows.UI.Notifications.NotificationData",
             "--lang",
             "js",
             "--winmd",
         ])
-        .arg(format!("{};{}", input.display(), windows_winmd.display()))
+        .arg(format!("{};{};{}", input.display(), outputs.display(), windows_winmd.display()))
         .arg("--output")
         .arg(&generated)
         .output()
         .expect("run freshly built codegen");
     assert!(output.status.success(), "codegen failed: {output:?}");
 
-    // No native addon is needed: declarations use only these opaque runtime types.
+    let native_runtime = std::env::var_os("DYNWINRT_JS_PACKAGE").map(PathBuf::from);
     let runtime = directory.join("node_modules/@microsoft/dynwinrt");
-    fs::create_dir_all(&runtime).unwrap();
-    fs::write(runtime.join("package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
-    fs::write(
-        runtime.join("index.d.ts"),
-        r#"
+    if let Some(source) = &native_runtime {
+        fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+        let link = Command::new("node")
+            .args([
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')",
+            ])
+            .arg(source)
+            .arg(&runtime)
+            .output()
+            .expect("link the production runtime without copying or modifying it");
+        assert!(link.status.success(), "Runtime link failed: {link:?}");
+    } else {
+        // Declarations can also be checked without a built native addon.
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
+        fs::write(
+            runtime.join("index.d.ts"),
+            r#"
 export declare class WinGuid { private readonly brand: unknown; }
 export declare class DynWinRtType { private readonly brand: unknown; }
 export declare class DynWinRtValue { private readonly brand: unknown; }
@@ -293,8 +424,9 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
     readonly interfaces: T;
 }
 "#,
-    )
-    .unwrap();
+        )
+        .unwrap();
+    }
     let reference = TypeMeta::Parameterized {
         namespace: "Windows.Foundation".into(),
         name: "IReference`1".into(),
@@ -343,7 +475,7 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
     .collect::<Vec<_>>()
     .join(", ");
     let prefix = format!(
-        "import {{ IProbe, IReference_UInt32, NotificationData, {imports} }} from './generated/index.js';\n\
+        "import {{ IProbe, ICollectionOutputs, IReference_UInt32, NotificationData, IVector_UInt32, IVectorView_UInt32, IIterable_UInt32, IMap_String_UInt32, IMapView_String_UInt32, {imports} }} from './generated/index.js';\n\
          declare const probe: IProbe;\n\
          declare const boxed: IReference_UInt32;\n\
          declare const vector: Vector;\n\
@@ -351,7 +483,7 @@ export interface DynWinRtImplementationOptions<T extends readonly DynWinRtImplem
          declare const nestedKeys: NestedKeys;\n\
          declare const nestedValues: NestedValues;\n"
     );
-    let valid = format!(
+    let mut valid = format!(
         r#"{prefix}
 const native = [17, null];
 const boxes = [boxed];
@@ -409,7 +541,32 @@ nestedValues.insert('value', null);
 nestedValues.set('value', null);
 vector.replaceAll(boxes);
 vector.getMany(0, boxes);
-const materialized: (number | null | IReference_UInt32)[] = vector.toArray();
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+function exact<T extends true>(): void {{}}
+exact<Equal<ReturnType<Vector['getAt']>, number | null>>();
+exact<Equal<ReturnType<Vector['at']>, number | null | undefined>>();
+exact<Equal<ReturnType<Vector['toArray']>, (number | null)[]>>();
+exact<Equal<ReturnType<Vector['getMany']>, (number | null)[]>>();
+exact<Equal<ReturnType<Vector[typeof Symbol.iterator]>, IterableIterator<number | null>>>();
+exact<Equal<ReturnType<Values['lookup']>, number | null>>();
+exact<Equal<ReturnType<Values['get']>, number | null | undefined>>();
+exact<Equal<ReturnType<typeof Vector.create>, Vector>>();
+exact<Equal<ReturnType<typeof Values.create>, Values>>();
+exact<Equal<ReturnType<Nested['getAt']>, IVectorView_UInt32 | null>>();
+exact<Equal<ReturnType<Nested['at']>, IVectorView_UInt32 | null | undefined>>();
+exact<Equal<ReturnType<Nested['toArray']>, (IVectorView_UInt32 | null)[]>>();
+exact<Equal<ReturnType<NestedValues['get']>, IVectorView_UInt32 | null | undefined>>();
+const fromNullMap = NestedValues.create(['present'], [null]).get('present');
+exact<Equal<typeof fromNullMap, IVectorView_UInt32 | null | undefined>>();
+if (fromNullMap !== undefined && fromNullMap !== null) {{
+    const size: number = fromNullMap.size;
+}}
+const fromNullVector = Nested.create([null]).getAt(0);
+exact<Equal<typeof fromNullVector, IVectorView_UInt32 | null>>();
+exact<Equal<IProbe['collection'], IVector_UInt32 | null>>();
+exact<Equal<ReturnType<Numbers['toArray']>, number[]>>();
+exact<Equal<ReturnType<Strings['toArray']>, string[]>>();
+exact<Equal<ReturnType<Keys['get']>, number | undefined>>();
 Strings.create(['value']);
 Numbers.create([17]);
 probe.takeStrings(['value']);
@@ -418,6 +575,35 @@ probe.takeBytes(new Uint8Array([17]));
 probe.takeBytes([17]);
 "#
     );
+    for (suffix, output_type) in [
+        ("Vector", "IVector_UInt32"),
+        ("View", "IVectorView_UInt32"),
+        ("Iterable", "IIterable_UInt32"),
+        ("Map", "IMap_String_UInt32"),
+        ("MapView", "IMapView_String_UInt32"),
+    ] {
+        let property = format!("{}{}", suffix[..1].to_lowercase(), &suffix[1..]);
+        valid.push_str(&format!(r#"
+exact<Equal<ReturnType<ICollectionOutputs['read{suffix}']>, {output_type} | null>>();
+exact<Equal<ICollectionOutputs['{property}'], {output_type} | null>>();
+exact<Equal<ReturnType<ICollectionOutputs['read{suffix}Array']>, ({output_type} | null)[]>>();
+exact<Equal<Awaited<ReturnType<ICollectionOutputs['read{suffix}Async']>>, {output_type} | null>>();
+exact<Equal<Awaited<ReturnType<ICollectionOutputs['read{suffix}Progress']>>, {output_type} | null>>();
+type Nested{suffix} = NonNullable<ReturnType<ICollectionOutputs['readNested{suffix}']>>;
+exact<Equal<ReturnType<Nested{suffix}['getAt']>, {output_type} | null>>();
+exact<Equal<ReturnType<Nested{suffix}['toArray']>, ({output_type} | null)[]>>();
+exact<Equal<ReturnType<Nested{suffix}[typeof Symbol.iterator]>, IterableIterator<{output_type} | null>>>();
+type MapOf{suffix} = NonNullable<ReturnType<ICollectionOutputs['read{suffix}Map']>>;
+exact<Equal<ReturnType<MapOf{suffix}['lookup']>, {output_type} | null>>();
+exact<Equal<ReturnType<MapOf{suffix}['get']>, {output_type} | null | undefined>>();
+type Pairs{suffix} = NonNullable<ReturnType<ICollectionOutputs['read{suffix}Pairs']>>;
+type Iterator{suffix} = ReturnType<Pairs{suffix}['first']>;
+type Pair{suffix} = Iterator{suffix}['current'];
+exact<Equal<Pair{suffix}['key'], {output_type} | null>>();
+exact<Equal<Pair{suffix}['value'], {output_type} | null>>();
+exact<Equal<ReturnType<Iterator{suffix}['next']>, IteratorResult<Pair{suffix}>>>();
+"#));
+    }
     fs::write(directory.join("valid.ts"), valid).unwrap();
     let invalid = [
         ("Vector.create(17);", "2345"),
@@ -475,6 +661,15 @@ probe.takeBytes([17]);
         ("Vector.create({ value: 17 });", "2561"),
         ("Strings.create('value');", "2345"),
         ("Numbers.create(17);", "2345"),
+        ("nested.getAt(0).size;", "2531"),
+        ("nestedValues.lookup('present').size;", "2531"),
+        (
+            "const read = nestedValues.get('present'); if (read !== undefined) read.size;",
+            "18047",
+        ),
+        ("probe.collection.size;", "18047"),
+        ("nested.toArray()[0].size;", "2531"),
+        ("for (const item of nested) item.size;", "18047"),
     ];
     fs::write(
         directory.join("invalid.ts"),
@@ -489,8 +684,14 @@ probe.takeBytes([17]);
     )
     .unwrap();
     let compile = |file| {
-        Command::new("node")
-            .arg(&tsc)
+        let mut command = Command::new("node");
+        command.arg(&tsc);
+        if let Some(runtime) = &native_runtime {
+            command
+                .arg("--typeRoots")
+                .arg(runtime.join("node_modules/@types"));
+        }
+        command
             .args([
                 "--noEmit",
                 "--strict",
@@ -538,5 +739,42 @@ probe.takeBytes([17]);
          Expected: {expected:?}\nActual: {actual:?}\nFixture: {}",
         directory.display()
     );
+    if let Some(runtime) = native_runtime {
+        let script = manifest.join("../../bindings/js/__test__/fixtures/collection-contracts.mjs");
+        let native = Command::new("node")
+            .arg(script)
+            .arg(&generated)
+            .arg(&runtime)
+            .output()
+            .expect("run production generated collection contracts");
+        assert!(
+            native.status.success(),
+            "Native collection contracts: {native:?}"
+        );
+        eprintln!("{}", String::from_utf8_lossy(&native.stdout));
+        let standalone = directory.join("map-view-only");
+        let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+            .args(["generate", "--class-name", "Tests.IMapViewProbe", "--winmd"])
+            .arg(format!("{};{}", outputs.display(), windows_winmd.display()))
+            .arg("--output")
+            .arg(&standalone)
+            .output()
+            .expect("generate map-view-only metadata closure");
+        assert!(
+            output.status.success(),
+            "Standalone MapView generation: {output:?}"
+        );
+        let native = Command::new("node")
+            .arg(manifest.join("../../bindings/js/__test__/fixtures/collection-contracts.mjs"))
+            .arg(standalone)
+            .arg(runtime)
+            .output()
+            .expect("execute map-view-only metadata closure");
+        assert!(
+            native.status.success(),
+            "Standalone MapView contracts: {native:?}"
+        );
+        eprintln!("{}", String::from_utf8_lossy(&native.stdout));
+    }
     fs::remove_dir_all(directory).unwrap();
 }

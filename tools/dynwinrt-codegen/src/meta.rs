@@ -528,6 +528,26 @@ pub fn resolve_dependencies(
         existing_enums,
         false,
         true,
+        |_| Vec::new(),
+    )
+}
+
+/// Resolve metadata plus language-projection interface dependencies at each fixpoint step.
+pub fn resolve_dependencies_with_projection(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    existing_interfaces: &[InterfaceMeta],
+    existing_enums: &[TypeMeta],
+    projection_dependencies: fn(&InterfaceMeta) -> Vec<TypeMeta>,
+) -> ResolvedDeps {
+    resolve_dependencies_impl(
+        winmd_paths,
+        classes,
+        existing_interfaces,
+        existing_enums,
+        false,
+        true,
+        projection_dependencies,
     )
 }
 
@@ -545,6 +565,7 @@ pub fn resolve_python_dependencies(
         existing_enums,
         true,
         true,
+        |_| Vec::new(),
     )
 }
 
@@ -555,6 +576,7 @@ fn resolve_dependencies_impl(
     existing_enums: &[TypeMeta],
     include_inheritance: bool,
     preserve_semantic_identity: bool,
+    projection_dependencies: fn(&InterfaceMeta) -> Vec<TypeMeta>,
 ) -> ResolvedDeps {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
@@ -610,6 +632,7 @@ fn resolve_dependencies_impl(
         include_inheritance,
         preserve_semantic_identity,
     );
+    param_worklist.extend(existing_interfaces.iter().flat_map(projection_dependencies));
 
     // Fixpoint: keep resolving until no new types are discovered
     loop {
@@ -740,6 +763,7 @@ fn resolve_dependencies_impl(
             include_inheritance,
             preserve_semantic_identity,
         );
+        param_worklist.extend(new_interfaces.iter().flat_map(projection_dependencies));
 
         dep_classes.extend(new_classes);
         dep_interfaces.extend(new_interfaces);

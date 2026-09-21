@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runCodegen } from '../scripts/run-codegen.mjs'
 import { checkNullableCollectionInputs } from './fixtures/nullable-collection-inputs.mjs'
+import { checkCollectionContracts } from './fixtures/collection-contracts.mjs'
 
 const require = createRequire(import.meta.url)
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -101,6 +102,10 @@ test('generated string vector factory accepts nonempty Unicode strings', (t) => 
 
 test('generated nullable collection inputs reach the native slots without optional arguments', (t) => {
   t.diagnostic(JSON.stringify(checkNullableCollectionInputs(generated, require(runtimeRoot))))
+})
+
+test('generated collection input and output contracts agree with native roundtrips', (t) => {
+  t.diagnostic(JSON.stringify(checkCollectionContracts(generated, require(runtimeRoot))))
 })
 
 test('generated string map factory converts both keys and values', (t) => {

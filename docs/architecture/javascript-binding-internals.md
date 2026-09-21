@@ -109,6 +109,11 @@ and values) using the same metadata-directed argument projection as ordinary
 methods. Native `createVector`/`createMap` receive managed `DynWinRtValue`
 carriers, not unconverted JavaScript primitives. Conversion does not expand
 the native producer's supported ABI or ownership boundary.
+Automatic array/Map inputs and native PassArray elements reuse the ordinary
+`IReference<T>` argument conversion: native values are boxed, native/managed
+nulls remain null, and existing reference wrappers are unwrapped once. Reading
+an `IReference<T>` element (including a returned native array) produces the
+native value or `null`, not a reference wrapper.
 Runtime-class and collection-reference conversions preserve managed null
 carriers without querying an interface; non-null carriers still query the
 declared interface before being passed to native code.
@@ -133,6 +138,27 @@ native PassArray/FillArray containers stay nonnullable. Scalar and struct
 elements are not made nullable. This projection does not add support for
 previously rejected struct collection ABI shapes.
 
+JavaScript `Map` inputs for `IMapView<K,V>` create a temporary typed `IMap<K,V>`
+and call its metadata-generated `getView()`. The returned view owns its
+snapshot independently of the temporary map, which is released before the
+view is passed onward. QueryInterface is only used to select existing
+interfaces; it never creates a snapshot or a new COM identity. The JavaScript
+projection resolves the source `IMap` through the ordinary generic metadata
+dependency traversal, including when only an `IMapView` appears in the input
+metadata. Map keys and values are each enumerated once, as for mutable map
+inputs.
+
+**Strict TypeScript migration:** outputs of `IVector<T>`, `IVectorView<T>`,
+`IIterable<T>`, `IMap<K,V>`, and `IMapView<K,V>` are nullable references.
+Methods, property getters, async results, native array elements, and collection
+read helpers now declare the `null` that their conversion can return. Add a
+null guard before dereferencing a returned collection. `get()` and `at()`
+also retain `undefined` for a missing key or out-of-range index; a present
+null element is not missing. Map `get()` converts the key once and checks
+`HasKey` before `Lookup`, so conversion/native failures propagate instead of
+being mistaken for missing entries. Array containers, scalar/struct values,
+and non-null collection factories are not made nullable.
+
 Typed map construction uses the same key equality as `Insert`. For duplicate
 keys, the last value wins while the first key and its insertion position are
 retained. All keys and values are validated before publishing the map, including
@@ -153,6 +179,12 @@ fixture used by `test:collection-factories`. That production-artifact E2E path
 always calls the complete generated WinRT implementation through native vtable
 dispatch to check null inputs, preserved argument roles, rejection before
 dispatch, and distinct empty collections. It does not require test hooks.
+Setting `DYNWINRT_JS_PACKAGE` for the declaration test additionally checks the
+real runtime declarations and executes the generated roundtrips, including a
+standalone MapView-only dependency graph. Its supplemental WinMD builder covers
+nullable nested collections, key/value pair properties, arrays and async
+signatures. The plain `fixtures/collection-contracts.mjs` runner also works on
+Node 18 without `node:test` lifecycle hooks.
 
 `value.rs` defines `DynWinRTValue` with named WinRT data, independent call storage,
 and the private `com_value.rs` sidecar. Callers use constructors and accessors,
