@@ -6,7 +6,7 @@ use crate::{MetadataTable, TypeHandle, WinRTValue};
 use windows::Devices::Geolocation::BasicGeoposition;
 use windows::Foundation::{Point, Rect, Size};
 use windows::Graphics::{PointInt32, RectInt32};
-use windows::UI::Input::ManipulationDelta;
+use windows::UI::Input::{ManipulationDelta, ManipulationVelocities};
 use windows_collections::{IVector, IVectorView};
 
 macro_rules! exercise_vector {
@@ -19,7 +19,36 @@ macro_rules! exercise_vector {
                 .unwrap();
         let vector: IVector<$native> = object.cast().unwrap();
         let live: IVectorView<$native> = object.cast().unwrap();
+        let iterable: windows_collections::IIterable<$native> = object.cast().unwrap();
+        let observable: windows::Foundation::Collections::IObservableVector<$native> =
+            object.cast().unwrap();
+        for identity in [
+            vector.cast::<IUnknown>().unwrap(),
+            live.cast::<IUnknown>().unwrap(),
+            iterable.cast::<IUnknown>().unwrap(),
+            observable.cast::<IUnknown>().unwrap(),
+        ] {
+            assert_eq!(identity.as_raw(), object.as_raw());
+        }
+        drop(iterable);
+        drop(observable);
         let snapshot = vector.GetView().unwrap();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let recording = observations.clone();
+        let observable: windows::Foundation::Collections::IObservableVector<$native> =
+            object.cast().unwrap();
+        let handler = windows::Foundation::Collections::VectorChangedEventHandler::<$native>::new(
+            move |_sender, args| {
+                let args = args.as_ref().unwrap();
+                recording
+                    .lock()
+                    .unwrap()
+                    .push((args.CollectionChange()?.0, args.Index()?));
+                Ok(())
+            },
+        );
+        observable.VectorChanged(&handler).unwrap();
+        drop(observable);
         assert_eq!(vector.GetAt(0).unwrap(), values[0]);
         let mut index = u32::MAX;
         assert!(vector.IndexOf(values[0], &mut index).unwrap());
@@ -40,71 +69,85 @@ macro_rules! exercise_vector {
         assert_eq!(&output[..3], &values);
         assert_eq!(output[3], values[2]);
         let iterator = vector.First().unwrap();
+        assert!(iterator.HasCurrent().unwrap());
+        assert_eq!(iterator.Current().unwrap(), values[0]);
+        assert!(iterator.MoveNext().unwrap());
+        assert_eq!(iterator.Current().unwrap(), values[1]);
         vector.Clear().unwrap();
-        assert_eq!(iterator.GetMany(&mut output[..3]).unwrap(), 3);
-        assert_eq!(&output[..3], &values);
+        drop(vector);
+        drop(live);
+        drop(object);
+        assert_eq!(iterator.GetMany(&mut output[..3]).unwrap(), 2);
+        assert_eq!(&output[..2], &values[1..]);
+        assert_eq!(output[3], values[2]);
+        assert!(!iterator.HasCurrent().unwrap());
+        assert!(!iterator.MoveNext().unwrap());
+        assert_eq!(iterator.Current().unwrap_err().code(), E_BOUNDS);
+        assert_eq!(snapshot.GetAt(0).unwrap(), values[0]);
+        assert_eq!(snapshot.First().unwrap().Current().unwrap(), values[0]);
+        assert_eq!(
+            *observations.lock().unwrap(),
+            vec![
+                (COLLECTION_CHANGE_ITEM_INSERTED, 1),
+                (COLLECTION_CHANGE_ITEM_CHANGED, 0),
+                (COLLECTION_CHANGE_ITEM_INSERTED, 1),
+                (COLLECTION_CHANGE_RESET, 0),
+                (COLLECTION_CHANGE_RESET, 0),
+            ]
+        );
     }};
 }
 
 macro_rules! exercise_empty {
-    ($native:ty, $element:expr, $value:expr, $supported:expr) => {{
+    ($native:ty, $element:expr, $value:expr) => {{
         let element = $element;
         assert_eq!(element.size_of(), size_of::<$native>());
-        let result =
-            create_vector_from_values(&[], &element, element.table().vector_iids(&element));
-        assert!(
-            create_vector_from_values(
-                &[WinRTValue::Struct(element.default_value())],
-                &element,
-                element.table().vector_iids(&element),
-            )
-            .is_err()
-        );
-        if $supported {
-            let object = result.unwrap();
-            let vector: IVector<$native> = object.cast().unwrap();
-            let live: IVectorView<$native> = object.cast().unwrap();
-            let snapshot = vector.GetView().unwrap();
-            let value: $native = $value;
-            let mut index = 123;
-            assert_eq!(
-                vector.IndexOf(value, &mut index).unwrap_err().code(),
-                E_NOTIMPL
-            );
-            assert_eq!(index, 123);
-            for view in [live, snapshot] {
-                assert_eq!(
-                    view.IndexOf(value, &mut index).unwrap_err().code(),
-                    E_NOTIMPL
-                );
-                assert_eq!(index, 123);
-                let mut out = [value; 2];
-                assert_eq!(view.GetMany(0, &mut out).unwrap(), 0);
-                assert_eq!(out, [value; 2]);
-            }
-            assert_eq!(vector.Append(value).unwrap_err().code(), E_NOTIMPL);
-            assert_eq!(vector.SetAt(0, value).unwrap_err().code(), E_BOUNDS);
-            assert_eq!(vector.InsertAt(0, value).unwrap_err().code(), E_NOTIMPL);
-            assert_eq!(vector.InsertAt(1, value).unwrap_err().code(), E_BOUNDS);
-            assert_eq!(vector.ReplaceAll(&[value]).unwrap_err().code(), E_NOTIMPL);
-            vector.ReplaceAll(&[]).unwrap();
-            assert_eq!(vector.Size().unwrap(), 0);
+        let object =
+            create_vector_from_values(&[], &element, element.table().vector_iids(&element))
+                .unwrap();
+        let vector: IVector<$native> = object.cast().unwrap();
+        let live: IVectorView<$native> = object.cast().unwrap();
+        let snapshot = vector.GetView().unwrap();
+        let value: $native = $value;
+        let mut index = 123;
+        assert!(!vector.IndexOf(value, &mut index).unwrap());
+        assert_eq!(index, 0);
+        for view in [&live, &snapshot] {
+            assert!(!view.IndexOf(value, &mut index).unwrap());
+            assert_eq!(index, 0);
             let mut out = [value; 2];
-            assert_eq!(vector.GetMany(0, &mut out).unwrap(), 0);
+            assert_eq!(view.GetMany(0, &mut out).unwrap(), 0);
             assert_eq!(out, [value; 2]);
-            assert_eq!(vector.GetAt(0).unwrap_err().code(), E_BOUNDS);
-            let iterator = vector.First().unwrap();
-            assert!(!iterator.HasCurrent().unwrap());
-            assert_eq!(iterator.GetMany(&mut out).unwrap(), 0);
-            assert_eq!(out, [value; 2]);
-            assert_eq!(iterator.Current().unwrap_err().code(), E_BOUNDS);
-            vector.Clear().unwrap();
-        } else {
-            assert!(matches!(
-                result,
-                Err(crate::Error::UnsupportedCollectionElement(_))
-            ));
         }
+        assert_eq!(vector.SetAt(0, value).unwrap_err().code(), E_BOUNDS);
+        assert_eq!(vector.InsertAt(1, value).unwrap_err().code(), E_BOUNDS);
+        assert_eq!(vector.RemoveAt(0).unwrap_err().code(), E_BOUNDS);
+        assert_eq!(vector.RemoveAtEnd().unwrap_err().code(), E_BOUNDS);
+        assert_eq!(vector.GetAt(0).unwrap_err().code(), E_BOUNDS);
+        let iterator = vector.First().unwrap();
+        assert!(!iterator.HasCurrent().unwrap());
+        let mut out = [value; 2];
+        assert_eq!(iterator.GetMany(&mut out).unwrap(), 0);
+        assert_eq!(out, [value; 2]);
+        assert_eq!(iterator.Current().unwrap_err().code(), E_BOUNDS);
+        assert!(!iterator.MoveNext().unwrap());
+        vector.Append(value).unwrap();
+        vector.InsertAt(0, value).unwrap();
+        vector.SetAt(1, value).unwrap();
+        assert_eq!(vector.Size().unwrap(), 2);
+        assert_eq!(live.GetAt(1).unwrap(), value);
+        assert_eq!(snapshot.Size().unwrap(), 0);
+        assert!(vector.IndexOf(value, &mut index).unwrap());
+        assert_eq!(index, 0);
+        vector.RemoveAt(0).unwrap();
+        vector.RemoveAtEnd().unwrap();
+        vector.ReplaceAll(&[value]).unwrap();
+        assert_eq!(vector.GetAt(0).unwrap(), value);
+        vector.ReplaceAll(&[]).unwrap();
+        assert_eq!(vector.Size().unwrap(), 0);
+        assert_eq!(vector.GetMany(0, &mut out).unwrap(), 0);
+        assert_eq!(out, [value; 2]);
+        vector.Clear().unwrap();
     }};
 }
 
@@ -218,65 +261,51 @@ fn typed_point_size_and_integer_pair_boundaries() {
         data.set_field(0, 1.0f32);
         data.set_field(1, 2.0f32);
         let item = WinRTValue::Struct(data);
-        if cfg!(target_arch = "x86_64") {
-            if element == &point {
-                exercise_vector!(
-                    Point,
-                    element.clone(),
-                    item,
-                    [
-                        Point { X: 1.0, Y: 2.0 },
-                        Point { X: 3.0, Y: 4.0 },
-                        Point { X: 5.0, Y: 6.0 }
-                    ]
-                );
-            } else {
-                exercise_vector!(
-                    Size,
-                    element.clone(),
-                    item,
-                    [
-                        Size {
-                            Width: 1.0,
-                            Height: 2.0
-                        },
-                        Size {
-                            Width: 3.0,
-                            Height: 4.0
-                        },
-                        Size {
-                            Width: 5.0,
-                            Height: 6.0
-                        }
-                    ]
-                );
-            }
+        if element == &point {
+            exercise_vector!(
+                Point,
+                element.clone(),
+                item,
+                [
+                    Point { X: 1.0, Y: 2.0 },
+                    Point { X: 3.0, Y: 4.0 },
+                    Point { X: 5.0, Y: 6.0 }
+                ]
+            );
         } else {
-            for values in [vec![], vec![item]] {
-                assert!(
-                    create_vector_from_values(&values, element, table.vector_iids(element))
-                        .is_err()
-                );
-            }
+            exercise_vector!(
+                Size,
+                element.clone(),
+                item,
+                [
+                    Size {
+                        Width: 1.0,
+                        Height: 2.0
+                    },
+                    Size {
+                        Width: 3.0,
+                        Height: 4.0
+                    },
+                    Size {
+                        Width: 5.0,
+                        Height: 6.0
+                    }
+                ]
+            );
         }
     }
-    if cfg!(target_pointer_width = "64") {
-        exercise_vector!(
-            PointInt32,
-            point_int.clone(),
-            pair(&point_int, 1, 2),
-            [
-                PointInt32 { X: 1, Y: 2 },
-                PointInt32 { X: 3, Y: 4 },
-                PointInt32 { X: 5, Y: 6 }
-            ]
-        );
-    } else {
-        assert!(create_vector_from_values(&[], &point_int, table.vector_iids(&point_int)).is_err());
-    }
+    exercise_vector!(
+        PointInt32,
+        point_int.clone(),
+        pair(&point_int, 1, 2),
+        [
+            PointInt32 { X: 1, Y: 2 },
+            PointInt32 { X: 3, Y: 4 },
+            PointInt32 { X: 5, Y: 6 }
+        ]
+    );
 }
 
-#[cfg(target_arch = "x86_64")]
 fn point_value(typ: &TypeHandle, point: Point) -> WinRTValue {
     let mut value = typ.default_value();
     value.set_field(0, point.X);
@@ -284,7 +313,6 @@ fn point_value(typ: &TypeHandle, point: Point) -> WinRTValue {
     WinRTValue::Struct(value)
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn struct_equality_point_signed_zero_matches_all_views() {
     let table = MetadataTable::new();
@@ -322,7 +350,6 @@ fn struct_equality_point_signed_zero_matches_all_views() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn struct_equality_point_nan_never_matches_even_identical_bits() {
     let table = MetadataTable::new();
@@ -370,7 +397,6 @@ fn struct_equality_point_nan_never_matches_even_identical_bits() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn struct_equality_survives_mutation_snapshots_and_metadata_drop() {
     let (object, weak) = {
@@ -414,6 +440,261 @@ fn struct_equality_survives_mutation_snapshots_and_metadata_drop() {
     assert!(snapshot.IndexOf(negative, &mut index).unwrap());
     assert_eq!(index, 0);
     assert_eq!(snapshot.GetAt(0).unwrap().X.to_bits(), 0);
+}
+
+fn native_value<T: Copy>(typ: &TypeHandle, value: &T) -> WinRTValue {
+    assert_eq!(typ.size_of(), size_of::<T>());
+    assert_eq!(typ.align_of(), align_of::<T>());
+    WinRTValue::Struct(unsafe {
+        crate::ValueTypeData::from_borrowed_abi(typ, std::ptr::from_ref(value).cast())
+    })
+}
+
+#[test]
+fn typed_nonempty_pod_vectors_use_one_generic_plan() {
+    let table = MetadataTable::new();
+    let rect = table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]);
+    let values = [
+        RectInt32 {
+            X: -1,
+            Y: 2,
+            Width: 300,
+            Height: 40,
+        },
+        RectInt32 {
+            X: 50,
+            Y: -6,
+            Width: 70,
+            Height: 800,
+        },
+        RectInt32 {
+            X: 9,
+            Y: 10,
+            Width: 11,
+            Height: 12,
+        },
+    ];
+    exercise_vector!(
+        RectInt32,
+        rect.clone(),
+        native_value(&rect, &values[0]),
+        values
+    );
+    let position = table.struct_type(
+        "Windows.Devices.Geolocation.BasicGeoposition",
+        &vec![table.f64_type(); 3],
+    );
+    let values = [
+        BasicGeoposition {
+            Latitude: 1.25,
+            Longitude: -2.5,
+            Altitude: 300.0,
+        },
+        BasicGeoposition {
+            Latitude: -4.5,
+            Longitude: 5.25,
+            Altitude: -60.0,
+        },
+        BasicGeoposition {
+            Latitude: 7.75,
+            Longitude: 8.25,
+            Altitude: 900.0,
+        },
+    ];
+    exercise_vector!(
+        BasicGeoposition,
+        position.clone(),
+        native_value(&position, &values[0]),
+        values
+    );
+    let point = table.struct_type("Windows.Foundation.Point", &vec![table.f32_type(); 2]);
+    let delta = table.struct_type(
+        "Windows.UI.Input.ManipulationDelta",
+        &[
+            point.clone(),
+            table.f32_type(),
+            table.f32_type(),
+            table.f32_type(),
+        ],
+    );
+    let values = [1.0f32, -2.0, 30.0].map(|x| ManipulationDelta {
+        Translation: Point { X: x, Y: x + 1.0 },
+        Scale: x + 2.0,
+        Rotation: x + 3.0,
+        Expansion: x + 4.0,
+    });
+    exercise_vector!(
+        ManipulationDelta,
+        delta.clone(),
+        native_value(&delta, &values[0]),
+        values
+    );
+    let velocities = table.struct_type(
+        "Windows.UI.Input.ManipulationVelocities",
+        &[point, table.f32_type(), table.f32_type()],
+    );
+    let values = [1.5f32, -20.25, 300.75].map(|x| ManipulationVelocities {
+        Linear: Point { X: x, Y: x + 1.0 },
+        Angular: x + 2.0,
+        Expansion: x + 3.0,
+    });
+    exercise_vector!(
+        ManipulationVelocities,
+        velocities.clone(),
+        native_value(&velocities, &values[0]),
+        values
+    );
+}
+
+#[test]
+fn pod_f64_equality_ignores_zero_sign_and_never_matches_nan() {
+    let table = MetadataTable::new();
+    let typ = table.struct_type(
+        "Windows.Devices.Geolocation.BasicGeoposition",
+        &vec![table.f64_type(); 3],
+    );
+    for latitude in [0.0f64, -0.0, f64::from_bits(0x7ff8_0000_0000_0001)] {
+        let value = BasicGeoposition {
+            Latitude: latitude,
+            Longitude: 2.0,
+            Altitude: 3.0,
+        };
+        let object =
+            create_vector_from_values(&[native_value(&typ, &value)], &typ, table.vector_iids(&typ))
+                .unwrap();
+        let vector: IVector<BasicGeoposition> = object.cast().unwrap();
+        let live: IVectorView<BasicGeoposition> = object.cast().unwrap();
+        let snapshot = vector.GetView().unwrap();
+        for query in [
+            value,
+            BasicGeoposition {
+                Latitude: -latitude,
+                ..value
+            },
+        ] {
+            let mut index = u32::MAX;
+            assert_eq!(
+                vector.IndexOf(query, &mut index).unwrap(),
+                !latitude.is_nan()
+            );
+            assert_eq!(index, 0);
+            for view in [&live, &snapshot] {
+                assert_eq!(view.IndexOf(query, &mut index).unwrap(), !latitude.is_nan());
+                assert_eq!(index, 0);
+            }
+        }
+        assert_eq!(
+            vector.GetAt(0).unwrap().Latitude.to_bits(),
+            latitude.to_bits()
+        );
+    }
+}
+
+#[test]
+fn pod_observable_notifications_allow_reentrant_mutation_and_final_release() {
+    use std::sync::atomic::AtomicUsize;
+    use windows::Foundation::Collections::{
+        CollectionChange, IObservableVector, VectorChangedEventHandler,
+    };
+
+    let table = MetadataTable::new();
+    let typ = table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]);
+    let object = create_vector_from_values(&[], &typ, table.vector_iids(&typ)).unwrap();
+    let vector: IVector<RectInt32> = object.cast().unwrap();
+    let observable: IObservableVector<RectInt32> = object.cast().unwrap();
+    let snapshot = vector.GetView().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicUsize::new(0));
+    let owned_raw = Arc::new(AtomicUsize::new(0));
+    let token = Arc::new(AtomicI64::new(0));
+    let changed = Arc::new(Mutex::new(Vec::new()));
+    let recording = changed.clone();
+    let observer = VectorChangedEventHandler::<RectInt32>::new(move |sender, args| {
+        let sender = sender.as_ref().unwrap();
+        let args = args.as_ref().unwrap();
+        recording
+            .lock()
+            .unwrap()
+            .push((args.CollectionChange()?, args.Index()?));
+        assert!(sender.cast::<IVector<RectInt32>>()?.Size()? > 0);
+        Ok(())
+    });
+    observable.VectorChanged(&observer).unwrap();
+    let callback_calls = calls.clone();
+    let callback_raw = owned_raw.clone();
+    let callback_released = released.clone();
+    let callback_token = token.clone();
+    let item = RectInt32 {
+        X: -1,
+        Y: 2,
+        Width: 3,
+        Height: 4,
+    };
+    let handler = VectorChangedEventHandler::<RectInt32>::new(move |sender, _args| {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+        let sender = sender.as_ref().unwrap();
+        sender.RemoveVectorChanged(callback_token.load(Ordering::SeqCst))?;
+        let vector = sender.cast::<IVector<RectInt32>>()?;
+        vector.Append(item)?;
+        assert_eq!(vector.GetAt(1)?, item);
+        drop(vector);
+        let raw = callback_raw.swap(0, Ordering::SeqCst);
+        assert_ne!(raw, 0);
+        // Release the original caller's only reference while its ABI entrypoint
+        // and all remaining handler invocations are still active.
+        unsafe { drop(IVector::<RectInt32>::from_raw(raw as *mut c_void)) };
+        callback_released.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(sender.cast::<IVector<RectInt32>>()?.Size()?, 2);
+        Ok(())
+    });
+    token.store(
+        observable.VectorChanged(&handler).unwrap(),
+        Ordering::SeqCst,
+    );
+    drop(observable);
+    drop(object);
+    let append = vector.vtable().Append;
+    let raw = vector.into_raw();
+    owned_raw.store(raw as usize, Ordering::SeqCst);
+    unsafe { append(raw, item).ok().unwrap() };
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(released.load(Ordering::SeqCst), 1);
+    let changes = changed.lock().unwrap();
+    assert_eq!(changes.len(), 2);
+    assert!(changes.contains(&(CollectionChange::ItemInserted, 0)));
+    assert!(changes.contains(&(CollectionChange::ItemInserted, 1)));
+    assert_eq!(snapshot.Size().unwrap(), 0);
+}
+
+#[test]
+fn pod_lookup_validates_required_output_cells_with_the_sdk_signature() {
+    let table = MetadataTable::new();
+    let typ = table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]);
+    let object = create_vector_from_values(&[], &typ, table.vector_iids(&typ)).unwrap();
+    let vector: IVector<RectInt32> = object.cast().unwrap();
+    let live: IVectorView<RectInt32> = object.cast().unwrap();
+    let snapshot = vector.GetView().unwrap();
+    let value = RectInt32::default();
+    let mut index = u32::MAX;
+    let mut found = true;
+    unsafe {
+        assert_eq!(
+            (vector.vtable().IndexOf)(vector.as_raw(), value, std::ptr::null_mut(), &mut found),
+            crate::com_helpers::E_POINTER
+        );
+        assert_eq!(
+            (vector.vtable().IndexOf)(vector.as_raw(), value, &mut index, std::ptr::null_mut()),
+            crate::com_helpers::E_POINTER
+        );
+        for view in [live, snapshot] {
+            assert_eq!(
+                (view.vtable().IndexOf)(view.as_raw(), value, std::ptr::null_mut(), &mut found),
+                crate::com_helpers::E_POINTER
+            );
+        }
+    }
+    assert_eq!(index, u32::MAX);
+    assert!(found);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -554,7 +835,7 @@ fn struct_equality_raw_constructor_preserves_packed_byte_comparison() {
 }
 
 #[test]
-fn typed_empty_only_uses_indirect_argument_abi() {
+fn typed_empty_pod_vectors_publish_complete_native_abis() {
     let table = MetadataTable::new();
     let rect_int = table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]);
     exercise_empty!(
@@ -565,8 +846,7 @@ fn typed_empty_only_uses_indirect_argument_abi() {
             Y: 2,
             Width: 3,
             Height: 4
-        },
-        cfg!(target_arch = "x86_64")
+        }
     );
     let rect = table.struct_type("Windows.Foundation.Rect", &vec![table.f32_type(); 4]);
     exercise_empty!(
@@ -577,8 +857,7 @@ fn typed_empty_only_uses_indirect_argument_abi() {
             Y: 2.0,
             Width: 3.0,
             Height: 4.0
-        },
-        cfg!(target_arch = "x86_64")
+        }
     );
     let position = table.struct_type(
         "Windows.Devices.Geolocation.BasicGeoposition",
@@ -591,8 +870,7 @@ fn typed_empty_only_uses_indirect_argument_abi() {
             Latitude: 1.0,
             Longitude: 2.0,
             Altitude: 3.0
-        },
-        cfg!(target_arch = "x86_64")
+        }
     );
     let point = table.struct_type(
         "Windows.Foundation.Point",
@@ -610,28 +888,32 @@ fn typed_empty_only_uses_indirect_argument_abi() {
             Scale: 3.0,
             Rotation: 4.0,
             Expansion: 5.0
-        },
-        cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
+        }
     );
 }
 
 #[test]
 fn typed_constructors_reject_mismatched_iids_before_publication() {
     let table = MetadataTable::new();
-    let element = table.i32_type();
-    let expected = table.vector_iids(&element);
-    for field in 0..6 {
-        let mut iids = expected.clone();
-        let fields = [
-            &mut iids.iterable,
-            &mut iids.vector,
-            &mut iids.vector_view,
-            &mut iids.observable_vector,
-            &mut iids.vector_changed_handler,
-            &mut iids.iterator,
-        ];
-        *fields.into_iter().nth(field).unwrap() = GUID::zeroed();
-        assert!(create_vector_from_values(&[], &element, iids).is_err());
+    for element in [
+        table.i32_type(),
+        table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]),
+        table.struct_type("Windows.Foundation.Point", &vec![table.f32_type(); 2]),
+    ] {
+        let expected = table.vector_iids(&element);
+        for field in 0..6 {
+            let mut iids = expected.clone();
+            let fields = [
+                &mut iids.iterable,
+                &mut iids.vector,
+                &mut iids.vector_view,
+                &mut iids.observable_vector,
+                &mut iids.vector_changed_handler,
+                &mut iids.iterator,
+            ];
+            *fields.into_iter().nth(field).unwrap() = GUID::zeroed();
+            assert!(create_vector_from_values(&[], &element, iids).is_err());
+        }
     }
 }
 
