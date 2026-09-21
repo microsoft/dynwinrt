@@ -201,6 +201,27 @@
       ]
     },
     {
+      "id": "pod_point_collection_input",
+      "namespace": "Windows.UI.Input.Inking",
+      "class": "InkStrokeBuilder",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "pod_point_input", "member": "create_stroke" }
+      ]
+    },
+    {
+      "id": "pod_geoposition_collection_input",
+      "namespace": "Windows.Devices.Geolocation",
+      "class": "Geopath",
+      "extra_classes": ["GeoboundingBox"],
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "pod_geoposition_input", "member": "create" }
+      ]
+    },
+    {
       "id": "struct_point_roundtrip",
       "namespace": "Windows.Foundation",
       "class": "PropertyValue",

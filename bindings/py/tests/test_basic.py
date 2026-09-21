@@ -901,7 +901,7 @@ def test_collection_producers_retain_direct_strings_and_nullable_references_with
         incompatible.release()
 
 
-def test_collection_producers_enforce_architecture_specific_small_pod_boundary():
+def test_pod_vectors_work_without_broadening_architecture_specific_map_boundary():
     is_x86 = sys.maxsize == 2**31 - 1
     is_arm64 = sysconfig.get_platform() == "win-arm64"
     cases = [
@@ -921,8 +921,8 @@ def test_collection_producers_enforce_architecture_specific_small_pod_boundary()
         value = DynWinRTStruct.create(typ)
         getattr(value, setter)(index, expected)
         supported = not ((is_x86 and size > 4) or (is_arm64 and hfa))
-        for create in _collection_producer_cases(typ, []):
-            if supported:
+        for producer_index, create in enumerate(_collection_producer_cases(typ, [])):
+            if producer_index == 0 or supported:
                 assert not create().is_null()
             else:
                 with pytest.raises(RuntimeError):
@@ -935,14 +935,19 @@ def test_collection_producers_enforce_architecture_specific_small_pod_boundary()
             assert getattr(from_map.as_struct(), getter)(index) == expected
             assert key_lookup.to_number() == 0
         else:
-            for create in _collection_producer_cases(typ, [value.to_value()]):
+            vector = DynWinRTValue.create_vector([value.to_value()], typ)
+            output = _invoke_collection_reader(
+                _collection_vector_reader(typ), vector, 6, [DynWinRTValue.from_u32(0)]
+            )
+            assert getattr(output.as_struct(), getter)(index) == expected
+            output.release()
+            vector.release()
+            for create in _collection_producer_cases(typ, [value.to_value()])[1:]:
                 with pytest.raises(RuntimeError):
                     create()
 
 
-def test_collection_producers_restrict_large_pod_to_abi_compatible_empty_vectors():
-    is_x86 = sys.maxsize == 2**31 - 1
-    is_arm64 = sysconfig.get_platform() == "win-arm64"
+def test_collection_producers_support_large_pod_vectors_but_not_maps():
     cases = [
         ("Windows.Graphics.RectInt32", [DynWinRTType.i32_type()] * 4, False, 16),
         ("Windows.Foundation.Rect", [DynWinRTType.f32_type()] * 4, True, 16),
@@ -957,22 +962,21 @@ def test_collection_producers_restrict_large_pod_to_abi_compatible_empty_vectors
     ]
     for name, fields, hfa, size in cases:
         typ = DynWinRTType.struct_type(name, fields)
-        empty_supported = not is_x86 and (not is_arm64 or (size > 16 and not hfa))
-        if empty_supported:
-            vector = DynWinRTValue.create_vector([], typ)
+        for items in [[], [DynWinRTStruct.create(typ).to_value()]]:
+            vector = DynWinRTValue.create_vector(items, typ)
             assert _invoke_collection_reader(
                 _collection_vector_reader(typ), vector, 7, []
-            ).to_number() == 0
+            ).to_number() == len(items)
+            if items:
+                output = _invoke_collection_reader(
+                    _collection_vector_reader(typ), vector, 6, [DynWinRTValue.from_u32(0)]
+                )
+                assert not output.is_null()
+                output.release()
             vector.release()
-        else:
-            with pytest.raises(RuntimeError):
-                DynWinRTValue.create_vector([], typ)
-        for create in _collection_producer_cases(typ, [])[1:]:
-            with pytest.raises(RuntimeError):
-                create()
-        for create in _collection_producer_cases(typ, [DynWinRTStruct.create(typ).to_value()]):
-            with pytest.raises(RuntimeError):
-                create()
+            for create in _collection_producer_cases(typ, items)[1:]:
+                with pytest.raises(RuntimeError):
+                    create()
 
 
 def test_collection_producers_reject_floating_scalars_and_guids_even_when_empty():

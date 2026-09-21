@@ -1623,6 +1623,96 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'pod_point_input':
+            from dynwinrt import release_projected
+
+            point_type = generated_type(pkg_name, 'Point')
+            points = [point_type(x=1.25, y=2.5), point_type(x=3.5, y=4.75)]
+            owned = []
+            try:
+                stroke = obj.create_stroke(points)
+                assert stroke is not None
+                owned.append(stroke)
+                view = stroke.get_ink_points()
+                assert view is not None
+                owned.append(view)
+                output = list(view)
+                owned.extend(output)
+                assert [point.position for point in output] == points
+                cr['pass'] = True
+            finally:
+                for value in reversed(owned):
+                    release_projected(value)
+
+        elif kind == 'pod_geoposition_input':
+            from dynwinrt import release_projected
+
+            position_type = generated_type(pkg_name, 'BasicGeoposition')
+            positions = [
+                position_type(latitude=10, longitude=20, altitude=30),
+                position_type(latitude=11, longitude=21, altitude=40),
+            ]
+            box_type = generated_type(pkg_name, 'GeoboundingBox')
+            reference = generated_type(pkg_name, 'AltitudeReferenceSystem').Ellipsoid
+            factories = [cls.create, cls.create_with_altitude_reference,
+                         cls.create_with_altitude_reference_and_spatial_reference]
+            computations = [box_type.try_compute, box_type.try_compute_with_altitude_reference,
+                            box_type.try_compute_with_altitude_reference_and_spatial_reference]
+            for factory, compute, args in zip(
+                factories, computations, [(), (reference,), (reference, 4326)]
+            ):
+                owned = []
+                try:
+                    path = factory(positions, *args)
+                    owned.append(path)
+                    view = path.positions
+                    assert view is not None
+                    owned.append(view)
+                    assert list(view) == positions
+                    bounds = compute(positions, *args)
+                    assert bounds is not None
+                    owned.append(bounds)
+                    assert bounds.northwest_corner == position_type(latitude=11, longitude=20, altitude=40)
+                    assert bounds.southeast_corner == position_type(latitude=10, longitude=21, altitude=30)
+                    assert bounds.min_altitude == 30
+                    assert bounds.max_altitude == 40
+                    assert compute([], *args) is None
+                finally:
+                    for value in reversed(owned):
+                        release_projected(value)
+            cr['pass'] = True
+
+        elif kind == 'pod_rect_vector_factory':
+            from dynwinrt import release_projected
+
+            vector_type = generated_type(pkg_name, 'IVector_RectInt32')
+            rect_type = generated_type(pkg_name, 'RectInt32')
+            rects = [rect_type(x=-1, y=2, width=30, height=40),
+                     rect_type(x=50, y=-6, width=70, height=80)]
+            # Exercise only the generated hint input, never AI activation.
+            for initial in [[], rects]:
+                vector = vector_type.create(initial)
+                snapshot = vector.get_view()
+                assert snapshot is not None
+                try:
+                    assert not vector._obj.is_null()
+                    assert list(vector) == initial
+                    vector.append(rects[0])
+                    vector.set_at(0, rects[1])
+                    vector.insert_at(0, rects[0])
+                    assert vector.index_of(rects[1]) == (1, True)
+                    vector.replace_all(rects)
+                    assert vector.get_many(0, [rects[0]] * 3) == rects
+                    assert list(snapshot) == initial
+                    vector.remove_at(0)
+                    vector.remove_at_end()
+                    assert vector.size == 0
+                    vector.clear()
+                finally:
+                    release_projected(vector)
+                    release_projected(snapshot)
+            cr['pass'] = True
+
         elif kind == 'nested_struct_runtime':
             from typing import get_type_hints
 

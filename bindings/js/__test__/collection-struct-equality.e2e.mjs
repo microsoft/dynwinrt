@@ -68,14 +68,23 @@ test('checked Point map keys compare fields numerically', { skip: process.arch !
   }
 })
 
-test('Point collection admission is unchanged on non-x64 targets', { skip: process.arch === 'x64' }, (t) => {
-  const keep = own(t)
-  const source = keep(point(0, 1))
-  const value = keep(DynWinRtValue.i32(7))
-  for (const items of [[], [source]]) {
-    assert.throws(() => DynWinRtValue.createVector(items, pointType))
-    assert.throws(() =>
-      DynWinRtValue.createMap(items, items.map(() => value), pointType, DynWinRtType.i32()),
-    )
-  }
-})
+test(
+  'Point vectors work without broadening map admission on non-x64 targets',
+  { skip: process.arch === 'x64' },
+  (t) => {
+    const keep = own(t)
+    const source = keep(point(0, 1))
+    const value = keep(DynWinRtValue.i32(7))
+    for (const items of [[], [source]]) {
+      assert.equal(keep(DynWinRtValue.createVector(items, pointType)).isNull(), false)
+      assert.throws(() =>
+        DynWinRtValue.createMap(
+          items,
+          items.map(() => value),
+          pointType,
+          DynWinRtType.i32(),
+        ),
+      )
+    }
+  },
+)
