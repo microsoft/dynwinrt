@@ -370,9 +370,10 @@ complete set of closed collection IIDs before creating a native object.
 These limits apply to **producing** collections, including generated input
 conversions, not to consuming collections returned by Windows.
 
-**Post-release phase one (#161):** the following matrix describes this feature
-branch, not the current release candidate. POD vector support is independent
-of Classic COM/Win32 and does not expand map admission.
+**Phase one (#161), proposed for this release:** the following matrix describes
+the proposed capability, subject to PR review, final integration, and platform
+CI. POD vector support is independent of Classic COM/Win32 and does not expand
+map admission.
 
 | Element / key / value | x64 | ARM64 | i686 |
 |---|---|---|---|

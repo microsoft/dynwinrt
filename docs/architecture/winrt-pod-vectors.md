@@ -1,10 +1,10 @@
 # Checked WinRT POD vectors
 
-**Post-release phase one of #161.** This feature branch is not part of the
-current release candidate. It implements checked POD **vectors**, not the
-whole struct-collection issue. Maps, owning structs, and unrelated top-level
-scalar expansion remain out of scope. There is no permanent feature flag:
-release isolation is the branch boundary.
+**Phase one of #161 (proposed).** This change implements checked POD
+**vectors**, not the whole struct-collection issue. Inclusion in the current
+release remains subject to PR review, final integration, and platform CI.
+Maps, owning structs, and unrelated top-level scalar expansion remain out of
+scope. No permanent feature flag is introduced.
 
 ## Validation and ABI planning
 
@@ -114,6 +114,6 @@ WinAppSDK bootstrap, UI, or a model. It does **not** qualify AI hint execution.
 
 Native ARM64 and Windows x64/i686 emulation are separate evidence categories;
 emulated results are not native x64/i686 hardware qualification. Generated
-consumers must run against the matching locally built runtime. No gallery,
-installed consumer, published package, tag, or release workflow is replaced
-by this work.
+consumers must run against the matching locally built runtime. Local validation
+does not replace PR review, final integration, or platform CI for release
+admission.
