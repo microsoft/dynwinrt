@@ -479,11 +479,13 @@ impl SingleThreadedVector {
         unsafe { (self as *const Self as *const *const c_void).add(3) as *mut c_void }
     }
 
+    // Keep the owner alive for the whole mutation, including input retention,
+    // event callbacks and handler destruction, not just the notification borrow.
+    unsafe fn retain_mutation(this: *mut c_void) -> IUnknown {
+        IUnknown::from_raw_borrowed(&this).unwrap().clone()
+    }
+
     fn notify_changed(&self, collection_change: i32, index: u32) -> HRESULT {
-        // A handler can release the last external reference or reenter mutation.
-        // Keep the sender and its tables alive until every handler has returned.
-        let identity = Self::as_iterable_ptr(self);
-        let _keep_alive = unsafe { IUnknown::from_raw_borrowed(&identity).unwrap().clone() };
         let handlers: Vec<IUnknown> = match self.handlers.lock() {
             Ok(handlers) => handlers.values().cloned().collect(),
             Err(_) => return E_FAIL,
@@ -626,6 +628,7 @@ impl SingleThreadedVector {
     }
 
     unsafe fn set_at_impl(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -651,6 +654,7 @@ impl SingleThreadedVector {
     }
 
     unsafe fn insert_at_impl(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -667,6 +671,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn remove_at(this: *mut c_void, index: u32) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let removed = {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -684,6 +689,7 @@ impl SingleThreadedVector {
     }
 
     unsafe fn append_impl(this: *mut c_void, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         if me.storage.is_empty_only() {
             return E_NOTIMPL;
@@ -705,6 +711,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn remove_at_end(this: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let (removed, index) = {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -723,6 +730,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         for raw in old_items {
@@ -756,6 +764,7 @@ impl SingleThreadedVector {
         count: u32,
         values: *const *mut c_void,
     ) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         if count > 0 && me.storage.is_empty_only() {
             return E_NOTIMPL;

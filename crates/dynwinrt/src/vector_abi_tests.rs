@@ -651,6 +651,8 @@ fn pod_observable_notifications_allow_reentrant_mutation_and_final_release() {
         observable.VectorChanged(&handler).unwrap(),
         Ordering::SeqCst,
     );
+    drop(handler);
+    drop(observer);
     drop(observable);
     drop(object);
     let append = vector.vtable().Append;
@@ -659,6 +661,8 @@ fn pod_observable_notifications_allow_reentrant_mutation_and_final_release() {
     unsafe { append(raw, item).ok().unwrap() };
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(released.load(Ordering::SeqCst), 1);
+    assert_eq!(Arc::strong_count(&owned_raw), 1);
+    assert_eq!(Arc::strong_count(&calls), 1);
     let changes = changed.lock().unwrap();
     assert_eq!(changes.len(), 2);
     assert!(changes.contains(&(CollectionChange::ItemInserted, 0)));

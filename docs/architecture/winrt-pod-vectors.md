@@ -75,9 +75,10 @@ recurses over metadata leaves and ignores internal/tail padding. Floating
 leaves compare numerically: signed zeros match and NaNs never match. Stored
 field bits are not normalized.
 
-Mutation unlocks before notifying observers. Notification retains the sender
-while invoking the snapshotted handler set, so unsubscribe, reentrant mutation,
-and releasing the caller's last reference cannot destroy the sender mid-event.
+Mutation retains its owner for the entire entrypoint, including input
+retention, callbacks, and handler destruction, and unlocks before notifying
+observers. Unsubscribe, reentrant mutation, and releasing the caller's last
+reference cannot destroy the sender while its state is borrowed.
 Dynamic dispatch runs inside the centralized panic boundary; its Rust method
 bodies do not cross a second non-unwinding FFI boundary.
 
