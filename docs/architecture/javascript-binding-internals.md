@@ -156,7 +156,9 @@ null guard before dereferencing a returned collection. `get()` and `at()`
 also retain `undefined` for a missing key or out-of-range index; a present
 null element is not missing. Map `get()` converts the key once and checks
 `HasKey` before `Lookup`, so conversion/native failures propagate instead of
-being mistaken for missing entries. Array containers, scalar/struct values,
+being mistaken for missing entries. These are separate native calls, not an
+atomic lookup: concurrent mutation between them can change the result or cause
+`Lookup` to fail. Array containers, scalar/struct values,
 and non-null collection factories are not made nullable.
 
 Typed map construction uses the same key equality as `Insert`. For duplicate

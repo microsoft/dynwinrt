@@ -68,8 +68,14 @@ fn visit_projected_generics(
             args,
         } => {
             names.insert(context.projected_parameterized_name(namespace, name, piid, args));
-            if let Some(source) = CollectionInput::map_view_source(typ) {
-                visit_projected_generics(context, &source, names);
+            if let Some(TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            }) = CollectionInput::map_view_source(typ)
+            {
+                names.insert(context.projected_parameterized_name(&namespace, &name, &piid, &args));
             }
             for argument in args {
                 visit_projected_generics(context, argument, names);
@@ -107,6 +113,51 @@ fn collect_used_generics_from_methods(
     let mut names = names.into_iter().collect::<Vec<_>>();
     names.sort();
     names
+}
+
+#[cfg(test)]
+mod generic_dependency_tests {
+    use super::*;
+    use crate::meta::{ParamMeta, WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE};
+
+    #[test]
+    fn nested_map_views_collect_both_argument_branches_and_deduplicate_names() {
+        let context = JavaScriptProjectionContext::default();
+        let view = |args| TypeMeta::Parameterized {
+            namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+            name: "IMapView".into(),
+            piid: PIID_IMAP_VIEW.into(),
+            args,
+        };
+        let number_args = vec![TypeMeta::String, TypeMeta::U32];
+        let string_args = vec![TypeMeta::String, TypeMeta::String];
+        let outer_args = vec![view(number_args.clone()), view(string_args.clone())];
+        let nested = view(outer_args.clone());
+        let method = MethodMeta {
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ: nested.clone(),
+                direction: ParamDirection::In,
+            }],
+            return_type: Some(nested),
+            ..Default::default()
+        };
+        let actual = collect_used_generics_from_methods(&context, &[method]);
+        let mut expected = Vec::new();
+        for args in [number_args, string_args, outer_args] {
+            for (name, piid) in [("IMapView", PIID_IMAP_VIEW), ("IMap", PIID_IMAP)] {
+                expected.push(context.projected_parameterized_name(
+                    WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    name,
+                    piid,
+                    &args,
+                ));
+            }
+        }
+        expected.sort();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 6);
+    }
 }
 
 fn collect_used_generics_from_class(

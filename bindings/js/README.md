@@ -379,6 +379,8 @@ including getters, async results and collection-valued elements. Check for
 a present `null` from a missing key's `undefined`; `at()` similarly returns
 `undefined` only outside the vector's range. Collection factories still
 return non-null wrappers, and array containers remain non-nullable.
+Map `get()` uses separate `HasKey` and `Lookup` calls, so it is not atomic
+against concurrent native mutation; a lookup failure still propagates.
 
 `DynWinRtValue.createVector(items, elementType)` and
 `DynWinRtValue.createMap(keys, values, keyType, valueType)` keep their public
