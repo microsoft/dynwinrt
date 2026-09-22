@@ -7,7 +7,7 @@ use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
 
 use super::JavaScriptProjectionContext;
-use super::signature::{ref_marker, wrap_arg};
+use super::signature::{normalize_unsigned_flags, ref_marker, wrap_arg};
 
 // ======================================================================
 // Struct field type helpers (TypeScript)
@@ -132,9 +132,12 @@ pub(crate) fn struct_field_setter(
         TypeMeta::U8 => format!("s.setU8({}, {})", index, value_expr),
         TypeMeta::I16 => format!("s.setI16({}, {})", index, value_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("s.setU16({}, {})", index, value_expr),
-        TypeMeta::Enum { underlying, .. } => {
-            struct_field_setter(context, underlying, index, value_expr)
-        }
+        TypeMeta::Enum { underlying, .. } => struct_field_setter(
+            context,
+            underlying,
+            index,
+            &normalize_unsigned_flags(value_expr, typ),
+        ),
         TypeMeta::I32 => format!("s.setI32({}, {})", index, value_expr),
         TypeMeta::U32 => format!("s.setU32({}, {})", index, value_expr),
         TypeMeta::I64 => format!("s.setI64({}, {})", index, value_expr),

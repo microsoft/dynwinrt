@@ -285,8 +285,18 @@ test('scalar and enum ABI aliases survive synchronous callbacks without JS numer
     vtableIndex: index + 6,
     signature: new DynWinRtMethodSig().addIn(type).addOut(type),
   }))
+  const setterSlot = methods.length + 6
+  methods.push({
+    name: 'SetUInt32',
+    vtableIndex: setterSlot,
+    signature: new DynWinRtMethodSig().addIn(DynWinRtType.u32()),
+  })
   const { type, plan } = fixture('2799ac23-bcd8-4086-b6f0-1f33b3af84be', methods, 'Tests.IWinRtScalars')
   const owner = DynWinRtImplementation.create([plan], (_index, slot, args) => {
+    if (slot === setterSlot) {
+      t.is(args[0].toNumber(), 0xffffffff)
+      return []
+    }
     t.is(cases[slot - 6].read(args[0]), cases[slot - 6].expected)
     return [args[0]]
   })
@@ -294,6 +304,10 @@ test('scalar and enum ABI aliases survive synchronous callbacks without JS numer
   cases.forEach(({ value, read, expected }, index) => {
     t.is(read(type.method(index + 6).invoke(view, [value])), expected)
   })
+  type.method(setterSlot).setU32(view, 0xffffffff)
+  for (const invalid of [-1, 2 ** 32, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    t.throws(() => type.method(setterSlot).setU32(view, invalid))
+  }
   owner.dispose()
   view.release()
 })

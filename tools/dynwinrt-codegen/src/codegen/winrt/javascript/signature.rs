@@ -359,7 +359,9 @@ pub(crate) fn wrap_arg(
     match typ {
         TypeMeta::String => format!("DynWinRtValue.hstring({})", name),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
-        TypeMeta::Enum { underlying, .. } => wrap_arg(context, name, underlying),
+        TypeMeta::Enum { underlying, .. } => {
+            wrap_arg(context, &normalize_unsigned_flags(name, typ), underlying)
+        }
         TypeMeta::I32 | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
             format!("DynWinRtValue.i32({})", name)
         }
@@ -448,6 +450,7 @@ pub(crate) fn wrap_arg(
                     "({name} instanceof Uint8Array ? DynWinRtArray.fromUint8Array({name}).toValue() : Array.isArray({name}) ? DynWinRtArray.fromU8Values({name}).toValue() : {name}.toValue())"
                 );
             }
+            let array_input = normalize_unsigned_flags_array(name, inner);
             let from_array_expr = match inner.underlying_type() {
                 TypeMeta::I8 => format!("DynWinRtArray.fromI8Values({name})"),
                 TypeMeta::U8 => format!("DynWinRtArray.fromU8Values({name})"),
@@ -461,7 +464,7 @@ pub(crate) fn wrap_arg(
                 } if struct_name == "HResult" => {
                     format!("DynWinRtArray.fromHresultValues({name})")
                 }
-                TypeMeta::U32 => format!("DynWinRtArray.fromU32Values({name})"),
+                TypeMeta::U32 => format!("DynWinRtArray.fromU32Values({array_input})"),
                 TypeMeta::I64 => format!("DynWinRtArray.fromI64Values({name})"),
                 TypeMeta::U64 => format!("DynWinRtArray.fromU64Values({name})"),
                 TypeMeta::F32 => format!("DynWinRtArray.fromF32Values({name})"),
@@ -517,7 +520,7 @@ fn wrap_reference_value(
         TypeMeta::Enum { .. } => format!(
             "DynWinRtValue.enumValue({}, {})",
             ts_dynwinrt_type(context, typ),
-            name
+            normalize_unsigned_flags(name, typ)
         ),
         TypeMeta::Struct {
             name: struct_name, ..
@@ -564,7 +567,9 @@ fn vector_item_wrap_expr(
         }
         TypeMeta::String => format!("DynWinRtValue.hstring({})", var),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", var),
-        TypeMeta::Enum { underlying, .. } => vector_item_wrap_expr(context, var, underlying),
+        TypeMeta::Enum { underlying, .. } => {
+            vector_item_wrap_expr(context, &normalize_unsigned_flags(var, elem), underlying)
+        }
         TypeMeta::I32 | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
             format!("DynWinRtValue.i32({})", var)
         }
@@ -582,6 +587,33 @@ fn vector_item_wrap_expr(
             format!("({var} === null ? DynWinRtValue.nullValue() : {reference})")
         }
         _ => format!("_unwrap({})", var),
+    }
+}
+
+pub(crate) fn is_unsigned_flags(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Enum {
+            underlying,
+            is_flags: true,
+            ..
+        } if matches!(underlying.as_ref(), TypeMeta::U32)
+    )
+}
+
+pub(crate) fn normalize_unsigned_flags(value: &str, typ: &TypeMeta) -> String {
+    if is_unsigned_flags(typ) {
+        format!("_flagsU32({value})")
+    } else {
+        value.to_string()
+    }
+}
+
+pub(crate) fn normalize_unsigned_flags_array(value: &str, element: &TypeMeta) -> String {
+    if is_unsigned_flags(element) {
+        format!("{value}.map(item => _flagsU32(item))")
+    } else {
+        value.to_string()
     }
 }
 

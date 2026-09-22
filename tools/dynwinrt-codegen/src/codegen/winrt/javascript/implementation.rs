@@ -15,7 +15,9 @@ use crate::types::TypeMeta;
 
 use super::JavaScriptProjectionContext;
 use super::naming::{capitalize, to_camel_case};
-use super::signature::{convert_return, ts_dynwinrt_type};
+use super::signature::{
+    convert_return, is_unsigned_flags, normalize_unsigned_flags, ts_dynwinrt_type,
+};
 
 const HELPERS: &str = r#"
 function __implementationCheck(value, valid, label) {
@@ -382,7 +384,10 @@ impl Projector<'_> {
         let integer = |min: &str, max: &str| {
             format!("typeof v === 'number' && Number.isInteger(v) && v >= {min} && v <= {max}")
         };
-        let check = match typ.metadata.underlying_type() {
+        let check = if is_unsigned_flags(&typ.metadata) {
+            integer("-2147483648", "4294967295")
+        } else {
+            match typ.metadata.underlying_type() {
             TypeMeta::Bool => "typeof v === 'boolean'".into(),
             TypeMeta::String | TypeMeta::Guid => "typeof v === 'string'".into(),
             TypeMeta::I8 => integer("-128", "127"),
@@ -396,6 +401,7 @@ impl Projector<'_> {
             TypeMeta::F32 => "typeof v === 'number' && (!Number.isFinite(v) || Math.abs(v) <= 3.4028234663852886e38)".into(),
             TypeMeta::F64 => "typeof v === 'number'".into(),
             _ => unreachable!("validated scalar"),
+            }
         };
         format!(
             "((v) => __implementationCheck(v, {check}, {}))({value})",
@@ -512,7 +518,11 @@ impl Projector<'_> {
                     TypeMeta::String => "hstring",
                     TypeMeta::Guid => return format!("DynWinRtValue.guid(WinGuid.parse({value}))"),
                     TypeMeta::Enum { .. } => {
-                        return format!("DynWinRtValue.enumValue({}, {value})", self.native(typ));
+                        return format!(
+                            "DynWinRtValue.enumValue({}, {})",
+                            self.native(typ),
+                            normalize_unsigned_flags(&value, &typ.metadata)
+                        );
                     }
                     _ => unreachable!("validated scalar"),
                 };

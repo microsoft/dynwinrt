@@ -4744,7 +4744,7 @@ impl DynCom {
   }
 
   #[napi]
-  pub fn u32(value: u32) -> DynWinRTValue {
+  pub fn u32(value: f64) -> napi::Result<DynWinRTValue> {
     DynWinRTValue::u32(value)
   }
 

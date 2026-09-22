@@ -112,7 +112,7 @@ test('generated SDK flags preserve unsigned values through native calls and call
   const unused = () => {
     throw new Error('Unused complete SDK interface slot')
   }
-  let attributes = 0xffffffff
+  let attributes = -1
   const received = []
   const owner = generated.IStorageItem.implement({
     renameAsyncOverloadDefaultOptions: unused,
@@ -131,10 +131,21 @@ test('generated SDK flags preserve unsigned values through native calls and call
   })
   try {
     assert.equal(owner.value.attributes, 0xffffffff)
-    assert.equal(owner.value.isOfType(0x80000000), true)
-    assert.equal(owner.value.isOfType(0xffffffff), true)
-    assert.deepEqual(received, [0x80000000, 0xffffffff])
-    attributes = -1
+    for (const [input, expected] of [
+      [-0x80000000, 0x80000000],
+      [-1, 0xffffffff],
+      [0x80000000, 0x80000000],
+      [0xffffffff, 0xffffffff],
+    ]) {
+      assert.equal(owner.value.isOfType(input), true)
+      assert.equal(received.at(-1), expected)
+    }
+    const before = received.length
+    for (const invalid of [-0x80000001, 0x100000000, 1.5, NaN, Infinity]) {
+      assert.throws(() => owner.value.isOfType(invalid))
+    }
+    assert.equal(received.length, before)
+    attributes = -0x80000001
     assert.throws(() => owner.value.attributes)
   } finally {
     owner.dispose()

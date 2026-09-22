@@ -68,6 +68,11 @@ test('unsigned enums retain SDK IIDs and high-bit values across native storage',
   t.is(negative.getEnumInt(), -1)
   t.is(DynWinRtType.getEnumValue('EnumContracts.Signed', 'Negative'), -1)
   t.throws(() => DynWinRtValue.enumValue(signed, 0x80000000))
+
+  for (const invalid of [-1, 2 ** 32, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    t.throws(() => DynWinRtValue.u32(invalid))
+    t.throws(() => DynWinRtArray.fromU32Values([0, invalid]))
+  }
 })
 
 function registerMethodAt(

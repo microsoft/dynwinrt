@@ -198,16 +198,20 @@ fn enum_projection_preserves_backing_type_in_properties_arrays_structs_and_callb
         if unsigned {
             for expected in [
                 "[2147483648, 4294967295], DynWinRtType.u32())",
-                "DynWinRtValue.u32(value)",
+                "DynWinRtValue.u32(_flagsU32(value))",
                 "s.getU32(0)",
-                "s.setU32(0,",
-                "fromU32Values(",
+                "s.setU32(0, _flagsU32(",
+                "fromU32Values(values.map(item => _flagsU32(item)))",
                 ".toU32Vec()",
-                "_m.setU32(",
+                "_m.setU32(this._obj, _flagsU32(value))",
+                "DynWinRtValue.enumValue(",
+                "_flagsU32(((v) => __implementationCheck(",
+                "v >= -2147483648 && v <= 4294967295",
                 "v <= 4294967295",
             ] {
                 assert!(js.contains(expected), "{expected}: {js}");
             }
+            assert_eq!(js.matches("const _flagsU32 =").count(), 1, "{js}");
             assert!(!js.contains("_m.getI32("), "{js}");
             for expected in [
                 "[2147483648, 4294967295], DynWinRTType.u32_type())",
@@ -219,6 +223,7 @@ fn enum_projection_preserves_backing_type_in_properties_arrays_structs_and_callb
                 assert!(py.contains(expected), "{expected}: {py}");
             }
         } else {
+            assert!(!js.contains("_flagsU32"), "{js}");
             assert!(js.contains("[-2147483648, -1])"), "{js}");
             assert!(js.contains("_m.getI32("), "{js}");
             assert!(js.contains(".toI32Vec()"), "{js}");
@@ -265,7 +270,105 @@ fn unsigned_enum_vector_helpers_use_unsigned_batch_storage() {
         js.contains("DynWinRtArray.fromU32Values(new Array(count).fill(0))"),
         "{js}"
     );
-    assert!(js.contains("DynWinRtArray.fromU32Values(items)"), "{js}");
+    assert!(
+        js.contains("DynWinRtArray.fromU32Values(items.map(item => _flagsU32(item)))"),
+        "{js}"
+    );
     assert!(js.contains(".toU32Vec()"), "{js}");
-    assert!(js.contains("DynWinRtValue.u32(i)"), "{js}");
+    assert!(js.contains("DynWinRtValue.u32(_flagsU32(i))"), "{js}");
+}
+
+#[test]
+fn only_uint32_flags_receive_signed_bit_pattern_normalization() {
+    let mut unsigned_non_flags = enumeration(true);
+    let TypeMeta::Enum { is_flags, .. } = &mut unsigned_non_flags else {
+        unreachable!()
+    };
+    *is_flags = false;
+    let interface = InterfaceMeta {
+        namespace: "Tests.EnumContracts".into(),
+        name: "INonFlags".into(),
+        iid: "4e92ff20-69cf-4860-b729-76635431fbc4".into(),
+        methods: vec![MethodMeta {
+            name: "put_Value".into(),
+            raw_name: "put_Value".into(),
+            vtable_index: 6,
+            is_property_setter: true,
+            params: vec![parameter("value", unsigned_non_flags, ParamDirection::In)],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let (js, _) = render(&interface);
+    assert!(js.contains("_m.setU32(this._obj, value)"), "{js}");
+    assert!(js.contains("DynWinRtValue.u32(value)"), "{js}");
+    assert!(!js.contains("_flagsU32"), "{js}");
+}
+
+#[test]
+fn flags_normalization_covers_references_vectors_and_maps() {
+    let flags = enumeration(true);
+    let reference = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation".into(),
+        name: "IReference`1".into(),
+        piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+        args: vec![flags.clone()],
+    };
+    let vector = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IVector`1".into(),
+        piid: meta::PIID_IVECTOR.into(),
+        args: vec![flags.clone()],
+    };
+    let map = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IMap`2".into(),
+        piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+        args: vec![flags.clone(), flags],
+    };
+    let interface = InterfaceMeta {
+        namespace: "Tests.EnumContracts".into(),
+        name: "IContainers".into(),
+        iid: "c067186d-3400-403f-a116-bff5f10aad68".into(),
+        methods: vec![
+            MethodMeta {
+                name: "TakeReference".into(),
+                raw_name: "TakeReference".into(),
+                vtable_index: 6,
+                params: vec![parameter("value", reference, ParamDirection::In)],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "TakeVector".into(),
+                raw_name: "TakeVector".into(),
+                vtable_index: 7,
+                params: vec![parameter("value", vector, ParamDirection::In)],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "TakeMap".into(),
+                raw_name: "TakeMap".into(),
+                vtable_index: 8,
+                params: vec![parameter("value", map, ParamDirection::In)],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let (js, _) = render(&interface);
+    assert!(js.contains("DynWinRtValue.enumValue("), "{js}");
+    assert!(js.contains("_flagsU32(value)"), "{js}");
+    assert!(
+        js.contains(".map(_i => DynWinRtValue.u32(_flagsU32(_i)))"),
+        "{js}"
+    );
+    assert!(
+        js.contains(".map(_k => DynWinRtValue.u32(_flagsU32(_k)))"),
+        "{js}"
+    );
+    assert!(
+        js.contains(".map(_v => DynWinRtValue.u32(_flagsU32(_v)))"),
+        "{js}"
+    );
+    assert_eq!(js.matches("const _flagsU32 =").count(), 1, "{js}");
 }

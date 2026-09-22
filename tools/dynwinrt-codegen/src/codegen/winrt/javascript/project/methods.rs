@@ -163,6 +163,9 @@ fn setter_line(
         .map(|typ| wrap_arg(context, "value", typ))
         .unwrap_or_else(|| "value".into());
     let fallback = format!("_m.invoke({}, [{}]);", obj_expr, wrapped);
+    let fast_value = typ
+        .map(|typ| normalize_unsigned_flags("value", typ))
+        .unwrap_or_else(|| "value".into());
     let Some(method) = (match typ.map(TypeMeta::underlying_type) {
         Some(TypeMeta::String) => Some("setHstring"),
         Some(TypeMeta::Bool) => Some("setBool"),
@@ -178,10 +181,11 @@ fn setter_line(
         );
     };
     format!(
-        "{{ const _m = {iface}.method({index}); if (typeof _m.{method} === 'function') _m.{method}({obj}, value); else {fallback} }}",
+        "{{ const _m = {iface}.method({index}); if (typeof _m.{method} === 'function') _m.{method}({obj}, {fast_value}); else {fallback} }}",
         iface = iface_var,
         index = vtable_index,
         obj = obj_expr,
+        fast_value = fast_value,
     )
 }
 

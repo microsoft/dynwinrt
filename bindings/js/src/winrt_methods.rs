@@ -227,7 +227,8 @@ impl DynWinRTMethodHandle {
   }
 
   #[napi]
-  pub fn set_u32(&self, obj: &DynWinRTValue, value: u32) -> napi::Result<()> {
+  pub fn set_u32(&self, obj: &DynWinRTValue, value: f64) -> napi::Result<()> {
+    let value = crate::js_numbers::js_u32(value, "setU32")?;
     let raw = obj
       .winrt()
       .as_object()

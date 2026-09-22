@@ -15,8 +15,8 @@ use crate::codegen::winrt::javascript::signature::ref_marker;
 
 use commonjs::convert_to_cjs_with_lazy;
 use helpers::{
-    emit_abortable_async_body, emit_delegate_wraps, emit_with_progress_body, inject_unwrap,
-    render_jsdoc, render_overload_dispatcher_js, render_same_class_overload_js,
+    emit_abortable_async_body, emit_delegate_wraps, emit_with_progress_body, inject_unsigned_flags,
+    inject_unwrap, render_jsdoc, render_overload_dispatcher_js, render_same_class_overload_js,
 };
 
 /// Render a projected file as CJS with lazy sibling requires.
@@ -137,6 +137,7 @@ fn render_esm(file: &ProjectedFile) -> String {
     if file.needs_unwrap_helper {
         out = inject_unwrap(out);
     }
+    out = inject_unsigned_flags(out);
 
     out
 }

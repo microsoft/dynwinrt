@@ -52,7 +52,8 @@ use super::method::{
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{
     build_args_expr, collect_runtime_class_iid_consts, convert_array_return, convert_return,
-    generate_interface_registration, js_argument_kind, ref_marker, ts_dynwinrt_type, wrap_arg,
+    generate_interface_registration, js_argument_kind, normalize_unsigned_flags,
+    normalize_unsigned_flags_array, ref_marker, ts_dynwinrt_type, wrap_arg,
 };
 
 fn visit_projected_generics(

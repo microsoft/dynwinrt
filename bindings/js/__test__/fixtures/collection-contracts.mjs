@@ -32,7 +32,7 @@ function unused() {
 
 const numberExpected = {
   code: 'NumberExpected',
-  message: 'Failed to convert napi value String into rust type `u32`',
+  message: 'Failed to convert napi value String into rust type `f64`',
 }
 
 export function checkCollectionContracts(g, runtime) {

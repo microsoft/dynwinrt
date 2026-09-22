@@ -122,6 +122,37 @@ pub(super) fn inject_unwrap(code: String) -> String {
     }
 }
 
+pub(super) fn inject_unsigned_flags(code: String) -> String {
+    if !code.contains("_flagsU32(") {
+        return code;
+    }
+    let helper = "const _flagsU32 = (value) => {\n\
+    if (!Number.isInteger(value) || value < -2147483648 || value > 4294967295) {\n\
+        throw new TypeError('UInt32 flags value must be an integer from -2147483648 through 4294967295');\n\
+    }\n\
+    return value < 0 ? value + 4294967296 : value;\n\
+};\n";
+    let mut last_import_end: Option<usize> = None;
+    let mut cursor = 0usize;
+    for line in code.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("import ") || trimmed.starts_with("import{") {
+            last_import_end = Some(cursor + line.len());
+        }
+        cursor += line.len();
+    }
+    match last_import_end {
+        Some(insert_at) => {
+            let mut out = String::with_capacity(code.len() + helper.len());
+            out.push_str(&code[..insert_at]);
+            out.push_str(helper);
+            out.push_str(&code[insert_at..]);
+            out
+        }
+        None => code,
+    }
+}
+
 pub(super) fn emit_delegate_wraps(out: &mut String, method: &ProjectedMethod) {
     for (param_name, delegate_name) in &method.delegate_wraps {
         let needs_wrap = method

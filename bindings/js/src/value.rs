@@ -154,8 +154,10 @@ impl DynWinRTValue {
     Self::hresult(value)
   }
   #[napi]
-  pub fn u32(value: u32) -> DynWinRTValue {
-    DynWinRTValue::new(dynwinrt::WinRTValue::U32(value))
+  pub fn u32(value: f64) -> napi::Result<DynWinRTValue> {
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U32(js_u32(
+      value, "u32",
+    )?)))
   }
   #[napi]
   pub fn i64(value: Either<BigInt, f64>) -> napi::Result<DynWinRTValue> {

@@ -210,6 +210,12 @@ I32 accessors. The backing type also participates in generic interface IIDs,
 including `IReference<T>` and collection IIDs. Regenerate wrappers and update
 the runtime together when adopting this support.
 
+Generated inputs for metadata-declared `UInt32` flags also accept the signed
+32-bit bit patterns produced by JavaScript bitwise operators: for example,
+`-1` is normalized to `0xffffffff`. This applies only to generated flags-enum
+inputs. Plain UInt32 values, non-flags enums, and low-level factories remain
+strict and reject negative, fractional, non-finite, or out-of-range values.
+
 ### Classic COM
 
 Classic COM is a preview under active development. It uses a separate subpath

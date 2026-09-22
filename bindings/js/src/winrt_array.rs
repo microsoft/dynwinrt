@@ -355,10 +355,15 @@ impl DynWinRTArray {
   }
 
   #[napi]
-  pub fn from_u32_values(values: Vec<u32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> =
-      values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
-    DynWinRTArray::new(dynwinrt::ArrayData::from_values(TABLE.u32_type(), &wvals))
+  pub fn from_u32_values(values: Vec<f64>) -> napi::Result<DynWinRTArray> {
+    let wvals = values
+      .into_iter()
+      .map(|value| js_u32(value, "fromU32Values").map(dynwinrt::WinRTValue::U32))
+      .collect::<napi::Result<Vec<_>>>()?;
+    Ok(DynWinRTArray::new(dynwinrt::ArrayData::from_values(
+      TABLE.u32_type(),
+      &wvals,
+    )))
   }
 
   #[napi]

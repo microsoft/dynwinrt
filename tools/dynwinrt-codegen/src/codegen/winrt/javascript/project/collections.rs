@@ -73,7 +73,11 @@ fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
         TypeMeta::String => "fromStringValues",
         _ => return None,
     };
-    Some(format!("DynWinRtArray.{}({})", method, items_var))
+    Some(format!(
+        "DynWinRtArray.{}({})",
+        method,
+        normalize_unsigned_flags_array(items_var, elem)
+    ))
 }
 
 pub(super) fn project_collection_helpers(
