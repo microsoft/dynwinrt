@@ -1653,7 +1653,9 @@ async def run_check(
                 position_type(latitude=11, longitude=21, altitude=40),
             ]
             box_type = generated_type(pkg_name, 'GeoboundingBox')
-            reference = generated_type(pkg_name, 'AltitudeReferenceSystem').Ellipsoid
+            altitude_type = generated_type(pkg_name, 'AltitudeReferenceSystem')
+            shape_type = generated_type(pkg_name, 'GeoshapeType')
+            reference = altitude_type.Ellipsoid
             factories = [cls.create, cls.create_with_altitude_reference,
                          cls.create_with_altitude_reference_and_spatial_reference]
             computations = [box_type.try_compute, box_type.try_compute_with_altitude_reference,
@@ -1669,6 +1671,19 @@ async def run_check(
                     assert view is not None
                     owned.append(view)
                     assert list(view) == positions
+                    assert view.get_many(1, positions) == positions[1:]
+                    assert view.index_of(positions[1]) == (1, True)
+                    constructed = cls(positions, *args)
+                    owned.append(constructed)
+                    constructed_view = constructed.positions
+                    assert constructed_view is not None
+                    owned.append(constructed_view)
+                    assert list(constructed_view) == positions
+                    expected_altitude = reference if args else altitude_type.Terrain
+                    for candidate in (path, constructed):
+                        assert candidate.geoshape_type == shape_type.Geopath
+                        assert candidate.spatial_reference_id == 4326
+                        assert candidate.altitude_reference_system == expected_altitude
                     bounds = compute(positions, *args)
                     assert bounds is not None
                     owned.append(bounds)
@@ -1676,6 +1691,15 @@ async def run_check(
                     assert bounds.southeast_corner == position_type(latitude=10, longitude=21, altitude=30)
                     assert bounds.min_altitude == 30
                     assert bounds.max_altitude == 40
+                    rebuilt = box_type(bounds.northwest_corner, bounds.southeast_corner, *args)
+                    owned.append(rebuilt)
+                    assert rebuilt.northwest_corner == bounds.northwest_corner
+                    assert rebuilt.southeast_corner == bounds.southeast_corner
+                    assert rebuilt.center == bounds.center
+                    for candidate in (bounds, rebuilt):
+                        assert candidate.geoshape_type == shape_type.GeoboundingBox
+                        assert candidate.spatial_reference_id == 4326
+                        assert candidate.altitude_reference_system == expected_altitude
                     assert compute([], *args) is None
                 finally:
                     for value in reversed(owned):
