@@ -4172,10 +4172,16 @@ fn map_com_type(typ: &windows_metadata::Type, index: &reader::Index) -> TypeMeta
     match typ {
         windows_metadata::Type::ISize => native_isize_type(),
         windows_metadata::Type::USize => native_usize_type(),
+        windows_metadata::Type::Array(inner) | windows_metadata::Type::ArrayRef(inner) => {
+            TypeMeta::Array(Box::new(map_com_type(inner, index)))
+        }
         windows_metadata::Type::Name(name)
             if is_canonical_hstring_name(&name.namespace, &name.name) =>
         {
             TypeMeta::String
+        }
+        windows_metadata::Type::Name(name) if name.namespace == "System" && name.name == "Guid" => {
+            TypeMeta::Guid
         }
         windows_metadata::Type::Name(name) => {
             if let Some(def) = index.get(&name.namespace, &name.name).next() {
@@ -4184,6 +4190,23 @@ fn map_com_type(typ: &windows_metadata::Type, index: &reader::Index) -> TypeMeta
                 }
                 if let Some(delegate) = parse_com_delegate_def(&def) {
                     return delegate;
+                }
+                if name.generics.is_empty()
+                    && def.extends().is_some_and(|base| {
+                        base.namespace() == "System" && base.name() == "ValueType"
+                    })
+                {
+                    return TypeMeta::Struct {
+                        namespace: name.namespace.clone(),
+                        name: name.name.clone(),
+                        fields: def
+                            .fields()
+                            .map(|field| crate::types::FieldMeta {
+                                name: field.name().to_string(),
+                                typ: map_com_type(&field.ty(), index),
+                            })
+                            .collect(),
+                    };
                 }
             }
             crate::meta::map_winmd_type_with_generics(typ, index, &[])
@@ -4554,6 +4577,122 @@ mod tests {
 
     const IWBEM_SERVICES_IID: &str = "9556dc99-828c-11cf-a37e-00aa003240c7";
     const IWBEM_CALL_RESULT_IID: &str = "44aca675-e8fc-11d0-a07c-00c04fb68820";
+
+    #[test]
+    fn nested_native_enums_keep_com_backing_types_without_winrt_validation() {
+        use windows_metadata::{FieldAttributes, Type, TypeAttributes, writer};
+
+        const NAMESPACE: &str = "Tests.NativeEnums";
+        let cases = [
+            ("SignedByte", Type::I8, TypeMeta::I8),
+            ("UnsignedByte", Type::U8, TypeMeta::U8),
+            ("SignedWord", Type::I16, TypeMeta::I16),
+            ("UnsignedWord", Type::U16, TypeMeta::U16),
+            ("SignedDword", Type::I32, TypeMeta::I32),
+            ("UnsignedDword", Type::U32, TypeMeta::U32),
+            ("SignedQword", Type::I64, TypeMeta::I64),
+            ("UnsignedQword", Type::U64, TypeMeta::U64),
+        ];
+        let mut file = writer::File::new("NativeEnums");
+        let enum_base = file.TypeRef("System", "Enum");
+        let value_base = file.TypeRef("System", "ValueType");
+        for (name, underlying, _) in &cases {
+            file.TypeDef(
+                NAMESPACE,
+                name,
+                writer::TypeDefOrRef::TypeRef(enum_base),
+                TypeAttributes::Public | TypeAttributes::Sealed,
+            );
+            file.Field(
+                "value__",
+                underlying,
+                FieldAttributes::Public
+                    | FieldAttributes::SpecialName
+                    | FieldAttributes::RTSpecialName,
+            );
+        }
+        file.TypeDef(
+            NAMESPACE,
+            "Inner",
+            writer::TypeDefOrRef::TypeRef(value_base),
+            TypeAttributes::Public | TypeAttributes::SequentialLayout,
+        );
+        for (name, _, _) in &cases {
+            file.Field(name, &Type::named(NAMESPACE, name), FieldAttributes::Public);
+        }
+        file.TypeDef(
+            NAMESPACE,
+            "Outer",
+            writer::TypeDefOrRef::TypeRef(value_base),
+            TypeAttributes::Public | TypeAttributes::SequentialLayout,
+        );
+        file.Field(
+            "Inner",
+            &Type::named(NAMESPACE, "Inner"),
+            FieldAttributes::Public,
+        );
+        file.Field(
+            "Next",
+            &Type::PtrMut(Box::new(Type::named(NAMESPACE, "Outer")), 1),
+            FieldAttributes::Public,
+        );
+        file.TypeDef(
+            "System",
+            "Guid",
+            writer::TypeDefOrRef::TypeRef(value_base),
+            TypeAttributes::Public | TypeAttributes::SequentialLayout,
+        );
+        file.Field("Data1", &Type::U32, FieldAttributes::Public);
+        file.Field("Data2", &Type::U16, FieldAttributes::Public);
+        file.Field("Data3", &Type::U16, FieldAttributes::Public);
+        file.Field(
+            "Data4",
+            &Type::ArrayFixed(Box::new(Type::U8), 8),
+            FieldAttributes::Public,
+        );
+        let index = reader::Index::new(vec![reader::File::new(file.into_stream()).unwrap()]);
+        let TypeMeta::Struct { fields, .. } =
+            map_com_type(&Type::named(NAMESPACE, "Outer"), &index)
+        else {
+            panic!("expected the outer native struct");
+        };
+        let TypeMeta::Struct { fields: inner, .. } = &fields[0].typ else {
+            panic!("expected the nested native struct");
+        };
+        for (field, (name, _, expected)) in inner.iter().zip(&cases) {
+            let TypeMeta::Enum {
+                namespace,
+                name: actual_name,
+                underlying,
+                ..
+            } = &field.typ
+            else {
+                panic!("expected a native enum for {name}");
+            };
+            assert_eq!(namespace, NAMESPACE);
+            assert_eq!(actual_name, name);
+            assert_eq!(underlying.as_ref(), expected);
+        }
+        assert_eq!(inner.len(), cases.len());
+        assert_eq!(fields[1].typ, TypeMeta::Object);
+        assert_eq!(
+            map_com_type(&Type::named("System", "Guid"), &index),
+            TypeMeta::Guid
+        );
+        for (name, _, expected) in &cases {
+            for array in [
+                Type::Array(Box::new(Type::named(NAMESPACE, name))),
+                Type::ArrayRef(Box::new(Type::named(NAMESPACE, name))),
+            ] {
+                let TypeMeta::Array(element) = map_com_type(&array, &index) else {
+                    panic!("expected an array of native enums");
+                };
+                assert!(
+                    matches!(element.as_ref(), TypeMeta::Enum { underlying, .. } if underlying.as_ref() == expected)
+                );
+            }
+        }
+    }
 
     fn wbem_open_namespace_fixture() -> (MethodMeta, RawComMethod) {
         let scalar_type = |native_type| RawComType {

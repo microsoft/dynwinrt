@@ -4586,18 +4586,19 @@ fn unsigned_enum_values_preserve_their_value() {
         unreachable!()
     };
     assert!(
-        matches!(*underlying, TypeMeta::I32),
-        "the shared WinRT model must remain unchanged"
+        matches!(*underlying, TypeMeta::U32),
+        "enum metadata must preserve its declared unsigned backing type"
     );
+    let member = members
+        .iter()
+        .find(|member| member.name == "FOFX_DONTDISPLAYLOCATIONS")
+        .unwrap();
     assert_eq!(
-        members
-            .iter()
-            .find(|member| member.name == "FOFX_DONTDISPLAYLOCATIONS")
-            .unwrap()
-            .value,
+        member.value,
         i32::MIN,
-        "unsigned Win32 values must be corrected only in the COM-local model"
+        "member storage retains the raw 32-bit representation"
     );
+    assert_eq!(member.numeric_value(&underlying), 2_147_483_648);
 }
 
 #[test]

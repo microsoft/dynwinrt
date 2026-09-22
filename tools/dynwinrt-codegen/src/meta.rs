@@ -422,32 +422,37 @@ pub fn parse_interfaces(winmd_paths: &str, namespace: &str) -> Vec<InterfaceMeta
         if def.namespace() != namespace {
             continue;
         }
-        // Skip CLR projection types
-        if def.name().starts_with('<') {
-            continue;
-        }
-        // Interfaces have no extends (or extend nothing)
-        if def.extends().is_some() {
-            continue;
-        }
-        // Skip generic interface definitions (they have generic params)
-        if def.generic_params().next().is_some() {
-            continue;
-        }
-        // Check it's actually an interface by looking for GuidAttribute
-        let iid = extract_iid(&def);
-        if iid.is_empty() {
-            continue;
-        }
-        // Skip exclusive interfaces (marked with ExclusiveTo attribute)
-        if def.has_attribute("ExclusiveToAttribute") {
-            continue;
-        }
-        if let Some(iface) = parse_interface(&index, namespace, def.name()) {
+        if let Some(iface) = parse_public_interface_from_def(&index, &def) {
             interfaces.push(iface);
         }
     }
     interfaces
+}
+
+/// Parse one public interface without interpreting unrelated types in its namespace.
+pub fn parse_public_interface(
+    winmd_paths: &str,
+    namespace: &str,
+    name: &str,
+) -> Option<InterfaceMeta> {
+    let index = load_index(winmd_paths)?;
+    let def = index.get(namespace, name).next()?;
+    parse_public_interface_from_def(&index, &def)
+}
+
+fn parse_public_interface_from_def(
+    index: &reader::Index,
+    def: &reader::TypeDef,
+) -> Option<InterfaceMeta> {
+    if def.name().starts_with('<')
+        || def.extends().is_some()
+        || def.generic_params().next().is_some()
+        || extract_iid(def).is_empty()
+        || def.has_attribute("ExclusiveToAttribute")
+    {
+        return None;
+    }
+    parse_interface(index, def.namespace(), def.name())
 }
 
 /// Parse enums in a namespace.

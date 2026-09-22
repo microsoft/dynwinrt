@@ -106,7 +106,10 @@ pub(in crate::codegen::com) fn project_type(typ: &TypeMeta) -> Result<ComType, U
                     name: name.clone(),
                     underlying,
                 })
-            } else if matches!(fields[0].typ, TypeMeta::Object) {
+            } else if matches!(fields[0].typ, TypeMeta::Object)
+                || is_native_isize(&fields[0].typ)
+                || is_native_usize(&fields[0].typ)
+            {
                 classify_pointer_alias(name)
                     .map(|kind| ComType::PointerAlias {
                         namespace: namespace.clone(),
@@ -347,17 +350,38 @@ mod tests {
 
     #[test]
     fn unknown_pointer_shaped_typedef_fails_closed() {
-        let unknown = TypeMeta::Struct {
-            namespace: "Windows.Win32.Foundation".into(),
-            name: "MYSTERY_POINTER".into(),
-            fields: vec![crate::types::FieldMeta {
-                name: "Value".into(),
-                typ: TypeMeta::Object,
-            }],
-        };
-        assert!(matches!(
-            project_type(&unknown),
-            Err(UnsupportedComType::UnknownPointerAlias { .. })
-        ));
+        for storage in [
+            TypeMeta::Object,
+            crate::com_metadata::native_isize_type(),
+            crate::com_metadata::native_usize_type(),
+        ] {
+            let unknown = TypeMeta::Struct {
+                namespace: "Windows.Win32.Foundation".into(),
+                name: "MYSTERY_POINTER".into(),
+                fields: vec![crate::types::FieldMeta {
+                    name: "Value".into(),
+                    typ: storage.clone(),
+                }],
+            };
+            assert!(matches!(
+                project_type(&unknown),
+                Err(UnsupportedComType::UnknownPointerAlias { .. })
+            ));
+            let image_list = TypeMeta::Struct {
+                namespace: "Windows.Win32.UI.Controls".into(),
+                name: "HIMAGELIST".into(),
+                fields: vec![crate::types::FieldMeta {
+                    name: "Value".into(),
+                    typ: storage,
+                }],
+            };
+            assert!(matches!(
+                project_type(&image_list),
+                Ok(ComType::PointerAlias {
+                    kind: PointerAliasKind::HandleValue,
+                    ..
+                })
+            ));
+        }
     }
 }

@@ -580,10 +580,7 @@ fn run() -> Result<(), String> {
                             .iter()
                             .any(|class| class.name == cls.as_str());
                         if !is_runtime_class {
-                            if let Some(interface) = meta::parse_interfaces(&winmd, ns)
-                                .into_iter()
-                                .find(|interface| interface.name == cls.as_str())
-                            {
+                            if let Some(interface) = meta::parse_public_interface(&winmd, ns, cls) {
                                 requested_winrt_interfaces.push(interface);
                                 continue;
                             }
@@ -598,10 +595,7 @@ fn run() -> Result<(), String> {
                         com_coclasses.push(coclass);
                         continue;
                     }
-                    if let Some(interface) = meta::parse_interfaces(&winmd, ns)
-                        .into_iter()
-                        .find(|interface| interface.name == cls.as_str())
-                    {
+                    if let Some(interface) = meta::parse_public_interface(&winmd, ns, cls) {
                         requested_winrt_interfaces.push(interface);
                         continue;
                     }
