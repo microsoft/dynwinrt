@@ -15,6 +15,7 @@ pub(crate) mod structs;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta, TypeRef};
@@ -266,10 +267,12 @@ struct JavaScriptModuleLayout {
 /// A context owns the complete native-identity-to-module mapping. Keeping it
 /// explicit makes independent projections deterministic and prevents nested or
 /// concurrent generation from observing process-global layout state.
+#[derive(Clone)]
 pub struct JavaScriptProjectionContext {
-    layout: JavaScriptModuleLayout,
+    layout: Arc<JavaScriptModuleLayout>,
     runtime_import_name: String,
-    implementation_helpers: BTreeMap<String, Vec<ImplementationHelper>>,
+    implementation_helpers: Arc<BTreeMap<String, Vec<ImplementationHelper>>>,
+    pub(crate) flags_helper: String,
 }
 
 impl Default for JavaScriptProjectionContext {
@@ -280,6 +283,91 @@ impl Default for JavaScriptProjectionContext {
 }
 
 impl JavaScriptProjectionContext {
+    // Calls appear inside methods, so module bindings alone cannot prevent shadowing.
+    pub(crate) fn with_flags_scope(
+        &self,
+        owner: &str,
+        interfaces: &[&InterfaceMeta],
+        known: &std::collections::HashSet<String>,
+    ) -> Self {
+        fn reserve(names: &mut BTreeSet<String>, name: &str) {
+            names.insert(name.into());
+            names.insert(naming::to_camel_case(name));
+            names.insert(format!("_{name}"));
+            names.insert(format!("_{name}Cache"));
+        }
+        fn visit(names: &mut BTreeSet<String>, typ: &TypeMeta) {
+            match typ {
+                TypeMeta::Struct { name, fields, .. } => {
+                    reserve(names, name);
+                    for field in fields {
+                        visit(names, &field.typ);
+                    }
+                }
+                TypeMeta::Parameterized { name, args, .. } => {
+                    reserve(names, name);
+                    for arg in args {
+                        visit(names, arg);
+                    }
+                }
+                TypeMeta::Array(inner)
+                | TypeMeta::AsyncOperation(inner)
+                | TypeMeta::AsyncActionWithProgress(inner) => visit(names, inner),
+                TypeMeta::AsyncOperationWithProgress(result, progress) => {
+                    visit(names, result);
+                    visit(names, progress);
+                }
+                TypeMeta::Enum { name, .. }
+                | TypeMeta::Interface { name, .. }
+                | TypeMeta::RuntimeClass { name, .. }
+                | TypeMeta::Delegate { name, .. } => {
+                    reserve(names, name);
+                }
+                _ => {}
+            }
+        }
+        let mut names = BTreeSet::new();
+        reserve(&mut names, owner);
+        for name in known {
+            reserve(&mut names, name);
+        }
+        for target in self.output_targets() {
+            reserve(&mut names, &target.projected_name);
+        }
+        for helper in self.implementation_helpers.values().flatten() {
+            reserve(&mut names, &helper.name);
+        }
+        for iface in interfaces {
+            reserve(&mut names, &iface.name);
+            for method in iface.methods.iter().chain(
+                iface
+                    .implementation_metadata
+                    .delegates
+                    .iter()
+                    .map(|delegate| &delegate.invoke),
+            ) {
+                for param in &method.params {
+                    reserve(&mut names, &param.name);
+                    visit(&mut names, &param.typ);
+                }
+                if let Some(typ) = &method.return_type {
+                    visit(&mut names, typ);
+                }
+            }
+            for arg in &iface.generic_args {
+                visit(&mut names, arg);
+            }
+        }
+        let mut scoped = self.clone();
+        scoped.flags_helper = "_flagsU32".into();
+        let mut suffix = 1;
+        while names.contains(&scoped.flags_helper) {
+            scoped.flags_helper = format!("_flagsU32_{suffix}");
+            suffix += 1;
+        }
+        scoped
+    }
+
     pub fn configure_implementation_helpers(&mut self, records: &[JavaScriptTypeLayoutRecord]) {
         let owners = records.iter().filter_map(|record| {
             let target = self.target_for_identity(&record.identity)?;
@@ -298,7 +386,7 @@ impl JavaScriptProjectionContext {
                 format!("{}_PARAM_TYPES", target.projected_name),
             ]
         });
-        self.implementation_helpers = allocate_helpers(
+        self.implementation_helpers = Arc::new(allocate_helpers(
             owners,
             reserved.chain(
                 records
@@ -306,7 +394,7 @@ impl JavaScriptProjectionContext {
                     .flat_map(|record| record.reserved_symbols.iter().cloned()),
             ),
             true,
-        );
+        ));
     }
 
     pub fn implementation_helpers(
@@ -1327,12 +1415,13 @@ pub fn create_javascript_projection_context_with_records(
         .collect();
 
     let mut context = JavaScriptProjectionContext {
-        layout: JavaScriptModuleLayout {
+        layout: Arc::new(JavaScriptModuleLayout {
             targets,
             by_projected_name: projected_owners,
-        },
+        }),
         runtime_import_name: runtime_import_name.into(),
-        implementation_helpers: BTreeMap::new(),
+        implementation_helpers: Arc::new(BTreeMap::new()),
+        flags_helper: "_flagsU32".into(),
     };
     context
         .configure_implementation_helpers(&previous_by_identity.into_values().collect::<Vec<_>>());

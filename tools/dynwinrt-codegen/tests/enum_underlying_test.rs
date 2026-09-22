@@ -7,6 +7,31 @@ use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render
 use dynwinrt_codegen::meta::{self, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::{EnumMember, FieldMeta, TypeMeta};
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+fn run_node(source: &str) {
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Node is required for generated enum regression tests");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(source.as_bytes())
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
 
 fn enumeration(unsigned: bool) -> TypeMeta {
     TypeMeta::Enum {
@@ -381,4 +406,170 @@ fn flags_normalization_covers_references_vectors_and_maps() {
         "{js}"
     );
     assert_eq!(js.matches("const _flagsU32 =").count(), 1, "{js}");
+}
+
+#[test]
+fn flags_helper_avoids_type_parameter_and_suffixed_name_collisions() {
+    for type_name in ["_flagsU32", "IFlagsProbe"] {
+        let interface = parse_flags_collision_fixture(type_name);
+        let (js, _) = render(&interface);
+        assert!(js.contains("const _flagsU32_3 ="), "{js}");
+        run_node(&format!(
+            r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+let calls = 0;
+let received;
+const signature = {{ addIn() {{ return this; }} }};
+const iface = {{
+  addMethod() {{ return this; }},
+  method() {{ return {{ invoke(_obj, args) {{ calls++; received = args; }} }}; }}
+}};
+const runtime = {{
+  WinGuid: {{ parse: value => value }},
+  DynWinRtType: {{ u32() {{}}, enumType() {{}}, registerInterface() {{ return iface; }} }},
+  DynWinRtMethodSig: function() {{ return signature; }},
+  DynWinRtValue: {{ u32(value) {{
+    assert.ok(Number.isInteger(value) && value >= 0 && value <= 0xffffffff);
+    return value;
+  }} }}
+}};
+const exports = {{}};
+vm.runInNewContext({}, {{ exports, require() {{ return runtime; }} }});
+const obj = new exports[{}]({{}});
+for (const value of [1, -2147483647, 2147483649, -1]) {{
+  obj.take(value, value, value);
+  assert.deepEqual(Array.from(received), [value >>> 0, value >>> 0, value >>> 0]);
+}}
+for (const value of [-2147483649, 4294967296, 1.5, NaN, Infinity, '1', null, undefined]) {{
+  const before = calls;
+  assert.throws(() => obj.take(value, 1, 1));
+  assert.equal(calls, before);
+}}
+"#,
+            serde_json::to_string(&js).unwrap(),
+            serde_json::to_string(type_name).unwrap(),
+        ));
+    }
+}
+
+fn parse_flags_collision_fixture(name: &str) -> InterfaceMeta {
+    use windows_metadata::{
+        FieldAttributes, MethodAttributes, MethodCallAttributes, MethodImplAttributes,
+        ParamAttributes, Signature, Type, TypeAttributes, Value, writer,
+    };
+    const NS: &str = "Tests.EnumContracts";
+    let mut file = writer::File::new("FlagsNames");
+    let enum_base = file.TypeRef("System", "Enum");
+    let enumeration = file.TypeDef(
+        NS,
+        "Options",
+        writer::TypeDefOrRef::TypeRef(enum_base),
+        TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+    );
+    file.Field(
+        "value__",
+        &Type::U32,
+        FieldAttributes::Public | FieldAttributes::SpecialName | FieldAttributes::RTSpecialName,
+    );
+    let flags = file.TypeRef("System", "FlagsAttribute");
+    let ctor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![],
+        },
+        writer::MemberRefParent::TypeRef(flags),
+    );
+    file.Attribute(
+        writer::HasAttribute::TypeDef(enumeration),
+        writer::AttributeType::MemberRef(ctor),
+        &[],
+    );
+    let interface = file.TypeDef(
+        NS,
+        name,
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public
+            | TypeAttributes::Abstract
+            | TypeAttributes::Interface
+            | TypeAttributes::WindowsRuntime,
+    );
+    let guid = file.TypeRef("Windows.Foundation.Metadata", "GuidAttribute");
+    let ctor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![
+                Type::U32,
+                Type::U16,
+                Type::U16,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+            ],
+        },
+        writer::MemberRefParent::TypeRef(guid),
+    );
+    let values = [
+        Value::U32(0x37d06f6d),
+        Value::U16(0x734a),
+        Value::U16(0x4192),
+        Value::U8(0x81),
+        Value::U8(0x90),
+        Value::U8(0xbc),
+        Value::U8(0xdf),
+        Value::U8(0x83),
+        Value::U8(0x51),
+        Value::U8(0x72),
+        Value::U8(0xf0),
+    ];
+    file.Attribute(
+        writer::HasAttribute::TypeDef(interface),
+        writer::AttributeType::MemberRef(ctor),
+        &values
+            .into_iter()
+            .map(|value| (String::new(), value))
+            .collect::<Vec<_>>(),
+    );
+    file.MethodDef(
+        "Take",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![Type::named(NS, "Options"); 3],
+        },
+        MethodAttributes::Public
+            | MethodAttributes::Virtual
+            | MethodAttributes::Abstract
+            | MethodAttributes::NewSlot,
+        MethodImplAttributes::default(),
+    );
+    for (index, name) in ["_flagsU32", "_flagsU32_1", "_flagsU32_2"]
+        .iter()
+        .enumerate()
+    {
+        file.Param(name, (index + 1) as u16, ParamAttributes::In);
+    }
+    let path = std::env::temp_dir().join(format!(
+        "dynwinrt-flags-names-{}-{name}.winmd",
+        std::process::id()
+    ));
+    std::fs::write(&path, file.into_stream()).unwrap();
+    let parsed = meta::parse_interfaces(path.to_str().unwrap(), NS);
+    std::fs::remove_file(path).unwrap();
+    let interface = parsed
+        .into_iter()
+        .find(|interface| interface.name == name)
+        .unwrap();
+    assert!(matches!(&interface.methods[0].params[0].typ,
+        TypeMeta::Enum { underlying, is_flags: true, .. } if underlying.as_ref() == &TypeMeta::U32));
+    interface
 }

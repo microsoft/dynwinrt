@@ -300,6 +300,7 @@ pub struct ProjectedDelegate {
 /// A complete projected file ready for rendering.
 pub struct ProjectedFile {
     pub name: String,
+    pub flags_helper: String,
     pub imports: Vec<ProjectedImport>,
     /// IID constants (rendered as `const` in JS, `declare const` in DTS)
     pub iid_consts: Vec<ProjectedIidConst>,

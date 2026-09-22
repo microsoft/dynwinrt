@@ -246,7 +246,20 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::Guid => format!("DynCom.guid(WinGuid.parse({variable}))"),
         ComType::GuidPointer => format!("DynCom.iidPointer(WinGuid.parse({variable}))"),
         ComType::HString => format!("DynCom.hstring({variable})"),
-        ComType::Enum { underlying, .. } => wrap_enum_arg_js(*underlying, variable),
+        ComType::Enum {
+            underlying,
+            signed_bit_pattern_input,
+            ..
+        } => {
+            let value = if *signed_bit_pattern_input {
+                format!(
+                    "((value) => {{ if (typeof value !== 'number' || value % 1 !== 0 || value < -2147483648 || value > 4294967295) throw new TypeError('Expected a 32-bit flags value'); return value < 0 ? value + 4294967296 : value; }})({variable})"
+                )
+            } else {
+                variable.to_string()
+            };
+            wrap_enum_arg_js(*underlying, &value)
+        }
         ComType::ScalarAlias { underlying, .. } => wrap_scalar_arg_js(*underlying, variable),
         ComType::RawPointer => format!("DynCom.safeDataPointer({variable})"),
         ComType::ExactNullPointer => format!("DynCom.exactNullPointer({variable})"),
@@ -838,6 +851,27 @@ fn unwrap_enum_js(underlying: ComEnumUnderlying, expression: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn flags_input_conversion_is_explicit_and_leaves_other_scalars_strict() {
+        let enumeration = |underlying, signed_bit_pattern_input| ComType::Enum {
+            namespace: "Tests".into(),
+            name: "Flags".into(),
+            underlying,
+            signed_bit_pattern_input,
+        };
+        let flags = enumeration(ComEnumUnderlying::U32, true);
+        let unsigned = enumeration(ComEnumUnderlying::U32, false);
+        let signed = enumeration(ComEnumUnderlying::I32, false);
+        assert!(wrap_arg_js(&flags, "value").contains("value + 4294967296"));
+        assert_eq!(wrap_arg_js(&unsigned, "value"), "DynCom.u32(value)");
+        assert_eq!(wrap_arg_js(&signed, "value"), "DynCom.i32(value)");
+        assert_eq!(abi_type_js(&flags), abi_type_js(&unsigned));
+        assert_eq!(
+            unwrap_value_js(&flags, "value"),
+            unwrap_value_js(&unsigned, "value")
+        );
+    }
+
     fn pod_layout() -> NativePodLayout {
         let architecture = NativePodArchitectureLayout {
             size: 8,
@@ -941,6 +975,7 @@ mod tests {
                 namespace: "Tests".into(),
                 name: "E".into(),
                 underlying: ComEnumUnderlying::U32,
+                signed_bit_pattern_input: false,
             },
             ComType::ScalarAlias {
                 namespace: "Tests".into(),

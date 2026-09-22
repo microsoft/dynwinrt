@@ -231,6 +231,7 @@ pub(super) enum ComType {
         namespace: String,
         name: String,
         underlying: ComEnumUnderlying,
+        signed_bit_pattern_input: bool,
     },
     ScalarAlias {
         namespace: String,

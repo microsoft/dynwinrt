@@ -869,6 +869,15 @@ requirements for older borrowed-copy output still apply.
 | `SAFEARRAY`                       | `DynComSafeArray`                                                     |
 | `PROPVARIANT`                     | `DynComPropVariant`                                                   |
 
+Generated COM parameters for metadata-declared UInt32 flags accept either
+unsigned numbers or signed 32-bit bit patterns from JavaScript bitwise
+operators. For example, `FOS_SUPPORTSTREAMABLEITEMS | FOS_FORCEFILESYSTEM`
+is normalized to `0x80000040` before calling `IFileDialog.setOptions`.
+The same conversion applies to enum InOut inputs and callback outputs.
+Fractions, non-numbers, and values outside `-2147483648..4294967295` are
+rejected before dispatch. Plain UInt32 and non-flags enum inputs remain
+unsigned-only, and the low-level `DynCom.u32()` factory remains strict.
+
 Do not treat every pointer as a Buffer:
 
 - The **contents** of a handle Buffer represent the handle bits.

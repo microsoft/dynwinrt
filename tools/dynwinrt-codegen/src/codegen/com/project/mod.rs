@@ -1803,6 +1803,8 @@ fn project_value_type(
                 namespace: definition.native_name().namespace().into(),
                 name: definition.native_name().name().into(),
                 underlying: project_enum_underlying(definition.underlying())?,
+                signed_bit_pattern_input: definition.is_flags()
+                    && definition.underlying() == ScalarType::U32,
             })
         }
         ComAbiType::Handle(handle) => Ok(ComType::PointerAlias {

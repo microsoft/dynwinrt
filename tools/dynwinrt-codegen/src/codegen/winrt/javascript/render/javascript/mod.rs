@@ -137,7 +137,7 @@ fn render_esm(file: &ProjectedFile) -> String {
     if file.needs_unwrap_helper {
         out = inject_unwrap(out);
     }
-    out = inject_unsigned_flags(out);
+    out = inject_unsigned_flags(out, &file.flags_helper);
 
     out
 }

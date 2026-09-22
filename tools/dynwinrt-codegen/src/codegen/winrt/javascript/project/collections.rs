@@ -23,7 +23,7 @@ pub(super) fn should_skip_raw_collection_method(iface: &InterfaceMeta, method_na
                     && iface
                         .generic_args
                         .first()
-                        .is_some_and(|elem| ts_array_from_items("items", elem).is_some())
+                        .is_some_and(|elem| ts_fill_array_create("count", elem).is_some())
             }
             _ => false,
         },
@@ -58,7 +58,11 @@ fn ts_fill_array_create(count_var: &str, elem: &TypeMeta) -> Option<String> {
 
 /// Create a DynWinRtArray from a JS array variable for replaceAll.
 /// Returns `None` for element types that have no typed batch constructor.
-fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
+fn ts_array_from_items(
+    context: &JavaScriptProjectionContext,
+    items_var: &str,
+    elem: &TypeMeta,
+) -> Option<String> {
     let method = match elem.underlying_type() {
         TypeMeta::I8 => "fromI8Values",
         TypeMeta::U8 => "fromU8Values",
@@ -76,7 +80,7 @@ fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
     Some(format!(
         "DynWinRtArray.{}({})",
         method,
-        normalize_unsigned_flags_array(items_var, elem)
+        normalize_unsigned_flags_array(context, items_var, elem)
     ))
 }
 
@@ -268,7 +272,7 @@ pub(super) fn project_collection_helpers(
                     .find(|m| m.name == "ReplaceAll")
                     .map(|m| m.vtable_index)
                 {
-                    if let Some(items_expr) = ts_array_from_items("items", elem) {
+                    if let Some(items_expr) = ts_array_from_items(context, "items", elem) {
                         let invoke = format!(
                             "{iface_var}.method({replace_all_idx}).invoke({object_expr}, \
                              [{items_expr}.toValue()])"

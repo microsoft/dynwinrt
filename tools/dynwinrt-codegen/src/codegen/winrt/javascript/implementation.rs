@@ -521,7 +521,7 @@ impl Projector<'_> {
                         return format!(
                             "DynWinRtValue.enumValue({}, {})",
                             self.native(typ),
-                            normalize_unsigned_flags(&value, &typ.metadata)
+                            normalize_unsigned_flags(self.context, &value, &typ.metadata)
                         );
                     }
                     _ => unreachable!("validated scalar"),

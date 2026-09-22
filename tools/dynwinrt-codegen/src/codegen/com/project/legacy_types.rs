@@ -77,11 +77,13 @@ pub(in crate::codegen::com) fn project_type(typ: &TypeMeta) -> Result<ComType, U
             namespace,
             name,
             underlying,
+            is_flags,
             ..
         } => Ok(ComType::Enum {
             namespace: namespace.clone(),
             name: name.clone(),
             underlying: project_enum_underlying(underlying)?,
+            signed_bit_pattern_input: *is_flags && matches!(underlying.as_ref(), TypeMeta::U32),
         }),
         TypeMeta::Struct {
             namespace, name, ..

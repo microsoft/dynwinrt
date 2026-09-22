@@ -35,6 +35,99 @@ fn win32_available() -> bool {
     Path::new(&win32_winmd()).exists()
 }
 
+#[test]
+fn file_dialog_flags_accept_signed_js_bit_patterns_without_opening_a_dialog() {
+    use std::io::Write;
+
+    if !win32_available() {
+        assert!(std::env::var_os("DYNWINRT_REQUIRE_WIN32_METADATA").is_none());
+        eprintln!("Skipping: Win32 metadata not available");
+        return;
+    }
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IFileDialog")
+            .unwrap();
+    let options = interface
+        .referenced_enums
+        .iter()
+        .find(|en| en.name == "FILEOPENDIALOGOPTIONS")
+        .unwrap();
+    assert!(options.is_flags);
+    assert_eq!(options.underlying, TypeMeta::U32);
+    let generated = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+    let script = format!(
+        r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const native = process.env.DYNWINRT_JS_PACKAGE
+  ? require(require('node:path').join(process.env.DYNWINRT_JS_PACKAGE, 'dist', 'com-unsafe.js')).DynCom
+  : null;
+let calls = 0;
+let received;
+const signature = new Proxy({{}}, {{get() {{ return () => signature; }}}});
+const iface = {{
+  addBaseInterface() {{ return this; }},
+  addMethod() {{ return this; }},
+  addMethodAt() {{ return this; }},
+  method(slot) {{ return {{invoke(_object, args) {{ calls++; received = args; return []; }} }}; }},
+}};
+const strictU32 = value => {{
+  assert.ok(typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff, 'strict UInt32');
+  if (native) return native.toU32(native.u32(value));
+  return value;
+}};
+const runtime = {{
+  __registerComProjection() {{}},
+  __requireComProjection() {{}},
+  DynCom: new Proxy({{
+    registerInterface: () => iface,
+    registerIUnknownInterface: () => iface,
+    u32: strictU32,
+  }}, {{get(target, name) {{ return target[name] ?? (() => ({{}})); }} }}),
+  DynComMethodSig: function() {{ return signature; }},
+  WinGuid: {{parse: value => value}},
+}};
+const output = {{}};
+vm.runInNewContext({}, {{exports: output, require() {{ return runtime; }} }});
+const dialog = Object.create(output.IFileDialog.prototype);
+dialog._obj = {{}};
+for (const [input, expected] of [[0x80000000 | 0x40, 0x80000040], [0x80000040, 0x80000040], [-1, 0xffffffff], [1, 1]]) {{
+  dialog.setOptions(input);
+  assert.equal(received[0], expected);
+}}
+for (const invalid of [-2147483649, 4294967296, 1.5, NaN, Infinity, -Infinity, '1', null, undefined, true, 1n]) {{
+  const before = calls;
+  assert.throws(() => dialog.setOptions(invalid));
+  assert.equal(calls, before);
+}}
+const before = calls;
+assert.throws(() => dialog.setFileTypeIndex(-1), /strict UInt32/);
+assert.equal(calls, before);
+"#,
+        serde_json::to_string(&generated.js).unwrap()
+    );
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn remove_com_generation_lock(output_dir: &Path) {
     let Some(parent) = output_dir.parent() else {
         return;

@@ -136,7 +136,7 @@ pub(crate) fn struct_field_setter(
             context,
             underlying,
             index,
-            &normalize_unsigned_flags(value_expr, typ),
+            &normalize_unsigned_flags(context, value_expr, typ),
         ),
         TypeMeta::I32 => format!("s.setI32({}, {})", index, value_expr),
         TypeMeta::U32 => format!("s.setU32({}, {})", index, value_expr),

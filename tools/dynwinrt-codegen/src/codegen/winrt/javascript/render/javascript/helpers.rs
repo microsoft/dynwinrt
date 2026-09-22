@@ -122,16 +122,18 @@ pub(super) fn inject_unwrap(code: String) -> String {
     }
 }
 
-pub(super) fn inject_unsigned_flags(code: String) -> String {
-    if !code.contains("_flagsU32(") {
+pub(super) fn inject_unsigned_flags(code: String, name: &str) -> String {
+    if name.is_empty() || !code.contains(&format!("{name}(")) {
         return code;
     }
-    let helper = "const _flagsU32 = (value) => {\n\
-    if (!Number.isInteger(value) || value < -2147483648 || value > 4294967295) {\n\
+    let helper = format!(
+        "const {name} = (value) => {{\n\
+    if (typeof value !== 'number' || value % 1 !== 0 || value < -2147483648 || value > 4294967295) {{\n\
         throw new TypeError('UInt32 flags value must be an integer from -2147483648 through 4294967295');\n\
-    }\n\
+    }}\n\
     return value < 0 ? value + 4294967296 : value;\n\
-};\n";
+}};\n"
+    );
     let mut last_import_end: Option<usize> = None;
     let mut cursor = 0usize;
     for line in code.split_inclusive('\n') {
@@ -145,7 +147,7 @@ pub(super) fn inject_unsigned_flags(code: String) -> String {
         Some(insert_at) => {
             let mut out = String::with_capacity(code.len() + helper.len());
             out.push_str(&code[..insert_at]);
-            out.push_str(helper);
+            out.push_str(&helper);
             out.push_str(&code[insert_at..]);
             out
         }

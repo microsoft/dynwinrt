@@ -164,7 +164,7 @@ fn setter_line(
         .unwrap_or_else(|| "value".into());
     let fallback = format!("_m.invoke({}, [{}]);", obj_expr, wrapped);
     let fast_value = typ
-        .map(|typ| normalize_unsigned_flags("value", typ))
+        .map(|typ| normalize_unsigned_flags(context, "value", typ))
         .unwrap_or_else(|| "value".into());
     let Some(method) = (match typ.map(TypeMeta::underlying_type) {
         Some(TypeMeta::String) => Some("setHstring"),
