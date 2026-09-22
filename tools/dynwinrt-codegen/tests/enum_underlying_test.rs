@@ -66,9 +66,19 @@ fn render(interface: &InterfaceMeta) -> (String, String) {
 
 #[test]
 fn sdk_enum_metadata_retains_signed_and_unsigned_backing_types() {
-    let winmd = std::env::var("DYNWINRT_WINDOWS_WINMD").unwrap_or_else(|_| {
-        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd".into()
-    });
+    let winmd = std::env::var("DYNWINRT_WINDOWS_WINMD")
+        .ok()
+        .into_iter()
+        .chain(dynwinrt_codegen::com_metadata::discover_newest_windows_winmd())
+        .find(|candidate| {
+            meta::parse_enums(candidate, "Windows.Gaming.Input")
+                .iter()
+                .any(|typ| matches!(typ, TypeMeta::Enum { name, .. } if name == "GamepadButtons"))
+        });
+    let Some(winmd) = winmd else {
+        eprintln!("Skipping: complete Windows SDK metadata is unavailable");
+        return;
+    };
     for (namespace, name, expected, flags) in [
         (
             "Windows.Gaming.Input",
