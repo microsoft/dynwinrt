@@ -88,9 +88,9 @@ fn value_matches_type(value_type: &TypeHandle, value: &WinRTValue) -> bool {
         | (TypeKind::Guid, WinRTValue::Guid(_))
         | (TypeKind::HString, WinRTValue::HString(_))
         | (TypeKind::HResult, WinRTValue::HResult(_))
-        | (TypeKind::HResult, WinRTValue::I32(_))
-        | (TypeKind::Enum(_), WinRTValue::I32(_)) => true,
+        | (TypeKind::HResult, WinRTValue::I32(_)) => true,
         (TypeKind::Enum(_), WinRTValue::Enum { type_handle, .. }) => type_handle == value_type,
+        (TypeKind::Enum(_), value) => value.get_type_kind() == value_type.underlying_kind(),
         (TypeKind::Struct(_), WinRTValue::Struct(data)) => data.type_handle() == value_type,
         _ => false,
     }
@@ -113,7 +113,9 @@ unsafe fn write_abi_value(
             (result as *mut i32).write(*value)
         }
         (TypeKind::Enum(_), WinRTValue::Enum { value, .. }) => (result as *mut i32).write(*value),
-        (TypeKind::U32, WinRTValue::U32(value)) => (result as *mut u32).write(*value),
+        (TypeKind::U32 | TypeKind::Enum(_), WinRTValue::U32(value)) => {
+            (result as *mut u32).write(*value)
+        }
         (TypeKind::I64, WinRTValue::I64(value)) => (result as *mut i64).write(*value),
         (TypeKind::U64, WinRTValue::U64(value)) => (result as *mut u64).write(*value),
         (TypeKind::F32, WinRTValue::F32(value)) => (result as *mut f32).write(*value),

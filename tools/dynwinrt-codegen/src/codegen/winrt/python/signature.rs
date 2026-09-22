@@ -287,19 +287,29 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
             namespace,
             name,
             members,
+            underlying,
             ..
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if members.is_empty() {
+            let backing = match underlying.as_ref() {
+                TypeMeta::I32 => "",
+                TypeMeta::U32 => ", DynWinRTType.u32_type()",
+                _ => panic!("WinRT enum backing type must be I32 or U32"),
+            };
+            if members.is_empty() && backing.is_empty() {
                 format!("DynWinRTType.enum_type('{}')", full_name)
             } else {
                 let names: Vec<String> = members.iter().map(|m| format!("'{}'", m.name)).collect();
-                let values: Vec<String> = members.iter().map(|m| m.value.to_string()).collect();
+                let values: Vec<String> = members
+                    .iter()
+                    .map(|m| m.numeric_value(underlying).to_string())
+                    .collect();
                 format!(
-                    "DynWinRTType.enum_type('{}', [{}], [{}])",
+                    "DynWinRTType.enum_type('{}', [{}], [{}]{})",
                     full_name,
                     names.join(", "),
-                    values.join(", ")
+                    values.join(", "),
+                    backing
                 )
             }
         }
@@ -791,13 +801,19 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::U16 => format!("{}.to_u16_list()", arr_expr),
         TypeMeta::Char16 => format!("[chr(value) for value in {}.to_u16_list()]", arr_expr),
         TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
-        typ @ TypeMeta::Enum { .. } if context.is_known_type(typ) => format!(
-            "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",
-            context.implementation_module_for_type(typ),
-            context.projected_name_for_type(typ),
-            arr_expr
-        ),
-        TypeMeta::Enum { .. } => format!("{}.to_i32_list()", arr_expr),
+        typ @ TypeMeta::Enum { underlying, .. } => {
+            let values = py_convert_array_return(arr_expr, underlying, context);
+            if context.is_known_type(typ) {
+                format!(
+                    "[_dynwinrt_enum('{}', '{}', value) for value in {}]",
+                    context.implementation_module_for_type(typ),
+                    context.projected_name_for_type(typ),
+                    values
+                )
+            } else {
+                values
+            }
+        }
         TypeMeta::U32 => format!("{}.to_u32_list()", arr_expr),
         TypeMeta::I64 => format!("{}.to_i64_list()", arr_expr),
         TypeMeta::U64 => format!("{}.to_u64_list()", arr_expr),

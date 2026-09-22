@@ -332,15 +332,15 @@ impl ArrayData {
     // Convenience typed getters
     // ------------------------------------------------------------------
 
-    /// Read an `i32`-compatible element (plain `i32`, named enum, or `HRESULT`).
+    /// Read an `i32`-compatible element (plain `i32`, signed enum, or `HRESULT`).
     pub fn get_i32(&self, index: usize) -> crate::result::Result<i32> {
         let len = self.len();
         if index >= len {
             return Err(crate::result::Error::IndexOutOfBounds { index, len });
         }
 
-        match self.element_type.kind() {
-            TypeKind::I32 | TypeKind::Enum(_) | TypeKind::HResult => {}
+        match self.element_type.underlying_kind() {
+            TypeKind::I32 | TypeKind::HResult => {}
             other => {
                 return Err(crate::result::Error::InvalidType(TypeKind::I32, other));
             }
@@ -352,6 +352,32 @@ impl ArrayData {
             WinRTValue::HResult(value) => Ok(value.0),
             other => Err(crate::result::Error::InvalidType(
                 TypeKind::I32,
+                other.get_type_kind(),
+            )),
+        }
+    }
+
+    /// Read a `u32` element or an enum with a UInt32 backing type.
+    pub fn get_u32(&self, index: usize) -> crate::result::Result<u32> {
+        let len = self.len();
+        if index >= len {
+            return Err(crate::result::Error::IndexOutOfBounds { index, len });
+        }
+        if self.element_type.underlying_kind() != TypeKind::U32 {
+            return Err(crate::result::Error::InvalidType(
+                TypeKind::U32,
+                self.element_type.kind(),
+            ));
+        }
+        match self.try_get(index)? {
+            WinRTValue::U32(value) => Ok(value),
+            WinRTValue::Enum { value, type_handle }
+                if type_handle.underlying_kind() == TypeKind::U32 =>
+            {
+                Ok(value as u32)
+            }
+            other => Err(crate::result::Error::InvalidType(
+                TypeKind::U32,
                 other.get_type_kind(),
             )),
         }

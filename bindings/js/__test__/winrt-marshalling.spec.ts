@@ -19,6 +19,57 @@ function own(t: ExecutionContext, value: InstanceType<typeof DynWinRtValue>) {
   return value
 }
 
+test('unsigned enums retain SDK IIDs and high-bit values across native storage', (t) => {
+  const flags = DynWinRtType.enumType(
+    'Windows.Gaming.Input.GamepadButtons',
+    ['High', 'All'],
+    [0x80000000, 0xffffffff],
+    DynWinRtType.u32(),
+  )
+  const vector = DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [flags])
+  const reference = DynWinRtType.parameterized(WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'), [flags])
+  t.is(vector.iid().toString().toLowerCase(), '2da67b4c-03d3-57c7-8257-6c30837177ac')
+  t.is(reference.iid().toString().toLowerCase(), '9b7e3bfb-85a9-5b98-81b3-1af4a060a6f5')
+  t.is(DynWinRtType.getEnumValue('Windows.Gaming.Input.GamepadButtons', 'All'), 0xffffffff)
+  const getter = DynWinRtType.registerInterface('EnumContracts.IReferenceFlags', reference.iid())
+    .addMethod('get_Value', new DynWinRtMethodSig().addOut(flags))
+    .method(6)
+
+  const values = [0, 0x80000000, 0xffffffff].map((value) => own(t, DynWinRtValue.enumValue(flags, value)))
+  for (const [index, expected] of [0, 0x80000000, 0xffffffff].entries()) {
+    t.is(values[index].toNumber(), expected)
+    t.is(values[index].getEnumInt(), expected)
+    const boxed = own(t, DynWinRtValue.boxReference(values[index], flags))
+    const view = own(t, boxed.cast(reference.iid()))
+    t.is(own(t, getter.invoke(view, [])).toNumber(), expected)
+    t.throws(() => getter.getI32(view))
+  }
+  t.is(values[2].getEnumName(), 'All')
+  const array = DynWinRtArray.fromObjectValues(values, flags)
+  t.deepEqual(array.toU32Vec(), [0, 0x80000000, 0xffffffff])
+  t.throws(() => array.toI32Vec())
+  const record = DynWinRtStruct.create(DynWinRtType.structType('EnumContracts.FlagRecord', [flags]))
+  record.setU32(0, 0xffffffff)
+  t.is(record.getU32(0), 0xffffffff)
+  t.throws(() => record.getI32(0))
+
+  for (const value of [-1, 2 ** 32, 1.5, NaN, Infinity]) {
+    t.throws(() => DynWinRtValue.enumValue(flags, value))
+  }
+  t.throws(() => DynWinRtValue.enumValue(DynWinRtType.u32(), 1))
+  t.throws(() => DynWinRtType.enumType('Windows.Gaming.Input.GamepadButtons'), { message: /backing type/ })
+  t.throws(() => DynWinRtType.enumType('EnumContracts.Bad', [], [], DynWinRtType.u64()))
+  t.throws(() => DynWinRtType.enumType('EnumContracts.Range', ['Bad'], [-1], DynWinRtType.u32()))
+  t.throws(() => DynWinRtType.enumType('EnumContracts.Length', ['Missing'], []))
+
+  const signed = DynWinRtType.enumType('EnumContracts.Signed', ['Negative'], [-1])
+  const negative = own(t, DynWinRtValue.enumValue(signed, -1))
+  t.is(negative.toNumber(), -1)
+  t.is(negative.getEnumInt(), -1)
+  t.is(DynWinRtType.getEnumValue('EnumContracts.Signed', 'Negative'), -1)
+  t.throws(() => DynWinRtValue.enumValue(signed, 0x80000000))
+})
+
 function registerMethodAt(
   name: string,
   iid: InstanceType<typeof WinGuid>,

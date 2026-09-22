@@ -63,7 +63,11 @@ pub fn generate_enum(context: &PythonProjectionContext, en: &TypeMeta) -> Option
                     }
                 }
             }
-            out.push_str(&format!("    {} = {}\n", member_name, member.value));
+            out.push_str(&format!(
+                "    {} = {}\n",
+                member_name,
+                member.numeric_value(en.underlying_type())
+            ));
         }
     }
     Some(out)

@@ -231,6 +231,7 @@ test('async and generator dispatchers are rejected before publication', (t) => {
 
 test('scalar and enum ABI aliases survive synchronous callbacks without JS numeric coercion', (t) => {
   const enumType = DynWinRtType.enumType('Tests.NodeReverseEnum', ['Answer'], [42])
+  const flagsType = DynWinRtType.enumType('Tests.NodeReverseFlags', ['All'], [0xffffffff], DynWinRtType.u32())
   const cases: Array<{
     type: DynWinRtType
     value: DynWinRtValue
@@ -271,6 +272,13 @@ test('scalar and enum ABI aliases survive synchronous callbacks without JS numer
     { type: DynWinRtType.f32(), value: DynWinRtValue.f32(1.25), read: (v) => v.toF64(), expected: 1.25 },
     { type: DynWinRtType.f64(), value: DynWinRtValue.f64(-9.5), read: (v) => v.toF64(), expected: -9.5 },
     { type: enumType, value: DynWinRtValue.enumValue(enumType, 42), read: (v) => v.getEnumInt(), expected: 42 },
+    {
+      type: flagsType,
+      value: DynWinRtValue.enumValue(flagsType, 0xffffffff),
+      read: (v) => v.getEnumInt(),
+      expected: 0xffffffff,
+    },
+    { type: flagsType, value: DynWinRtValue.u32(0x80000000), read: (v) => v.toNumber(), expected: 0x80000000 },
   ]
   const methods = cases.map(({ type }, index) => ({
     name: `Echo${index}`,

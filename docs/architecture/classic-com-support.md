@@ -78,7 +78,8 @@ In particular:
 - shared native methods are fully built before publication and are immutable
   during concurrent invocation;
 - exact struct identity is validated before native dispatch, while established
-  WinRT ABI aliases such as Char16/U16 and enum/I32 arrays remain compatible;
+  WinRT ABI aliases such as Char16/U16, signed enum/I32, and unsigned enum/U32
+  arrays remain compatible;
   and
 - language-friendly choices remain a codegen responsibility after the COM
   planner has validated the native contract.

@@ -105,7 +105,9 @@ impl MetadataTable {
             TypeKind::HResult => Ok("i4".to_string()),
             TypeKind::Enum(idx) => {
                 let name = self.get_enum_name(idx);
-                Ok(format!("enum({};i4)", name))
+                let underlying =
+                    self.try_signature_string_kind_impl(self.underlying_kind(kind), false)?;
+                Ok(format!("enum({};{})", name, underlying))
             }
             TypeKind::Struct(idx) => {
                 let entry = &self.structs.read().unwrap()[idx as usize];

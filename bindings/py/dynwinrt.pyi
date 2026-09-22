@@ -212,6 +212,7 @@ class DynWinRTType:
         name: str,
         member_names: Optional[Sequence[str]] = ...,
         member_values: Optional[Sequence[int]] = ...,
+        underlying_type: Optional[DynWinRTType] = ...,
     ) -> DynWinRTType: ...
     @staticmethod
     def get_enum_value(enum_name: str, member_name: str) -> Optional[int]: ...

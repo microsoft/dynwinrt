@@ -1576,7 +1576,7 @@ pub fn project_enum(en: &TypeMeta) -> Option<ProjectedFile> {
         .iter()
         .map(|m| ProjectedEnumMember {
             name: m.name.clone(),
-            value: m.value as i64,
+            value: m.numeric_value(en.underlying_type()),
             doc: m.doc.clone(),
         })
         .collect();

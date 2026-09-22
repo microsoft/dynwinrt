@@ -52,7 +52,7 @@ impl DynWinRTStruct {
         handle.field_count(),
       )));
     }
-    let actual = handle.field_type(index).kind();
+    let actual = handle.field_type(index).underlying_kind();
     if !accepts(actual) {
       return Err(napi::Error::from_reason(format!(
         "{method}: field {index} has type {actual:?}, expected {expected}",
@@ -163,20 +163,14 @@ impl DynWinRTStruct {
   #[napi]
   pub fn get_i32(&self, index: f64) -> napi::Result<i32> {
     let index = self.checked_field_index(index, "getI32", "i32, enum, or HRESULT", |kind| {
-      matches!(
-        kind,
-        dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::Enum(_) | dynwinrt::TypeKind::HResult
-      )
+      matches!(kind, dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::HResult)
     })?;
     Ok(self.0.get_field::<i32>(index))
   }
   #[napi]
   pub fn set_i32(&mut self, index: f64, value: f64) -> napi::Result<()> {
     let index = self.checked_field_index(index, "setI32", "i32, enum, or HRESULT", |kind| {
-      matches!(
-        kind,
-        dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::Enum(_) | dynwinrt::TypeKind::HResult
-      )
+      matches!(kind, dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::HResult)
     })?;
     self.0.set_field(index, js_i32(value, "setI32")?);
     Ok(())

@@ -89,7 +89,7 @@ pub enum TypeKind {
     // ABI-only
     OutValue(u32), // idx → inner_types
 
-    // Named enum — ABI is i32, but carries name for signature computation
+    // Named enum — registry retains the i32/u32 backing type and signature name
     Enum(u32), // idx → enum_entries
 
     // Composite
@@ -122,7 +122,7 @@ impl TypeKind {
         }
     }
 
-    /// libffi type for simple (non-struct) kinds. Returns `None` for Struct.
+    /// libffi type for primitive kinds. Named enums and structs require registry data.
     pub fn primitive_libffi_type(self) -> Option<libffi::middle::Type> {
         use libffi::middle::Type;
         match self {
@@ -131,7 +131,7 @@ impl TypeKind {
             TypeKind::U8 => Some(Type::u8()),
             TypeKind::I16 => Some(Type::i16()),
             TypeKind::U16 | TypeKind::Char16 => Some(Type::u16()),
-            TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => Some(Type::i32()),
+            TypeKind::I32 | TypeKind::HResult => Some(Type::i32()),
             TypeKind::U32 => Some(Type::u32()),
             TypeKind::I64 => Some(Type::i64()),
             TypeKind::U64 => Some(Type::u64()),

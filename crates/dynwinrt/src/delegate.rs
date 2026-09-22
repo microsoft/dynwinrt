@@ -235,12 +235,13 @@ impl DynamicDelegate {
     fn callback_abi_type(typ: &TypeHandle) -> Option<CallbackAbiType> {
         use crate::metadata_table::TypeKind;
 
-        match typ.kind() {
+        match typ.underlying_kind() {
+            TypeKind::Enum(_) => unreachable!("enum backing types are scalar"),
             TypeKind::I8 => Some(CallbackAbiType::I8),
             TypeKind::Bool | TypeKind::U8 => Some(CallbackAbiType::U8),
             TypeKind::I16 => Some(CallbackAbiType::I16),
             TypeKind::U16 | TypeKind::Char16 => Some(CallbackAbiType::U16),
-            TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => Some(CallbackAbiType::I32),
+            TypeKind::I32 | TypeKind::HResult => Some(CallbackAbiType::I32),
             TypeKind::U32 => Some(CallbackAbiType::U32),
             TypeKind::I64 => Some(CallbackAbiType::I64),
             TypeKind::U64 => Some(CallbackAbiType::U64),

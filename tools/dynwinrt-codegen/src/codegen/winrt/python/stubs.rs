@@ -229,7 +229,11 @@ pub fn generate_enum_stub(context: &PythonProjectionContext, en: &TypeMeta) -> O
             } else {
                 m.name.clone()
             };
-            out.push_str(&format!("    {} = {}\n", member_name, m.value));
+            out.push_str(&format!(
+                "    {} = {}\n",
+                member_name,
+                m.numeric_value(en.underlying_type())
+            ));
         }
     }
     Some(out)

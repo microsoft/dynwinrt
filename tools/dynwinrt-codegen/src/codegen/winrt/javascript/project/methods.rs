@@ -114,10 +114,10 @@ fn fast_getter_expression(
     known_types: &HashSet<String>,
     delegate_names: &HashSet<String>,
 ) -> Option<String> {
-    let method = match typ {
+    let method = match typ.map(TypeMeta::underlying_type) {
         Some(TypeMeta::String) => "getString",
         Some(TypeMeta::Bool) => "getBool",
-        Some(TypeMeta::I32 | TypeMeta::Enum { .. }) => "getI32",
+        Some(TypeMeta::I32) => "getI32",
         Some(
             TypeMeta::Object
             | TypeMeta::Interface { .. }
@@ -163,10 +163,10 @@ fn setter_line(
         .map(|typ| wrap_arg(context, "value", typ))
         .unwrap_or_else(|| "value".into());
     let fallback = format!("_m.invoke({}, [{}]);", obj_expr, wrapped);
-    let Some(method) = (match typ {
+    let Some(method) = (match typ.map(TypeMeta::underlying_type) {
         Some(TypeMeta::String) => Some("setHstring"),
         Some(TypeMeta::Bool) => Some("setBool"),
-        Some(TypeMeta::I32 | TypeMeta::Enum { .. }) => Some("setI32"),
+        Some(TypeMeta::I32) => Some("setI32"),
         Some(TypeMeta::U32) => Some("setU32"),
         Some(TypeMeta::F32) => Some("setF32"),
         Some(TypeMeta::F64) => Some("setF64"),

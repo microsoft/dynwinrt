@@ -138,11 +138,20 @@ vectors on x64 and ARM64. Large map keys/values are rejected even for empty maps
 
 Structs and typed enums require exact type identity, not a matching byte size
 or shape. Scalars require the matching value variant, except U16 inputs for
-Char16, I32 inputs for enum/HRESULT, and range-checked I32 inputs for
-I8/U8/Char16. For example, `from_i32(255)` is accepted for U8;
-`from_i32(257)` raises instead of wrapping. Reference inputs are retained and
-queried for the declared IID; an incompatible interface raises, while
+Char16, I32 inputs for signed enum/HRESULT, U32 inputs for unsigned enum, and
+range-checked I32 inputs for I8/U8/Char16. For example, `from_i32(255)` is
+accepted for U8; `from_i32(257)` raises instead of wrapping. Reference inputs
+are retained and queried for the declared IID; an incompatible interface raises, while
 `DynWinRTValue.null_value()` remains a null reference.
+
+WinRT enums preserve their metadata-declared `Int32` or `UInt32` backing type.
+`DynWinRTType.enum_type(name, names, values)` remains signed by default. Pass
+`DynWinRTType.u32_type()` as its fourth argument for a `UInt32` flags enum;
+generated wrappers supply this automatically. Enum member lookup,
+`enum_value()`, `get_enum_int()`, `to_number()`, and `to_int()` preserve values
+through `0xffffffff`. Unsigned enum arrays and struct fields use the U32
+accessors, and their generic interface IIDs include the `u4` signature.
+Update the runtime and regenerate wrappers together.
 
 For admitted POD structs, vector `IndexOf` and map key operations compare
 metadata-declared fields by value, including nested fields, and ignore padding.

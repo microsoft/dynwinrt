@@ -382,14 +382,14 @@ impl Projector<'_> {
         let integer = |min: &str, max: &str| {
             format!("typeof v === 'number' && Number.isInteger(v) && v >= {min} && v <= {max}")
         };
-        let check = match &typ.metadata {
+        let check = match typ.metadata.underlying_type() {
             TypeMeta::Bool => "typeof v === 'boolean'".into(),
             TypeMeta::String | TypeMeta::Guid => "typeof v === 'string'".into(),
             TypeMeta::I8 => integer("-128", "127"),
             TypeMeta::U8 => integer("0", "255"),
             TypeMeta::I16 => integer("-32768", "32767"),
             TypeMeta::U16 | TypeMeta::Char16 => integer("0", "65535"),
-            TypeMeta::I32 | TypeMeta::Enum { .. } | TypeMeta::Struct { .. } => integer("-2147483648", "2147483647"),
+            TypeMeta::I32 | TypeMeta::Struct { .. } => integer("-2147483648", "2147483647"),
             TypeMeta::U32 => integer("0", "4294967295"),
             TypeMeta::I64 => "typeof v === 'bigint' && v >= -9223372036854775808n && v <= 9223372036854775807n".into(),
             TypeMeta::U64 => "typeof v === 'bigint' && v >= 0n && v <= 18446744073709551615n".into(),

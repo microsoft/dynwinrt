@@ -36,12 +36,12 @@ pub(super) fn should_skip_raw_collection_method(iface: &InterfaceMeta, method_na
 /// `count_var` elements, pre-filled with type-appropriate defaults.
 /// Returns `None` for element types that have no typed batch constructor.
 fn ts_fill_array_create(count_var: &str, elem: &TypeMeta) -> Option<String> {
-    let (method, fill) = match elem {
+    let (method, fill) = match elem.underlying_type() {
         TypeMeta::I8 => ("fromI8Values", "0"),
         TypeMeta::U8 => ("fromU8Values", "0"),
         TypeMeta::I16 => ("fromI16Values", "0"),
         TypeMeta::U16 | TypeMeta::Char16 => ("fromU16Values", "0"),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => ("fromI32Values", "0"),
+        TypeMeta::I32 => ("fromI32Values", "0"),
         TypeMeta::U32 => ("fromU32Values", "0"),
         TypeMeta::I64 => ("fromI64Values", "0"),
         TypeMeta::U64 => ("fromU64Values", "0"),
@@ -59,12 +59,12 @@ fn ts_fill_array_create(count_var: &str, elem: &TypeMeta) -> Option<String> {
 /// Create a DynWinRtArray from a JS array variable for replaceAll.
 /// Returns `None` for element types that have no typed batch constructor.
 fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
-    let method = match elem {
+    let method = match elem.underlying_type() {
         TypeMeta::I8 => "fromI8Values",
         TypeMeta::U8 => "fromU8Values",
         TypeMeta::I16 => "fromI16Values",
         TypeMeta::U16 | TypeMeta::Char16 => "fromU16Values",
-        TypeMeta::I32 | TypeMeta::Enum { .. } => "fromI32Values",
+        TypeMeta::I32 => "fromI32Values",
         TypeMeta::U32 => "fromU32Values",
         TypeMeta::I64 => "fromI64Values",
         TypeMeta::U64 => "fromU64Values",

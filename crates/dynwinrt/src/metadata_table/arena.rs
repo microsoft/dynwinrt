@@ -33,6 +33,7 @@ pub(super) struct StructEntry {
 
 pub(super) struct EnumData {
     pub(super) name: String,
+    pub(super) underlying: TypeKind,
     pub(super) members: Vec<(String, i32)>,
 }
 
@@ -100,11 +101,17 @@ impl MetadataTable {
         id
     }
 
-    pub(super) fn push_enum(&self, name: &str, members: Vec<(String, i32)>) -> u32 {
+    pub(super) fn push_enum(
+        &self,
+        name: &str,
+        members: Vec<(String, i32)>,
+        underlying: TypeKind,
+    ) -> u32 {
         let mut enums = self.enum_entries.write().unwrap();
         let id = enums.len() as u32;
         enums.push(EnumData {
             name: name.to_string(),
+            underlying,
             members,
         });
         id
@@ -189,6 +196,13 @@ impl MetadataTable {
 
     pub(super) fn get_enum_name(&self, idx: u32) -> String {
         self.enum_entries.read().unwrap()[idx as usize].name.clone()
+    }
+
+    pub(crate) fn underlying_kind(&self, kind: TypeKind) -> TypeKind {
+        match kind {
+            TypeKind::Enum(idx) => self.enum_entries.read().unwrap()[idx as usize].underlying,
+            _ => kind,
+        }
     }
 
     pub(crate) fn get_enum_member_name(&self, idx: u32, value: i32) -> Option<String> {
@@ -312,7 +326,7 @@ impl MetadataTable {
     }
 
     pub(crate) fn libffi_type_kind(&self, kind: TypeKind) -> libffi::middle::Type {
-        if let Some(t) = kind.primitive_libffi_type() {
+        if let Some(t) = self.underlying_kind(kind).primitive_libffi_type() {
             return t;
         }
         match kind {

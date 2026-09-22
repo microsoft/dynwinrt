@@ -108,6 +108,39 @@ test('generated collection input and output contracts agree with native roundtri
   t.diagnostic(JSON.stringify(checkCollectionContracts(generated, require(runtimeRoot))))
 })
 
+test('generated SDK flags preserve unsigned values through native calls and callbacks', () => {
+  const unused = () => {
+    throw new Error('Unused complete SDK interface slot')
+  }
+  let attributes = 0xffffffff
+  const received = []
+  const owner = generated.IStorageItem.implement({
+    renameAsyncOverloadDefaultOptions: unused,
+    renameAsync: unused,
+    deleteAsyncOverloadDefaultOptions: unused,
+    deleteAsync: unused,
+    getBasicPropertiesAsync: unused,
+    getName: unused,
+    getPath: unused,
+    getAttributes: () => attributes,
+    getDateCreated: unused,
+    isOfType: (value) => {
+      received.push(value)
+      return true
+    },
+  })
+  try {
+    assert.equal(owner.value.attributes, 0xffffffff)
+    assert.equal(owner.value.isOfType(0x80000000), true)
+    assert.equal(owner.value.isOfType(0xffffffff), true)
+    assert.deepEqual(received, [0x80000000, 0xffffffff])
+    attributes = -1
+    assert.throws(() => owner.value.attributes)
+  } finally {
+    owner.dispose()
+  }
+})
+
 test('generated string map factory converts both keys and values', (t) => {
   const keep = own(t)
   const keys = ['first', '\u03bb', '\ud83d\ude00']

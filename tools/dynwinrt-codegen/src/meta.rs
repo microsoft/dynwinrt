@@ -2295,6 +2295,19 @@ fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> 
 }
 
 fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
+    let underlying = match def
+        .fields()
+        .find(|field| field.name() == "value__")
+        .map(|field| field.ty())
+    {
+        Some(windows_metadata::Type::I32) => TypeMeta::I32,
+        Some(windows_metadata::Type::U32) => TypeMeta::U32,
+        other => panic!(
+            "WinRT enum {}.{} requires an Int32 or UInt32 value__ field, found {other:?}",
+            def.namespace(),
+            def.name()
+        ),
+    };
     let mut members = Vec::new();
     for field in def.fields() {
         let name = field.name().to_string();
@@ -2306,7 +2319,11 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
             let value = match constant.value() {
                 windows_metadata::Value::I32(v) => v,
                 windows_metadata::Value::U32(v) => v as i32,
-                _ => 0,
+                other => panic!(
+                    "WinRT enum {}.{} member {name} has a non-32-bit constant: {other:?}",
+                    def.namespace(),
+                    def.name()
+                ),
             };
             members.push(EnumMember {
                 name,
@@ -2318,7 +2335,7 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     TypeMeta::Enum {
         namespace: def.namespace().to_string(),
         name: def.name().to_string(),
-        underlying: Box::new(TypeMeta::I32),
+        underlying: Box::new(underlying),
         members,
         is_flags: def.has_attribute("FlagsAttribute"),
         doc: None,

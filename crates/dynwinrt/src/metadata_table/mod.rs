@@ -3,6 +3,8 @@
 
 mod append_only_arena;
 mod arena;
+#[cfg(test)]
+mod enum_tests;
 mod iid;
 mod method_handle;
 #[cfg(test)]
@@ -295,15 +297,47 @@ impl MetadataTable {
         self.make(kind)
     }
 
-    /// Register a named enum with member values.
+    /// Register a named Int32 enum with member values.
     pub fn enum_type(self: &Arc<Self>, name: &str, members: Vec<(String, i32)>) -> TypeHandle {
-        if let Some(kind) = self.get_named_type(name) {
-            return self.make(kind);
+        self.enum_type_with_underlying(name, members, TypeKind::I32)
+            .expect("invalid Int32 enum registration")
+    }
+
+    /// Register a named WinRT enum with an explicit I32 or U32 backing type.
+    ///
+    /// Member values retain their 32-bit representation in an i32, including
+    /// UInt32 values with the high bit set. Reusing a name with a different
+    /// backing type is an error.
+    pub fn enum_type_with_underlying(
+        self: &Arc<Self>,
+        name: &str,
+        members: Vec<(String, i32)>,
+        underlying: TypeKind,
+    ) -> crate::result::Result<TypeHandle> {
+        let invalid = |message: String| {
+            crate::result::Error::WindowsError(windows_core::Error::new(
+                windows_core::HRESULT(0x80070057u32 as i32),
+                &message,
+            ))
+        };
+        if !matches!(underlying, TypeKind::I32 | TypeKind::U32) {
+            return Err(invalid(format!(
+                "Enum '{name}' requires an I32 or U32 backing type, not {underlying:?}"
+            )));
         }
-        let id = self.push_enum(name, members);
+        let mut names = self.type_names.write().unwrap();
+        if let Some(kind) = names.get(name).copied() {
+            if !matches!(kind, TypeKind::Enum(_)) || self.underlying_kind(kind) != underlying {
+                return Err(invalid(format!(
+                    "Enum '{name}' was registered with a different type or backing type"
+                )));
+            }
+            return Ok(self.make(kind));
+        }
+        let id = self.push_enum(name, members, underlying);
         let kind = TypeKind::Enum(id);
-        self.insert_named_type(name, kind);
-        self.make(kind)
+        names.insert(name.to_string(), kind);
+        Ok(self.make(kind))
     }
 
     // -----------------------------------------------------------------------
@@ -340,11 +374,24 @@ impl MetadataTable {
     // Query API
     // -----------------------------------------------------------------------
 
+    /// Get a member's raw 32-bit representation (the legacy signed API).
     pub fn get_enum_value(&self, enum_name: &str, member_name: &str) -> Option<i32> {
         self.get_enum_members(enum_name)?
             .iter()
             .find(|(n, _)| n == member_name)
             .map(|(_, v)| *v)
+    }
+
+    /// Get a member's numeric value, preserving its signed or unsigned backing type.
+    pub fn get_enum_value_i64(&self, enum_name: &str, member_name: &str) -> Option<i64> {
+        let enums = self.enum_entries.read().unwrap();
+        let entry = enums.iter().find(|entry| entry.name == enum_name)?;
+        let (_, value) = entry.members.iter().find(|(name, _)| name == member_name)?;
+        Some(if entry.underlying == TypeKind::U32 {
+            i64::from(*value as u32)
+        } else {
+            i64::from(*value)
+        })
     }
 
     // -----------------------------------------------------------------------

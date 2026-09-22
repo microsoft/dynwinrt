@@ -147,25 +147,56 @@ impl DynWinRTType {
     DynWinRTType(TABLE.struct_type(&name, &handles))
   }
 
-  /// Create a named enum type (ABI = i32, carries name for signature).
+  /// Create a named enum type. The backing type defaults to i32; flags use u32.
   /// `member_names` and `member_values` are parallel arrays of enum member definitions.
   #[napi]
   pub fn enum_type(
     name: String,
     member_names: Option<Vec<String>>,
-    member_values: Option<Vec<i32>>,
-  ) -> Self {
+    member_values: Option<Vec<f64>>,
+    underlying_type: Option<&DynWinRTType>,
+  ) -> napi::Result<Self> {
+    let underlying = underlying_type.map_or(dynwinrt::TypeKind::I32, |typ| typ.0.kind());
+    if !matches!(
+      underlying,
+      dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::U32
+    ) {
+      return Err(napi::Error::from_reason(
+        "enumType requires an i32 or u32 backing type",
+      ));
+    }
     let members = match (member_names, member_values) {
-      (Some(names), Some(values)) => names.into_iter().zip(values).collect(),
-      _ => Vec::new(),
+      (None, None) => Vec::new(),
+      (Some(names), Some(values)) if names.len() == values.len() => names
+        .into_iter()
+        .zip(values)
+        .map(|(name, value)| {
+          let bits = if underlying == dynwinrt::TypeKind::U32 {
+            crate::js_numbers::js_u32(value, "enumType member")? as i32
+          } else {
+            crate::js_numbers::js_i32(value, "enumType member")?
+          };
+          Ok((name, bits))
+        })
+        .collect::<napi::Result<Vec<_>>>()?,
+      _ => {
+        return Err(napi::Error::from_reason(
+          "enumType requires equally sized member name and value arrays",
+        ))
+      }
     };
-    DynWinRTType(TABLE.enum_type(&name, members))
+    TABLE
+      .enum_type_with_underlying(&name, members, underlying)
+      .map(DynWinRTType)
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
-  /// Look up an enum member's i32 value by name.
+  /// Look up an enum member's value, preserving signed or unsigned numeric values.
   #[napi]
-  pub fn get_enum_value(enum_name: String, member_name: String) -> Option<i32> {
-    TABLE.get_enum_value(&enum_name, &member_name)
+  pub fn get_enum_value(enum_name: String, member_name: String) -> Option<f64> {
+    TABLE
+      .get_enum_value_i64(&enum_name, &member_name)
+      .map(|value| value as f64)
   }
 
   /// Declare a parameterized type (generic instantiation, e.g. IReference<UInt64>).

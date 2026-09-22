@@ -214,7 +214,7 @@ SCALARS = {
     "hresult": ("hresult", "from_hresult", [-2147467259, 0], "to_number"),
     "hstring": ("hstring", "from_hstring", ["hello\0world", "\U0001f600"], "to_string"),
 }
-SHAPES = (*SCALARS, "guid", "enum", "struct", "object", "interface",
+SHAPES = (*SCALARS, "guid", "enum", "unsigned_enum", "struct", "object", "interface",
           "runtime_class", "delegate", "generic", "async")
 
 
@@ -234,6 +234,13 @@ def _values(shape):
         elif shape == "enum":
             typ = DynWinRTType.enum_type(f"Tests.Enum{uuid4().hex}", ["Low", "High"], [-1, 42])
             values = [DynWinRTValue.enum_value(typ, value) for value in (-1, 42)]
+            normalize = lambda value: value.to_number()
+        elif shape == "unsigned_enum":
+            typ = DynWinRTType.enum_type(
+                f"Tests.Flags{uuid4().hex}", ["High", "All"], [0x80000000, 0xFFFFFFFF],
+                DynWinRTType.u32_type(),
+            )
+            values = [DynWinRTValue.enum_value(typ, value) for value in (0x80000000, 0xFFFFFFFF)]
             normalize = lambda value: value.to_number()
         elif shape == "struct":
             inner_type = DynWinRTType.struct_type(

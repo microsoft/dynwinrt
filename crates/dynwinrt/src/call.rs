@@ -508,7 +508,16 @@ macro_rules! dispatch_scalar {
             WinRTValue::U16(v) => $call(*v),
             WinRTValue::I32(v) => $call(*v),
             WinRTValue::HResult(v) => $call(v.0),
-            WinRTValue::Enum { value: v, .. } => $call(*v),
+            WinRTValue::Enum {
+                value: v,
+                type_handle,
+            } => {
+                if type_handle.underlying_kind() == crate::TypeKind::U32 {
+                    $call(*v as u32)
+                } else {
+                    $call(*v)
+                }
+            }
             WinRTValue::U32(v) => $call(*v),
             WinRTValue::I64(v) => $call(*v),
             WinRTValue::U64(v) => $call(*v),
@@ -636,7 +645,13 @@ fn input_abi_value(value: &WinRTValue) -> windows_core::Result<AbiValue> {
         WinRTValue::F32(value) => AbiValue::F32(*value),
         WinRTValue::F64(value) => AbiValue::F64(*value),
         WinRTValue::HResult(value) => AbiValue::I32(value.0),
-        WinRTValue::Enum { value, .. } => AbiValue::I32(*value),
+        WinRTValue::Enum { value, type_handle } => {
+            if type_handle.underlying_kind() == crate::TypeKind::U32 {
+                AbiValue::U32(*value as u32)
+            } else {
+                AbiValue::I32(*value)
+            }
+        }
         WinRTValue::RawPtr(value) => AbiValue::Pointer(*value),
         WinRTValue::Null => AbiValue::Pointer(std::ptr::null_mut()),
         _ => {

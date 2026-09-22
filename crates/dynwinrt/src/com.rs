@@ -3599,6 +3599,9 @@ impl CallbackMethodPlan {
                 TypeKind::U16 | TypeKind::Char16 => {
                     Some(crate::native_callback::CallbackAbiType::U16)
                 }
+                TypeKind::Enum(_) if typ.underlying_kind() == TypeKind::U32 => {
+                    Some(crate::native_callback::CallbackAbiType::U32)
+                }
                 TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => {
                     Some(crate::native_callback::CallbackAbiType::I32)
                 }
@@ -4360,7 +4363,11 @@ impl CallbackMethodPlan {
                 (TypeKind::Enum(_), WinRTValue::Enum { value, type_handle })
                     if typ == type_handle =>
                 {
-                    Ok(PreparedNativeCallbackOutput::I32(*value))
+                    Ok(if typ.underlying_kind() == TypeKind::U32 {
+                        PreparedNativeCallbackOutput::U32(*value as u32)
+                    } else {
+                        PreparedNativeCallbackOutput::I32(*value)
+                    })
                 }
                 (
                     TypeKind::Object

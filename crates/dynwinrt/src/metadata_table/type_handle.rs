@@ -48,6 +48,11 @@ impl TypeHandle {
         self.kind
     }
 
+    /// Resolve a named enum to its I32/U32 storage kind; other kinds are unchanged.
+    pub fn underlying_kind(&self) -> TypeKind {
+        self.table.underlying_kind(self.kind)
+    }
+
     pub fn table(&self) -> &Arc<MetadataTable> {
         &self.table
     }
@@ -141,13 +146,13 @@ impl TypeHandle {
     // -----------------------------------------------------------------------
 
     pub fn abi_type(&self) -> AbiType {
-        match self.kind {
+        match self.underlying_kind() {
             TypeKind::Bool => AbiType::Bool,
             TypeKind::I8 => AbiType::I8,
             TypeKind::U8 => AbiType::U8,
             TypeKind::I16 => AbiType::I16,
             TypeKind::U16 | TypeKind::Char16 => AbiType::U16,
-            TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => AbiType::I32,
+            TypeKind::I32 | TypeKind::HResult => AbiType::I32,
             TypeKind::U32 => AbiType::U32,
             TypeKind::I64 => AbiType::I64,
             TypeKind::U64 => AbiType::U64,
@@ -181,6 +186,7 @@ impl TypeHandle {
                     "Array types expand to multiple ABI parameters; cannot map to single AbiType"
                 )
             }
+            TypeKind::Enum(_) => unreachable!("enum backing types are scalar"),
         }
     }
 
@@ -233,6 +239,25 @@ impl TypeHandle {
             TypeKind::Enum(idx) => self.table.get_enum_member_name(idx, value),
             _ => None,
         }
+    }
+
+    /// Create a typed enum value, rejecting values outside its declared backing range.
+    pub fn enum_value(&self, value: i64) -> crate::result::Result<WinRTValue> {
+        let bits = match (self.kind, self.underlying_kind()) {
+            (TypeKind::Enum(_), TypeKind::I32) => i32::try_from(value).ok(),
+            (TypeKind::Enum(_), TypeKind::U32) => u32::try_from(value).ok().map(|v| v as i32),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            crate::result::Error::WindowsError(windows_core::Error::new(
+                windows_core::HRESULT(0x80070057u32 as i32),
+                &format!("Value {value} is not valid for enum type {:?}", self.kind),
+            ))
+        })?;
+        Ok(WinRTValue::Enum {
+            value: bits,
+            type_handle: self.clone(),
+        })
     }
 
     pub fn signature_string(&self) -> String {
@@ -411,10 +436,18 @@ impl TypeHandle {
             (TypeKind::I16, AbiValue::I16(v)) => Ok(WinRTValue::I16(*v)),
             (TypeKind::U16 | TypeKind::Char16, AbiValue::U16(v)) => Ok(WinRTValue::U16(*v)),
             (TypeKind::I32, AbiValue::I32(v)) => Ok(WinRTValue::I32(*v)),
-            (TypeKind::Enum(_), AbiValue::I32(v)) => Ok(WinRTValue::Enum {
-                value: *v,
-                type_handle: self.clone(),
-            }),
+            (TypeKind::Enum(_), AbiValue::I32(v)) if self.underlying_kind() == TypeKind::I32 => {
+                Ok(WinRTValue::Enum {
+                    value: *v,
+                    type_handle: self.clone(),
+                })
+            }
+            (TypeKind::Enum(_), AbiValue::U32(v)) if self.underlying_kind() == TypeKind::U32 => {
+                Ok(WinRTValue::Enum {
+                    value: *v as i32,
+                    type_handle: self.clone(),
+                })
+            }
             (TypeKind::U32, AbiValue::U32(v)) => Ok(WinRTValue::U32(*v)),
             (TypeKind::I64, AbiValue::I64(v)) => Ok(WinRTValue::I64(*v)),
             (TypeKind::U64, AbiValue::U64(v)) => Ok(WinRTValue::U64(*v)),

@@ -64,7 +64,7 @@ fn ensure_field_kind(
         .field_kind_checked(index)
         .map_err(map_dynwinrt_error)?;
     let enum_storage = matches!(actual, dynwinrt::TypeKind::Enum(_))
-        && matches!(expected, dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::U32);
+        && value.type_handle().field_type(index).underlying_kind() == expected;
     let bool_storage = actual == dynwinrt::TypeKind::Bool && expected == dynwinrt::TypeKind::U8;
     let hresult_storage =
         actual == dynwinrt::TypeKind::HResult && expected == dynwinrt::TypeKind::I32;
@@ -634,23 +634,57 @@ impl DynWinRTType {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (name, member_names=None, member_values=None))]
+    #[pyo3(signature = (name, member_names=None, member_values=None, underlying_type=None))]
     fn enum_type(
         name: String,
         member_names: Option<Vec<String>>,
-        member_values: Option<Vec<i32>>,
-    ) -> Self {
+        member_values: Option<Vec<i64>>,
+        underlying_type: Option<&DynWinRTType>,
+    ) -> PyResult<Self> {
+        let underlying = underlying_type.map_or(dynwinrt::TypeKind::I32, |typ| typ.0.kind());
+        if !matches!(
+            underlying,
+            dynwinrt::TypeKind::I32 | dynwinrt::TypeKind::U32
+        ) {
+            return Err(PyTypeError::new_err(
+                "enum_type requires an i32 or u32 backing type",
+            ));
+        }
         let members = match (member_names, member_values) {
-            (Some(names), Some(values)) => names.into_iter().zip(values).collect(),
-            _ => Vec::new(),
+            (None, None) => Vec::new(),
+            (Some(names), Some(values)) if names.len() == values.len() => names
+                .into_iter()
+                .zip(values)
+                .map(|(name, value)| {
+                    let bits = if underlying == dynwinrt::TypeKind::U32 {
+                        u32::try_from(value).ok().map(|value| value as i32)
+                    } else {
+                        i32::try_from(value).ok()
+                    }
+                    .ok_or_else(|| {
+                        PyOverflowError::new_err(format!(
+                            "enum_type member {name}: {value} does not fit {underlying:?}"
+                        ))
+                    })?;
+                    Ok((name, bits))
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "enum_type requires equally sized member name and value arrays",
+                ));
+            }
         };
-        DynWinRTType(TABLE.enum_type(&name, members))
+        TABLE
+            .enum_type_with_underlying(&name, members, underlying)
+            .map(DynWinRTType)
+            .map_err(map_dynwinrt_error)
     }
 
-    /// Look up an enum member's i32 value by name.
+    /// Look up an enum member's signed or unsigned numeric value by name.
     #[staticmethod]
-    fn get_enum_value(enum_name: String, member_name: String) -> Option<i32> {
-        TABLE.get_enum_value(&enum_name, &member_name)
+    fn get_enum_value(enum_name: String, member_name: String) -> Option<i64> {
+        TABLE.get_enum_value_i64(&enum_name, &member_name)
     }
 
     #[staticmethod]
@@ -1306,13 +1340,14 @@ impl DynWinRTValue {
         DynWinRTValue(dynwinrt::WinRTValue::Null)
     }
 
-    /// Create an enum value from an i32 and its type handle.
+    /// Create an enum value within the enum's declared i32 or u32 range.
     #[staticmethod]
-    fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
-        DynWinRTValue(dynwinrt::WinRTValue::Enum {
-            value,
-            type_handle: enum_type.0.clone(),
-        })
+    fn enum_value(enum_type: &DynWinRTType, value: i64) -> PyResult<DynWinRTValue> {
+        enum_type
+            .0
+            .enum_value(value)
+            .map(DynWinRTValue)
+            .map_err(map_dynwinrt_error)
     }
 
     #[staticmethod]
@@ -1322,12 +1357,9 @@ impl DynWinRTValue {
             .map_err(map_dynwinrt_error)
     }
 
-    /// Get the i32 value of an enum. Returns None if not an enum.
-    fn get_enum_int(&self) -> Option<i32> {
-        match &self.0 {
-            dynwinrt::WinRTValue::Enum { value, .. } => Some(*value),
-            _ => None,
-        }
+    /// Get the signed or unsigned numeric value of an enum. Returns None if not an enum.
+    fn get_enum_int(&self) -> Option<i64> {
+        self.0.as_enum_number()
     }
 
     /// Get the member name of an enum value.
@@ -1466,6 +1498,8 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::Enum { value, type_handle } => {
                 if let Some(name) = type_handle.enum_member_name(*value) {
                     name
+                } else if type_handle.underlying_kind() == dynwinrt::TypeKind::U32 {
+                    (*value as u32).to_string()
                 } else {
                     value.to_string()
                 }
@@ -1483,6 +1517,9 @@ impl DynWinRTValue {
     }
 
     fn to_number(&self) -> PyResult<i64> {
+        if let Some(value) = self.0.as_enum_number() {
+            return Ok(value);
+        }
         match &self.0 {
             dynwinrt::WinRTValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
             dynwinrt::WinRTValue::I8(i) => Ok(*i as i64),
@@ -1492,7 +1529,6 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::I32(i) => Ok(*i as i64),
             dynwinrt::WinRTValue::U32(i) => Ok(*i as i64),
             dynwinrt::WinRTValue::HResult(hr) => Ok(hr.0 as i64),
-            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i64),
             _ => Err(PyRuntimeError::new_err(format!(
                 "Cannot convert {:?} to number",
                 self.0.get_type_kind()
@@ -1501,6 +1537,9 @@ impl DynWinRTValue {
     }
 
     fn to_int(&self) -> PyResult<i128> {
+        if let Some(value) = self.0.as_enum_number() {
+            return Ok(i128::from(value));
+        }
         match &self.0 {
             dynwinrt::WinRTValue::I32(i) => Ok(*i as i128),
             dynwinrt::WinRTValue::I64(i) => Ok(*i as i128),
@@ -1511,7 +1550,6 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::U8(i) => Ok(*i as i128),
             dynwinrt::WinRTValue::I16(i) => Ok(*i as i128),
             dynwinrt::WinRTValue::U16(i) => Ok(*i as i128),
-            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i128),
             _ => Err(PyRuntimeError::new_err("Cannot convert to int")),
         }
     }
@@ -1812,9 +1850,9 @@ impl DynWinRTArray {
             .map(|i| self.0.get_i32(i).map_err(map_dynwinrt_error))
             .collect()
     }
-    fn to_u32_list(&self) -> Vec<u32> {
+    fn to_u32_list(&self) -> PyResult<Vec<u32>> {
         (0..self.0.len())
-            .map(|i| self.0.get(i).as_i32().unwrap_or(0) as u32)
+            .map(|i| self.0.get_u32(i).map_err(map_dynwinrt_error))
             .collect()
     }
     fn to_f32_list(&self) -> Vec<f32> {

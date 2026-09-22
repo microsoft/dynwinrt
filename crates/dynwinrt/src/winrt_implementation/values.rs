@@ -112,12 +112,12 @@ impl ValuePlan {
     }
 
     pub fn callback_abi(&self) -> (CallbackAbiType, Type) {
-        let abi = match self.typ.kind() {
+        let abi = match self.typ.underlying_kind() {
             TypeKind::I8 => CallbackAbiType::I8,
             TypeKind::Bool | TypeKind::U8 => CallbackAbiType::U8,
             TypeKind::I16 => CallbackAbiType::I16,
             TypeKind::U16 | TypeKind::Char16 => CallbackAbiType::U16,
-            TypeKind::I32 | TypeKind::Enum(_) | TypeKind::HResult => CallbackAbiType::I32,
+            TypeKind::I32 | TypeKind::HResult => CallbackAbiType::I32,
             TypeKind::U32 => CallbackAbiType::U32,
             TypeKind::I64 => CallbackAbiType::I64,
             TypeKind::U64 => CallbackAbiType::U64,
@@ -228,7 +228,7 @@ impl ValuePlan {
             {
                 primitive!(value, I32)
             }
-            (TypeKind::U32, WinRTValue::U32(value)) => primitive!(value, U32),
+            (TypeKind::U32 | TypeKind::Enum(_), WinRTValue::U32(value)) => primitive!(value, U32),
             (TypeKind::I64, WinRTValue::I64(value)) => primitive!(value, I64),
             (TypeKind::U64, WinRTValue::U64(value)) => primitive!(value, U64),
             (TypeKind::F32, WinRTValue::F32(value)) => primitive!(value, F32),

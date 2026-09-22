@@ -94,7 +94,8 @@ pub(crate) fn struct_field_getter(
         TypeMeta::U8 => format!("s.getU8({})", index),
         TypeMeta::I16 => format!("s.getI16({})", index),
         TypeMeta::U16 | TypeMeta::Char16 => format!("s.getU16({})", index),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.getI32({})", index),
+        TypeMeta::Enum { underlying, .. } => struct_field_getter(context, underlying, index),
+        TypeMeta::I32 => format!("s.getI32({})", index),
         TypeMeta::U32 => format!("s.getU32({})", index),
         TypeMeta::I64 => format!("s.getI64({})", index),
         TypeMeta::U64 => format!("s.getU64({})", index),
@@ -131,7 +132,10 @@ pub(crate) fn struct_field_setter(
         TypeMeta::U8 => format!("s.setU8({}, {})", index, value_expr),
         TypeMeta::I16 => format!("s.setI16({}, {})", index, value_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("s.setU16({}, {})", index, value_expr),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.setI32({}, {})", index, value_expr),
+        TypeMeta::Enum { underlying, .. } => {
+            struct_field_setter(context, underlying, index, value_expr)
+        }
+        TypeMeta::I32 => format!("s.setI32({}, {})", index, value_expr),
         TypeMeta::U32 => format!("s.setU32({}, {})", index, value_expr),
         TypeMeta::I64 => format!("s.setI64({}, {})", index, value_expr),
         TypeMeta::U64 => format!("s.setU64({}, {})", index, value_expr),

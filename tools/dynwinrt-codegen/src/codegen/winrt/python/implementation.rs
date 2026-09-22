@@ -427,14 +427,14 @@ impl Projector<'_> {
         let integer = |min: &str, max: &str| {
             format!("isinstance(v, int) and not isinstance(v, bool) and {min} <= v <= {max}")
         };
-        let check = match &typ.metadata {
+        let check = match typ.metadata.underlying_type() {
             TypeMeta::Bool => "isinstance(v, bool)".into(),
             TypeMeta::String => "isinstance(v, str)".into(),
             TypeMeta::Char16 => "isinstance(v, str) and len(v) == 1 and ord(v) <= 65535".into(),
             TypeMeta::Guid => "isinstance(v, UUID)".into(),
             TypeMeta::I8 => integer("-128", "127"), TypeMeta::U8 => integer("0", "255"),
             TypeMeta::I16 => integer("-32768", "32767"), TypeMeta::U16 => integer("0", "65535"),
-            TypeMeta::I32 | TypeMeta::Enum { .. } | TypeMeta::Struct { .. } => integer("-2147483648", "2147483647"),
+            TypeMeta::I32 | TypeMeta::Struct { .. } => integer("-2147483648", "2147483647"),
             TypeMeta::U32 => integer("0", "4294967295"),
             TypeMeta::I64 => integer("-9223372036854775808", "9223372036854775807"),
             TypeMeta::U64 => integer("0", "18446744073709551615"),

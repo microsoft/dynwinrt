@@ -1143,9 +1143,8 @@ pub(crate) fn array_element_types_match(expected: &TypeHandle, actual: &TypeHand
         (TypeKind::Struct(_), TypeKind::Struct(_)) | (TypeKind::Enum(_), TypeKind::Enum(_)) => {
             expected == actual
         }
-        (TypeKind::Enum(_), TypeKind::I32)
-        | (TypeKind::Char16, TypeKind::U16)
-        | (TypeKind::U16, TypeKind::Char16) => true,
+        (TypeKind::Enum(_), actual) => expected.underlying_kind() == actual,
+        (TypeKind::Char16, TypeKind::U16) | (TypeKind::U16, TypeKind::Char16) => true,
         (expected, actual) => expected == actual,
     }
 }
@@ -1253,6 +1252,11 @@ pub(crate) fn coerce_scalar_input(
                 invalid_argument("I32 projection value does not fit the expected char16 ABI")
             })?))
         }
+        (TypeKind::Enum(_), WinRTValue::Enum { value, type_handle })
+            if type_handle == expected && expected.underlying_kind() == TypeKind::U32 =>
+        {
+            Some(WinRTValue::U32(*value as u32))
+        }
         _ => None,
     };
     if projected_alias.is_some() {
@@ -1275,7 +1279,7 @@ pub(crate) fn coerce_scalar_input(
         TypeKind::HString => matches!(value, WinRTValue::HString(_)),
         TypeKind::HResult => matches!(value, WinRTValue::HResult(_) | WinRTValue::I32(_)),
         TypeKind::Enum(_) => {
-            matches!(value, WinRTValue::I32(_))
+            value.get_type_kind() == expected.underlying_kind()
                 || matches!(
                     value,
                     WinRTValue::Enum { type_handle, .. } if type_handle == expected
@@ -1341,7 +1345,7 @@ fn validate_array_element(
         });
     }
     if let TypeKind::Enum(_) = expected.kind() {
-        let matches = matches!(value, WinRTValue::I32(_))
+        let matches = value.get_type_kind() == expected.underlying_kind()
             || matches!(
                 value,
                 WinRTValue::Enum { type_handle, .. } if type_handle == expected
@@ -1637,7 +1641,7 @@ impl Method {
             && matches!(self.info.return_kind, MethodReturn::HResult)
             && matches!(
                 &self.info.parameters[0].typ,
-                ParameterType::WinRT(typ) if accepts(&typ.kind())
+                ParameterType::WinRT(typ) if accepts(&typ.underlying_kind())
             );
         if valid {
             Ok(())
@@ -1660,7 +1664,7 @@ impl Method {
             && matches!(self.info.return_kind, MethodReturn::HResult)
             && matches!(
                 &self.info.parameters[0].typ,
-                ParameterType::WinRT(typ) if accepts(&typ.kind())
+                ParameterType::WinRT(typ) if accepts(&typ.underlying_kind())
             );
         if valid {
             Ok(())
@@ -1673,9 +1677,7 @@ impl Method {
 
     /// Getter → i32 (0 in, 1 out). Writes directly to stack i32.
     pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<i32> {
-        self.validate_fast_getter("get_i32", |kind| {
-            matches!(kind, TypeKind::I32 | TypeKind::Enum(_))
-        })?;
+        self.validate_fast_getter("get_i32", |kind| matches!(kind, TypeKind::I32))?;
         let mut out: i32 = 0;
         let hr = call::call_winrt_method_1(
             self.info.index,
@@ -1779,9 +1781,7 @@ impl Method {
         obj: *mut std::ffi::c_void,
         value: i32,
     ) -> windows_core::Result<()> {
-        self.validate_fast_setter("set_i32", |kind| {
-            matches!(kind, TypeKind::I32 | TypeKind::Enum(_))
-        })?;
+        self.validate_fast_setter("set_i32", |kind| matches!(kind, TypeKind::I32))?;
         call::call_winrt_method_1(self.info.index, obj, value).ok()
     }
 

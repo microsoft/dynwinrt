@@ -145,6 +145,7 @@ pub enum WinRTValue {
     Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
     Enum {
+        /// Raw 32-bit representation; signedness comes from type_handle.
         value: i32,
         type_handle: TypeHandle,
     },
@@ -168,6 +169,17 @@ impl WinRTValue {
     pub fn as_hstring(&self) -> Option<windows::core::HSTRING> {
         match self {
             WinRTValue::HString(hstr) => Some((*hstr).clone()),
+            _ => None,
+        }
+    }
+
+    pub fn as_enum_number(&self) -> Option<i64> {
+        match self {
+            Self::Enum { value, type_handle } => match type_handle.underlying_kind() {
+                TypeKind::I32 => Some(i64::from(*value)),
+                TypeKind::U32 => Some(i64::from(*value as u32)),
+                _ => None,
+            },
             _ => None,
         }
     }

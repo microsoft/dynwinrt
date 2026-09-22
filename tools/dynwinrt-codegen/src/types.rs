@@ -294,12 +294,30 @@ pub struct FieldMeta {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumMember {
     pub name: String,
+    /// Raw 32-bit representation, interpreted using the enum's underlying type.
     pub value: i32,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
 }
 
+impl EnumMember {
+    pub fn numeric_value(&self, underlying: &TypeMeta) -> i64 {
+        match underlying {
+            TypeMeta::I32 => i64::from(self.value),
+            TypeMeta::U32 => i64::from(self.value as u32),
+            _ => panic!("WinRT enum backing type must be I32 or U32"),
+        }
+    }
+}
+
 impl TypeMeta {
+    pub fn underlying_type(&self) -> &Self {
+        match self {
+            Self::Enum { underlying, .. } => underlying,
+            _ => self,
+        }
+    }
+
     /// Return the canonical semantic identity represented by this metadata type.
     pub fn type_identity(&self) -> TypeIdentity {
         let primitive = |name: &str| TypeIdentity::Primitive {

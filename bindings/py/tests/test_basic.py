@@ -224,6 +224,64 @@ def test_enum_type_and_value():
     assert ev.get_enum_name() == "B"
 
 
+def test_unsigned_enum_iids_values_arrays_and_struct_fields():
+    flags = DynWinRTType.enum_type(
+        "Windows.Gaming.Input.GamepadButtons",
+        ["High", "All"], [0x80000000, 0xFFFFFFFF], DynWinRTType.u32_type(),
+    )
+    vector = DynWinRTType.parameterized(
+        WinGUID.parse("913337e9-11a1-4345-a3a2-4e7f956e222d"), [flags],
+    )
+    reference = DynWinRTType.parameterized(
+        WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"), [flags],
+    )
+    assert vector.iid().to_string().lower() == "2da67b4c-03d3-57c7-8257-6c30837177ac"
+    assert reference.iid().to_string().lower() == "9b7e3bfb-85a9-5b98-81b3-1af4a060a6f5"
+    assert DynWinRTType.get_enum_value("Windows.Gaming.Input.GamepadButtons", "All") == 0xFFFFFFFF
+    getter = DynWinRTType.register_interface("EnumContracts.PyReference", reference.iid()).add_method(
+        "get_Value", DynWinRTMethodSig().add_out(flags),
+    ).method(6)
+    expected = [0, 0x80000000, 0xFFFFFFFF]
+    values = [DynWinRTValue.enum_value(flags, value) for value in expected]
+    for value, number in zip(values, expected):
+        assert value.get_enum_int() == number
+        assert value.to_number() == number
+        assert value.to_int() == number
+        boxed = DynWinRTValue.box_reference(value, flags)
+        view = boxed.cast(reference.iid())
+        try:
+            assert getter.invoke(view, []).to_number() == number
+        finally:
+            view.release()
+            boxed.release()
+    assert values[-1].get_enum_name() == "All"
+    assert DynWinRTValue.enum_value(flags, 0x80000001).to_string() == "2147483649"
+    array = DynWinRTArray.from_values(values, flags)
+    assert array.to_u32_list() == expected
+    with pytest.raises((RuntimeError, TypeError)):
+        array.to_i32_list()
+    record = DynWinRTStruct.create(DynWinRTType.struct_type("EnumContracts.PyRecord", [flags]))
+    record.set_u32(0, 0xFFFFFFFF)
+    assert record.get_u32(0) == 0xFFFFFFFF
+    with pytest.raises((RuntimeError, TypeError)):
+        record.get_i32(0)
+    for number in [-1, 2**32]:
+        with pytest.raises(OSError):
+            DynWinRTValue.enum_value(flags, number)
+    with pytest.raises(OSError):
+        DynWinRTType.enum_type("Windows.Gaming.Input.GamepadButtons")
+    with pytest.raises(TypeError):
+        DynWinRTType.enum_type("EnumContracts.BadBacking", [], [], DynWinRTType.u64_type())
+    with pytest.raises(OverflowError):
+        DynWinRTType.enum_type("EnumContracts.BadMember", ["Bad"], [-1], DynWinRTType.u32_type())
+    with pytest.raises(TypeError):
+        DynWinRTType.enum_type("EnumContracts.MissingMember", ["Bad"], [])
+    signed = DynWinRTType.enum_type("EnumContracts.PySigned", ["Negative"], [-1])
+    assert DynWinRTValue.enum_value(signed, -1).to_number() == -1
+    with pytest.raises(OSError):
+        DynWinRTValue.enum_value(signed, 0x80000000)
+
+
 def test_iid():
     """iid() should return the IID for an interface type."""
     iid = WinGUID.parse("00000002-0000-0000-0000-000000000002")

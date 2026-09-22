@@ -175,13 +175,19 @@ impl DynWinRTValue {
   pub fn f64(value: f64) -> DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::F64(value))
   }
-  /// Create an enum value from an i32. The type_handle must be an enum type.
+  /// Create an enum value within the enum's declared i32 or u32 range.
   #[napi]
-  pub fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
-    DynWinRTValue::new(dynwinrt::WinRTValue::Enum {
-      value,
-      type_handle: enum_type.0.clone(),
-    })
+  pub fn enum_value(enum_type: &DynWinRTType, value: f64) -> napi::Result<DynWinRTValue> {
+    let value = if enum_type.0.underlying_kind() == dynwinrt::TypeKind::U32 {
+      i64::from(js_u32(value, "enumValue")?)
+    } else {
+      i64::from(js_i32(value, "enumValue")?)
+    };
+    enum_type
+      .0
+      .enum_value(value)
+      .map(DynWinRTValue::new)
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   #[napi]
@@ -194,13 +200,10 @@ impl DynWinRTValue {
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
-  /// Get the i32 value of an enum. Returns None if not an enum.
+  /// Get the signed or unsigned numeric value of an enum. Returns None if not an enum.
   #[napi]
-  pub fn get_enum_int(&self) -> Option<i32> {
-    match &self.winrt {
-      dynwinrt::WinRTValue::Enum { value, .. } => Some(*value),
-      _ => None,
-    }
+  pub fn get_enum_int(&self) -> Option<f64> {
+    self.winrt.as_enum_number().map(|value| value as f64)
   }
 
   /// Get the member name of an enum value. Returns None if not an enum or no matching member.
@@ -427,7 +430,13 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::I32(i) => f64::from(*i),
       dynwinrt::WinRTValue::U32(i) => f64::from(*i),
       dynwinrt::WinRTValue::HResult(hr) => f64::from(hr.0),
-      dynwinrt::WinRTValue::Enum { value, .. } => f64::from(*value),
+      dynwinrt::WinRTValue::Enum { value, type_handle } => {
+        if type_handle.underlying_kind() == dynwinrt::TypeKind::U32 {
+          f64::from(*value as u32)
+        } else {
+          f64::from(*value)
+        }
+      }
       _ => {
         return Err(napi::Error::from_reason(format!(
           "Cannot convert {:?} to number",
