@@ -250,10 +250,18 @@ extends:
               targetPath: artifacts
               artifactName: npm-packages
 
+          - task: CopyFiles@2
+            displayName: Stage release notes
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)/eng/release'
+              Contents: RELEASE_NOTES.md
+              TargetFolder: '$(Build.ArtifactStagingDirectory)/release-notes'
+              CleanTargetFolder: true
+
           - task: 1ES.PublishPipelineArtifact@1
             displayName: Upload release notes
             inputs:
-              targetPath: '$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'
+              targetPath: '$(Build.ArtifactStagingDirectory)/release-notes'
               artifactName: release-notes
 
     - stage: Wait_Python

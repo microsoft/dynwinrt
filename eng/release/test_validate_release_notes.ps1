@@ -132,11 +132,20 @@ Write-Output "SCRIPT_ROOT_PROBE_OK"
         "            artifactName: release-notes"
         '            targetPath: $(Pipeline.Workspace)/release-notes'
     ) -join $newline
+    $notesStager = @(
+        "          - task: CopyFiles@2"
+        "            displayName: Stage release notes"
+        "            inputs:"
+        '              SourceFolder: ''$(Build.SourcesDirectory)/eng/release'''
+        "              Contents: RELEASE_NOTES.md"
+        '              TargetFolder: ''$(Build.ArtifactStagingDirectory)/release-notes'''
+        "              CleanTargetFolder: true"
+    ) -join $newline
     $notesPublisher = @(
         "          - task: 1ES.PublishPipelineArtifact@1"
         "            displayName: Upload release notes"
         "            inputs:"
-        '              targetPath: ''$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'''
+        '              targetPath: ''$(Build.ArtifactStagingDirectory)/release-notes'''
         "              artifactName: release-notes"
     ) -join $newline
 
@@ -292,10 +301,65 @@ Write-Output "SCRIPT_ROOT_PROBE_OK"
     Assert-ValidationFails -Name "duplicate Build artifact producer" `
         -Pipeline $duplicatePublisher -Notes $validNotes -CreateNotes $true `
         -ExpectedMessage "*Build job must publish exactly one release-notes*"
-    $wrongSource = $validPipeline.Replace($notesPublisher, $notesPublisher.Replace("RELEASE_NOTES.md", "README.md"))
-    Assert-ValidationFails -Name "incorrect notes artifact source" `
-        -Pipeline $wrongSource -Notes $validNotes -CreateNotes $true `
-        -ExpectedMessage "*Build must publish release-notes from the checked-in*"
+    $singleFilePublisher = $validPipeline.Replace(
+        $notesPublisher,
+        $notesPublisher.Replace(
+            '$(Build.ArtifactStagingDirectory)/release-notes',
+            '$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'
+        )
+    )
+    Assert-ValidationFails -Name "single-file artifact omits sibling SBOM" `
+        -Pipeline $singleFilePublisher -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*whole release-notes staging directory*"
+    $nestedFilePublisher = $validPipeline.Replace(
+        $notesPublisher,
+        $notesPublisher.Replace(
+            '$(Build.ArtifactStagingDirectory)/release-notes',
+            '$(Build.ArtifactStagingDirectory)/release-notes/RELEASE_NOTES.md'
+        )
+    )
+    Assert-ValidationFails -Name "staged single-file artifact omits sibling SBOM" `
+        -Pipeline $nestedFilePublisher -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*whole release-notes staging directory*"
+    $missingStager = $validPipeline.Replace($notesStager, "          # release-notes staging removed")
+    Assert-ValidationFails -Name "missing notes staging step" `
+        -Pipeline $missingStager -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*stage release notes exactly once before publishing*"
+    $duplicateStager = $validPipeline.Replace($notesStager, "${notesStager}${newline}${notesStager}")
+    Assert-ValidationFails -Name "duplicate notes staging step" `
+        -Pipeline $duplicateStager -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*stage release notes exactly once before publishing*"
+    $lateStager = $missingStager.Replace($notesPublisher, "${notesPublisher}${newline}${notesStager}")
+    Assert-ValidationFails -Name "notes staged after artifact publication" `
+        -Pipeline $lateStager -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*stage release notes exactly once before publishing*"
+    foreach ($replacement in @(
+        $notesStager.Replace("Contents: RELEASE_NOTES.md", "Contents: README.md"),
+        $notesStager.Replace("Contents: RELEASE_NOTES.md", "Contents: '**'"),
+        $notesStager.Replace('$(Build.SourcesDirectory)/eng/release', '$(Build.SourcesDirectory)/unrelated'),
+        $notesStager.Replace("CleanTargetFolder: true", "CleanTargetFolder: false")
+    )) {
+        Assert-ValidationFails -Name "incorrect notes staging source or cleanup" `
+            -Pipeline $validPipeline.Replace($notesStager, $replacement) `
+            -Notes $validNotes -CreateNotes $true `
+            -ExpectedMessage "*stage only the checked-in RELEASE_NOTES.md into a clean*"
+    }
+    $wrongStagingDirectory = $validPipeline.Replace(
+        $notesStager,
+        $notesStager.Replace('$(Build.ArtifactStagingDirectory)/release-notes', '$(Build.ArtifactStagingDirectory)/wrong-notes')
+    )
+    Assert-ValidationFails -Name "notes staged outside the published directory" `
+        -Pipeline $wrongStagingDirectory -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*stage release notes exactly once before publishing*"
+    foreach ($disabled in @("enabled: false", "condition: false", "continueOnError: true")) {
+        $disabledStager = $validPipeline.Replace(
+            $notesStager,
+            $notesStager.Replace("            displayName: Stage release notes", "            ${disabled}${newline}            displayName: Stage release notes")
+        )
+        Assert-ValidationFails -Name "disabled notes staging $disabled" `
+            -Pipeline $disabledStager -Notes $validNotes -CreateNotes $true `
+            -ExpectedMessage "*staging must not be disabled*"
+    }
     foreach ($disabled in @("enabled: false", "condition: false")) {
         $disabledPublisher = $validPipeline.Replace(
             $notesPublisher,

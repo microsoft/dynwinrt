@@ -314,12 +314,17 @@ $buildStepsIndex = Get-ChildBlockIndex -Lines $lines -Start $buildJobIndex `
     -End $buildJobEnd -ParentIndent $buildJobIndent -Key "steps" -Context "Build job"
 $buildStepsIndent = Get-Indent $lines[$buildStepsIndex]
 $buildStepsEnd = Get-BlockEnd -Lines $lines -Start $buildStepsIndex -Indent $buildStepsIndent
+$notesStagingDirectory = '$(Build.ArtifactStagingDirectory)/release-notes'
+$stagers = @()
 $publishers = @()
 for ($index = $buildStepsIndex + 1; $index -lt $buildStepsEnd; $index++) {
     $indent = Get-Indent $lines[$index]
     if ($indent -ne ($buildStepsIndent + 2) -or
-        $lines[$index] -notmatch "^\s*-\s+task:\s*(?<value>$yamlScalarPattern)\s*(?:#.*)?$" -or
-        (ConvertFrom-YamlScalar $Matches.value) -cne "1ES.PublishPipelineArtifact@1") {
+        $lines[$index] -notmatch "^\s*-\s+task:\s*(?<value>$yamlScalarPattern)\s*(?:#.*)?$") {
+        continue
+    }
+    $taskType = ConvertFrom-YamlScalar $Matches.value
+    if ($taskType -cnotin @("1ES.PublishPipelineArtifact@1", "CopyFiles@2")) {
         continue
     }
     $end = Get-BlockEnd -Lines $lines -Start $index -Indent $indent
@@ -329,9 +334,23 @@ for ($index = $buildStepsIndex + 1; $index -lt $buildStepsEnd; $index++) {
     $publishInputsEnd = Get-BlockEnd -Lines $lines -Start $publishInputsIndex -Indent $publishInputsIndent
     $publishInputs = Get-DirectMapping -Lines $lines -Start $publishInputsIndex `
         -End $publishInputsEnd -ParentIndent $publishInputsIndent
-    if ($publishInputs["artifactName"] -ceq "release-notes") {
-        if ($publishInputs["targetPath"] -cne '$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md') {
-            throw "Build must publish release-notes from the checked-in eng/release/RELEASE_NOTES.md file"
+    if ($taskType -ceq "CopyFiles@2" -and $publishInputs["TargetFolder"] -ceq $notesStagingDirectory) {
+        if ($publishInputs["SourceFolder"] -cne '$(Build.SourcesDirectory)/eng/release' -or
+            $publishInputs["Contents"] -cne "RELEASE_NOTES.md" -or
+            $publishInputs["CleanTargetFolder"] -cne "true") {
+            throw "Build must stage only the checked-in RELEASE_NOTES.md into a clean release-notes directory"
+        }
+        $task = Get-DirectMapping -Lines $lines -Start $index -End $end -ParentIndent $indent
+        if (($task.ContainsKey("enabled") -and $task["enabled"] -cne "true") -or
+            ($task.ContainsKey("condition") -and $task["condition"] -cne "succeeded()") -or
+            ($task.ContainsKey("continueOnError") -and $task["continueOnError"] -cne "false")) {
+            throw "Build release-notes staging must not be disabled, conditionally skipped, or ignore errors"
+        }
+        $stagers += $index
+    }
+    if ($taskType -ceq "1ES.PublishPipelineArtifact@1" -and $publishInputs["artifactName"] -ceq "release-notes") {
+        if ($publishInputs["targetPath"] -cne $notesStagingDirectory) {
+            throw "Build must publish the whole release-notes staging directory to include the generated SBOM, not a single file"
         }
         $task = Get-DirectMapping -Lines $lines -Start $index -End $end -ParentIndent $indent
         if (($task.ContainsKey("enabled") -and $task["enabled"] -cne "true") -or
@@ -343,6 +362,9 @@ for ($index = $buildStepsIndex + 1; $index -lt $buildStepsEnd; $index++) {
 }
 if ($publishers.Count -ne 1) {
     throw "Build job must publish exactly one release-notes pipeline artifact"
+}
+if ($stagers.Count -ne 1 -or $stagers[0] -ge $publishers[0]) {
+    throw "Build job must stage release notes exactly once before publishing the directory artifact"
 }
 
 $releaseStageIndex = -1
