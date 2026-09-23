@@ -3,11 +3,16 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+    [ValidateNotNullOrEmpty()][string]$RepositoryRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if (-not $PSBoundParameters.ContainsKey("RepositoryRoot")) {
+    # Windows PowerShell 5.1 evaluates dot-sourced parameter defaults in the caller's scope.
+    $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+}
 
 function Get-Indent {
     param([string]$Line)

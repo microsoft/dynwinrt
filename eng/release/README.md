@@ -26,3 +26,9 @@ Build CI and the release pipeline both run `validate_release_notes.ps1` and
 the Build artifact producer, the release job's artifact input, and the absence
 of release-job source checkout. These checks do not create a tag or publish a
 release.
+
+Both scripts derive their default repository root from their own location,
+independent of the working directory or an agent's temporary wrapper script.
+The regression suite exercises the dot-sourced invocation used by
+`PowerShell@2`, including Windows PowerShell 5.1 on Windows. An explicitly
+supplied `-RepositoryRoot` is still honored.

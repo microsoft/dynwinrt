@@ -3,11 +3,16 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+    [ValidateNotNullOrEmpty()][string]$RepositoryRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if (-not $PSBoundParameters.ContainsKey("RepositoryRoot")) {
+    # Windows PowerShell 5.1 evaluates dot-sourced parameter defaults in the caller's scope.
+    $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+}
 
 $validatorPath = Join-Path $PSScriptRoot "validate_release_notes.ps1"
 $pipelinePath = Join-Path $RepositoryRoot ".pipelines/release.yml"
@@ -78,6 +83,49 @@ New-Item -ItemType Directory -Force -Path `
     (Split-Path $tempNotesPath -Parent) | Out-Null
 
 try {
+    $agentTemp = Join-Path $tempRoot "agent temp"
+    New-Item -ItemType Directory -Path $agentTemp -Force | Out-Null
+    $wrapperPath = Join-Path $agentTemp "validate wrapper.ps1"
+    Write-TestFile -Path $tempPipelinePath -Contents $validPipeline
+    Write-TestFile -Path $tempNotesPath -Contents $validNotes
+    Write-TestFile -Path $wrapperPath -Contents @'
+param([string]$Validator, [string]$ExpectedRoot, [string]$FixtureRoot)
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $PSScriptRoot
+. $Validator
+if ($RepositoryRoot -cne $ExpectedRoot) {
+    throw "Dot-sourced validator resolved the caller's directory instead of its own repository"
+}
+. $Validator -RepositoryRoot $FixtureRoot
+if ($RepositoryRoot -cne $FixtureRoot) {
+    throw "Explicit RepositoryRoot was not preserved"
+}
+$missingRoot = Join-Path $PSScriptRoot "missing-repository"
+try {
+    . $Validator -RepositoryRoot $missingRoot
+    throw "Expected missing release notes to fail"
+} catch {
+    if ($_.Exception.Message -notlike "Release notes file is missing:*") {
+        throw
+    }
+}
+Write-Output "SCRIPT_ROOT_PROBE_OK"
+'@
+    $shells = @((Get-Process -Id $PID).Path)
+    if ($env:OS -eq "Windows_NT") {
+        $shells += Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    }
+    $scriptRepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+    foreach ($shell in ($shells | Select-Object -Unique)) {
+        $probeOutput = & $shell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $wrapperPath -Validator $validatorPath -ExpectedRoot $scriptRepositoryRoot `
+            -FixtureRoot $tempRoot
+        if ($LASTEXITCODE -ne 0 -or $probeOutput -notcontains "SCRIPT_ROOT_PROBE_OK") {
+            throw "Release validator dot-source regression failed under ${shell}: $probeOutput"
+        }
+        Write-Host "Accepted agent temporary-wrapper invocation: $shell"
+    }
+
     $releaseTask = "          - task: GitHubRelease@1"
     $notesInput = @(
         "          - input: pipelineArtifact"
