@@ -10,20 +10,23 @@
 use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicI64, Ordering},
 };
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::collection_element::{
-    CollectionElementPlan, CollectionEquality, CollectionStorage, PreparedCollectionItem,
+    CollectionElementPlan, CollectionEquality, CollectionStorage, OwnedPod, PreparedCollectionItem,
 };
+#[path = "vector_pod.rs"]
+mod pod;
 use crate::com_helpers::{
     E_BOUNDS, E_FAIL, E_NOTIMPL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out,
     com_usize_release,
 };
 #[allow(unused_imports)]
 use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
+use pod::PodVectorVtables;
 
 // ======================================================================
 // IIDs for collection PIIDs
@@ -52,6 +55,10 @@ struct IterableVtbl {
 }
 
 /// IVector<T> vtable: IInspectable + 12 methods
+///
+/// By-value slots are typed for the word/reference fast path. POD tables replace
+/// their code with libffi closures; those slots must be called with the native
+/// element signature, not these erased Rust signatures.
 #[repr(C)]
 struct VectorVtbl {
     base: IInspectableVtbl,
@@ -182,7 +189,9 @@ pub(crate) unsafe fn write_item_out(
     raw: usize,
     result: *mut *mut c_void,
 ) {
-    if storage.is_hstring() {
+    if let CollectionStorage::Pod(layout) = storage {
+        std::ptr::copy_nonoverlapping(raw as *const u8, result.cast::<u8>(), layout.size());
+    } else if storage.is_hstring() {
         *result = clone_hstring_raw(raw) as *mut c_void;
     } else if storage.is_value_type() {
         let write_size = storage.element_size();
@@ -215,6 +224,9 @@ unsafe fn store_array_item(
     index: usize,
 ) -> usize {
     let slot = values.cast::<u8>().add(index * storage.array_stride());
+    if matches!(storage, CollectionStorage::Pod(_)) {
+        return store_abi_item(storage, slot.cast_mut().cast());
+    }
     let raw = if storage.is_value_type() {
         debug_assert!(!storage.is_empty_only());
         let mut word = 0usize;
@@ -247,7 +259,9 @@ unsafe fn release_hstring_raw(raw: usize) {
 }
 
 pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -> usize {
-    if storage.is_hstring() {
+    if let CollectionStorage::Pod(layout) = storage {
+        OwnedPod::copy(layout, raw as *const u8).into_raw()
+    } else if storage.is_hstring() {
         clone_hstring_raw(raw)
     } else if storage.is_value_type() {
         raw
@@ -256,8 +270,11 @@ pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -
     }
 }
 
+// POD input is an address supplied by libffi or a packed-array slot, not word bits.
 pub(crate) unsafe fn store_abi_item(storage: CollectionStorage, raw: *mut c_void) -> usize {
-    if storage.is_hstring() {
+    if let CollectionStorage::Pod(layout) = storage {
+        OwnedPod::copy(layout, raw.cast()).into_raw()
+    } else if storage.is_hstring() {
         clone_hstring_raw(raw as usize)
     } else if storage.is_value_type() {
         normalize_value_word(raw as usize, storage.element_size())
@@ -267,7 +284,9 @@ pub(crate) unsafe fn store_abi_item(storage: CollectionStorage, raw: *mut c_void
 }
 
 pub(crate) unsafe fn release_stored_item(storage: CollectionStorage, raw: usize) {
-    if storage.is_hstring() {
+    if let CollectionStorage::Pod(layout) = storage {
+        drop(OwnedPod::from_raw(layout, raw));
+    } else if storage.is_hstring() {
         release_hstring_raw(raw);
     } else if !storage.is_value_type() {
         com_usize_release(raw);
@@ -280,6 +299,14 @@ pub(crate) unsafe fn stored_items_equal(
     left: usize,
     right: usize,
 ) -> bool {
+    if let CollectionStorage::Pod(layout) = storage {
+        return equality
+            .struct_bytes_equal(
+                std::slice::from_raw_parts(left as *const u8, layout.size()),
+                std::slice::from_raw_parts(right as *const u8, layout.size()),
+            )
+            .expect("POD storage requires field equality");
+    }
     if let Some(equal) = equality.struct_words_equal(left, right) {
         return equal;
     }
@@ -317,8 +344,9 @@ fn normalize_value_word(value: usize, elem_size: usize) -> usize {
 ///
 /// Stores items as raw `usize` values. For reference types (COM objects),
 /// each usize is a raw IUnknown pointer with manual AddRef/Release.
-/// For value types (structs ≤ pointer size), each usize holds the struct
-/// bytes directly — no refcounting needed.
+/// For word-ABI value types, each usize holds the bytes directly.
+/// Other checked PODs own aligned allocations addressed by
+/// each word and use metadata-prepared by-value entrypoints.
 ///
 /// Implements four interfaces:
 /// - IIterable<T>: First() for iteration
@@ -338,6 +366,7 @@ struct SingleThreadedVector {
     storage: CollectionStorage,
     equality: CollectionEquality,
     iids: VectorIids,
+    pod_vtables: Option<Arc<PodVectorVtables>>,
 }
 
 unsafe impl Send for SingleThreadedVector {}
@@ -450,6 +479,12 @@ impl SingleThreadedVector {
         unsafe { (self as *const Self as *const *const c_void).add(3) as *mut c_void }
     }
 
+    // Keep the owner alive for the whole mutation, including input retention,
+    // event callbacks and handler destruction, not just the notification borrow.
+    unsafe fn retain_mutation(this: *mut c_void) -> IUnknown {
+        IUnknown::from_raw_borrowed(&this).unwrap().clone()
+    }
+
     fn notify_changed(&self, collection_change: i32, index: u32) -> HRESULT {
         let handlers: Vec<IUnknown> = match self.handlers.lock() {
             Ok(handlers) => handlers.values().cloned().collect(),
@@ -542,6 +577,7 @@ impl SingleThreadedVector {
             me.storage,
             me.equality.clone(),
             me.iids.clone(),
+            me.pod_vtables.clone(),
         );
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
@@ -556,6 +592,18 @@ impl SingleThreadedVector {
         index: *mut u32,
         found: *mut bool,
     ) -> HRESULT {
+        Self::index_of_impl(this, value, index, found)
+    }
+
+    unsafe fn index_of_impl(
+        this: *mut c_void,
+        value: *mut c_void,
+        index: *mut u32,
+        found: *mut bool,
+    ) -> HRESULT {
+        if index.is_null() || found.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
         let me = Self::from_vector_ptr(this);
         // Empty-only aggregates lower to one pointer, but have no value storage.
         if me.storage.is_empty_only() {
@@ -576,6 +624,11 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn set_at(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
+        Self::set_at_impl(this, index, value)
+    }
+
+    unsafe fn set_at_impl(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -597,6 +650,11 @@ impl SingleThreadedVector {
         index: u32,
         value: *mut c_void,
     ) -> HRESULT {
+        Self::insert_at_impl(this, index, value)
+    }
+
+    unsafe fn insert_at_impl(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -613,6 +671,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn remove_at(this: *mut c_void, index: u32) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let removed = {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -626,13 +685,24 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
+        Self::append_impl(this, value)
+    }
+
+    unsafe fn append_impl(this: *mut c_void, value: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         if me.storage.is_empty_only() {
             return E_NOTIMPL;
         }
         let val = store_abi_item(me.storage, value);
         let index = {
-            let mut items = lock_or!(me.items, E_FAIL);
+            let mut items = match me.items.lock() {
+                Ok(items) => items,
+                Err(_) => {
+                    release_stored_item(me.storage, val);
+                    return E_FAIL;
+                }
+            };
             let index = items.len() as u32;
             items.push(val);
             index
@@ -641,6 +711,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn remove_at_end(this: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let (removed, index) = {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -659,6 +730,7 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         for raw in old_items {
@@ -692,6 +764,7 @@ impl SingleThreadedVector {
         count: u32,
         values: *const *mut c_void,
     ) -> HRESULT {
+        let _keep_alive = Self::retain_mutation(this);
         let me = Self::from_vector_ptr(this);
         if count > 0 && me.storage.is_empty_only() {
             return E_NOTIMPL;
@@ -739,6 +812,18 @@ impl SingleThreadedVector {
         index: *mut u32,
         found: *mut bool,
     ) -> HRESULT {
+        Self::view_index_of_impl(this, value, index, found)
+    }
+
+    unsafe fn view_index_of_impl(
+        this: *mut c_void,
+        value: *mut c_void,
+        index: *mut u32,
+        found: *mut bool,
+    ) -> HRESULT {
+        if index.is_null() || found.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
         let me = Self::from_view_ptr(this);
         if me.storage.is_empty_only() {
             return E_NOTIMPL;
@@ -780,11 +865,13 @@ impl SingleThreadedVector {
 
 impl Drop for SingleThreadedVector {
     fn drop(&mut self) {
-        if let Ok(items) = self.items.lock() {
-            for &raw in items.iter() {
-                unsafe {
-                    release_stored_item(self.storage, raw);
-                }
+        let items = self
+            .items
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for &raw in items.iter() {
+            unsafe {
+                release_stored_item(self.storage, raw);
             }
         }
     }
@@ -803,6 +890,7 @@ struct SingleThreadedVectorView {
     storage: CollectionStorage,
     equality: CollectionEquality,
     iids: VectorIids,
+    pod_vtables: Option<Arc<PodVectorVtables>>,
 }
 
 unsafe impl Send for SingleThreadedVectorView {}
@@ -845,15 +933,19 @@ impl SingleThreadedVectorView {
         storage: CollectionStorage,
         equality: CollectionEquality,
         iids: VectorIids,
+        pod_vtables: Option<Arc<PodVectorVtables>>,
     ) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
-            vtable_view: &Self::VIEW_VTBL,
+            vtable_view: pod_vtables
+                .as_ref()
+                .map_or(&Self::VIEW_VTBL, |plan| &plan.snapshot),
             ref_count: windows_core::imp::RefCount::new(1),
             items,
             storage,
             equality,
             iids,
+            pod_vtables,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
     }
@@ -903,6 +995,18 @@ impl SingleThreadedVectorView {
         index: *mut u32,
         found: *mut bool,
     ) -> HRESULT {
+        Self::index_of_impl(this, value, index, found)
+    }
+
+    unsafe fn index_of_impl(
+        this: *mut c_void,
+        value: *mut c_void,
+        index: *mut u32,
+        found: *mut bool,
+    ) -> HRESULT {
+        if index.is_null() || found.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
         let me = Self::from_view_ptr(this);
         if me.storage.is_empty_only() {
             return E_NOTIMPL;
@@ -1067,8 +1171,9 @@ impl Drop for SingleThreadedIterator {
 /// Create an IVector<T> COM object from WinRTValue items.
 ///
 /// Validates the complete IID set, exact element types, native argument ABI,
-/// and ownership before publication. Only word-sized POD values are stored.
-/// Some indirectly passed large POD types support empty-only vectors.
+/// and ownership before publication. Checked POD structs use aligned owned
+/// storage and metadata-prepared native entrypoints when they do not fit the
+/// word ABI. Structs with owned fields and incomplete layouts are rejected.
 /// Admitted struct fields compare by value, ignoring padding; floating fields
 /// use numerical equality, including equal signed zeros and unequal NaNs.
 pub fn create_vector_from_values(
@@ -1076,12 +1181,17 @@ pub fn create_vector_from_values(
     element_type: &crate::TypeHandle,
     iids: VectorIids,
 ) -> crate::Result<IUnknown> {
-    let plan = CollectionElementPlan::new(element_type, items.is_empty())?;
+    let plan = CollectionElementPlan::for_vector(element_type)?;
     if iids != element_type.table().vector_iids(element_type) {
         return Err(crate::Error::InvalidCollectionValue(
             "collection IIDs matching the declared element type",
         ));
     }
+    let pod_vtables = if matches!(plan.storage, CollectionStorage::Pod(_)) {
+        Some(PodVectorVtables::for_type(element_type)?)
+    } else {
+        None
+    };
     let prepared = items
         .iter()
         .map(|item| plan.prepare(item))
@@ -1090,7 +1200,13 @@ pub fn create_vector_from_values(
         .into_iter()
         .map(PreparedCollectionItem::into_raw)
         .collect();
-    Ok(new_vector(packed, plan.storage, plan.equality, iids))
+    Ok(new_vector(
+        packed,
+        plan.storage,
+        plan.equality,
+        iids,
+        pod_vtables,
+    ))
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
@@ -1113,6 +1229,7 @@ pub unsafe fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown 
         CollectionStorage::Object,
         CollectionEquality::Storage,
         iids,
+        None,
     )
 }
 
@@ -1158,7 +1275,7 @@ pub unsafe fn create_value_vector(
             val
         })
         .collect();
-    new_vector(packed, storage, CollectionEquality::Storage, iids)
+    new_vector(packed, storage, CollectionEquality::Storage, iids, None)
 }
 
 fn new_vector(
@@ -1166,11 +1283,16 @@ fn new_vector(
     storage: CollectionStorage,
     equality: CollectionEquality,
     iids: VectorIids,
+    pod_vtables: Option<Arc<PodVectorVtables>>,
 ) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
-        vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
-        vtable_view: &SingleThreadedVector::VIEW_VTBL,
+        vtable_vector: pod_vtables
+            .as_ref()
+            .map_or(&SingleThreadedVector::VECTOR_VTBL, |plan| &plan.vector),
+        vtable_view: pod_vtables
+            .as_ref()
+            .map_or(&SingleThreadedVector::VIEW_VTBL, |plan| &plan.live),
         vtable_observable: &SingleThreadedVector::OBSERVABLE_VTBL,
         ref_count: windows_core::imp::RefCount::new(1),
         items: Mutex::new(items),
@@ -1179,6 +1301,7 @@ fn new_vector(
         storage,
         equality,
         iids,
+        pod_vtables,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(vector) as *mut c_void) }
 }
@@ -1509,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nonempty_large_struct_vector_remains_unsupported() {
+    fn test_nonempty_large_struct_vector() {
         let table = MetadataTable::new();
         let rect = table.struct_type(
             "Windows.Graphics.RectInt32",
@@ -1523,12 +1646,14 @@ mod tests {
         let iids = table.vector_iids(&rect);
         let item = crate::WinRTValue::Struct(rect.default_value());
 
-        assert!(matches!(
-            create_vector_from_values(&[item], &rect, iids),
-            Err(crate::Error::UnsupportedCollectionElement(
-                crate::TypeKind::Struct(_)
-            ))
-        ));
+        let object = create_vector_from_values(&[item], &rect, iids).unwrap();
+        let vector: windows_collections::IVector<windows::Graphics::RectInt32> =
+            object.cast().unwrap();
+        assert_eq!(vector.Size().unwrap(), 1);
+        assert_eq!(
+            vector.GetAt(0).unwrap(),
+            windows::Graphics::RectInt32::default()
+        );
     }
 
     #[test]

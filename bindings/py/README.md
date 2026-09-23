@@ -120,21 +120,31 @@ complete set of closed collection IIDs before creating a native object.
 These limits apply to **producing** collections, including conversion of Python
 sequences/mappings, not to consuming collections returned by Windows.
 
+**Phase one (#161), proposed for this release:** the following matrix describes
+the proposed capability, subject to PR review, final integration, and platform
+CI. POD vector support is independent of Classic COM/Win32 and does not expand
+map admission.
+
 | Element / key / value | x64 | ARM64 | i686 |
 |---|---|---|---|
 | Boolean, integers, Char16, enum, HRESULT | Supported | Supported | Up to 4 bytes; I64/U64 rejected |
 | HSTRING; owned nullable interface/object references | Supported | Supported | Supported |
-| POD structs in populated vectors or maps | Sizes 1, 2, 4, 8 | Up to 8 bytes, non-HFA only | Up to 4 bytes |
-| Additional POD structs in **empty vectors only** | Larger than 8 bytes | Larger than 16 bytes, non-HFA only | None |
+| Validated POD structs in empty or populated vectors | Supported | Supported, including HFAs | Supported |
+| POD struct map keys/values (unchanged) | Sizes 1, 2, 4, 8 | Up to 8 bytes, non-HFA only | Up to 4 bytes |
 | Top-level F32/F64/GUID; structs recursively containing HSTRING or references | Rejected, even empty | Rejected, even empty | Rejected, even empty |
 
 POD means a validated, reference-free native layout. HFA means an aggregate of
 one to four same-width floating-point values, including nested aggregates.
-Thus `Point`/`Size` work on x64 but are rejected on ARM64 even when empty;
-`PointInt32` works on x64 and ARM64. ARM64 also rejects empty `RectInt32`,
-`Rect`, and `BasicGeoposition` vectors. `ManipulationDelta` (20 bytes, five floats,
-non-HFA) supports empty
-vectors on x64 and ARM64. Large map keys/values are rejected even for empty maps.
+Examples include `Point`/`Size`, `PointInt32`, `RectInt32`, `Rect`,
+`BasicGeoposition`, and nested PODs such as `ManipulationDelta` and
+`ManipulationVelocities`; these are not a runtime whitelist. Empty vectors are
+real, non-null, fully mutable collections. Large map keys/values and ARM64 HFA
+map elements remain rejected even for empty maps.
+Struct ABI entrypoints use cached libffi callbacks where the word fast path
+does not apply. A process that prohibits executable callback allocation can
+reject construction before publishing an object.
+See the [POD vector architecture](../../docs/architecture/winrt-pod-vectors.md)
+for layout, storage, callback lifetime, and remaining limitations.
 
 Structs and typed enums require exact type identity, not a matching byte size
 or shape. Scalars require the matching value variant, except U16 inputs for
@@ -168,7 +178,9 @@ the same checks. The metadata-free Rust `create_value_vector`, `create_vector`,
 and `create_map` constructors require `unsafe`: callers must prove the native
 ABI, ownership, element types, and complete IID set themselves.
 The metadata-free `create_value_vector` retains packed-byte equality, including
-padding, rather than metadata-directed field equality.
+padding, rather than metadata-directed field equality. Its original restricted
+word/empty-indirect ABI contract is unchanged; it does not gain checked POD
+vector support.
 Unsupported layouts raise
 `RuntimeError`; HRESULT-backed type, range, or QueryInterface failures raise
 `OSError`. Complete native struct collection support is tracked in

@@ -1918,10 +1918,6 @@ test('create empty vectors for large struct element types', (t) => {
     DynWinRtType.i32(),
     DynWinRtType.i32(),
   ])
-  if (process.arch !== 'x64') {
-    t.throws(() => DynWinRtValue.createVector([], rectType))
-    return
-  }
   const vector = DynWinRtValue.createVector([], rectType)
   const vectorIid = DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [rectType]).iid()
 
@@ -2128,7 +2124,7 @@ test('collection producers retain direct strings and nullable references with th
   }
 })
 
-test('collection producers enforce the architecture-specific small POD boundary', (t) => {
+test('POD vectors are complete while maps retain their architecture-specific boundary', (t) => {
   const cases = [
     {
       name: 'CollectionBoundary.Byte',
@@ -2183,7 +2179,7 @@ test('collection producers enforce the architecture-specific small POD boundary'
     const supported =
       process.arch === 'x64' || (process.arch === 'arm64' && !entry.hfa) || (process.arch === 'ia32' && entry.size <= 4)
     for (const producer of collectionProducerCases(type, [])) {
-      if (supported) {
+      if (producer.name === 'vector' || supported) {
         t.false(producer.create().isNull())
       } else {
         t.throws(producer.create, undefined, entry.name)
@@ -2195,14 +2191,19 @@ test('collection producers enforce the architecture-specific small POD boundary'
       t.is(entry.read(fromMap.asStruct()), entry.expected)
       t.is(keyLookup.toNumber(), 0)
     } else {
-      for (const producer of collectionProducerCases(type, [value.toValue()])) {
+      const vector = DynWinRtValue.createVector([value.toValue()], type)
+      const output = invokeCollectionReader(collectionVectorReader(type), vector, 6, [DynWinRtValue.u32(0)])
+      t.is(entry.read(output.asStruct()), entry.expected)
+      output.release()
+      vector.release()
+      for (const producer of collectionProducerCases(type, [value.toValue()]).slice(1)) {
         t.throws(producer.create, undefined, entry.name)
       }
     }
   }
 })
 
-test('collection producers restrict large POD to ABI-compatible empty vectors', (t) => {
+test('collection producers support empty and nonempty large POD vectors but not maps', (t) => {
   const cases = [
     {
       name: 'Windows.Graphics.RectInt32',
@@ -2236,19 +2237,18 @@ test('collection producers restrict large POD to ABI-compatible empty vectors', 
   ]
   for (const entry of cases) {
     const type = DynWinRtType.structType(entry.name, entry.fields)
-    const emptySupported = process.arch === 'x64' || (process.arch === 'arm64' && entry.size > 16 && !entry.hfa)
-    if (emptySupported) {
-      const vector = DynWinRtValue.createVector([], type)
-      t.is(invokeCollectionReader(collectionVectorReader(type), vector, 7, []).toNumber(), 0)
+    for (const items of [[], [DynWinRtStruct.create(type).toValue()]]) {
+      const vector = DynWinRtValue.createVector(items, type)
+      t.is(invokeCollectionReader(collectionVectorReader(type), vector, 7, []).toNumber(), items.length)
+      if (items.length) {
+        const value = invokeCollectionReader(collectionVectorReader(type), vector, 6, [DynWinRtValue.u32(0)])
+        t.false(value.isNull())
+        value.release()
+      }
       vector.release()
-    } else {
-      t.throws(() => DynWinRtValue.createVector([], type))
-    }
-    for (const producer of collectionProducerCases(type, []).slice(1)) {
-      t.throws(producer.create, undefined, producer.name)
-    }
-    for (const producer of collectionProducerCases(type, [DynWinRtStruct.create(type).toValue()])) {
-      t.throws(producer.create, undefined, producer.name)
+      for (const producer of collectionProducerCases(type, items).slice(1)) {
+        t.throws(producer.create, undefined, producer.name)
+      }
     }
   }
 })

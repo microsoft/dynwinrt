@@ -602,8 +602,8 @@ pub fn create_map_from_values(
     value_type: &crate::TypeHandle,
     iids: MapIids,
 ) -> crate::Result<IUnknown> {
-    let key_plan = CollectionElementPlan::new(key_type, false)?;
-    let value_plan = CollectionElementPlan::new(value_type, false)?;
+    let key_plan = CollectionElementPlan::for_map(key_type)?;
+    let value_plan = CollectionElementPlan::for_map(value_type)?;
     if !std::sync::Arc::ptr_eq(key_type.table(), value_type.table()) {
         return Err(crate::Error::InvalidCollectionValue(
             "map key and value types from the same metadata table",
