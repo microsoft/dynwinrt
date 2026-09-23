@@ -9,8 +9,9 @@ param(
     [ValidateRange(1, [long]::MaxValue)][long]$RunId,
     [switch]$ExportRunId,
     [ValidateRange(1, 120)][int]$DiscoveryAttempts = 10,
-    [ValidateRange(1, 120)][int]$WaitAttempts = 120,
-    [ValidateRange(0, 60)][int]$PollSeconds = 30,
+    [ValidateRange(0, 300)][int]$DiscoveryPollSeconds = 30,
+    [ValidateRange(1, 120)][int]$WaitAttempts = 20,
+    [ValidateRange(0, 300)][int]$PollSeconds = 180,
     [scriptblock]$ApiRequest,
     [scriptblock]$Sleep
 )
@@ -84,11 +85,11 @@ if (-not $PSBoundParameters.ContainsKey('RunId')) {
         }
         if ($attempt -lt $DiscoveryAttempts) {
             Write-Host "Waiting for the Python tag workflow (attempt $attempt/$DiscoveryAttempts)..."
-            & $Sleep $PollSeconds
+            & $Sleep $DiscoveryPollSeconds
         }
     }
     if (-not $RunId) {
-        throw "Python tag workflow for $tag at $SourceSha was not found after $DiscoveryAttempts discovery attempts."
+        throw "Python tag workflow for $tag at $SourceSha was not found after $DiscoveryAttempts discovery attempts (${DiscoveryPollSeconds}s interval)."
     }
 }
 
@@ -135,4 +136,4 @@ for ($attempt = 1; $attempt -le $WaitAttempts; $attempt++) {
         & $Sleep $PollSeconds
     }
 }
-throw "Python run $RunId job '$JobName' did not succeed after $WaitAttempts polling attempts."
+throw "Python run $RunId job '$JobName' did not succeed after $WaitAttempts polling attempts (${PollSeconds}s interval)."

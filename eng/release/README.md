@@ -53,8 +53,14 @@ on `Wait_Python` and waits for that exact run's `github-release` job to succeed
 after its authenticated `gh release upload`. Each poll revalidates the run's
 identity and refreshes its status. Failed jobs, completed runs without the
 required successful job, API retry exhaustion, and timeouts fail explicitly.
-Discovery allows 10 attempts and job polling 120 attempts, 30 seconds apart;
-Azure jobs allow 90 minutes for polling and API overhead.
+Discovery allows 10 attempts, 30 seconds apart (`DiscoveryPollSeconds`).
+Job polling allows 20 attempts, 180 seconds apart (`PollSeconds`): 57 minutes
+of sleeps plus request time. Each poll reads both the run and its jobs, so
+these defaults use 40 job-poll requests plus at most 10 discovery requests
+for a normal single-page wait, below GitHub's usual unauthenticated limit of
+60 requests/hour. Retries, pagination, and other callers sharing the agent's
+IP consume additional quota. Azure jobs allow 90 minutes for polling and API
+overhead.
 
 The script still checks the release's exact tag and `target_commitish` after
 upload succeeds, but never reads embedded `release.assets`, which can be empty

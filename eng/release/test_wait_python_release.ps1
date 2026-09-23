@@ -61,7 +61,8 @@ function Test-Wait {
         [long]$ExpectedId = 42,
         [string]$ExpectedWarning = '',
         [int[]]$ExpectedSleeps = @(),
-        [switch]$DotSource
+        [switch]$DotSource,
+        [switch]$ProductionDefaults
     )
 
     $state = @{
@@ -83,9 +84,13 @@ function Test-Wait {
     $sleeper = { param($Seconds) $state.Sleeps.Add($Seconds) }.GetNewClosure()
     $parameters = @{
         Version = $version; SourceSha = $sha; JobName = 'assemble-release'
-        DiscoveryAttempts = 2; WaitAttempts = 2; PollSeconds = 30
         ApiRequest = $request; Sleep = $sleeper
         WarningVariable = 'warnings'; WarningAction = 'SilentlyContinue'
+    }
+    if (-not $ProductionDefaults) {
+        $parameters.DiscoveryAttempts = 2
+        $parameters.WaitAttempts = 2
+        $parameters.PollSeconds = 30
     }
     foreach ($key in $Arguments.Keys) { $parameters[$key] = $Arguments[$key] }
     $warnings = @()
@@ -126,6 +131,29 @@ $run = New-Run
 $assembly = @{ jobs = @(New-Job) }
 $upload = @{ jobs = @(New-Job -Name 'github-release') }
 $release = @{ tag_name = $tag; target_commitish = $sha; assets = @() }
+
+Test-Wait 'production discovery defaults: 10 attempts, 30-second interval' -ProductionDefaults -Responses @(
+    1..10 | ForEach-Object { New-Response $discoveryPath @{ workflow_runs = @() } }
+) -ExpectedSleeps (@(30) * 9) -ExpectedError '*not found after 10 discovery attempts (30s interval).'
+
+foreach ($jobName in @('assemble-release', 'github-release')) {
+    Test-Wait "production $jobName defaults: 40 requests, 57 minutes of sleeps" -ProductionDefaults `
+        -Arguments @{ RunId = 42; JobName = $jobName } -Responses @(
+            1..20 | ForEach-Object {
+                New-Response '/actions/runs/42' $run
+                New-Response $jobsPath @{ jobs = @() }
+            }
+        ) -ExpectedSleeps (@(180) * 19) -ExpectedError "*job '$jobName' did not succeed after 20 polling attempts (180s interval)."
+}
+
+Test-Wait 'discovery interval is independent of job interval' -Arguments @{ DiscoveryPollSeconds = 7; PollSeconds = 300 } -Responses @(
+    (New-Response $discoveryPath @{ workflow_runs = @() })
+    (New-Response $discoveryPath @{ workflow_runs = @($run) })
+    (New-Response '/actions/runs/42' $run)
+    (New-Response $jobsPath @{ jobs = @() })
+    (New-Response '/actions/runs/42' $run)
+    (New-Response $jobsPath $assembly)
+) -ExpectedSleeps @(7, 300)
 
 Test-Wait 'exact workflow, event, tag and SHA filtering' -Arguments @{ ExportRunId = $true } -Responses @(
     (New-Response $discoveryPath @{ workflow_runs = @(
