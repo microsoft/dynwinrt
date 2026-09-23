@@ -12,11 +12,17 @@ Before each public release:
 2. Merge the release preparation to `main`.
 3. Tag that exact `main` commit.
 
-Do not edit `.pipelines/release.yml` for each release. The Azure DevOps release
-job explicitly checks out the tagged commit before `GitHubRelease@1` reads the
-notes, so the contents are snapshotted from the tag commit. Its automatic
-changelog remains enabled and is appended after the checked-in notes.
+Do not edit `.pipelines/release.yml` for each release. The Azure DevOps Build
+job checks out the tagged commit and publishes `RELEASE_NOTES.md` as the
+`release-notes` pipeline artifact. The GitHub release job declares this artifact
+in `templateContext.inputs` and reads
+`$(Pipeline.Workspace)/release-notes/RELEASE_NOTES.md`, without checking out
+source. This preserves the tagged notes while complying with the 1ES
+restriction on checkout in release jobs. The automatic changelog remains
+enabled and is appended after the checked-in notes.
 
 Build CI and the release pipeline both run `validate_release_notes.ps1` and
 `test_validate_release_notes.ps1` to check the notes file, release task inputs,
-and source checkout. These checks do not create a tag or publish a release.
+the Build artifact producer, the release job's artifact input, and the absence
+of release-job source checkout. These checks do not create a tag or publish a
+release.

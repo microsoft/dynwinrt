@@ -250,6 +250,12 @@ extends:
               targetPath: artifacts
               artifactName: npm-packages
 
+          - task: 1ES.PublishPipelineArtifact@1
+            displayName: Upload release notes
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'
+              artifactName: release-notes
+
     - stage: Wait_Python
       displayName: Wait for tested Python wheels
       dependsOn: Build
@@ -351,10 +357,10 @@ extends:
           - input: pipelineArtifact
             artifactName: npm-packages
             targetPath: $(Pipeline.Workspace)/npm-packages
+          - input: pipelineArtifact
+            artifactName: release-notes
+            targetPath: $(Pipeline.Workspace)/release-notes
         steps:
-          - checkout: self
-            fetchDepth: 1
-
           - task: GitHubRelease@1
             displayName: Create GitHub Release
             inputs:
@@ -366,7 +372,7 @@ extends:
               tag: 'v$(version)'
               title: 'v$(version)'
               releaseNotesSource: 'filePath'
-              releaseNotesFilePath: '$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'
+              releaseNotesFilePath: '$(Pipeline.Workspace)/release-notes/RELEASE_NOTES.md'
               assets: '$(Pipeline.Workspace)/npm-packages/*.tgz'
               isDraft: false
               isPreRelease: $(isPrerelease)

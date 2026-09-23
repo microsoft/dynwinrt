@@ -78,26 +78,51 @@ New-Item -ItemType Directory -Force -Path `
     (Split-Path $tempNotesPath -Parent) | Out-Null
 
 try {
-    $checkoutBlock = "          - checkout: self${newline}            fetchDepth: 1"
-    $singleTaskDoubleCheckout = $validPipeline.Replace(
+    $releaseTask = "          - task: GitHubRelease@1"
+    $notesInput = @(
+        "          - input: pipelineArtifact"
+        "            artifactName: release-notes"
+        '            targetPath: $(Pipeline.Workspace)/release-notes'
+    ) -join $newline
+    $notesPublisher = @(
+        "          - task: 1ES.PublishPipelineArtifact@1"
+        "            displayName: Upload release notes"
+        "            inputs:"
+        '              targetPath: ''$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'''
+        "              artifactName: release-notes"
+    ) -join $newline
+
+    $singleTaskDoubleArtifact = $validPipeline.Replace(
         "          - task: GitHubRelease@1",
         "          - task: 'GitHubRelease@1'"
     ).Replace(
-        $checkoutBlock,
-        "          - checkout: `"self`"${newline}            fetchDepth: 1"
+        "artifactName: release-notes",
+        'artifactName: "release-notes"'
     )
-    Assert-ValidationPasses -Name "single-quoted task and double-quoted checkout" `
-        -Pipeline $singleTaskDoubleCheckout -Notes $validNotes
+    Assert-ValidationPasses -Name "single-quoted task and double-quoted artifact" `
+        -Pipeline $singleTaskDoubleArtifact -Notes $validNotes
 
-    $doubleTaskSingleCheckout = $validPipeline.Replace(
+    $doubleTaskSingleArtifact = $validPipeline.Replace(
         "          - task: GitHubRelease@1",
         "          - task: `"GitHubRelease@1`""
     ).Replace(
-        $checkoutBlock,
-        "          - checkout: 'self'${newline}            fetchDepth: 1"
+        "artifactName: release-notes",
+        "artifactName: 'release-notes'"
     )
-    Assert-ValidationPasses -Name "double-quoted task and single-quoted checkout" `
-        -Pipeline $doubleTaskSingleCheckout -Notes $validNotes
+    Assert-ValidationPasses -Name "double-quoted task and single-quoted artifact" `
+        -Pipeline $doubleTaskSingleArtifact -Notes $validNotes
+
+    $explicitNoCheckout = $validPipeline.Replace(
+        $releaseTask, "          - checkout: none${newline}${releaseTask}"
+    )
+    Assert-ValidationPasses -Name "release job explicitly disables checkout" `
+        -Pipeline $explicitNoCheckout -Notes $validNotes
+
+    $commentedCheckout = $validPipeline.Replace(
+        $releaseTask, "          # - checkout: self${newline}${releaseTask}"
+    )
+    Assert-ValidationPasses -Name "commented source checkout is inactive" `
+        -Pipeline $commentedCheckout -Notes $validNotes
 
     $quotedDuplicateTasks = @(
         "          - task: 'GitHubRelease@1'"
@@ -115,7 +140,7 @@ try {
     $commentedExpectedValues = @(
         "              releaseNotesSource: 'inline'"
         "              # releaseNotesSource: 'filePath'"
-        '              # releaseNotesFilePath: ''$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'''
+        '              # releaseNotesFilePath: ''$(Pipeline.Workspace)/release-notes/RELEASE_NOTES.md'''
         "              # addChangeLog: true"
     ) -join $newline
     $commentedPipeline = $validPipeline.Replace(
@@ -138,7 +163,7 @@ try {
         "              script: Write-Host test"
         "            env:"
         "              releaseNotesSource: 'filePath'"
-        '              releaseNotesFilePath: ''$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md'''
+        '              releaseNotesFilePath: ''$(Pipeline.Workspace)/release-notes/RELEASE_NOTES.md'''
         "              addChangeLog: true"
         ""
         "          - task: GitHubRelease@1"
@@ -152,8 +177,8 @@ try {
         -ExpectedMessage "*releaseNotesSource*must be 'filePath'*"
 
     $wrongPathPipeline = $validPipeline.Replace(
-        'releaseNotesFilePath: ''$(Build.SourcesDirectory)/eng/release/RELEASE_NOTES.md''',
-        'releaseNotesFilePath: ''$(Build.SourcesDirectory)/eng/release/BROKEN.md'''
+        'releaseNotesFilePath: ''$(Pipeline.Workspace)/release-notes/RELEASE_NOTES.md''',
+        'releaseNotesFilePath: ''$(Pipeline.Workspace)/release-notes/BROKEN.md'''
     )
     Assert-ValidationFails -Name "wrong active release notes path" `
         -Pipeline $wrongPathPipeline -Notes $validNotes -CreateNotes $true `
@@ -167,11 +192,82 @@ try {
         -Pipeline $disabledChangeLogPipeline -Notes $validNotes -CreateNotes $true `
         -ExpectedMessage "*addChangeLog*must be 'true'*"
 
-    $checkoutNoneBlock = "          - checkout: none${newline}          # - checkout: self${newline}          #   fetchDepth: 1"
-    $missingCheckoutPipeline = $validPipeline.Replace($checkoutBlock, $checkoutNoneBlock)
-    Assert-ValidationFails -Name "release job source checkout unavailable" `
-        -Pipeline $missingCheckoutPipeline -Notes $validNotes -CreateNotes $true `
-        -ExpectedMessage "*explicitly checkout 'self'*"
+    foreach ($checkout in @("self", "'self'", '"self"', "anotherRepository")) {
+        $checkoutPipeline = $validPipeline.Replace(
+            $releaseTask, "          - checkout: ${checkout}${newline}${releaseTask}"
+        )
+        Assert-ValidationFails -Name "release job source checkout $checkout" `
+            -Pipeline $checkoutPipeline -Notes $validNotes -CreateNotes $true `
+            -ExpectedMessage "*must not checkout source*"
+    }
+    $lateCheckoutPipeline = $validPipeline.Replace(
+        "              addChangeLog: true",
+        "              addChangeLog: true${newline}          - checkout: self"
+    )
+    Assert-ValidationFails -Name "source checkout after release task" `
+        -Pipeline $lateCheckoutPipeline -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*must not checkout source*"
+
+    $missingArtifact = $validPipeline.Replace($notesInput, "          # release-notes input removed")
+    Assert-ValidationFails -Name "missing release notes job input" `
+        -Pipeline $missingArtifact -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*exactly one release-notes pipelineArtifact input*"
+    $duplicateArtifact = $validPipeline.Replace($notesInput, "${notesInput}${newline}${notesInput}")
+    Assert-ValidationFails -Name "duplicate release notes job input" `
+        -Pipeline $duplicateArtifact -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*exactly one release-notes pipelineArtifact input*"
+    foreach ($replacement in @(
+        $notesInput.Replace("input: pipelineArtifact", "input: otherArtifact"),
+        $notesInput.Replace('$(Pipeline.Workspace)/release-notes', '$(Pipeline.Workspace)/wrong-notes'),
+        "${notesInput}${newline}            pipeline: anotherPipeline"
+    )) {
+        Assert-ValidationFails -Name "incorrect release notes job input" `
+            -Pipeline $validPipeline.Replace($notesInput, $replacement) `
+            -Notes $validNotes -CreateNotes $true `
+            -ExpectedMessage "*job input must use this run's pipelineArtifact*"
+    }
+
+    $taskArtifact = (($notesInput -split "\r?\n" | ForEach-Object { "    $_" }) -join $newline)
+    $misplacedArtifact = $missingArtifact.Replace(
+        $releaseTask,
+        "          - task: PowerShell@2${newline}            inputs:${newline}${taskArtifact}${newline}${releaseTask}"
+    )
+    Assert-ValidationFails -Name "artifact input outside templateContext" `
+        -Pipeline $misplacedArtifact -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*exactly one release-notes pipelineArtifact input*"
+
+    $missingPublisher = $validPipeline.Replace($notesPublisher, "          # release-notes publisher removed")
+    Assert-ValidationFails -Name "missing Build artifact producer" `
+        -Pipeline $missingPublisher -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*Build job must publish exactly one release-notes*"
+    $duplicatePublisher = $validPipeline.Replace($notesPublisher, "${notesPublisher}${newline}${notesPublisher}")
+    Assert-ValidationFails -Name "duplicate Build artifact producer" `
+        -Pipeline $duplicatePublisher -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*Build job must publish exactly one release-notes*"
+    $wrongSource = $validPipeline.Replace($notesPublisher, $notesPublisher.Replace("RELEASE_NOTES.md", "README.md"))
+    Assert-ValidationFails -Name "incorrect notes artifact source" `
+        -Pipeline $wrongSource -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*Build must publish release-notes from the checked-in*"
+    foreach ($disabled in @("enabled: false", "condition: false")) {
+        $disabledPublisher = $validPipeline.Replace(
+            $notesPublisher,
+            $notesPublisher.Replace("            displayName: Upload release notes", "            ${disabled}${newline}            displayName: Upload release notes")
+        )
+        Assert-ValidationFails -Name "disabled notes publisher $disabled" `
+            -Pipeline $disabledPublisher -Notes $validNotes -CreateNotes $true `
+            -ExpectedMessage "*publisher must not be disabled*"
+    }
+    $wrongProducerJob = $missingPublisher.Replace($releaseTask, "${notesPublisher}${newline}${releaseTask}")
+    Assert-ValidationFails -Name "artifact published in release job instead of Build" `
+        -Pipeline $wrongProducerJob -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*Build job must publish exactly one release-notes*"
+    $missingBuildDependency = $validPipeline.Replace(
+        "        - Build${newline}        - Wait_Python",
+        "        - Wait_Python"
+    )
+    Assert-ValidationFails -Name "release stage missing Build dependency" `
+        -Pipeline $missingBuildDependency -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "*must depend on Build*"
 
     Assert-ValidationFails -Name "empty release notes" `
         -Pipeline $validPipeline -Notes "" -CreateNotes $true `
