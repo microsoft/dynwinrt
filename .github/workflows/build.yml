@@ -72,6 +72,12 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           python eng\release\python\verify_python_release.py source
+      - name: Test Python release workflow waits
+        shell: pwsh
+        run: |
+          .\eng\release\test_wait_python_release.ps1
+          powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File eng\release\test_wait_python_release.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # Rust test programs are independent builds, not reusable runtime packages.
   test-rust:

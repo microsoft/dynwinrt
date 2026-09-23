@@ -39,3 +39,36 @@ supplied `-RepositoryRoot` is still honored.
 The release job's 1ES SBOM validation remains enabled. Local configuration
 tests check the staging and publication paths; hosted 1ES execution is needed
 to verify SBOM generation and validation.
+
+## Python release orchestration
+
+`Wait_Python` invokes `wait_python_release.ps1` to find a push run of
+`python-release.yml` for the exact `v<version>` tag and source commit SHA.
+Duplicate matches warn and select the newest `created_at`, then numeric run ID.
+After that run's `assemble-release` job succeeds, the `WaitPython` task exports
+`pythonRunId` as an Azure output variable; later waits cannot select another run.
+
+`Release_GitHub` then creates the release. `Collect_Python` depends directly
+on `Wait_Python` and waits for that exact run's `github-release` job to succeed
+after its authenticated `gh release upload`. Each poll revalidates the run's
+identity and refreshes its status. Failed jobs, completed runs without the
+required successful job, API retry exhaustion, and timeouts fail explicitly.
+Discovery allows 10 attempts and job polling 120 attempts, 30 seconds apart;
+Azure jobs allow 90 minutes for polling and API overhead.
+
+The script still checks the release's exact tag and `target_commitish` after
+upload succeeds, but never reads embedded `release.assets`, which can be empty
+even when wheels are uploaded. The existing `DownloadGitHubRelease@0` service
+connection downloads the wheels; `verify_python_release.py release-set` still
+requires the exact version's 8 runtime and 2 codegen wheels and their metadata
+before freezing `python-packages`. Automatic npm/PyPI publication and
+`DoEsrp`/`PublishPyPI` conditions remain unchanged, with no new approval gate.
+
+Run `eng\release\test_wait_python_release.ps1` with either PowerShell 7 (`pwsh`)
+or Windows PowerShell 5.1 (`powershell.exe`): fake API responses and a sleep
+recorder avoid network requests and real sleeps. Build CI runs both engines;
+the Azure release Build job also runs the suite.
+
+Already-running Azure releases retain their original YAML. Use a clean rerun
+from a tag on the fixed `main` commit; merging this change does not repair the
+in-flight `v0.1.0-preview.22` run.

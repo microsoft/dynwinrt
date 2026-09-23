@@ -67,6 +67,12 @@ extends:
               targetType: filePath
               filePath: eng/release/test_validate_release_notes.ps1
 
+          - task: PowerShell@2
+            displayName: Test Python release workflow waits
+            inputs:
+              targetType: filePath
+              filePath: eng/release/test_wait_python_release.ps1
+
           - task: UseNode@1
             displayName: Setup Node.js 24
             inputs:
@@ -271,6 +277,7 @@ extends:
         version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
       jobs:
       - job: wait_python
+        timeoutInMinutes: 90
         pool:
           name: Azure-Pipelines-1ESPT-ExDShared
           image: windows-latest
@@ -278,69 +285,16 @@ extends:
           hostArchitecture: amd64
         displayName: Require successful Python release assembly
         steps:
-          - checkout: none
+          - checkout: self
           - task: PowerShell@2
+            name: WaitPython
             displayName: Wait for GitHub ARM64 and x64 validation
             inputs:
-              targetType: inline
-              script: |
-                $ErrorActionPreference = 'Stop'
-                $runsUri = "https://api.github.com/repos/microsoft/dynwinrt/actions/workflows/python-release.yml/runs?event=push&head_sha=$(Build.SourceVersion)&per_page=20"
-                $headers = @{
-                  Accept = 'application/vnd.github+json'
-                  'User-Agent' = 'microsoft-dynwinrt-ado-release'
-                  'X-GitHub-Api-Version' = '2022-11-28'
-                }
-                function Invoke-GitHubApi([string]$Uri) {
-                  for ($requestAttempt = 1; $requestAttempt -le 3; $requestAttempt++) {
-                    try {
-                      return (Invoke-RestMethod -Uri $Uri -Headers $headers)
-                    } catch {
-                      if ($requestAttempt -eq 3) { throw }
-                      Write-Warning "GitHub API request failed; retrying: $($_.Exception.Message)"
-                      Start-Sleep -Seconds (10 * $requestAttempt)
-                    }
-                  }
-                }
-                $run = $null
-                for ($attempt = 1; $attempt -le 10; $attempt++) {
-                  $runs = Invoke-GitHubApi $runsUri
-                  $matches = @($runs.workflow_runs |
-                    Where-Object head_branch -EQ "v$(version)")
-                  if ($matches.Count -gt 1) {
-                    throw "Expected one Python tag workflow, found $($matches.Count)"
-                  }
-                  if ($matches.Count -eq 1) {
-                    $run = $matches[0]
-                    break
-                  }
-                  Write-Host "Waiting for the Python tag workflow (attempt $attempt/10)..."
-                  Start-Sleep -Seconds 30
-                }
-                if (-not $run) {
-                  throw 'The Python tag workflow did not start within 5 minutes'
-                }
-
-                $ready = $false
-                for ($attempt = 1; $attempt -le 60; $attempt++) {
-                  $jobs = Invoke-GitHubApi "$($run.jobs_url)?per_page=100"
-                  $assembly = @($jobs.jobs | Where-Object name -EQ 'assemble-release')
-                  if ($assembly.Count -eq 1 -and $assembly[0].status -eq 'completed') {
-                    if ($assembly[0].conclusion -ne 'success') {
-                      throw "Python release assembly concluded '$($assembly[0].conclusion)'"
-                    }
-                    $ready = $true
-                    break
-                  }
-                  if ($run.status -eq 'completed' -and $run.conclusion -ne 'success') {
-                    throw "Python tag workflow concluded '$($run.conclusion)'"
-                  }
-                  Write-Host "Waiting for Python release assembly (attempt $attempt/60)..."
-                  Start-Sleep -Seconds 60
-                }
-                if (-not $ready) {
-                  throw 'Python release assembly did not pass within 60 minutes'
-                }
+              targetType: filePath
+              filePath: eng/release/wait_python_release.ps1
+              arguments: >-
+                -Version "$(version)" -SourceSha "$(Build.SourceVersion)"
+                -JobName assemble-release -ExportRunId
 
     - stage: Release_GitHub
       displayName: Create GitHub Release
@@ -390,11 +344,14 @@ extends:
       displayName: Collect tested Python wheels
       dependsOn:
         - Build
+        - Wait_Python
         - Release_GitHub
       variables:
         version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
+        pythonRunId: $[ stageDependencies.Wait_Python.wait_python.outputs['WaitPython.pythonRunId'] ]
       jobs:
       - job: collect_python
+        timeoutInMinutes: 90
         pool:
           name: Azure-Pipelines-1ESPT-ExDShared
           image: windows-latest
@@ -405,48 +362,13 @@ extends:
           - checkout: self
 
           - task: PowerShell@2
-            displayName: Wait for tested Python wheels
+            displayName: Wait for tested Python wheel upload
             inputs:
-              targetType: inline
-              script: |
-                $ErrorActionPreference = 'Stop'
-                $uri = "https://api.github.com/repos/microsoft/dynwinrt/releases/tags/v$(version)"
-                $headers = @{
-                  Accept = 'application/vnd.github+json'
-                  'User-Agent' = 'microsoft-dynwinrt-ado-release'
-                  'X-GitHub-Api-Version' = '2022-11-28'
-                }
-                function Invoke-GitHubApi([string]$Uri) {
-                  for ($requestAttempt = 1; $requestAttempt -le 3; $requestAttempt++) {
-                    try {
-                      return (Invoke-RestMethod -Uri $Uri -Headers $headers)
-                    } catch {
-                      if ($requestAttempt -eq 3) { throw }
-                      Write-Warning "GitHub API request failed; retrying: $($_.Exception.Message)"
-                      Start-Sleep -Seconds (10 * $requestAttempt)
-                    }
-                  }
-                }
-                $ready = $false
-                for ($attempt = 1; $attempt -le 120; $attempt++) {
-                  $release = Invoke-GitHubApi $uri
-                  if ($release.target_commitish -ne '$(Build.SourceVersion)') {
-                    throw "GitHub release target '$($release.target_commitish)' does not match $(Build.SourceVersion)"
-                  }
-                  $wheels = @($release.assets | Where-Object name -Like '*.whl')
-                  if ($wheels.Count -eq 10) {
-                    $ready = $true
-                    break
-                  }
-                  if ($wheels.Count -gt 10) {
-                    throw "Expected 10 Python wheel assets, found $($wheels.Count)"
-                  }
-                  Write-Host "Waiting for Python release wheels ($($wheels.Count)/10, attempt $attempt/120)..."
-                  Start-Sleep -Seconds 30
-                }
-                if (-not $ready) {
-                  throw 'The complete tested Python wheel set was not attached within 60 minutes'
-                }
+              targetType: filePath
+              filePath: eng/release/wait_python_release.ps1
+              arguments: >-
+                -Version "$(version)" -SourceSha "$(Build.SourceVersion)"
+                -JobName github-release -RunId "$(pythonRunId)"
 
           - task: DownloadGitHubRelease@0
             displayName: Download tested Python wheels
