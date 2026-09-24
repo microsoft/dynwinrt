@@ -45,11 +45,11 @@ NOT_INITIALIZED_HINT = (
     "(or call `dynwinrt.ro_initialize(dynwinrt.RO_INIT_MULTITHREADED)`) before "
     "calling WinRT APIs."
 )
-RELEASED_REASON = (
-    r"has been released: its projected_lifetime_scope\(\) exited or "
-    r"release_projected\(\) was called\. Use the object inside its scope, or "
-    r"don't release it\.$"
-)
+RELEASED_REASON = re.escape(
+    "has been released (its projected_lifetime_scope() exited, or "
+    "release_projected() / DynWinRTValue.release() was called) and can no longer "
+    "be used."
+) + "$"
 RELEASED = rf"^This WinRT object {RELEASED_REASON}"
 
 _URI_FACTORY = DynWinRTType.register_interface(
@@ -145,6 +145,19 @@ def test_projection_used_after_release_projected_explains_the_release():
         release_projected(uri)
 
         _assert_released(uri)
+
+
+def test_projection_used_after_direct_value_release_explains_the_release():
+    with RoApartment():
+        uri = ProjectedUri.create("https://example.com/direct")
+        uri._obj.release()
+        _assert_released(uri)
+
+        value = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        value.release()
+        with pytest.raises(RuntimeError, match=RELEASED) as caught:
+            value.cast(IID_IURI_FACTORY)
+        assert "DynWinRTValue.release()" in str(caught.value)
 
 
 def test_receivers_report_released_values_null_and_value_kinds():

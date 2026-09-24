@@ -354,14 +354,23 @@ async def run_check(
                 cr['error'] = 'as_interface() accepted a runtime class'
 
         elif kind == 'released_projection_error':
+            reason = (
+                'has been released (its projected_lifetime_scope() exited, or '
+                'release_projected() / DynWinRTValue.release() was called) and '
+                'can no longer be used.'
+            )
+            args = [literal_arg(a) for a in check.get('args', [])]
             with dw.projected_lifetime_scope():
-                scoped = cls(*[literal_arg(a) for a in check.get('args', [])])
-            released = cls(*[literal_arg(a) for a in check.get('args', [])])
+                scoped = cls(*args)
+            released = cls(*args)
             dw.release_projected(released)
-            live = cls(*[literal_arg(a) for a in check.get('args', [])])
+            value_released = cls(*args)
+            value_released._obj.release()
+            live = cls(*args)
             uses = (
                 ('scope exit', lambda: getattr(scoped, member)),
                 ('release_projected', lambda: getattr(released, member)),
+                ('DynWinRTValue.release()', lambda: getattr(value_released, member)),
                 ('interface cast', released.to_string),
                 ('argument', lambda: live.equals(released)),
             )
@@ -370,11 +379,7 @@ async def run_check(
                     use()
                 except RuntimeError as error:
                     message = str(error)
-                    if (
-                        'has been released' not in message
-                        or 'projected_lifetime_scope()' not in message
-                        or 'release_projected()' not in message
-                    ):
+                    if not message.endswith(reason):
                         cr['error'] = f'{label}: unclear released-object error: {message}'
                         return cr
                 else:

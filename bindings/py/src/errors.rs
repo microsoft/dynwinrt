@@ -24,21 +24,18 @@ fn hresult_hint(code: HRESULT) -> Option<&'static str> {
         .find_map(|&(hinted, hint)| (hinted == code).then_some(hint))
 }
 
-const RELEASED_REASON: &str = "its projected_lifetime_scope() exited or release_projected() \
-     was called. Use the object inside its scope, or don't release it.";
+const RELEASED_REASON: &str = "has been released (its projected_lifetime_scope() exited, or \
+     release_projected() / DynWinRTValue.release() was called) and can no longer be used.";
 
 /// A call on a value after `release()`, including release by its lifetime scope.
 pub(crate) fn released_receiver_error() -> PyErr {
-    PyRuntimeError::new_err(format!(
-        "This WinRT object has been released: {RELEASED_REASON}"
-    ))
+    PyRuntimeError::new_err(format!("This WinRT object {RELEASED_REASON}"))
 }
 
 /// A released value passed as argument `position` (0-based) of `operation`.
 pub(crate) fn released_argument_error(operation: &str, position: usize) -> PyErr {
     PyRuntimeError::new_err(format!(
-        "This WinRT object (argument {position} of {operation}) has been released: \
-         {RELEASED_REASON}"
+        "This WinRT object (argument {position} of {operation}) {RELEASED_REASON}"
     ))
 }
 
