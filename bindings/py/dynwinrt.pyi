@@ -1,4 +1,5 @@
 from collections.abc import Coroutine
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
@@ -50,6 +51,7 @@ __all__ = [
     "project_as",
     "release_projected",
     "unbox_object",
+    "to_winrt_object",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -123,6 +125,30 @@ def project_as(
 
 def release_projected(value: object) -> None: ...
 
+# Shapes of dynwinrt.values.Point, Size and Rect. This stub also serves as a
+# single-file module stub, so it cannot import the dynwinrt.values submodule.
+class _WinRTPointValue(Protocol):
+    @property
+    def x(self) -> float: ...
+    @property
+    def y(self) -> float: ...
+
+class _WinRTSizeValue(Protocol):
+    @property
+    def width(self) -> float: ...
+    @property
+    def height(self) -> float: ...
+
+class _WinRTRectValue(Protocol):
+    @property
+    def x(self) -> float: ...
+    @property
+    def y(self) -> float: ...
+    @property
+    def width(self) -> float: ...
+    @property
+    def height(self) -> float: ...
+
 _UnboxedPropertyValue = Union[
     bool,
     int,
@@ -130,19 +156,35 @@ _UnboxedPropertyValue = Union[
     str,
     UUID,
     bytes,
+    datetime,
+    timedelta,
+    _WinRTPointValue,
+    _WinRTSizeValue,
+    _WinRTRectValue,
     List[int],
     List[float],
     List[bool],
     List[str],
     List[UUID],
+    List[datetime],
+    List[timedelta],
+    List[_WinRTPointValue],
+    List[_WinRTSizeValue],
+    List[_WinRTRectValue],
+    # InspectableArray elements are unboxed recursively.
+    List[Any],
 ]
 
 @overload
-def unbox_object(value: None) -> None: ...
+def unbox_object(value: None, *, preserve_type: bool = ...) -> None: ...
 @overload
 def unbox_object(
-    value: "DynWinRTValue",
+    value: "DynWinRTValue", *, preserve_type: bool = ...
 ) -> Union[_UnboxedPropertyValue, "DynWinRTValue", None]: ...
+
+def to_winrt_object(
+    value: object, property_type: Optional[int] = ...
+) -> "DynWinRTValue": ...
 
 
 @final

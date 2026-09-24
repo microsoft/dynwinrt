@@ -125,6 +125,7 @@ output, runtime behavior, and the `@microsoft/dynwinrt` root API.
 - GUID: `WinGUID.parse('...')`
 - Method call: `method_handle.invoke(obj, [args])` → returns single `DynWinRTValue`
 - `IReference<T>` values project as native values plus `None`; generated `IReference_*` wrappers remain accepted for input compatibility
+- Generated `Object` positions stay raw `DynWinRTValue`s; `unbox_object(raw, preserve_type=False)` and `to_winrt_object(value, property_type=None)` convert boxed values explicitly, with tags, typed arrays, `Point`/`Size`/`Rect` and `PropertyType` in `dynwinrt.values` (never guess a WinRT type)
 
 ### Common Issues
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var

@@ -1486,7 +1486,10 @@ test('explicitly unbox WinRT property values without changing raw objects', (t) 
   const dateTime = DynWinRtStruct.create(DynWinRtType.structType('Windows.Foundation.DateTime', [DynWinRtType.i64()]))
   dateTime.setI64(0, 0n)
   const unsupported = staticsType.methodByName('CreateDateTime').invoke(factory, [dateTime.toValue()])
-  t.throws(() => unboxObject(unsupported), { message: /Unsupported WinRT IPropertyValue type/ })
+  // The core now models DateTime; JavaScript keeps its exact pre-existing error.
+  t.throws(() => unboxObject(unsupported), {
+    message: '0x80004001: Unsupported WinRT IPropertyValue type: 14 (0x80004001)',
+  })
 
   const keyType = DynWinRtType.hstring()
   const propertyMap = DynWinRtValue.createMap(
