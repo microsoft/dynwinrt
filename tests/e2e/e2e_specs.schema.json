@@ -97,6 +97,7 @@
              "constructor_overload_dispatch",
              "value_set_mapping",
              "data_stream_scalar_roundtrip",
+             "data_stream_constructor_roundtrip",
              "calendar_comprehensive",
              "storage_query_temp_folder",
              "value_set_event_lifecycle",

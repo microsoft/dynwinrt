@@ -31,7 +31,7 @@ use super::method::{
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
-    py_collect_runtime_class_iid_consts, py_dynwinrt_type, py_generate_interface_registration,
+    py_collect_argument_iid_consts, py_dynwinrt_type, py_generate_interface_registration,
     py_interface_iid_expr, py_runtime_named_symbol, py_runtime_symbol, py_wrap_native_value,
 };
 use super::structs::{

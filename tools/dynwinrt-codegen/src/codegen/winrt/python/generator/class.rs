@@ -264,10 +264,8 @@ pub fn generate_class<'a>(
     let mut argument_iids = Vec::new();
     for iface in &all_class_ifaces {
         for method in &iface.methods {
-            for parameter in &method.params {
-                if parameter.direction == ParamDirection::In {
-                    py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
-                }
+            for parameter in crate::codegen::winrt::shared::imports::get_in_params(method) {
+                py_collect_argument_iid_consts(&parameter.typ, &mut argument_iids);
             }
         }
     }

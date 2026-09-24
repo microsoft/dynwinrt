@@ -1292,6 +1292,57 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'data_stream_constructor_roundtrip':
+            writer_cls = generated_type(pkg_name, 'DataWriter')
+            reader_cls = generated_type(pkg_name, 'DataReader')
+            stream = cls()
+            # The factories take IOutputStream/IInputStream; runtime-class streams
+            # must dispatch through QueryInterface instead of raising TypeError.
+            writer = writer_cls(stream)
+            writer.write_int32(-7)
+            writer.write_string('dynwinrt')
+            stored = await writer.store_async()
+            keyword_writer = writer_cls(output_stream=cls())
+            keyword_writer.write_byte(1)
+            keyword_stored = await keyword_writer.store_async()
+
+            reader = reader_cls(stream.get_input_stream_at(0))
+            loaded = await reader.load_async(stored)
+            values = (reader.read_int32(), reader.read_string(8))
+            stream.seek(0)
+            runtime_class_reader = reader_cls(stream)
+            runtime_class_loaded = await runtime_class_reader.load_async(stored)
+            runtime_class_values = (
+                runtime_class_reader.read_int32(),
+                runtime_class_reader.read_string(8),
+            )
+
+            rejected = []
+            for invalid in ((42,), ('stream',), (object(),)):
+                try:
+                    writer_cls(*invalid)
+                    rejected.append(f'accepted {invalid!r}')
+                except TypeError as error:
+                    if 'No matching constructor for DataWriter' not in str(error):
+                        rejected.append(f'unexpected error {error!r}')
+            if (
+                stored != 12
+                or keyword_stored != 1
+                or loaded != stored
+                or runtime_class_loaded != stored
+                or values != (-7, 'dynwinrt')
+                or runtime_class_values != values
+                or rejected
+            ):
+                cr['error'] = (
+                    'runtime-class stream constructor dispatch failed: '
+                    f'stored={stored}, keyword_stored={keyword_stored}, loaded={loaded}, '
+                    f'runtime_class_loaded={runtime_class_loaded}, values={values!r}, '
+                    f'runtime_class_values={runtime_class_values!r}, rejected={rejected!r}'
+                )
+            else:
+                cr['pass'] = True
+
         elif kind == 'calendar_comprehensive':
             obj.year = 2024
             obj.month = 1

@@ -12,8 +12,8 @@ use crate::codegen::winrt::shared::imports::{
 use super::member_plan::{Candidate, MethodGroup};
 use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
 use super::signature::{
-    py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
-    py_wrap_async, py_wrap_async_with_converters,
+    py_convert_return, py_interface_cast_guard, py_runtime_named_symbol, py_runtime_symbol,
+    py_type_guard, py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
@@ -170,6 +170,13 @@ pub(crate) struct ParamGuard {
     pub(crate) permissive: Option<String>,
 }
 
+/// Guards for one overload parameter.
+///
+/// Generated runtime-class wrappers do not inherit interface wrappers, so the
+/// strict `isinstance` guard of a known interface parameter rejects runtime
+/// class instances and raw `DynWinRTValue`s that implement the interface. Its
+/// permissive guard also accepts anything that supports the interface through
+/// QueryInterface.
 pub(crate) fn param_guard(
     name: &str,
     typ: &TypeMeta,
@@ -177,7 +184,9 @@ pub(crate) fn param_guard(
 ) -> ParamGuard {
     ParamGuard {
         strict: py_method_type_guard(name, typ, context),
-        permissive: None,
+        permissive: (!is_delegate_type(typ, context))
+            .then(|| py_interface_cast_guard(name, typ, context))
+            .flatten(),
     }
 }
 
@@ -1604,5 +1613,209 @@ print(json.dumps([exercise(FactoryForward), exercise(FactoryReverse)]))
             run_python(&script),
             r#"[["enum", "i32", "TypeError"], ["enum", "i32", "TypeError"]]"#
         );
+    }
+
+    fn interface_type(name: &str, iid: &str) -> TypeMeta {
+        TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: name.into(),
+            iid: iid.into(),
+        }
+    }
+
+    fn widget_type() -> TypeMeta {
+        TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: Some(Box::new(interface_type(
+                "IWidget",
+                "22222222-2222-2222-2222-222222222222",
+            ))),
+        }
+    }
+
+    #[test]
+    fn interface_overloads_accept_query_interface_only_after_exact_guards_fail() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let by_interface = overloaded_method("Write", 6, foo.clone());
+        let by_class = overloaded_method("Write2", 7, widget_type());
+        let by_text = overloaded_method("Write3", 8, TypeMeta::String);
+        let context = PythonProjectionContext::standalone([
+            foo.type_identity(),
+            widget_type().type_identity(),
+        ])
+        .unwrap();
+
+        let code = instance_group(&[&by_text, &by_class, &by_interface], &context);
+        let exact_interface = "if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')):";
+        let relaxed_interface = "if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_IFoo)):";
+        assert_eq!(code.matches(exact_interface).count(), 1, "{code}");
+        assert_eq!(code.matches(relaxed_interface).count(), 1, "{code}");
+        assert_eq!(
+            code.matches("_dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_Widget)")
+                .count(),
+            1,
+            "only interface candidates are retried: {code}"
+        );
+        for first_pass in [
+            "isinstance(_bound[0], str):",
+            exact_interface,
+            "_dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_Widget):",
+        ] {
+            assert_contains_in_order(&code, first_pass, relaxed_interface);
+        }
+
+        let dispatcher = extract_generated_block(&code, "    def write(self, *args, **kwargs):\n");
+        let script = format!(
+            r#"import json
+
+class DynWinRTValue:
+    def __init__(self, *interfaces):
+        self.interfaces = set(interfaces)
+
+    def cast(self, iid):
+        if iid not in self.interfaces:
+            raise OSError('E_NOINTERFACE')
+        return DynWinRTValue(*self.interfaces)
+
+    def release(self):
+        pass
+
+IID_ARG_Contoso_IFoo = 'IFoo'
+IID_ARG_Contoso_Widget = 'IWidget'
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if len(args) > len(parameter_names):
+        return None
+    bound = list(args)
+    for name in parameter_names[len(args):]:
+        if name not in kwargs:
+            return None
+        bound.append(kwargs[name])
+    if len(kwargs) != len(parameter_names) - len(args):
+        return None
+    return tuple(bound)
+
+def _dynwinrt_can_cast(value, iid):
+    raw = getattr(value, '_obj', value)
+    if not isinstance(raw, DynWinRTValue):
+        return False
+    try:
+        projected = raw.cast(iid)
+    except OSError:
+        return False
+    projected.release()
+    return True
+
+def _dynwinrt_symbol(module, name):
+    return globals()[name]
+
+class IFoo:
+    def __init__(self, obj):
+        self._obj = obj
+
+class Widget:
+    def __init__(self, obj):
+        self._obj = obj
+
+class PythonFoo(IFoo):
+    def __init__(self):
+        pass
+
+class Writer:
+    def _write_6(self, value):
+        return "interface"
+
+    def _write_7(self, value):
+        return "runtime class"
+
+    def _write_8(self, value):
+        return "text"
+
+{dispatcher}
+
+writer = Writer()
+results = [
+    writer.write(Widget(DynWinRTValue('IWidget', 'IFoo'))),
+    writer.write(IFoo(DynWinRTValue('IFoo'))),
+    writer.write(PythonFoo()),
+    writer.write(Widget(DynWinRTValue('IFoo'))),
+    writer.write(DynWinRTValue('IFoo')),
+    writer.write(value=DynWinRTValue('IFoo')),
+    writer.write('text'),
+]
+for rejected in (DynWinRTValue(), object(), None):
+    try:
+        writer.write(rejected)
+    except TypeError:
+        results.append("TypeError")
+    else:
+        results.append("unexpected")
+print(json.dumps(results))
+"#
+        );
+
+        assert_eq!(
+            run_python(&script),
+            r#"["runtime class", "interface", "interface", "interface", "interface", "interface", "text", "TypeError", "TypeError", "TypeError"]"#
+        );
+    }
+
+    #[test]
+    fn static_interface_overloads_retry_with_query_interface() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let by_interface = overloaded_method("Create", 6, foo.clone());
+        let by_text = overloaded_method("Create2", 7, TypeMeta::String);
+        let context = PythonProjectionContext::standalone([foo.type_identity()]).unwrap();
+
+        let code = static_group("Factory", &[&by_interface, &by_text], &context);
+
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], str):",
+            "if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_IFoo)):\n            return Factory._create_6(*_bound)\n",
+        );
+    }
+
+    #[test]
+    fn param_guards_are_permissive_only_for_known_interfaces() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let handler = interface_type("Handler", "33333333-3333-3333-3333-333333333333");
+        let context = PythonProjectionContext::standalone([
+            foo.type_identity(),
+            widget_type().type_identity(),
+            handler
+                .type_identity()
+                .with_kind(TypeIdentityKind::Delegate),
+        ])
+        .unwrap();
+
+        let guard = param_guard("value", &foo, &context);
+        assert_eq!(
+            guard.strict,
+            "isinstance(value, _dynwinrt_symbol('contoso__i_foo', 'IFoo'))"
+        );
+        assert_eq!(
+            guard.permissive.as_deref(),
+            Some(
+                "(isinstance(value, _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(value, IID_ARG_Contoso_IFoo))"
+            )
+        );
+        for strict_only in [
+            widget_type(),
+            handler,
+            TypeMeta::String,
+            TypeMeta::Object,
+            interface_type(
+                "IUnknownToProjection",
+                "44444444-4444-4444-4444-444444444444",
+            ),
+        ] {
+            assert_eq!(
+                param_guard("value", &strict_only, &context).permissive,
+                None,
+                "{strict_only:?}"
+            );
+        }
     }
 }

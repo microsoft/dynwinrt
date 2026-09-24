@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 IID_IDataWriter = WinGUID.parse('64b89265-d341-4922-b38a-dd4af8808c4e')
 IID_IDataWriterFactory = WinGUID.parse('338c67c2-8b84-4c2b-9c50-7b8767847a1f')
 IID_IClosable = WinGUID.parse('30d5a829-7fa4-4026-83bb-d75bae4ea99e')
+IID_ARG_Windows_Storage_Streams_IBuffer = WinGUID.parse('905a0fe0-bc53-11df-8c49-001e4fc686da')
+IID_ARG_Windows_Storage_Streams_IOutputStream = WinGUID.parse('905a0fe6-bc53-11df-8c49-001e4fc686da')
 
 _IDataWriter = DynWinRTType.register_interface(
     "IDataWriter", IID_IDataWriter) \
@@ -108,6 +110,9 @@ class DataWriter:
             _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
             if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')):
                 return cls.create_data_writer(_bound[0])
+            _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
+            if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IOutputStream)):
+                return cls.create_data_writer(_bound[0])
         return super().__new__(cls)
 
     def _set_native(self, obj: DynWinRTValue):
@@ -133,6 +138,10 @@ class DataWriter:
             return
         _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
         if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')):
+            self._set_native(type(self).create_data_writer(_bound[0])._obj)
+            return
+        _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
+        if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IOutputStream)):
             self._set_native(type(self).create_data_writer(_bound[0])._obj)
             return
         raise TypeError("No matching constructor for DataWriter")

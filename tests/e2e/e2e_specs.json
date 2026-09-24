@@ -429,7 +429,8 @@
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 },
-        { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] }
+        { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] },
+        { "kind": "data_stream_constructor_roundtrip", "member": "__init__", "langs": ["py"] }
       ]
     },
     {
