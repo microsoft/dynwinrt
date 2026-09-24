@@ -22,9 +22,11 @@ use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_struct,
 };
 
+use super::member_plan::ScopePlan;
 use super::method::{
-    InstanceOverload, StaticOverload, StaticOverloadKind, generate_instance_method_group,
-    generate_static_method_group, py_method_type_guard,
+    DispatchCandidate, InstanceOverload, StaticOverload, StaticOverloadKind, emit_dispatch,
+    generate_instance_accessor, generate_instance_method_group, generate_static_accessor,
+    generate_static_method_group,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::shared::reorder_getters_before_setters;
@@ -190,10 +192,10 @@ fn has_ireference_struct_field(structs: &[TypeMeta]) -> bool {
     structs.iter().any(contains)
 }
 
-fn generate_compatibility_aliases<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> String {
-    super::overloads::compatibility_aliases(methods)
-        .into_iter()
-        .map(|(legacy, canonical)| format!("    {legacy} = {canonical}\n"))
+fn generate_compatibility_aliases(plan: &ScopePlan<'_>) -> String {
+    plan.aliases()
+        .iter()
+        .map(|alias| format!("    {} = {}\n", alias.name, alias.target))
         .collect()
 }
 

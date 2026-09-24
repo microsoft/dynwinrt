@@ -27,6 +27,10 @@ use crate::codegen::winrt::shared::structs::{
 use super::collections::{
     CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
 };
+use super::member_plan::{
+    ClassMemberPlan, MethodGroup, PlannedMember, ScopePlan, class_instance_interfaces,
+    interface_member_plan,
+};
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
 use super::shared::reorder_getters_before_setters;
@@ -578,37 +582,46 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         ));
     }
 
-    for methods in super::overloads::grouped_methods(reorder_getters_before_setters(&iface.methods))
-    {
-        let event_has_remove = methods.first().is_some_and(|method| {
-            method.name.strip_prefix("add_").is_some_and(|suffix| {
-                iface
-                    .methods
-                    .iter()
-                    .any(|candidate| candidate.name == format!("remove_{suffix}"))
-            })
-        });
-        let property_has_getter = methods.first().is_none_or(|method| {
-            !method.is_property_setter
-                || method.name.strip_prefix("put_").is_some_and(|suffix| {
+    let plan = interface_member_plan(iface);
+    let members = reorder_getters_before_setters(&iface.methods)
+        .into_iter()
+        .map(|method| (iface, method));
+    for member in plan.members(members) {
+        out.push('\n');
+        out.push_str(&match member {
+            PlannedMember::Accessor(_, method) => {
+                let event_has_remove = method.name.strip_prefix("add_").is_some_and(|suffix| {
                     iface
                         .methods
                         .iter()
-                        .any(|candidate| candidate.name == format!("get_{suffix}"))
-                })
+                        .any(|candidate| candidate.name == format!("remove_{suffix}"))
+                });
+                let property_has_getter = !method.is_property_setter
+                    || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                        iface
+                            .methods
+                            .iter()
+                            .any(|candidate| candidate.name == format!("get_{suffix}"))
+                    });
+                emit_method_stub(
+                    method,
+                    context,
+                    4,
+                    event_has_remove,
+                    property_has_getter,
+                    collection_kind == Some(CollectionKind::MutableSequence),
+                )
+            }
+            PlannedMember::Group(group) => emit_instance_stub_group(
+                group,
+                context,
+                4,
+                collection_kind == Some(CollectionKind::MutableSequence),
+            ),
         });
-        out.push('\n');
-        out.push_str(&emit_instance_stub_group(
-            &methods,
-            context,
-            4,
-            event_has_remove,
-            property_has_getter,
-            collection_kind == Some(CollectionKind::MutableSequence),
-        ));
     }
     out.push_str(&emit_instance_compatibility_alias_stubs(
-        iface.methods.iter(),
+        &plan,
         context,
         4,
         collection_kind == Some(CollectionKind::MutableSequence),
@@ -618,9 +631,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
 }
 
 /// Generate a `.pyi` stub for a runtime class.
-pub fn generate_class_stub(
+pub fn generate_class_stub<'a>(
     context: &PythonProjectionContext,
-    class: &ClassMeta,
+    class: &'a ClassMeta,
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
@@ -647,6 +660,7 @@ pub fn generate_class_stub(
     let projectable = super::has_projectable_default_interface(class);
     let native_projectable = super::has_native_projector(class);
     let supports_interface_projection = projectable || !class.required_interfaces.is_empty();
+    let plan = ClassMemberPlan::new(class);
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -879,8 +893,14 @@ pub fn generate_class_stub(
             )),
             _ => None,
         });
-    let mut instance_stub_body =
-        emit_class_instance_stubs(class, context, collection_iface, false, has_closable);
+    let mut instance_stub_body = emit_class_instance_stubs(
+        class,
+        context,
+        &plan.instance,
+        collection_iface,
+        false,
+        has_closable,
+    );
     if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
         instance_stub_body.push_str("    def to_bytes(self) -> bytes: ...\n");
     }
@@ -951,6 +971,7 @@ pub fn generate_class_stub(
         out.push_str(&emit_class_instance_stubs(
             class,
             context,
+            &plan.instance,
             collection_iface,
             collection_kind == Some(CollectionKind::MutableSequence),
             has_closable,
@@ -979,28 +1000,29 @@ pub fn generate_class_stub(
         ));
     }
 
-    let static_methods = class
+    let static_members = class
         .factory_interfaces
         .iter()
-        .flat_map(|iface| iface.methods.iter().map(|method| (method, true)))
-        .chain(
-            class
-                .static_interfaces
-                .iter()
-                .flat_map(|iface| iface.methods.iter().map(|method| (method, false))),
-        )
-        .collect::<Vec<_>>();
-    for group in grouped_static_stubs(&static_methods) {
+        .chain(class.static_interfaces.iter())
+        .flat_map(|iface| iface.methods.iter().map(move |method| (iface, method)));
+    for member in plan.statics.members(static_members) {
         out.push('\n');
-        out.push_str(&emit_static_stub_group(
-            &context.class_name(class),
-            &group,
-            context,
-        ));
+        out.push_str(&match member {
+            PlannedMember::Accessor(iface, method) => emit_static_method_stub(
+                &context.class_name(class),
+                method,
+                context,
+                is_factory_interface(class, iface),
+            ),
+            PlannedMember::Group(group) => {
+                emit_static_stub_group(&context.class_name(class), class, group, context)
+            }
+        });
     }
     out.push_str(&emit_static_compatibility_alias_stubs(
         &context.class_name(class),
-        static_methods.iter().copied(),
+        class,
+        &plan.statics,
         context,
         4,
     ));
@@ -1089,38 +1111,46 @@ pub fn generate_class_stub(
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
-        for methods in
-            super::overloads::grouped_methods(reorder_getters_before_setters(&req_iface.methods))
-        {
-            let event_has_remove = methods.first().is_some_and(|method| {
-                method.name.strip_prefix("add_").is_some_and(|suffix| {
-                    req_iface
-                        .methods
-                        .iter()
-                        .any(|candidate| candidate.name == format!("remove_{suffix}"))
-                })
-            });
-            let property_has_getter = methods.first().is_none_or(|method| {
-                !method.is_property_setter
-                    || method.name.strip_prefix("put_").is_some_and(|suffix| {
+        let iface_plan = interface_member_plan(req_iface);
+        let members = reorder_getters_before_setters(&req_iface.methods)
+            .into_iter()
+            .map(|method| (req_iface, method));
+        for member in iface_plan.members(members) {
+            out.push('\n');
+            out.push_str(&match member {
+                PlannedMember::Accessor(_, method) => {
+                    let event_has_remove = method.name.strip_prefix("add_").is_some_and(|suffix| {
                         req_iface
                             .methods
                             .iter()
-                            .any(|candidate| candidate.name == format!("get_{suffix}"))
-                    })
+                            .any(|candidate| candidate.name == format!("remove_{suffix}"))
+                    });
+                    let property_has_getter = !method.is_property_setter
+                        || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                            req_iface
+                                .methods
+                                .iter()
+                                .any(|candidate| candidate.name == format!("get_{suffix}"))
+                        });
+                    emit_method_stub(
+                        method,
+                        context,
+                        4,
+                        event_has_remove,
+                        property_has_getter,
+                        interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+                    )
+                }
+                PlannedMember::Group(group) => emit_instance_stub_group(
+                    group,
+                    context,
+                    4,
+                    interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+                ),
             });
-            out.push('\n');
-            out.push_str(&emit_instance_stub_group(
-                &methods,
-                context,
-                4,
-                event_has_remove,
-                property_has_getter,
-                interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
-            ));
         }
         out.push_str(&emit_instance_compatibility_alias_stubs(
-            req_iface.methods.iter(),
+            &iface_plan,
             context,
             4,
             interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
@@ -1131,9 +1161,10 @@ pub fn generate_class_stub(
     out
 }
 
-fn emit_class_instance_stubs(
-    class: &ClassMeta,
+fn emit_class_instance_stubs<'a>(
+    class: &'a ClassMeta,
     context: &PythonProjectionContext,
+    plan: &ScopePlan<'a>,
     collection_iface: Option<&InterfaceMeta>,
     mutable_sequence_override: bool,
     has_closable: bool,
@@ -1146,12 +1177,7 @@ fn emit_class_instance_stubs(
         out.push_str(&collection_protocol_stubs(collection_iface, context, 4));
     }
 
-    let instance_ifaces = class
-        .default_interface
-        .iter()
-        .chain(class.required_interfaces.iter())
-        .filter(|iface| iface.iid != "30d5a829-7fa4-4026-83bb-d75bae4ea99e")
-        .collect::<Vec<_>>();
+    let instance_ifaces = class_instance_interfaces(class).collect::<Vec<_>>();
     let paired_events = instance_ifaces
         .iter()
         .flat_map(|iface| {
@@ -1174,12 +1200,16 @@ fn emit_class_instance_stubs(
         .collect::<HashSet<_>>();
     let original_instance_methods = instance_ifaces
         .iter()
-        .flat_map(|iface| reorder_getters_before_setters(&iface.methods))
+        .flat_map(|iface| {
+            reorder_getters_before_setters(&iface.methods)
+                .into_iter()
+                .map(move |method| (*iface, method))
+        })
         .collect::<Vec<_>>();
     let mut emitted = HashSet::<*const MethodMeta>::new();
     let mut instance_methods = Vec::with_capacity(original_instance_methods.len());
-    for method in &original_instance_methods {
-        if emitted.contains(&(*method as *const MethodMeta)) {
+    for &(iface, method) in &original_instance_methods {
+        if emitted.contains(&(method as *const MethodMeta)) {
             continue;
         }
         if method.is_property_setter
@@ -1191,53 +1221,54 @@ fn emit_class_instance_stubs(
             continue;
         }
 
-        instance_methods.push(*method);
-        emitted.insert(*method as *const MethodMeta);
+        instance_methods.push((iface, method));
+        emitted.insert(method as *const MethodMeta);
         if let Some(suffix) = method
             .is_property_getter
             .then(|| method.name.strip_prefix("get_"))
             .flatten()
         {
-            for setter in original_instance_methods
-                .iter()
-                .copied()
-                .filter(|candidate| {
+            for &(setter_iface, setter) in
+                original_instance_methods.iter().filter(|(_, candidate)| {
                     candidate.is_property_setter
                         && candidate.name.strip_prefix("put_") == Some(suffix)
                 })
             {
                 if emitted.insert(setter as *const MethodMeta) {
-                    instance_methods.push(setter);
+                    instance_methods.push((setter_iface, setter));
                 }
             }
         }
     }
-    for methods in super::overloads::grouped_methods(instance_methods) {
-        let event_has_remove = methods.first().is_some_and(|method| {
-            method
-                .name
-                .strip_prefix("add_")
-                .is_some_and(|suffix| paired_events.contains(suffix))
-        });
-        let property_has_getter = methods.first().is_none_or(|method| {
-            !method.is_property_setter
-                || method
-                    .name
-                    .strip_prefix("put_")
-                    .is_some_and(|suffix| property_getters.contains(suffix))
-        });
+    for member in plan.members(instance_methods) {
         out.push('\n');
-        out.push_str(&emit_instance_stub_group(
-            &methods,
-            context,
-            4,
-            event_has_remove,
-            property_has_getter,
-            mutable_sequence_override,
-        ));
+        out.push_str(&match member {
+            PlannedMember::Accessor(_, method) => {
+                let event_has_remove = method
+                    .name
+                    .strip_prefix("add_")
+                    .is_some_and(|suffix| paired_events.contains(suffix));
+                let property_has_getter = !method.is_property_setter
+                    || method
+                        .name
+                        .strip_prefix("put_")
+                        .is_some_and(|suffix| property_getters.contains(suffix));
+                emit_method_stub(
+                    method,
+                    context,
+                    4,
+                    event_has_remove,
+                    property_has_getter,
+                    mutable_sequence_override,
+                )
+            }
+            PlannedMember::Group(group) => {
+                emit_instance_stub_group(group, context, 4, mutable_sequence_override)
+            }
+        });
     }
     out.push_str(&emit_instance_compatibility_alias_stubs(
-        original_instance_methods.iter().copied(),
+        plan,
         context,
         4,
         mutable_sequence_override,
@@ -1455,7 +1486,7 @@ fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) 
         out.push_str("    def __init__(self, _not_constructible: NoReturn) -> None: ...\n");
         return out;
     }
-    overloads.sort_by(|left, right| super::overloads::cmp_python_dispatch_params(left, right));
+    overloads.sort_by(|left, right| super::member_plan::cmp_python_dispatch_params(left, right));
 
     let count = overloads.len();
     for params in &overloads {
@@ -1532,74 +1563,53 @@ fn has_constructor_stub_overload(class: &ClassMeta) -> bool {
 }
 
 fn emit_instance_stub_group(
-    methods: &[&MethodMeta],
+    group: &MethodGroup<'_>,
     context: &PythonProjectionContext,
     indent_spaces: usize,
-    event_has_remove: bool,
-    property_has_getter: bool,
     overrides_mutable_sequence: bool,
 ) -> String {
-    let mut ordered_methods = methods.iter().copied().collect::<Vec<_>>();
-    ordered_methods
-        .sort_by(|left, right| super::overloads::cmp_python_dispatch_methods(left, right));
-
-    if ordered_methods.len() == 1 {
-        return emit_method_stub(
-            ordered_methods[0],
-            context,
-            indent_spaces,
-            event_has_remove,
-            property_has_getter,
-            overrides_mutable_sequence,
-        );
-    }
-    let names = super::overloads::method_names(ordered_methods.iter().copied());
-    let public_name = super::overloads::method_group_key(ordered_methods[0], &names);
     let indent = " ".repeat(indent_spaces);
-    ordered_methods
+    let overloaded = group.candidates.len() > 1;
+    group
+        .candidates
         .iter()
-        .map(|method| {
-            format!(
-                "{indent}@overload\n{}",
-                emit_method_stub_named(
-                    method,
-                    context,
-                    indent_spaces,
-                    Some(&public_name),
-                    event_has_remove,
-                    property_has_getter,
-                    overrides_mutable_sequence,
-                )
-            )
+        .map(|candidate| {
+            let stub = emit_method_stub_named(
+                candidate.method,
+                context,
+                indent_spaces,
+                Some(&group.name),
+                false,
+                true,
+                overrides_mutable_sequence,
+            );
+            if overloaded {
+                format!("{indent}@overload\n{stub}")
+            } else {
+                stub
+            }
         })
         .collect()
 }
 
-fn emit_instance_compatibility_alias_stubs<'a>(
-    methods: impl IntoIterator<Item = &'a MethodMeta>,
+fn emit_instance_compatibility_alias_stubs(
+    plan: &ScopePlan<'_>,
     context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
 ) -> String {
-    let methods = methods.into_iter().collect::<Vec<_>>();
-    let aliases = super::overloads::compatibility_aliases(methods.iter().copied());
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
-    for (legacy, _) in aliases {
-        let matching = methods
-            .iter()
-            .copied()
-            .filter(|method| to_snake_case(&method.name) == legacy)
-            .collect::<Vec<_>>();
-        for method in &matching {
-            if matching.len() > 1 {
+    for alias in plan.aliases() {
+        for method in &alias.signatures {
+            if alias.signatures.len() > 1 {
                 out.push_str(&format!("{indent}@overload\n"));
             }
             out.push_str(&emit_method_stub_named(
                 method,
                 context,
                 indent_spaces,
-                Some(&legacy),
+                Some(&alias.name),
                 false,
                 true,
                 overrides_mutable_sequence,
@@ -1609,83 +1619,70 @@ fn emit_instance_compatibility_alias_stubs<'a>(
     out
 }
 
-fn emit_static_compatibility_alias_stubs<'a>(
+fn is_factory_interface(class: &ClassMeta, iface: &InterfaceMeta) -> bool {
+    class
+        .factory_interfaces
+        .iter()
+        .any(|factory| std::ptr::eq(factory, iface))
+}
+
+fn is_factory_method(class: &ClassMeta, method: &MethodMeta) -> bool {
+    class
+        .factory_interfaces
+        .iter()
+        .flat_map(|factory| factory.methods.iter())
+        .any(|candidate| std::ptr::eq(candidate, method))
+}
+
+fn emit_static_compatibility_alias_stubs(
     class_name: &str,
-    methods: impl IntoIterator<Item = (&'a MethodMeta, bool)>,
+    class: &ClassMeta,
+    plan: &ScopePlan<'_>,
     context: &PythonProjectionContext,
     indent_spaces: usize,
 ) -> String {
-    let methods = methods.into_iter().collect::<Vec<_>>();
-    let aliases =
-        super::overloads::compatibility_aliases(methods.iter().map(|(method, _)| *method));
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
-    for (legacy, _) in aliases {
-        let matching = methods
-            .iter()
-            .filter(|(method, _)| to_snake_case(&method.name) == legacy)
-            .collect::<Vec<_>>();
-        for (method, is_factory) in &matching {
-            if matching.len() > 1 {
+    for alias in plan.aliases() {
+        for method in &alias.signatures {
+            if alias.signatures.len() > 1 {
                 out.push_str(&format!("{indent}@overload\n"));
             }
             out.push_str(&emit_static_method_stub_named(
                 class_name,
                 method,
                 context,
-                *is_factory,
-                Some(&legacy),
+                is_factory_method(class, method),
+                Some(&alias.name),
             ));
         }
     }
     out
 }
 
-fn grouped_static_stubs<'a>(
-    methods: &[(&'a MethodMeta, bool)],
-) -> Vec<Vec<(&'a MethodMeta, bool)>> {
-    let names = super::overloads::method_names(methods.iter().map(|(method, _)| *method));
-    let mut groups: Vec<(String, Vec<(&MethodMeta, bool)>)> = Vec::new();
-    for &(method, is_factory) in methods {
-        let key = super::overloads::method_group_key(method, &names);
-        if let Some((_, group)) = groups.iter_mut().find(|(name, _)| name == &key) {
-            group.push((method, is_factory));
-        } else {
-            groups.push((key, vec![(method, is_factory)]));
-        }
-    }
-    groups.into_iter().map(|(_, group)| group).collect()
-}
-
 fn emit_static_stub_group(
     class_name: &str,
-    methods: &[(&MethodMeta, bool)],
+    class: &ClassMeta,
+    group: &MethodGroup<'_>,
     context: &PythonProjectionContext,
 ) -> String {
-    let mut ordered_methods = methods.iter().copied().collect::<Vec<_>>();
-    ordered_methods.sort_by(|(left, _), (right, _)| {
-        super::overloads::cmp_python_dispatch_methods(left, right)
-    });
-
-    if ordered_methods.len() == 1 {
-        let (method, is_factory) = ordered_methods[0];
-        return emit_static_method_stub(class_name, method, context, is_factory);
-    }
-    let names = super::overloads::method_names(ordered_methods.iter().map(|(method, _)| *method));
-    let public_name = super::overloads::method_group_key(ordered_methods[0].0, &names);
-    ordered_methods
+    let overloaded = group.candidates.len() > 1;
+    group
+        .candidates
         .iter()
-        .map(|(method, is_factory)| {
-            format!(
-                "    @overload\n{}",
-                emit_static_method_stub_named(
-                    class_name,
-                    method,
-                    context,
-                    *is_factory,
-                    Some(&public_name),
-                )
-            )
+        .map(|candidate| {
+            let stub = emit_static_method_stub_named(
+                class_name,
+                candidate.method,
+                context,
+                is_factory_interface(class, candidate.interface),
+                Some(&group.name),
+            );
+            if overloaded {
+                format!("    @overload\n{stub}")
+            } else {
+                stub
+            }
         })
         .collect()
 }

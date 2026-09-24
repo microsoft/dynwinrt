@@ -10,6 +10,7 @@ use crate::codegen::winrt::python::collections::{
     CollectionKind, interface_kind, map_iterable_identity, observable_vector_identity,
     runtime_mixin,
 };
+use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
@@ -578,29 +579,37 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     } else {
         "self._obj"
     };
-    for methods in crate::codegen::winrt::python::overloads::grouped_methods(
-        reorder_getters_before_setters(&iface.methods),
-    ) {
+    let plan = interface_member_plan(iface);
+    let overload = |method| InstanceOverload {
+        iface_var: iface_var.clone(),
+        obj_expr: obj_expr.to_string(),
+        method,
+        sibling_methods: Some(iface.methods.as_slice()),
+        property_has_getter: !method.is_property_setter
+            || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                iface
+                    .methods
+                    .iter()
+                    .any(|candidate| candidate.name == format!("get_{suffix}"))
+            }),
+    };
+    let members = reorder_getters_before_setters(&iface.methods)
+        .into_iter()
+        .map(|method| (iface, method));
+    for member in plan.members(members) {
         out.push('\n');
-        let overloads = methods
-            .into_iter()
-            .map(|method| InstanceOverload {
-                iface_var: iface_var.clone(),
-                obj_expr: obj_expr.to_string(),
-                method,
-                sibling_methods: Some(iface.methods.as_slice()),
-                property_has_getter: !method.is_property_setter
-                    || method.name.strip_prefix("put_").is_some_and(|suffix| {
-                        iface
-                            .methods
-                            .iter()
-                            .any(|candidate| candidate.name == format!("get_{suffix}"))
-                    }),
-            })
-            .collect::<Vec<_>>();
-        out.push_str(&generate_instance_method_group(&overloads, context));
+        out.push_str(&match member {
+            PlannedMember::Accessor(_, method) => {
+                generate_instance_accessor(&overload(method), context)
+            }
+            PlannedMember::Group(group) => generate_instance_method_group(
+                group,
+                |candidate| overload(candidate.method),
+                context,
+            ),
+        });
     }
-    let aliases = generate_compatibility_aliases(iface.methods.iter());
+    let aliases = generate_compatibility_aliases(&plan);
     if !aliases.is_empty() {
         out.push('\n');
         out.push_str(&aliases);
