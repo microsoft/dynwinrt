@@ -3,7 +3,7 @@
 
 //! Python method signatures, argument wrapping, and return conversion.
 
-use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
+use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 use super::naming::{PythonProjectionContext, PythonSymbol};
@@ -21,6 +21,53 @@ pub(crate) fn py_runtime_symbol(
         context.implementation_module(identity),
         symbol_name
     )
+}
+
+/// The single codegen hook for a Python value entering a WinRT `Object`
+/// position: parameters, setters, collection and array elements, and outputs
+/// of Python-implemented handlers. See `bindings/py/src/object_value.rs`.
+pub(crate) fn py_to_winrt_object(expr: &str) -> String {
+    format!("_dynwinrt_to_winrt_object({expr})")
+}
+
+/// The single codegen hook for a WinRT `Object` value leaving to Python:
+/// returns, getters, out parameters, collection and array elements, async
+/// results, and event and handler arguments.
+pub(crate) fn py_from_winrt_object(expr: &str) -> String {
+    format!("_dynwinrt_from_winrt_object({expr})")
+}
+
+/// Whether `param` is a composable factory's controlling outer: the last
+/// input, named outer/base/baseInterface/outerInterface and typed Object,
+/// next to an `inner` Object output.
+///
+/// It carries COM aggregation identity rather than a value, so it keeps the
+/// raw object-reference projection instead of the Object value conversion:
+/// boxing a Python value there would hand the factory a controlling outer
+/// that nothing keeps alive.
+pub(crate) fn py_is_composable_outer(method: &MethodMeta, param: &ParamMeta) -> bool {
+    let is_last_input = method
+        .params
+        .iter()
+        .rfind(|candidate| candidate.direction == ParamDirection::In)
+        .is_some_and(|last| std::ptr::eq(last, param));
+    let name = param.name.to_ascii_lowercase();
+    is_last_input
+        && param.typ == TypeMeta::Object
+        && matches!(
+            name.as_str(),
+            "outer" | "base" | "baseinterface" | "outerinterface"
+        )
+        && method.params.iter().any(|candidate| {
+            candidate.direction == ParamDirection::Out
+                && candidate.typ == TypeMeta::Object
+                && candidate.name.to_ascii_lowercase().contains("inner")
+        })
+}
+
+/// Argument expression for a composable factory's controlling outer.
+pub(crate) fn py_wrap_composable_outer(name: &str) -> String {
+    format!("getattr({name}, '_obj', {name})")
 }
 
 pub(crate) fn py_runtime_type_symbol(
@@ -391,7 +438,8 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta, context: &PythonProjection
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
         TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
-        TypeMeta::Object | TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
+        TypeMeta::Object => py_to_winrt_object(name),
+        TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
         TypeMeta::Parameterized { .. } => format!("getattr({}, '_obj', {})", name, name),
@@ -458,10 +506,10 @@ pub(crate) fn py_wrap_native_value(
             name
         ),
         TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
-        TypeMeta::Object
-        | TypeMeta::Interface { .. }
-        | TypeMeta::Parameterized { .. }
-        | TypeMeta::Delegate { .. } => format!("getattr({}, '_obj', {})", name, name),
+        TypeMeta::Object => py_to_winrt_object(name),
+        TypeMeta::Interface { .. } | TypeMeta::Parameterized { .. } | TypeMeta::Delegate { .. } => {
+            format!("getattr({}, '_obj', {})", name, name)
+        }
         TypeMeta::Array(inner) => format!(
             "_dynwinrt_array({}, lambda item: {}, {}, {})",
             name,
@@ -709,7 +757,8 @@ pub(crate) fn py_convert_return(
                 wrapper, expr
             )
         }
-        Some(TypeMeta::Object | TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }) => {
+        Some(TypeMeta::Object) => py_from_winrt_object(expr),
+        Some(TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }) => {
             format!(
                 "(lambda value: None if value.is_null() else value)({})",
                 expr
@@ -864,7 +913,12 @@ pub(crate) fn py_convert_array_return(
                 )
             }
         }
-        TypeMeta::Object | TypeMeta::Delegate { .. } => format!(
+        TypeMeta::Object => format!(
+            "[{} for v in {}.to_values()]",
+            py_from_winrt_object("v"),
+            arr_expr
+        ),
+        TypeMeta::Delegate { .. } => format!(
             "[None if v.is_null() else v for v in {}.to_values()]",
             arr_expr
         ),
@@ -926,6 +980,53 @@ mod tests {
                 iid: "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
             })),
         }
+    }
+
+    #[test]
+    fn object_positions_use_the_single_conversion_hooks() {
+        let context = PythonProjectionContext::default();
+        assert_eq!(
+            py_wrap_arg("value", &TypeMeta::Object, &context),
+            "_dynwinrt_to_winrt_object(value)"
+        );
+        assert_eq!(
+            py_wrap_native_value("item", &TypeMeta::Object, &context),
+            "_dynwinrt_to_winrt_object(item)"
+        );
+        assert_eq!(
+            py_convert_return("raw", Some(&TypeMeta::Object), false, &context),
+            "_dynwinrt_from_winrt_object(raw)"
+        );
+        let objects = TypeMeta::Array(Box::new(TypeMeta::Object));
+        assert_eq!(
+            py_convert_return("raw", Some(&objects), false, &context),
+            "[_dynwinrt_from_winrt_object(v) for v in raw.as_array().to_values()]"
+        );
+        assert!(
+            py_wrap_arg("items", &objects, &context)
+                .contains("lambda item: _dynwinrt_to_winrt_object(item)")
+        );
+        let async_object = TypeMeta::AsyncOperation(Box::new(TypeMeta::Object));
+        assert!(
+            py_convert_return("raw", Some(&async_object), true, &context)
+                .contains("lambda value: _dynwinrt_from_winrt_object(value)")
+        );
+        let map = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IMap`2".into(),
+            piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            args: vec![TypeMeta::String, TypeMeta::Object],
+        };
+        assert!(
+            py_wrap_arg("items", &map, &context)
+                .contains("lambda item: _dynwinrt_to_winrt_object(item)")
+        );
+        // Unknown classes and interfaces are references, not values: they keep
+        // the null-check projection and never unbox.
+        assert_eq!(
+            py_convert_return("raw", Some(&geometry_type()), false, &context),
+            "(lambda value: None if value.is_null() else value)(raw)"
+        );
     }
 
     #[test]

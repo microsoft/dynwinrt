@@ -5,7 +5,7 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
-    _DynWinRTObject, _DynWinRTProjector,
+    _DynWinRTObject, WinRTObjectValue, WinRTObjectInput, _DynWinRTProjector,
 )
 from typing import Protocol, Self, TypeVar
 

@@ -50,13 +50,13 @@ fn property_named_property_does_not_shadow_the_decorator() {
     for name in ["property", "old_value"] {
         assert!(
             py.contains(&format!(
-                "    @_property\n    def {name}(self) -> DynWinRTValue | None:"
+                "    @_property\n    def {name}(self) -> WinRTObjectValue | None:"
             )),
             "{py}"
         );
         assert!(
             pyi.contains(&format!(
-                "    @builtins.property\n    def {name}(self) -> DynWinRTValue | None: ..."
+                "    @builtins.property\n    def {name}(self) -> WinRTObjectValue | None: ..."
             )),
             "{pyi}"
         );

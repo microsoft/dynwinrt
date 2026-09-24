@@ -17,12 +17,24 @@ pub type PythonTypeIdentity = TypeIdentity;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
+    /// `dynwinrt.WinRTObjectValue`: values read from WinRT `Object` positions.
+    WinRTObjectValue,
+    /// `dynwinrt.WinRTObjectInput`: values accepted by WinRT `Object` positions.
+    WinRTObjectInput,
 }
 
 impl PythonSupportSymbol {
+    pub(crate) const ALL: [Self; 3] = [
+        Self::ObjectInput,
+        Self::WinRTObjectValue,
+        Self::WinRTObjectInput,
+    ];
+
     fn name(self) -> &'static str {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
+            Self::WinRTObjectValue => "WinRTObjectValue",
+            Self::WinRTObjectInput => "WinRTObjectInput",
         }
     }
 }
@@ -912,7 +924,7 @@ impl PythonProjectionContext {
             }
         }
         // Support imports yield to metadata declarations and their allocated roles.
-        for helper in [PythonSupportSymbol::ObjectInput] {
+        for helper in PythonSupportSymbol::ALL {
             let preferred = helper.name();
             let mut name = preferred.to_string();
             let mut index = 2;

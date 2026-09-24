@@ -57,6 +57,28 @@ pub(super) fn method_pydoc_with_indent(
 // Python type annotation helpers
 // ======================================================================
 
+/// Which side of a WinRT `Object` position an annotation describes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectRole {
+    /// Values accepted by `to_winrt_object`.
+    Input,
+    /// Values returned by `from_winrt_object`.
+    Output,
+}
+
+/// The single annotation hook for WinRT `Object` positions.
+///
+/// Names the public `dynwinrt` alias for the role; callers add the position's
+/// nullability through [`py_optional_type`], so `Object` positions always
+/// include `None`.
+pub(crate) fn py_object_annotation(context: &PythonProjectionContext, role: ObjectRole) -> String {
+    let alias = match role {
+        ObjectRole::Input => PythonSupportSymbol::WinRTObjectInput,
+        ObjectRole::Output => PythonSupportSymbol::WinRTObjectValue,
+    };
+    context.support_symbol_reference(alias).to_string()
+}
+
 pub(crate) fn py_optional_type(typ: String) -> String {
     let unquoted = typ
         .strip_prefix('\'')
@@ -108,8 +130,8 @@ fn py_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
         }
         TypeMeta::Array(inner) => py_array_param_type(inner, context),
         TypeMeta::Object => format!(
-            "'DynWinRTValue | {}'",
-            context.support_symbol_reference(PythonSupportSymbol::ObjectInput)
+            "'{}'",
+            py_optional_type(py_object_annotation(context, ObjectRole::Input))
         ),
         TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
@@ -363,7 +385,10 @@ fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> 
             py_return_type(Some(progress), context)
         ),
         Some(TypeMeta::Array(inner)) => py_array_return_type(inner, context),
-        Some(TypeMeta::Object) | Some(TypeMeta::Delegate { .. }) => "'DynWinRTValue'".to_string(),
+        Some(TypeMeta::Object) => {
+            format!("'{}'", py_object_annotation(context, ObjectRole::Output))
+        }
+        Some(TypeMeta::Delegate { .. }) => "'DynWinRTValue'".to_string(),
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => "int".to_string(),
         Some(typ) if foundation_type(typ) == Some(FoundationType::DateTime) => {
             "datetime".to_string()
@@ -415,6 +440,7 @@ fn py_native_element_type(inner: &TypeMeta, context: &PythonProjectionContext) -
                 "'DynWinRTValue'".to_string()
             }
         }
+        TypeMeta::Object => format!("'{}'", py_object_annotation(context, ObjectRole::Output)),
         _ => "'DynWinRTValue'".to_string(),
     }
 }
@@ -532,6 +558,30 @@ pub(super) fn py_param_list(
                 _ => py_param_type_safe(&p.typ, context),
             };
             format!("{}: {}", to_snake_case(&p.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`py_param_list`] for factory methods, where a composable factory's
+/// controlling outer keeps its raw object-reference annotation.
+pub(super) fn py_factory_param_list(
+    method: &MethodMeta,
+    in_params: &[&crate::meta::ParamMeta],
+    context: &PythonProjectionContext,
+) -> String {
+    in_params
+        .iter()
+        .map(|p| {
+            if super::signature::py_is_composable_outer(method, p) {
+                format!(
+                    "{}: 'DynWinRTValue | {}'",
+                    to_snake_case(&p.name),
+                    context.support_symbol_reference(PythonSupportSymbol::ObjectInput)
+                )
+            } else {
+                py_param_list(std::slice::from_ref(p), context)
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -667,33 +717,41 @@ mod tests {
     fn object_arrays_return_typed_runtime_values() {
         assert_eq!(
             py_array_return_type(&TypeMeta::Object, &PythonProjectionContext::default()),
-            "list[DynWinRTValue | None]"
+            "list[WinRTObjectValue | None]"
         );
     }
 
     #[test]
-    fn object_inputs_accept_native_wrappers_without_widening_outputs() {
+    fn object_positions_use_the_value_aliases_and_stay_nullable() {
         let context = PythonProjectionContext::default();
         assert_eq!(
+            py_object_annotation(&context, ObjectRole::Input),
+            "WinRTObjectInput"
+        );
+        assert_eq!(
+            py_object_annotation(&context, ObjectRole::Output),
+            "WinRTObjectValue"
+        );
+        assert_eq!(
             py_param_type_safe(&TypeMeta::Object, &context),
-            "'DynWinRTValue | _DynWinRTObject'"
+            "'WinRTObjectInput | None'"
         );
         assert_eq!(
             py_array_param_type(&TypeMeta::Object, &context),
-            "DynWinRTArray | Sequence['DynWinRTValue | _DynWinRTObject']"
+            "DynWinRTArray | Sequence['WinRTObjectInput | None']"
         );
         for (name, piid, args, expected) in [
             (
                 "IIterable`1",
                 "faa585ea-6214-4217-afda-7f46de5869b3",
                 vec![TypeMeta::Object],
-                "Iterable['DynWinRTValue | _DynWinRTObject']",
+                "Iterable['WinRTObjectInput | None']",
             ),
             (
                 "IMap`2",
                 "3c2925fe-8519-45c1-aa79-197b6718c1c1",
                 vec![TypeMeta::String, TypeMeta::Object],
-                "Mapping[str, 'DynWinRTValue | _DynWinRTObject']",
+                "Mapping[str, 'WinRTObjectInput | None']",
             ),
         ] {
             let typ = TypeMeta::Parameterized {
@@ -706,24 +764,32 @@ mod tests {
         }
         assert_eq!(
             py_return_type_safe(Some(&TypeMeta::Object), &context),
-            "DynWinRTValue | None"
+            "WinRTObjectValue | None"
         );
         assert_eq!(
             py_collection_input_type(&TypeMeta::Object, &context),
-            "DynWinRTValue | _DynWinRTObject | None"
+            "WinRTObjectInput | None"
         );
         assert_eq!(py_collection_input_type(&TypeMeta::I32, &context), "int");
     }
 
     #[test]
-    fn object_input_aliases_reach_collection_inputs_without_changing_outputs() {
-        let typ = TypeMeta::Struct {
+    fn object_value_aliases_yield_to_metadata_names() {
+        let value = TypeMeta::Struct {
             namespace: "Audit".into(),
-            name: "_DynWinRTObject".into(),
+            name: "WinRTObjectValue".into(),
             fields: vec![],
         };
-        let context = PythonProjectionContext::packaged([typ.type_identity()]).unwrap();
-        let context = context.for_struct_module(&typ, std::slice::from_ref(&typ));
+        let input = TypeMeta::Struct {
+            namespace: "Audit".into(),
+            name: "WinRTObjectInput".into(),
+            fields: vec![],
+        };
+        let context =
+            PythonProjectionContext::packaged([value.type_identity(), input.type_identity()])
+                .unwrap();
+        let structs = [value.clone(), input];
+        let context = context.for_struct_module(&value, &structs);
         let mapping = TypeMeta::Parameterized {
             namespace: "Windows.Foundation.Collections".into(),
             name: "IMap`2".into(),
@@ -732,19 +798,19 @@ mod tests {
         };
         assert_eq!(
             py_param_type_safe(&mapping, &context),
-            "Mapping[str, 'DynWinRTValue | _DynWinRTObject_2']"
-        );
-        assert_eq!(
-            py_collection_input_type(&TypeMeta::Object, &context),
-            "DynWinRTValue | _DynWinRTObject_2 | None"
+            "Mapping[str, 'WinRTObjectInput_2 | None']"
         );
         assert_eq!(
             py_return_type_safe(Some(&TypeMeta::Object), &context),
-            "DynWinRTValue | None"
+            "WinRTObjectValue_2 | None"
         );
         assert_eq!(
             py_array_return_type(&TypeMeta::Object, &context),
-            "list[DynWinRTValue | None]"
+            "list[WinRTObjectValue_2 | None]"
+        );
+        assert_eq!(
+            context.support_symbol_import(PythonSupportSymbol::WinRTObjectValue),
+            "WinRTObjectValue as WinRTObjectValue_2"
         );
     }
 
@@ -776,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             py_return_type_safe(Some(&TypeMeta::Object), &context),
-            "DynWinRTValue | None"
+            "WinRTObjectValue | None"
         );
         assert_eq!(
             py_array_return_type(&runtime_class, &context),

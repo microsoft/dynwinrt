@@ -11,12 +11,14 @@ use crate::codegen::winrt::shared::imports::{
 
 use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
 use super::signature::{
-    py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
-    py_wrap_async, py_wrap_async_with_converters,
+    py_convert_return, py_is_composable_outer, py_runtime_named_symbol, py_runtime_symbol,
+    py_type_guard, py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
+    py_wrap_composable_outer,
 };
 use super::type_helpers::{
-    method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
-    py_method_outputs, py_method_return_type, py_output_type, py_param_list,
+    method_pydoc, py_delegate_callable_type, py_factory_param_list, py_factory_return_type,
+    py_method_abi_output_count, py_method_outputs, py_method_return_type, py_output_type,
+    py_param_list,
 };
 
 fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
@@ -280,7 +282,7 @@ fn generate_factory_method_invoke_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, context);
+    let py_params = py_factory_param_list(method, &in_params, context);
 
     let return_py_type = py_factory_return_type(&context.class_name(class), method, context);
 
@@ -303,7 +305,18 @@ fn generate_factory_method_invoke_named(
     }
     out.push_str(&method_pydoc(method, &in_params));
 
-    let args_expr = py_build_method_args_expr(&in_params, context);
+    let args_expr = in_params
+        .iter()
+        .map(|param| {
+            let name = to_snake_case(&param.name);
+            if py_is_composable_outer(method, param) {
+                py_wrap_composable_outer(&name)
+            } else {
+                py_wrap_method_arg(&name, &param.typ, context)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
         &context.registration_symbol(iface),
@@ -1078,8 +1091,9 @@ mod tests {
         );
 
         assert!(code.contains(
-            "def write_async(self, buffer: 'DynWinRTValue | _DynWinRTObject') -> WinRTCoroutineWithProgress[int, int]:"
+            "def write_async(self, buffer: 'WinRTObjectInput | None') -> WinRTCoroutineWithProgress[int, int]:"
         ));
+        assert!(code.contains("_dynwinrt_to_winrt_object(buffer)"));
         assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsyncWithProgress("));
         assert!(code.contains("'WinRTAsyncWithProgress')"));
         assert!(code.contains("lambda value: value.to_u32()"));

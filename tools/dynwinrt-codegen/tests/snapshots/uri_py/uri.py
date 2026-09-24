@@ -5,7 +5,7 @@ from ._runtime import (
     TYPE_CHECKING, UUID, WinGUID, datetime, timedelta,
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
-    _DynWinRTObject, _property, _weakref_ref,
+    _DynWinRTObject, WinRTObjectValue, WinRTObjectInput, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
@@ -13,6 +13,7 @@ from ._runtime import (
     _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
+    _dynwinrt_from_winrt_object, _dynwinrt_to_winrt_object,
 )
 
 if TYPE_CHECKING:

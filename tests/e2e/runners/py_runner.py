@@ -368,12 +368,24 @@ async def run_check(
         elif kind == 'nullable_object_array_roundtrip':
             uri_cls = generated_type(pkg_name, 'Uri')
             uri = uri_cls.create_uri('https://example.com/null-array')
-            boxed = getattr(cls, member)(
+            # Raw native inputs still pass through; the Object result unboxes to
+            # an InspectableArray that keeps the null element and COM identity.
+            unboxed = getattr(cls, member)(
                 [dw.DynWinRTValue.null_value(), uri._obj]
             )
-            if boxed is None:
-                cr['error'] = 'CreateInspectableArray returned None'
+            if not isinstance(unboxed, dw.InspectableArray):
+                cr['error'] = (
+                    'CreateInspectableArray did not unbox to InspectableArray: '
+                    f'{unboxed!r}'
+                )
                 return cr
+            if len(unboxed) != 2 or unboxed[0] is not None:
+                cr['error'] = f'null inspectable array element was not preserved: {unboxed!r}'
+                return cr
+            if unboxed[1].identity_raw() != uri._obj.identity_raw():
+                cr['error'] = 'inspectable array element lost COM identity'
+                return cr
+            boxed = dw.to_winrt_object(unboxed)
             values = boxed.call_0(
                 38,
                 dw.DynWinRTType.array_type(dw.DynWinRTType.object()),
@@ -488,10 +500,11 @@ async def run_check(
 
             property_value_cls = generated_type(pkg_name, 'PropertyValue')
             factory = getattr(property_value_cls, to_snake_case(check['factory']))
-            boxed = factory(check['compatibility_value'])
+            # Object results unbox to tagged values that re-box as the same type.
+            boxed = dw.to_winrt_object(factory(check['compatibility_value']))
 
             reference_cls = generated_type(pkg_name, check['reference_class'])
-            reference = reference_cls.from_value(getattr(boxed, '_obj', boxed))
+            reference = reference_cls.from_value(boxed)
 
             setattr(obj, member, reference)
             actual = getattr(obj, member)
@@ -747,10 +760,11 @@ async def run_check(
 
         elif kind == 'value_set_mapping':
             property_value_cls = generated_type(pkg_name, 'PropertyValue')
+            # Object results unbox, so the factories return Python values; a raw
+            # native box and a plain value are both valid Object inputs.
             first = property_value_cls.create_string('first')
             second = property_value_cls.create_int32(2)
-            first_raw = getattr(first, '_obj', first)
-            second_raw = getattr(second, '_obj', second)
+            first_raw = dw.to_winrt_object(first)
 
             if len(obj) != 0 or obj.size != 0:
                 cr['error'] = 'new ValueSet was not empty'
@@ -764,14 +778,19 @@ async def run_check(
                 return cr
             first_lookup = obj.lookup('first')
             second_lookup = obj['second']
-            if first_lookup.is_null() or second_lookup.is_null():
+            if first_lookup is None or second_lookup is None:
                 cr['error'] = 'ValueSet lookup returned null'
                 return cr
             if (
-                first_lookup.identity_raw() != first_raw.identity_raw()
-                or second_lookup.identity_raw() != second_raw.identity_raw()
+                first_lookup != 'first'
+                or type(first_lookup) is not str
+                or second_lookup != 2
+                or type(second_lookup) is not int
             ):
-                cr['error'] = 'ValueSet payloads did not round-trip'
+                cr['error'] = (
+                    'ValueSet payloads did not round-trip: '
+                    f'{first_lookup!r}, {second_lookup!r}'
+                )
                 return cr
 
             view = obj.get_view()

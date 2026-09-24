@@ -4,7 +4,7 @@ import json
 from collections import Counter
 from collections.abc import Callable
 
-from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
+from dynwinrt import RoApartment, WinRTObjectValue, projected_lifetime_scope
 from generated.windows.devices.enumeration import (
     DeviceInformation,
     DeviceInformationUpdate,
@@ -72,13 +72,13 @@ async def enumerate_devices(timeout: int, show_names: bool) -> None:
 
         def on_enumeration_completed(
             _sender: DeviceWatcher | None,
-            _args: DynWinRTValue | None,
+            _args: WinRTObjectValue | None,
         ) -> None:
             loop.call_soon_threadsafe(enumeration_completed.set)
 
         def on_stopped(
             _sender: DeviceWatcher | None,
-            _args: DynWinRTValue | None,
+            _args: WinRTObjectValue | None,
         ) -> None:
             loop.call_soon_threadsafe(stopped.set)
 

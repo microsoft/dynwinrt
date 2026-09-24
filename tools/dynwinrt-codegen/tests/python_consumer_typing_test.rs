@@ -365,7 +365,7 @@ fn strict_consumers_separate_instances_factories_and_native_object_inputs() {
         &fixture,
         &["first", "second"],
         r#"from typing import assert_type
-from dynwinrt import DynWinRTValue, _DynWinRTProjector
+from dynwinrt import DynWinRTValue, UInt32, WinRTObjectValue, _DynWinRTProjector
 from first.contoso__i_item import IItem
 from first.contoso__resource import Resource, ResourceLike
 from first.contoso__derived_resource import DerivedResource
@@ -399,13 +399,18 @@ def valid(raw: DynWinRTValue, resource: Resource, derived: DerivedResource,
     assert_type(IItem.from_value(raw), IItem)
     assert_type(resource.as_interface(IItem), IItem)
     assert_type(resource.as_interface(OtherItem), OtherItem)
-    assert_type(content.content, DynWinRTValue | None)
+    assert_type(content.content, WinRTObjectValue | None)
     content.content = resource
     content.content = other
     content.content = item
     content.content = raw
+    content.content = "boxed"
+    content.content = None
+    content.content = 42
+    content.content = UInt32(42)
     content.set_object(derived)
     content.set_objects([resource, other, item, raw])
+    content.set_objects([42, "text", None, [1, 2]])
 
 def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
                 vector: IVector_Object, resources: IVector_Resource,
@@ -419,10 +424,13 @@ def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
     resources.insert(0, derived)
     resources.append(derived)
     mapping[resource] = derived
-    assert_type(vector[0], DynWinRTValue | None)
-    assert_type(vector[:], list[DynWinRTValue | None])
+    vector[0] = [resource]
+    vector[:] = [42, "text"]
+    mapping["key"] = 1.5
+    assert_type(vector[0], WinRTObjectValue | None)
+    assert_type(vector[:], list[WinRTObjectValue | None])
     assert_type(resources[0], Resource | None)
-    assert_type(mapping[resource], DynWinRTValue | None)
+    assert_type(mapping[resource], WinRTObjectValue | None)
     del mapping[resource]
 "#,
         &[],
@@ -458,19 +466,16 @@ def invalid(raw: DynWinRTValue, resource: Resource, unrelated: Unrelated,
     use_base(unrelated)
     resource.as_interface(Resource)
     content.content = object()
-    content.content = "not boxed"
-    content.content = None
     content.content = Resource
     content.set_object(WrongObject())
-    content.set_objects([42])
+    content.set_objects([object()])
 
 def invalid_collections(resource: Resource, unrelated: Unrelated,
                        vector: IVector_Object, resources: IVector_Resource,
                        mapping: IMap_Object_Object) -> None:
     vector[0] = object()
-    vector[0] = [resource]
     vector[:] = resource
-    vector[:] = [42]
+    vector[:] = [object()]
     resources[0] = unrelated
     resources.append(unrelated)
     mapping[WrongObject()] = resource
@@ -484,11 +489,8 @@ def invalid_collections(resource: Resource, unrelated: Unrelated,
             "[arg-type]",
             "[assignment]",
             "[assignment]",
-            "[assignment]",
-            "[assignment]",
             "[arg-type]",
             "[list-item]",
-            "[call-overload]",
             "[call-overload]",
             "[call-overload]",
             "[list-item]",
@@ -531,7 +533,7 @@ fn real_windows_consumers_accept_file_stream_content_and_composition_instances()
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
-from dynwinrt import DynWinRTValue
+from dynwinrt import WinRTObjectValue
 from sdk.windows.storage import FileIO, StorageFile
 from sdk.windows.media.playback import MediaPlayer
 from sdk.windows.media.speech_synthesis import SpeechSynthesisStream
@@ -553,8 +555,9 @@ def buffer_view(buffer: Buffer, data: bytes) -> IBuffer:
     return buffer
 
 def content(button: Button, text: TextBlock) -> None:
-    assert_type(button.content, DynWinRTValue | None)
+    assert_type(button.content, WinRTObjectValue | None)
     button.content = text
+    button.content = "Click me"
 
 def reference(animation: ExpressionAnimation, visual: ContainerVisual) -> None:
     animation.set_reference_parameter("target", visual)
@@ -687,7 +690,7 @@ print("subclass-factory-native-ok", flush=True)
 }
 
 #[test]
-fn collection_subscripts_accept_projected_inputs_and_keep_raw_outputs() {
+fn collection_subscripts_box_values_and_unbox_outputs() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
     );
@@ -711,7 +714,7 @@ fn collection_subscripts_accept_projected_inputs_and_keep_raw_outputs() {
         .unwrap();
     assert!(output.status.success(), "{}", diagnostics(&output));
     let imports = r#"from typing import assert_type
-from dynwinrt import DynWinRTValue
+from dynwinrt import DynWinRTValue, UInt32, WinRTObjectValue
 from sdk.windows.foundation import Uri
 from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
 from sdk.windows__foundation__collections__property_set import (
@@ -728,13 +731,21 @@ def valid(uri: Uri, raw: DynWinRTValue, properties: PropertySet,
           embedded: EmbeddedMap) -> None:
     properties["uri"] = uri
     properties["raw"] = raw
+    properties["string"] = "boxed"
+    properties["number"] = 42
+    properties["tagged"] = UInt32(42)
+    properties["list"] = [1, 2, 3]
+    properties["none"] = None
+    properties.update({{"a": 1, "b": "two"}})
     like["uri"] = uri
     mapping["uri"] = uri
+    mapping["number"] = 42
     embedded["uri"] = uri
-    assert_type(properties["uri"], DynWinRTValue | None)
-    assert_type(like["uri"], DynWinRTValue | None)
-    assert_type(mapping["uri"], DynWinRTValue | None)
-    assert_type(embedded["uri"], DynWinRTValue | None)
+    assert_type(properties["uri"], WinRTObjectValue | None)
+    assert_type(like["uri"], WinRTObjectValue | None)
+    assert_type(mapping["uri"], WinRTObjectValue | None)
+    assert_type(embedded["uri"], WinRTObjectValue | None)
+    assert_type(properties.get("uri"), WinRTObjectValue | None)
     del properties["uri"]
     del mapping["uri"]
 "#
@@ -751,16 +762,14 @@ class WrongObject:
 
 def invalid(uri: Uri, properties: PropertySet, mapping: IMap_String_Object) -> None:
     properties["plain"] = object()
-    properties["string"] = "unboxed"
     properties["wrong"] = WrongObject()
-    mapping["number"] = 42
+    properties["set"] = {{1, 2}}
     mapping["class"] = Uri
     mapping[42] = uri
     result: Uri = properties["uri"]
 "#
         ),
         &[
-            "[assignment]",
             "[assignment]",
             "[assignment]",
             "[assignment]",
@@ -772,7 +781,7 @@ def invalid(uri: Uri, properties: PropertySet, mapping: IMap_String_Object) -> N
     if has_implementation_runtime() {
         fs::write(
             fixture.0.join("collections_runtime.py"),
-            r#"from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
+            r#"from dynwinrt import DynWinRTValue, RoApartment, UInt32, projected_lifetime_scope
 from sdk.windows.foundation import Uri
 from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
 
@@ -788,6 +797,14 @@ with RoApartment(1), projected_lifetime_scope():
         value.release()
         collection["null"] = DynWinRTValue.null_value()
         assert collection["null"] is None
+        collection["none"] = None
+        assert collection["none"] is None
+        collection["number"] = 42
+        assert collection["number"] == 42 and type(collection["number"]) is int
+        collection["tagged"] = UInt32(7)
+        assert repr(collection["tagged"]) == "dynwinrt.UInt32(7)"
+        collection["tagged_again"] = collection["tagged"]
+        assert type(collection["tagged_again"]) is UInt32
         collection.insert("raw", uri._obj)
         value = collection["raw"]
         assert isinstance(value, DynWinRTValue)
@@ -821,8 +838,10 @@ fn native_object_inputs_keep_projection_factories_and_context_lifetimes() {
     let fixture = Fixture::new();
     generate_fixture(&fixture, "views");
     let script = r#"from typing import get_type_hints
-from dynwinrt import DynWinRTValue, RoApartment, project_as, projected_lifetime_scope
-from views._runtime import _DynWinRTObject
+from dynwinrt import (
+    DynWinRTValue, RoApartment, UInt32, WinRTObjectInput, WinRTObjectValue, project_as,
+    projected_lifetime_scope,
+)
 from views.contoso__i_item import IItem
 from views.contoso__i_content import IContent
 from views.contoso__resource import Resource
@@ -841,26 +860,27 @@ class ItemHandlers:
 
 class ContentHandlers:
     def __init__(self) -> None:
-        self.value: DynWinRTValue | None = None
-        self.items: list[DynWinRTValue | None] = []
+        self.value: WinRTObjectValue | None = None
+        self.items: list[WinRTObjectValue | None] = []
 
-    def get_content(self) -> DynWinRTValue | None:
+    def get_content(self) -> WinRTObjectInput | None:
         return self.value
 
-    def set_content(self, value: DynWinRTValue | None) -> None:
+    def set_content(self, value: WinRTObjectValue | None) -> None:
         self.value = value
 
-    def set_object(self, value: DynWinRTValue | None) -> None:
+    def set_object(self, value: WinRTObjectValue | None) -> None:
         self.value = value
 
-    def set_objects(self, value: list[DynWinRTValue | None]) -> None:
+    def set_objects(self, value: list[WinRTObjectValue | None]) -> None:
         self.items = value
 
 class WrongObject:
     _obj = 42
 
-assert get_type_hints(Content.set_object)["value"] == DynWinRTValue | _DynWinRTObject
-assert get_type_hints(Content.content.fset)["value"] == DynWinRTValue | _DynWinRTObject
+assert get_type_hints(Content.set_object)["value"] == WinRTObjectInput | None
+assert get_type_hints(Content.content.fset)["value"] == WinRTObjectInput | None
+assert get_type_hints(Content.content.fget)["return"] == WinRTObjectValue | None
 assert "value" in get_type_hints(Content.set_objects)
 item_handlers = ItemHandlers()
 content_handlers = ContentHandlers()
@@ -886,6 +906,19 @@ with RoApartment(1), projected_lifetime_scope():
                 assert all(item is not None for item in content_handlers.items)
                 content.content = DynWinRTValue.null_value()
                 assert content.content is None
+                # Values box on the way in, unbox for the Python handler, and
+                # keep their exact WinRT type on the way back out.
+                for plain in ("boxed", 42, 2.5, True, UInt32(7), [1, 2], None):
+                    content.content = plain
+                    assert content_handlers.value == plain
+                    assert type(content_handlers.value) is not DynWinRTValue
+                    result = content.content
+                    assert result == plain and type(result) is type(plain) or (
+                        isinstance(plain, list) and result == plain
+                    ), (plain, result)
+                content.set_objects(["text", 42, None, resource])
+                assert content_handlers.items[:3] == ["text", 42, None]
+                assert isinstance(content_handlers.items[3], DynWinRTValue)
             assert item_handlers.closed == 1
             try:
                 with resource as entered:
@@ -896,7 +929,7 @@ with RoApartment(1), projected_lifetime_scope():
             else:
                 raise AssertionError("__exit__ suppressed an exception")
             assert item_handlers.closed == 2
-            for invalid in (object(), "not boxed", None, 42, WrongObject()):
+            for invalid in (object(), WrongObject(), {"not": "boxable"}):
                 try:
                     content.set_object(invalid)
                 except TypeError:

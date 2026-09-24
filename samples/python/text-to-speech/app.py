@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 
-from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
+from dynwinrt import RoApartment, WinRTObjectValue, projected_lifetime_scope
 from generated.windows.media.playback import (
     MediaPlayer,
     MediaPlayerAudioCategory,
@@ -32,7 +32,7 @@ async def speak(text: str, smoke: bool) -> None:
 
                 def on_media_ended(
                     _sender: MediaPlayer | None,
-                    _args: DynWinRTValue | None,
+                    _args: WinRTObjectValue | None,
                 ) -> None:
                     loop.call_soon_threadsafe(ended.set)
 

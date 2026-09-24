@@ -7,7 +7,10 @@ from collections.abc import Callable
 from typing import Never, TypedDict
 from uuid import UUID
 
-from dynwinrt import DynWinRTImplementationHandle, DynWinRTValue, release_projected
+from dynwinrt import (
+    DynWinRTImplementationHandle, DynWinRTValue, WinRTObjectInput, WinRTObjectValue,
+    release_projected,
+)
 from python_bindings.windows.application_model.background import (
     IBackgroundTask, IBackgroundTaskInstance,
 )
@@ -169,7 +172,7 @@ def check_event(sender: IMemoryBufferReference) -> None:
     )
     view: IMemoryBufferReference = IMemoryBufferReference.from_implementation(owner)
 
-    def callback(source: IMemoryBufferReference | None, args: DynWinRTValue | None) -> None:
+    def callback(source: IMemoryBufferReference | None, args: WinRTObjectValue | None) -> None:
         if source is not None:
             capacity: int = source.capacity
             assert capacity >= 0
@@ -247,8 +250,8 @@ class PropertyHandlers:
     def get_string_array(self) -> list[str]:
         return ["owned string"]
 
-    def get_inspectable_array(self) -> list[DynWinRTValue | None]:
-        return [None]
+    def get_inspectable_array(self) -> list[WinRTObjectInput | None]:
+        return [None, 42, "boxed"]
 
     def get_point_array(self) -> list[Point]:
         return [Point(x=1.25, y=-3.5)]
@@ -278,13 +281,13 @@ class IndexOfResult(TypedDict):
 
 
 class VectorHandlers:
-    def get_at(self, index: int) -> DynWinRTValue | None:
+    def get_at(self, index: int) -> WinRTObjectInput | None:
         return None
 
     def get_size(self) -> int:
         return 1
 
-    def index_of(self, value: DynWinRTValue | None) -> IndexOfResult:
+    def index_of(self, value: WinRTObjectValue | None) -> IndexOfResult:
         return {"result": value is None, "index": 0}
 
     def first(self) -> IBindableIterator | None:
@@ -295,7 +298,7 @@ class TupleResultHandlers:
     get_at = unused
     get_size = unused
 
-    def index_of(self, value: DynWinRTValue | None) -> tuple[int, bool]:
+    def index_of(self, value: WinRTObjectValue | None) -> tuple[int, bool]:
         return (0, True)
 
 

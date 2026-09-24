@@ -11,8 +11,9 @@ use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_sn
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
-    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_delegate_callable_type, py_factory_param_list,
+    py_factory_return_type, py_method_return_type, py_output_type, py_param_list,
+    py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -369,7 +370,11 @@ pub(super) fn emit_static_method_stub_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, context);
+    let py_params = if is_factory {
+        py_factory_param_list(method, &in_params, context)
+    } else {
+        py_param_list(&in_params, context)
+    };
 
     let py_return = if is_factory {
         py_factory_return_type(class_name, method, context)

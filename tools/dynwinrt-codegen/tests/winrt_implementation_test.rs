@@ -902,6 +902,9 @@ for name, value in dict(
     _dynwinrt_cache_projected=lambda value: None,
     _dynwinrt_symbol=lambda module, name: namespace[name],
     _dynwinrt_array=lambda values, wrap, element_type, bytes_allowed: Array([wrap(value) for value in values]).to_value(),
+    # Projection doubles for the Object conversion hooks (native values only).
+    _dynwinrt_to_winrt_object=lambda value: Value.null_value() if value is None else getattr(value, '_obj', value),
+    _dynwinrt_from_winrt_object=lambda value: None if value.is_null() else value,
 ).items(): setattr(runtime, name, value)
 binding = types.ModuleType('dynwinrt')
 for name, value in dict(DynWinRTInterfacePlan=Plan, DynWinRTImplementationMethod=Method,

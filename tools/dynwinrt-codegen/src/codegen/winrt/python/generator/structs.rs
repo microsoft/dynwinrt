@@ -126,6 +126,13 @@ pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &Typ
         "    __slots__ = {}\n",
         py_string_tuple_literal(&slot_names)
     ));
+    if let Some(property_type) = boxable_geometry(namespace, metadata_name, fields) {
+        // Lets the Object conversion box this struct as PropertyType.Point/Size/Rect
+        // and makes it compare equal to the dynwinrt value of the same type.
+        out.push_str(&format!(
+            "    _dynwinrt_property_type = '{property_type}'\n"
+        ));
+    }
     out.push('\n');
     if fields.is_empty() {
         out.push_str("    def __init__(self):\n");
@@ -250,6 +257,27 @@ fn py_struct_slot_name(field: &FieldMeta) -> String {
     } else {
         snake
     }
+}
+
+/// The `PropertyType` a generated `Windows.Foundation` geometry struct boxes as
+/// in `Object` positions (its field names match dynwinrt.Point/Size/Rect).
+fn boxable_geometry(namespace: &str, name: &str, fields: &[FieldMeta]) -> Option<&'static str> {
+    let expected: &[&str] = match (namespace, name) {
+        ("Windows.Foundation", "Point") => &["X", "Y"],
+        ("Windows.Foundation", "Size") => &["Width", "Height"],
+        ("Windows.Foundation", "Rect") => &["X", "Y", "Width", "Height"],
+        _ => return None,
+    };
+    let matches = fields.len() == expected.len()
+        && fields
+            .iter()
+            .zip(expected)
+            .all(|(field, expected)| field.name == *expected && field.typ == TypeMeta::F32);
+    matches.then_some(match name {
+        "Point" => "Point",
+        "Size" => "Size",
+        _ => "Rect",
+    })
 }
 
 fn py_struct_field_names(fields: &[FieldMeta]) -> Vec<String> {
@@ -391,5 +419,55 @@ fn py_struct_constructor_field_type(context: &PythonProjectionContext, typ: &Typ
             py_optional_type(py_struct_field_type(context, typ))
         }
         _ => py_struct_field_type(context, typ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geometry(name: &str, fields: &[&str]) -> TypeMeta {
+        TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: name.into(),
+            fields: fields
+                .iter()
+                .map(|field| FieldMeta {
+                    name: (*field).into(),
+                    typ: TypeMeta::F32,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn foundation_geometry_structs_carry_the_object_boxing_marker() {
+        for (typ, marker) in [
+            (geometry("Point", &["X", "Y"]), "Point"),
+            (geometry("Size", &["Width", "Height"]), "Size"),
+            (geometry("Rect", &["X", "Y", "Width", "Height"]), "Rect"),
+        ] {
+            let code = generate_struct_helpers(&PythonProjectionContext::default(), &typ);
+            assert!(
+                code.contains(&format!("    _dynwinrt_property_type = '{marker}'\n")),
+                "{code}"
+            );
+        }
+        let vector = TypeMeta::Struct {
+            namespace: "Windows.Foundation.Numerics".into(),
+            name: "Vector2".into(),
+            fields: vec![
+                FieldMeta {
+                    name: "X".into(),
+                    typ: TypeMeta::F32,
+                },
+                FieldMeta {
+                    name: "Y".into(),
+                    typ: TypeMeta::F32,
+                },
+            ],
+        };
+        let code = generate_struct_helpers(&PythonProjectionContext::default(), &vector);
+        assert!(!code.contains("_dynwinrt_property_type"), "{code}");
     }
 }

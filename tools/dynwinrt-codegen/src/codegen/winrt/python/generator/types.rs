@@ -70,6 +70,22 @@ pub fn generate_enum(context: &PythonProjectionContext, en: &TypeMeta) -> Option
             ));
         }
     }
+    // Lets the Object conversion box members as IReference<Enum>. Assigned
+    // after the class body: a body attribute would become an enum member.
+    if let TypeMeta::Enum {
+        namespace,
+        name: winrt_name,
+        ..
+    } = en
+    {
+        let backing = match en.underlying_type() {
+            TypeMeta::U32 => "UInt32",
+            _ => "Int32",
+        };
+        out.push_str(&format!(
+            "\n\n{name}._dynwinrt_enum_type = ('{namespace}.{winrt_name}', '{backing}')\n"
+        ));
+    }
     Some(out)
 }
 
@@ -702,6 +718,24 @@ mod tests {
         let code = generate_enum(&PythonProjectionContext::default(), &value).unwrap();
         assert!(code.contains("from enum import IntFlag"));
         assert!(code.contains("class Options(IntFlag):"));
+        assert!(code.ends_with("\n\n\nOptions._dynwinrt_enum_type = ('Test.Options', 'UInt32')\n"));
+    }
+
+    #[test]
+    fn enums_carry_the_marker_for_object_boxing() {
+        let value = TypeMeta::Enum {
+            namespace: "Test".into(),
+            name: "Mode".into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            is_flags: false,
+            doc: None,
+            deprecated: None,
+        };
+
+        let code = generate_enum(&PythonProjectionContext::default(), &value).unwrap();
+        assert!(code.contains("class Mode(IntEnum):\n    pass\n"));
+        assert!(code.contains("\nMode._dynwinrt_enum_type = ('Test.Mode', 'Int32')\n"));
     }
 
     #[test]

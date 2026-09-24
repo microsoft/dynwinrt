@@ -3322,6 +3322,7 @@ fn object_input_helper_consumers(packaged: bool) {
         ("ObjectLeaf", false),
         ("_DynWinRTObject_2", false),
         ("_DynWinRTObject", true),
+        ("WinRTObjectInput", false),
     ] {
         for owner in ["Widget", "IWidget"] {
             let fixture = Fixture::new();
@@ -3464,9 +3465,16 @@ Holder(17)
             } else {
                 format!("_DynWinRTObject as {alias}")
             };
+            // Object value positions use the public input alias, which also
+            // yields to a metadata type of the same name.
+            let input_alias = if leaf == "WinRTObjectInput" {
+                "WinRTObjectInput_2"
+            } else {
+                "WinRTObjectInput"
+            };
             for text in [&source, &stub] {
                 assert!(text.contains(&format!("    {import},")), "{text}");
-                assert!(text.contains(&format!("DynWinRTValue | {alias}")), "{text}");
+                assert!(text.contains(&format!("'{input_alias} | None'")), "{text}");
                 assert!(text.contains(&format!("value: '{leaf}'")), "{text}");
             }
             let public_check = if packaged {
@@ -3485,15 +3493,14 @@ Holder(17)
                     r#"{imports}
 import typing
 import dynwinrt as dw
-from pyviews._runtime import _DynWinRTObject as ObjectInput
 {public_check}
 {peer_runtime}
 assert Leaf.__name__ == '{leaf}'
 assert typing.get_type_hints(Owner.echo_leaf)['value'] is Leaf
 assert typing.get_type_hints(Owner.echo_leaf)['return'] is Leaf
-assert typing.get_type_hints(Owner.set_object)['value'] == dw.DynWinRTValue | ObjectInput
+assert typing.get_type_hints(Owner.set_object)['value'] == dw.WinRTObjectInput | None
 array_hint = typing.get_type_hints(Owner.set_objects)['value']
-assert typing.get_args(typing.get_args(array_hint)[1])[0] == dw.DynWinRTValue | ObjectInput
+assert typing.get_args(typing.get_args(array_hint)[1])[0] == dw.WinRTObjectInput | None
 with dw.RoApartment(1):
     for Container, Item, pack, unpack in (
         (Holder, Leaf, pack_holder, unpack_holder),

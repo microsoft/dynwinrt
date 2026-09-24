@@ -125,6 +125,7 @@ output, runtime behavior, and the `@microsoft/dynwinrt` root API.
 - GUID: `WinGUID.parse('...')`
 - Method call: `method_handle.invoke(obj, [args])` → returns single `DynWinRTValue`
 - `IReference<T>` values project as native values plus `None`; generated `IReference_*` wrappers remain accepted for input compatibility
+- `Object` (IInspectable) positions convert only through `to_winrt_object` / `from_winrt_object` (`bindings/py/src/object_value.rs`, experimental): boxed `IPropertyValue` payloads become Python values, tagged (`dynwinrt.UInt32`, …) where the plain write rule would change their type; other objects stay the same `DynWinRTValue`. Codegen emits them only via `py_to_winrt_object` / `py_from_winrt_object` in `python/signature.rs`
 
 ### Common Issues
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var

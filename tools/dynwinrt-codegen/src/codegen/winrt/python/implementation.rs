@@ -15,7 +15,10 @@ use crate::types::TypeMeta;
 
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
-use super::signature::{py_convert_return, py_dynwinrt_type, py_runtime_type_symbol};
+use super::signature::{
+    py_convert_return, py_dynwinrt_type, py_runtime_type_symbol, py_to_winrt_object,
+};
+use super::type_helpers::{ObjectRole, py_object_annotation, py_optional_type};
 
 pub(super) const IMPORTS: &str = "\
 from typing import Protocol, TypedDict
@@ -333,9 +336,17 @@ impl Projector<'_> {
                     {
                         self.context.reference_name_for_type(&typ.metadata)
                     }
+                    TypeMeta::Object => py_object_annotation(
+                        self.context,
+                        if writing {
+                            ObjectRole::Input
+                        } else {
+                            ObjectRole::Output
+                        },
+                    ),
                     _ => "DynWinRTValue".into(),
                 };
-                format!("{name} | None")
+                py_optional_type(name)
             }
             ImplementationAbi::Scalar | ImplementationAbi::Guid | ImplementationAbi::HString => {
                 match typ.metadata {
@@ -466,6 +477,12 @@ impl Projector<'_> {
             );
         }
         match &typ.abi {
+            ImplementationAbi::Reference if typ.metadata == TypeMeta::Object => format!(
+                "_implementation_reference({}, {}, {})",
+                py_to_winrt_object(value),
+                self.iid(typ),
+                quote(label)
+            ),
             ImplementationAbi::Reference => format!(
                 "_implementation_reference({value}, {}, {})",
                 self.iid(typ),
