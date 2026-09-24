@@ -3,7 +3,12 @@
 
 """Actionable errors for common runtime misuse."""
 
+import errno
+import json
 import re
+import subprocess
+import sys
+import textwrap
 import threading
 
 import pytest
@@ -34,6 +39,12 @@ IID_IURI = WinGUID.parse("9E365E57-48B2-4160-956F-C7385120BBFC")
 IID_ISTRINGABLE = WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
 IID_TEST_DELEGATE = WinGUID.parse("5A0F1C3E-7B24-4D69-8E1F-2C3B4A5D6E7F")
 RPC_E_CHANGED_MODE = -2147417850
+CO_E_NOTINITIALIZED = -2147221008
+NOT_INITIALIZED_HINT = (
+    "WinRT is not initialized on this thread; use `with dynwinrt.RoApartment():` "
+    "(or call `dynwinrt.ro_initialize(dynwinrt.RO_INIT_MULTITHREADED)`) before "
+    "calling WinRT APIs."
+)
 RELEASED_REASON = (
     r"has been released: its projected_lifetime_scope\(\) exited or "
     r"release_projected\(\) was called\. Use the object inside its scope, or "
@@ -264,3 +275,60 @@ def test_apartment_constants_name_the_ro_init_models():
         "RoApartment(apartment_type=0, active=true)",
         RPC_E_CHANGED_MODE,
     ]
+
+
+def test_uninitialized_thread_error_explains_apartment_setup():
+    # Test modules initialize the process MTA at import, which makes every new
+    # thread an implicit MTA member. Observe a genuinely uninitialized thread
+    # in a fresh interpreter instead.
+    script = r'''
+        import json
+        import threading
+        from dynwinrt import DynWinRTValue
+
+        caught = []
+
+        def call_without_apartment():
+            try:
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+            except BaseException as error:
+                caught.append(error)
+
+        thread = threading.Thread(target=call_without_apartment)
+        thread.start()
+        thread.join()
+        error = caught[0]
+        print(json.dumps({
+            "type": type(error).__name__,
+            "winerror": getattr(error, "winerror", None),
+            "errno": getattr(error, "errno", None),
+            "strerror": getattr(error, "strerror", None),
+            "message": str(error),
+        }))
+    '''
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+
+    assert report["type"] == "OSError"
+    assert report["winerror"] == CO_E_NOTINITIALIZED
+    assert report["errno"] == errno.EINVAL
+    strerror = report["strerror"]
+    assert report["message"] == f"[WinError {CO_E_NOTINITIALIZED}] {strerror}"
+    assert strerror.endswith(f" {NOT_INITIALIZED_HINT}"), strerror
+    assert strerror[: -len(NOT_INITIALIZED_HINT)].strip(), "Windows text must remain"
+
+
+def test_other_hresults_do_not_mention_apartment_setup():
+    with RoApartment():
+        with pytest.raises(OSError) as exc_info:
+            DynWinRTValue.activation_factory("Contoso.DynWinRT.MissingClass")
+
+    assert exc_info.value.winerror != CO_E_NOTINITIALIZED
+    assert "RoApartment" not in str(exc_info.value)

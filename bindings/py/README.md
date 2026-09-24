@@ -253,6 +253,10 @@ model are supported. Requesting a conflicting model raises `OSError` with
 each successful call, including `S_FALSE`, must be paired with one
 `ro_uninitialize()` call on the same thread.
 
+WinRT is never initialized implicitly. A call on a thread without an apartment
+raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
+explains how to open one.
+
 Generated runtime classes that implement `IClosable` support `with` and an
 idempotent `close()` method. Prefer deterministic cleanup instead of relying on
 Python garbage collection.

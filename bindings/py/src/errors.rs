@@ -4,9 +4,25 @@
 use pyo3::exceptions::asyncio::CancelledError as PyCancelledError;
 use pyo3::exceptions::{PyIndexError, PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
+use windows::Win32::Foundation::CO_E_NOTINITIALIZED;
+use windows::core::HRESULT;
 
 #[cfg(test)]
 pub(crate) static UNRAISABLE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Guidance appended to the Windows description of specific HRESULTs.
+const HRESULT_HINTS: &[(HRESULT, &str)] = &[(
+    CO_E_NOTINITIALIZED,
+    "WinRT is not initialized on this thread; use `with dynwinrt.RoApartment():` \
+     (or call `dynwinrt.ro_initialize(dynwinrt.RO_INIT_MULTITHREADED)`) before calling \
+     WinRT APIs.",
+)];
+
+fn hresult_hint(code: HRESULT) -> Option<&'static str> {
+    HRESULT_HINTS
+        .iter()
+        .find_map(|&(hinted, hint)| (hinted == code).then_some(hint))
+}
 
 const RELEASED_REASON: &str = "its projected_lifetime_scope() exited or release_projected() \
      was called. Use the object inside its scope, or don't release it.";
@@ -40,9 +56,17 @@ pub(crate) fn map_windows_error_with_context(error: windows::core::Error, contex
 }
 
 fn windows_error(error: windows::core::Error, context: Option<&str>) -> PyErr {
-    let message = match context {
+    let description = match context {
         Some(context) => format!("{context}: {}", error.message()),
         None => error.message(),
+    };
+    // A hint explains how to fix the failure; it never changes the error.
+    let message = match hresult_hint(error.code()) {
+        Some(hint) => match description.trim_end() {
+            "" => hint.to_owned(),
+            text => format!("{text} {hint}"),
+        },
+        None => description,
     };
     // Match PyWinRT's OSError shape and preserve the signed HRESULT in winerror.
     PyOSError::new_err((0, message, Option::<String>::None, error.code().0))
@@ -68,5 +92,54 @@ pub(crate) fn map_dynwinrt_error_with_context(error: dynwinrt::Error, context: &
             PyCancelledError::new_err("WinRT async operation was canceled")
         }
         other => PyRuntimeError::new_err(format!("{context}: {}", other.message())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::E_POINTER;
+
+    fn os_error_fields(py: Python<'_>, error: PyErr) -> (i32, i32, String) {
+        let value = error.value(py);
+        assert!(value.is_instance_of::<PyOSError>());
+        (
+            value.getattr("winerror").unwrap().extract().unwrap(),
+            value.getattr("errno").unwrap().extract().unwrap(),
+            value.getattr("strerror").unwrap().extract().unwrap(),
+        )
+    }
+
+    #[test]
+    fn hinted_hresults_keep_their_os_error_and_append_guidance() {
+        Python::initialize();
+        Python::attach(|py| {
+            let hint = hresult_hint(CO_E_NOTINITIALIZED).expect("CO_E_NOTINITIALIZED hint");
+            let not_initialized = windows::core::Error::from_hresult(CO_E_NOTINITIALIZED);
+            let (winerror, errno, message) =
+                os_error_fields(py, map_windows_error(not_initialized.clone()));
+            assert_eq!(winerror, CO_E_NOTINITIALIZED.0);
+            assert_eq!(errno, 22);
+            assert!(message.ends_with(hint), "{message}");
+            assert_ne!(message, hint, "the Windows description must remain");
+
+            let (_, _, message) = os_error_fields(
+                py,
+                map_dynwinrt_error_with_context(
+                    dynwinrt::Error::WindowsError(not_initialized),
+                    "activation failed",
+                ),
+            );
+            assert!(message.starts_with("activation failed: "), "{message}");
+            assert!(message.ends_with(hint), "{message}");
+
+            assert_eq!(hresult_hint(E_POINTER), None);
+            let (winerror, _, message) = os_error_fields(
+                py,
+                map_dynwinrt_error(dynwinrt::Error::WindowsError(E_POINTER.into())),
+            );
+            assert_eq!(winerror, E_POINTER.0);
+            assert!(!message.contains("RoApartment"), "{message}");
+        });
     }
 }
