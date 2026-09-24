@@ -660,7 +660,7 @@ pub fn generate_class_stub<'a>(
     let projectable = super::has_projectable_default_interface(class);
     let native_projectable = super::has_native_projector(class);
     let supports_interface_projection = projectable || !class.required_interfaces.is_empty();
-    let plan = ClassMemberPlan::new(class);
+    let plan = ClassMemberPlan::new(class, context);
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -1487,18 +1487,24 @@ fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) 
         return out;
     }
     overloads.sort_by(|left, right| super::member_plan::cmp_python_dispatch_params(left, right));
-
     let count = overloads.len();
+    let mut signatures = HashSet::new();
     for params in &overloads {
         if count > 1 {
             out.push_str("    @overload\n");
         }
         let param_str = super::type_helpers::py_param_list(params, context);
+        let duplicate = !signatures.insert(param_str.clone());
+        let ignore = if duplicate {
+            "  # type: ignore[overload-cannot-match]"
+        } else {
+            ""
+        };
         if param_str.is_empty() {
-            out.push_str("    def __init__(self) -> None: ...\n");
+            out.push_str(&format!("    def __init__(self) -> None: ...{ignore}\n"));
         } else {
             out.push_str(&format!(
-                "    def __init__(self, {param_str}) -> None: ...\n"
+                "    def __init__(self, {param_str}) -> None: ...{ignore}\n"
             ));
         }
     }
@@ -1562,6 +1568,50 @@ fn has_constructor_stub_overload(class: &ClassMeta) -> bool {
         })
 }
 
+/// Preserve one declaration per WinRT overload. When two overloads collapse to
+/// the same Python signature (for example Int64 and UInt64 both become `int`),
+/// mark the later declaration so strict type checkers accept the metadata-exact
+/// overload count without reporting it as unreachable.
+fn typed_signatures<'m>(
+    methods: impl IntoIterator<Item = &'m MethodMeta>,
+    return_type: impl Fn(&MethodMeta) -> String,
+    context: &PythonProjectionContext,
+) -> Vec<(&'m MethodMeta, bool)> {
+    let mut signatures = HashSet::new();
+    methods
+        .into_iter()
+        .map(|method| {
+            let signature = (
+                super::type_helpers::py_param_list(
+                    &crate::codegen::winrt::shared::imports::get_in_params(method),
+                    context,
+                ),
+                return_type(method),
+            );
+            (method, !signatures.insert(signature))
+        })
+        .collect()
+}
+
+fn ignore_unreachable_overload(mut stub: String) -> String {
+    let definition = stub.find("def ").expect("method stub has a definition");
+    let line_end = definition
+        + stub[definition..]
+            .find('\n')
+            .unwrap_or(stub.len() - definition);
+    let line = &stub[definition..line_end];
+    if let Some(ignore) = line.find("# type: ignore[") {
+        let close = line[ignore..]
+            .find(']')
+            .map(|offset| definition + ignore + offset)
+            .expect("type ignore has a closing bracket");
+        stub.insert_str(close, ", overload-cannot-match");
+    } else {
+        stub.insert_str(line_end, "  # type: ignore[overload-cannot-match]");
+    }
+    stub
+}
+
 fn emit_instance_stub_group(
     group: &MethodGroup<'_>,
     context: &PythonProjectionContext,
@@ -1569,13 +1619,17 @@ fn emit_instance_stub_group(
     overrides_mutable_sequence: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
-    let overloaded = group.candidates.len() > 1;
-    group
-        .candidates
-        .iter()
-        .map(|candidate| {
-            let stub = emit_method_stub_named(
-                candidate.method,
+    let methods = typed_signatures(
+        group.candidates.iter().map(|candidate| candidate.method),
+        |method| super::type_helpers::py_method_return_type(method, context),
+        context,
+    );
+    let overloaded = methods.len() > 1;
+    methods
+        .into_iter()
+        .map(|(method, duplicate)| {
+            let mut stub = emit_method_stub_named(
+                method,
                 context,
                 indent_spaces,
                 Some(&group.name),
@@ -1583,6 +1637,9 @@ fn emit_instance_stub_group(
                 true,
                 overrides_mutable_sequence,
             );
+            if duplicate {
+                stub = ignore_unreachable_overload(stub);
+            }
             if overloaded {
                 format!("{indent}@overload\n{stub}")
             } else {
@@ -1601,11 +1658,16 @@ fn emit_instance_compatibility_alias_stubs(
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
     for alias in plan.aliases() {
-        for method in &alias.signatures {
-            if alias.signatures.len() > 1 {
+        let methods = typed_signatures(
+            alias.signatures.iter().copied(),
+            |method| super::type_helpers::py_method_return_type(method, context),
+            context,
+        );
+        for (method, duplicate) in &methods {
+            if methods.len() > 1 {
                 out.push_str(&format!("{indent}@overload\n"));
             }
-            out.push_str(&emit_method_stub_named(
+            let mut stub = emit_method_stub_named(
                 method,
                 context,
                 indent_spaces,
@@ -1613,7 +1675,11 @@ fn emit_instance_compatibility_alias_stubs(
                 false,
                 true,
                 overrides_mutable_sequence,
-            ));
+            );
+            if *duplicate {
+                stub = ignore_unreachable_overload(stub);
+            }
+            out.push_str(&stub);
         }
     }
     out
@@ -1644,20 +1710,42 @@ fn emit_static_compatibility_alias_stubs(
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
     for alias in plan.aliases() {
-        for method in &alias.signatures {
-            if alias.signatures.len() > 1 {
+        let methods = typed_signatures(
+            alias.signatures.iter().copied(),
+            |method| static_return_type(class_name, class, method, context),
+            context,
+        );
+        for (method, duplicate) in &methods {
+            if methods.len() > 1 {
                 out.push_str(&format!("{indent}@overload\n"));
             }
-            out.push_str(&emit_static_method_stub_named(
+            let mut stub = emit_static_method_stub_named(
                 class_name,
                 method,
                 context,
                 is_factory_method(class, method),
                 Some(&alias.name),
-            ));
+            );
+            if *duplicate {
+                stub = ignore_unreachable_overload(stub);
+            }
+            out.push_str(&stub);
         }
     }
     out
+}
+
+fn static_return_type(
+    class_name: &str,
+    class: &ClassMeta,
+    method: &MethodMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    if is_factory_method(class, method) {
+        super::type_helpers::py_factory_return_type(class_name, method, context)
+    } else {
+        super::type_helpers::py_method_return_type(method, context)
+    }
 }
 
 fn emit_static_stub_group(
@@ -1666,18 +1754,25 @@ fn emit_static_stub_group(
     group: &MethodGroup<'_>,
     context: &PythonProjectionContext,
 ) -> String {
-    let overloaded = group.candidates.len() > 1;
-    group
-        .candidates
-        .iter()
-        .map(|candidate| {
-            let stub = emit_static_method_stub_named(
+    let methods = typed_signatures(
+        group.candidates.iter().map(|candidate| candidate.method),
+        |method| static_return_type(class_name, class, method, context),
+        context,
+    );
+    let overloaded = methods.len() > 1;
+    methods
+        .into_iter()
+        .map(|(method, duplicate)| {
+            let mut stub = emit_static_method_stub_named(
                 class_name,
-                candidate.method,
+                method,
                 context,
-                is_factory_interface(class, candidate.interface),
+                is_factory_method(class, method),
                 Some(&group.name),
             );
+            if duplicate {
+                stub = ignore_unreachable_overload(stub);
+            }
             if overloaded {
                 format!("    @overload\n{stub}")
             } else {

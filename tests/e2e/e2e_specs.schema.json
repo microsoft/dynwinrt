@@ -100,6 +100,11 @@
              "data_stream_constructor_roundtrip",
              "calendar_comprehensive",
              "storage_query_temp_folder",
+             "storage_file_copy_overloads",
+             "random_access_stream_copy_overloads",
+             "decimal_formatter_overloads",
+             "xml_document_load_overloads",
+             "calendar_documented_overloads",
              "value_set_event_lifecycle",
              "nested_struct_runtime",
              "generated_helper_matrix"

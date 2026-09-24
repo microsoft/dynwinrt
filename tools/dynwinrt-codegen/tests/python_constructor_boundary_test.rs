@@ -400,7 +400,16 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
     );
 
     let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    assert_eq!(
+        pyi.matches("def __init__(self, value: int) -> None: ...")
+            .count(),
+        2,
+        "both ABI constructors stay declared even though I8 and I32 project as `int`:\n{pyi}"
+    );
     assert_eq!(pyi.matches("    @overload\n").count(), 4, "{pyi}");
+    assert!(pyi.contains(
+        "def __init__(self, value: int) -> None: ...  # type: ignore[overload-cannot-match]"
+    ));
 }
 
 #[test]

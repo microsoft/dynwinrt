@@ -103,6 +103,14 @@ unsubscribe function. `once_*` subscribes for at most one callback invocation.
 
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
+That name is the documented (CLR) method name, so `StorageFile.CopyAsync`
+overloads are all `copy_async(...)`. The unique `[Overload]` ABI names emitted by
+earlier releases, such as `copy_overload` or `launch_file_with_options_async`,
+remain available as compatibility aliases that keep calling the same overload.
+A method keeps its earlier name when the documented name would clash with
+another member, such as a property or the generated `close()`. Interface
+parameters of overloads accept any object that implements the interface, such
+as a runtime class instance or a `DynWinRTValue`.
 Activatable runtime classes use normal constructors, for example
 `Uri("https://example.com")`. Constructor overloads come only from WinMD
 `ActivatableAttribute` and public `ComposableAttribute` declarations. Classes

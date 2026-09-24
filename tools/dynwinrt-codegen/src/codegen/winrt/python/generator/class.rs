@@ -62,7 +62,7 @@ pub fn generate_class<'a>(
     };
     let projectable = super::super::has_projectable_default_interface(class);
     let native_projectable = super::super::has_native_projector(class);
-    let plan = ClassMemberPlan::new(class);
+    let plan = ClassMemberPlan::new(class, context);
     let mut out = String::new();
 
     // Header
@@ -953,6 +953,9 @@ struct PyCtorCandidate<'a> {
     public_params: Vec<&'a ParamMeta>,
     /// Full call expression, e.g. `type(self).create_instance(_bound[0], None)`.
     call_expr: String,
+    /// Tie-breaker between constructors whose parameters sort equally: the call
+    /// under pre-CLR-name method names, so renaming never reorders dispatch.
+    order_key: String,
     /// Aggregated call for Python subclasses. `None` means subclass activation
     /// is not semantically available for this constructor shape.
     composed_call_expr: Option<String>,
@@ -992,11 +995,13 @@ fn build_ctor_candidates<'a>(
         match constructor.kind {
             ConstructorKind::DefaultActivation => {
                 let ctor_name = default_constructor_name(has_create_factory);
+                let call_expr = format!("type(self).{}()", ctor_name);
                 push_unique(
                     &mut candidates,
                     PyCtorCandidate {
                         public_params: Vec::new(),
-                        call_expr: format!("type(self).{}()", ctor_name),
+                        order_key: call_expr.clone(),
+                        call_expr,
                         composed_call_expr: None,
                     },
                 );
@@ -1015,16 +1020,15 @@ fn build_ctor_candidates<'a>(
                         continue;
                     }
                     let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-                    let call_expr = build_factory_call_expr(
-                        static_attribute(statics, method),
-                        &in_params,
-                        None,
-                    );
+                    let (call_name, previous_name) = static_attributes(statics, method);
+                    let call_expr = build_factory_call_expr(call_name, &in_params, None);
+                    let order_key = build_factory_call_expr(previous_name, &in_params, None);
                     push_unique(
                         &mut candidates,
                         PyCtorCandidate {
                             public_params: in_params,
                             call_expr,
+                            order_key,
                             composed_call_expr: None,
                         },
                     );
@@ -1049,11 +1053,11 @@ fn build_ctor_candidates<'a>(
                     else {
                         continue;
                     };
-                    let call_expr = build_factory_call_expr(
-                        static_attribute(statics, method),
-                        &in_params,
-                        Some(outer_index),
-                    );
+                    let (call_name, previous_name) = static_attributes(statics, method);
+                    let call_expr =
+                        build_factory_call_expr(call_name, &in_params, Some(outer_index));
+                    let order_key =
+                        build_factory_call_expr(previous_name, &in_params, Some(outer_index));
                     let inner_output_index = method
                         .params
                         .iter()
@@ -1090,6 +1094,7 @@ fn build_ctor_candidates<'a>(
                         PyCtorCandidate {
                             public_params,
                             call_expr,
+                            order_key,
                             composed_call_expr: Some(composed_call_expr),
                         },
                     );
@@ -1102,10 +1107,14 @@ fn build_ctor_candidates<'a>(
     candidates
 }
 
-fn static_attribute<'p>(statics: &'p ScopePlan<'_>, method: &MethodMeta) -> &'p str {
-    statics
-        .attribute(method)
-        .expect("constructor factory methods are planned static methods")
+/// The attributes implementing a constructor factory method now and before
+/// CLR-name grouping.
+fn static_attributes<'p>(statics: &'p ScopePlan<'_>, method: &MethodMeta) -> (&'p str, &'p str) {
+    let planned = "constructor factory methods are planned static methods";
+    (
+        statics.attribute(method).expect(planned),
+        statics.previous_attribute(method).expect(planned),
+    )
 }
 
 /// Build a `type(self).<method>(_bound[0], _bound[1], ..., None_for_outer)` call.
@@ -1246,7 +1255,7 @@ fn generate_python_constructor(
             &left.public_params,
             &right.public_params,
         )
-        .then_with(|| left.call_expr.cmp(&right.call_expr))
+        .then_with(|| left.order_key.cmp(&right.order_key))
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
@@ -1647,14 +1656,14 @@ mod tests {
             &forward_class,
             None,
             false,
-            &ClassMemberPlan::new(&forward_class).statics,
+            &ClassMemberPlan::new(&forward_class, &context).statics,
         );
         let reverse = generate_python_constructor(
             &context,
             &reverse_class,
             None,
             false,
-            &ClassMemberPlan::new(&reverse_class).statics,
+            &ClassMemberPlan::new(&reverse_class, &context).statics,
         );
 
         assert_eq!(forward, reverse);

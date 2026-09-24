@@ -1541,6 +1541,171 @@ async def run_check(
                 else:
                     cr['pass'] = True
 
+        elif kind == 'storage_file_copy_overloads':
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            folder_cls = generated_type(pkg_name, 'StorageFolder')
+            collision = generated_type(pkg_name, 'NameCollisionOption')
+            with TemporaryDirectory(prefix='dynwinrt-copy-') as temp_dir:
+                root = Path(temp_dir)
+                (root / 'source.txt').write_text('payload', encoding='utf-8')
+                for name in ('documented', 'legacy'):
+                    (root / name).mkdir()
+                source = await cls.get_file_from_path_async(str(root / 'source.txt'))
+                documented = await folder_cls.get_folder_from_path_async(
+                    str(root / 'documented')
+                )
+                legacy = await folder_cls.get_folder_from_path_async(str(root / 'legacy'))
+
+                # CopyAsync overloads share the documented name; the folder argument is a
+                # runtime class passed to an IStorageFolder parameter.
+                copies = [
+                    await source.copy_async(documented),
+                    await source.copy_async(documented, 'named.txt'),
+                    await source.copy_async(
+                        documented, 'named.txt', collision.ReplaceExisting
+                    ),
+                    await source.copy_async(
+                        destination_folder=documented,
+                        desired_new_name='keyword.txt',
+                    ),
+                ]
+                # Former [Overload] names keep calling the same ABI overload,
+                # including a plain int for the NameCollisionOption parameter.
+                legacy_copies = [
+                    await source.copy_overload_default_name_and_options(legacy),
+                    await source.copy_overload_default_options(legacy, 'named.txt'),
+                    await source.copy_overload(legacy, 'named.txt', collision.ReplaceExisting),
+                    await source.copy_overload(legacy, 'named.txt', 1),
+                ]
+                rejected = []
+                for arguments in (('not a folder',), (documented, 42)):
+                    try:
+                        await source.copy_async(*arguments)
+                        rejected.append(f'accepted {arguments!r}')
+                    except TypeError as error:
+                        if 'No matching overload for copy_async' not in str(error):
+                            rejected.append(f'unexpected error {error!r}')
+
+                names = [copy.name for copy in copies]
+                legacy_names = [copy.name for copy in legacy_copies]
+                contents = sorted(
+                    path.name
+                    for path in (root / 'documented').iterdir()
+                    if path.read_text(encoding='utf-8') == 'payload'
+                )
+                if (
+                    names != ['source.txt', 'named.txt', 'named.txt', 'keyword.txt']
+                    or legacy_names != ['source.txt', 'named.txt', 'named.txt', 'named.txt']
+                    or contents != ['keyword.txt', 'named.txt', 'source.txt']
+                    or rejected
+                ):
+                    cr['error'] = (
+                        f'StorageFile copy overloads failed: names={names!r}, '
+                        f'legacy={legacy_names!r}, contents={contents!r}, '
+                        f'rejected={rejected!r}'
+                    )
+                else:
+                    cr['pass'] = True
+
+        elif kind == 'random_access_stream_copy_overloads':
+            stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')
+            writer_cls = generated_type(pkg_name, 'DataWriter')
+            reader_cls = generated_type(pkg_name, 'DataReader')
+            source = stream_cls()
+            writer = writer_cls(source)
+            writer.write_string('0123456789')
+            await writer.store_async()
+            writer.detach_stream()
+
+            async def read_all(stream):
+                stream.seek(0)
+                reader = reader_cls(stream)
+                loaded = await reader.load_async(stream.size)
+                return reader.read_string(loaded)
+
+            results = []
+            for copy in (
+                lambda destination: cls.copy_async(source, destination),
+                lambda destination: cls.copy_async(source, destination, 4),
+                lambda destination: cls.copy_size_async(source, destination, 4),
+            ):
+                source.seek(0)
+                destination = stream_cls()
+                copied = await copy(destination)
+                results.append((copied, await read_all(destination)))
+            if results != [(10, '0123456789'), (4, '0123'), (4, '0123')]:
+                cr['error'] = f'RandomAccessStream copy overloads failed: {results!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'decimal_formatter_overloads':
+            formatter = cls()
+            beyond_double = 2**53 + 1
+            beyond_int64 = 2**64 - 1
+            pairs = {
+                'int': (formatter.format(5), formatter.format_int(5)),
+                'double': (formatter.format(2.5), formatter.format_double(2.5)),
+                'int64 precision': (
+                    formatter.format(beyond_double),
+                    formatter.format_int(beyond_double),
+                ),
+                'uint64': (
+                    formatter.format(beyond_int64),
+                    formatter.format_u_int(beyond_int64),
+                ),
+            }
+            mismatches = {
+                name: values for name, values in pairs.items() if values[0] != values[1]
+            }
+            if (
+                mismatches
+                or formatter.format(beyond_double)
+                == formatter.format_double(float(beyond_double))
+            ):
+                cr['error'] = (
+                    f'DecimalFormatter.format overload dispatch failed: pairs={pairs!r}'
+                )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'xml_document_load_overloads':
+            settings = generated_type(pkg_name, 'XmlLoadSettings')()
+            loaded = []
+            for load in (
+                lambda: obj.load_xml('<documented />'),
+                lambda: obj.load_xml('<settings />', settings),
+                lambda: obj.load_xml(xml='<keyword />', load_settings=settings),
+                lambda: obj.load_xml_with_settings('<legacy />', settings),
+            ):
+                load()
+                loaded.append(obj.document_element.tag_name)
+            if loaded != ['documented', 'settings', 'keyword', 'legacy']:
+                cr['error'] = f'XmlDocument.load_xml overloads failed: {loaded!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'calendar_documented_overloads':
+            results = {
+                'month': (obj.month_as_string(), obj.month_as_full_string()),
+                'abbreviated month': (
+                    obj.month_as_string(3),
+                    obj.month_as_string(ideal_length=3),
+                ),
+                'day of week': (
+                    obj.day_of_week_as_string(),
+                    obj.day_of_week_as_full_string(),
+                ),
+            }
+            if any(
+                left != right or not isinstance(left, str) or not left
+                for left, right in results.values()
+            ):
+                cr['error'] = f'Calendar documented overloads failed: {results!r}'
+            else:
+                cr['pass'] = True
+
         elif kind == 'async_cancellation':
             import dynwinrt as dw
 

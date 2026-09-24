@@ -927,7 +927,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let plan = ClassMemberPlan::new(&class);
+        let plan = ClassMemberPlan::new(&class, context);
         let members = class_instance_interfaces(&class)
             .flat_map(|iface| iface.methods.iter().map(move |method| (iface, method)));
         let Some(PlannedMember::Group(group)) = plan.instance.members(members).into_iter().next()
@@ -962,7 +962,7 @@ mod tests {
             static_interfaces: vec![interface("IFactoryStatics", methods)],
             ..Default::default()
         };
-        let plan = ClassMemberPlan::new(&class);
+        let plan = ClassMemberPlan::new(&class, context);
         let members = class
             .static_interfaces
             .iter()

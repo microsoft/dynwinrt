@@ -326,7 +326,8 @@
       "checks": [
         { "kind": "sequence_protocol", "member": "languages", "expected_size": 1 },
         { "kind": "datetime_roundtrip", "member": "date_time", "langs": ["py"] },
-        { "kind": "calendar_comprehensive", "member": "self" }
+        { "kind": "calendar_comprehensive", "member": "self" },
+        { "kind": "calendar_documented_overloads", "member": "month_as_string", "langs": ["py"] }
       ]
     },
     {
@@ -454,6 +455,37 @@
       ]
     },
     {
+      "id": "python_storage_file_copy_overloads",
+      "namespace": "Windows.Storage",
+      "class": "StorageFile",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "storage_file_copy_overloads", "member": "copy_async" }
+      ]
+    },
+    {
+      "id": "python_stream_copy_overloads",
+      "namespace": "Windows.Storage.Streams",
+      "class": "RandomAccessStream",
+      "langs": ["py"],
+      "extra_classes": ["InMemoryRandomAccessStream", "DataWriter", "DataReader"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "random_access_stream_copy_overloads", "member": "copy_async" }
+      ]
+    },
+    {
+      "id": "python_decimal_formatter_overloads",
+      "namespace": "Windows.Globalization.NumberFormatting",
+      "class": "DecimalFormatter",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "decimal_formatter_overloads", "member": "format" }
+      ]
+    },
+    {
       "id": "issue_69_device_information_async_collection",
       "namespace": "Windows.Devices.Enumeration",
       "class": "DeviceInformation",
@@ -570,7 +602,8 @@
           "args": ["<root><child /></root>"],
           "property_path": ["document_element", "tag_name"],
           "expected": "root"
-        }
+        },
+        { "kind": "xml_document_load_overloads", "member": "load_xml", "langs": ["py"] }
       ]
     },
     {
