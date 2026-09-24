@@ -453,13 +453,13 @@ class TestPropertyValue:
             )
         )
         date_time.set_i64(0, 0)
-        unsupported = statics_h["CreateDateTime"].invoke(
+        boxed_date_time = statics_h["CreateDateTime"].invoke(
             factory, [date_time.to_value()]
         )
-        import pytest
+        from datetime import datetime, timezone
 
-        with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
-            unbox_object(unsupported)
+        # DateTime is supported now: tick 0 is 1601-01-01 UTC.
+        assert unbox_object(boxed_date_time) == datetime(1601, 1, 1, tzinfo=timezone.utc)
 
         key_type = DynWinRTType.hstring()
         object_type = DynWinRTType.object()

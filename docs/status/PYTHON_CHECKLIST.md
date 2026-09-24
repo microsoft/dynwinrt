@@ -140,6 +140,10 @@ of a dynamic projection.
 - [x] Expose `project_as(value, Type)` for typed, non-consuming projection of
       raw `Object`/`IInspectable` values to RuntimeClasses, matching JavaScript
       `projectAs`; use `as_interface()` / interface `from_value()` for QI views.
+- [x] Convert boxed `Object` values explicitly with
+      `unbox_object(raw, preserve_type=...)` and
+      `to_winrt_object(value, property_type=...)`, covering every
+      `PropertyType` with a payload; generated `Object` positions stay native.
 - [x] Declare non-suppressing runtime and generated context managers as
       `Literal[False]`.
 - [x] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.

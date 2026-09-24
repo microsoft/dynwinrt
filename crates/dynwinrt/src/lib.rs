@@ -60,7 +60,7 @@ pub use crate::element_factory::{
 pub use crate::ibuffer::{copy_from_ibuffer, copy_to_ibuffer};
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
 pub use crate::property_value::{
-    PropertyValueData, PropertyValueUnboxResult, unbox_property_value,
+    PropertyValueData, PropertyValueUnboxResult, box_property_value, unbox_property_value,
 };
 pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};

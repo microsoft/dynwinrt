@@ -1605,6 +1605,169 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'object_value_roundtrip':
+            from datetime import datetime, timedelta, timezone
+            from uuid import UUID
+
+            property_value_iid = dw.WinGUID.parse('4bd682dd-7554-40e9-9a9b-82654ede7e62')
+            generated_kinds = generated_type(pkg_name, 'PropertyType')
+            mirrored = {member.name: member.value for member in dw.values.PropertyType}
+            if mirrored != {member.name: member.value for member in generated_kinds}:
+                cr['error'] = 'dynwinrt.values.PropertyType differs from the metadata enum'
+                return cr
+
+            def stored_type(raw):
+                view = raw.cast(property_value_iid)
+                try:
+                    return view.call_0(6, dw.DynWinRTType.i32_type()).to_number()
+                finally:
+                    view.release()
+
+            point = generated_type(pkg_name, 'Point')
+            size = generated_type(pkg_name, 'Size')
+            rect = generated_type(pkg_name, 'Rect')
+            uri = generated_type(pkg_name, 'Uri').create_uri('https://example.com/boxed')
+            moment = datetime(2024, 5, 6, 7, 8, 9, 123456, tzinfo=timezone.utc)
+            v = dw.values
+            cases = [
+                # (factory, argument, PropertyType, unboxed with preserve_type=True)
+                ('create_uint8', 200, 'UInt8', v.UInt8(200)),
+                ('create_int16', -3, 'Int16', v.Int16(-3)),
+                ('create_uint16', 65535, 'UInt16', v.UInt16(65535)),
+                ('create_int32', -7, 'Int32', -7),
+                ('create_uint32', 2**32 - 1, 'UInt32', v.UInt32(2**32 - 1)),
+                ('create_int64', -(2**63), 'Int64', v.Int64(-(2**63))),
+                ('create_uint64', 2**64 - 1, 'UInt64', v.UInt64(2**64 - 1)),
+                ('create_single', 0.5, 'Single', v.Single(0.5)),
+                ('create_double', 0.1, 'Double', 0.1),
+                ('create_char16', 'x', 'Char16', v.Char16('x')),
+                ('create_boolean', True, 'Boolean', True),
+                ('create_string', 'text', 'String', 'text'),
+                ('create_guid', UUID(int=5), 'Guid', UUID(int=5)),
+                ('create_date_time', moment, 'DateTime', moment),
+                ('create_time_span', timedelta(seconds=-5), 'TimeSpan', timedelta(seconds=-5)),
+                ('create_point', point(1.5, 2.5), 'Point', v.Point(1.5, 2.5)),
+                ('create_size', size(3.0, 4.0), 'Size', v.Size(3.0, 4.0)),
+                ('create_rect', rect(1.0, 2.0, 3.0, 4.0), 'Rect', v.Rect(1.0, 2.0, 3.0, 4.0)),
+                ('create_uint8_array', b'\x01\x02', 'UInt8Array', b'\x01\x02'),
+                ('create_int16_array', [1, -2], 'Int16Array', v.Int16Array([1, -2])),
+                ('create_uint16_array', [1, 2], 'UInt16Array', v.UInt16Array([1, 2])),
+                ('create_int32_array', [1, -2], 'Int32Array', v.Int32Array([1, -2])),
+                ('create_uint32_array', [1, 2], 'UInt32Array', v.UInt32Array([1, 2])),
+                ('create_int64_array', [1, -2], 'Int64Array', v.Int64Array([1, -2])),
+                ('create_uint64_array', [1, 2], 'UInt64Array', v.UInt64Array([1, 2])),
+                ('create_single_array', [0.5, 1.5], 'SingleArray', v.SingleArray([0.5, 1.5])),
+                ('create_double_array', [0.1, 2.0], 'DoubleArray', v.DoubleArray([0.1, 2.0])),
+                ('create_char16_array', ['a', 'b'], 'Char16Array', v.Char16Array(['a', 'b'])),
+                ('create_boolean_array', [True, False], 'BooleanArray', v.BooleanArray([True, False])),
+                ('create_string_array', ['a', ''], 'StringArray', v.StringArray(['a', ''])),
+                (
+                    'create_inspectable_array',
+                    [dw.DynWinRTValue.null_value(), dw.to_winrt_object(v.UInt32(9))],
+                    'InspectableArray',
+                    v.InspectableArray([None, v.UInt32(9)]),
+                ),
+                ('create_guid_array', [UUID(int=1)], 'GuidArray', v.GuidArray([UUID(int=1)])),
+                ('create_date_time_array', [moment], 'DateTimeArray', v.DateTimeArray([moment])),
+                ('create_time_span_array', [timedelta(1)], 'TimeSpanArray', v.TimeSpanArray([timedelta(1)])),
+                ('create_point_array', [point(1.0, 2.0)], 'PointArray', v.PointArray([v.Point(1.0, 2.0)])),
+                ('create_size_array', [size(1.0, 2.0)], 'SizeArray', v.SizeArray([v.Size(1.0, 2.0)])),
+                ('create_rect_array', [rect(1.0, 2.0, 3.0, 4.0)], 'RectArray', v.RectArray([v.Rect(1.0, 2.0, 3.0, 4.0)])),
+            ]
+            covered = {kind_name for _, _, kind_name, _ in cases}
+            if len(covered) != 37:
+                cr['error'] = f'the round-trip matrix covers {len(covered)} PropertyTypes, not 37'
+                return cr
+            for factory, argument, kind_name, expected in cases:
+                boxed = getattr(cls, factory)(argument)
+                expected_kind = generated_kinds[kind_name]
+                exact = dw.unbox_object(boxed, preserve_type=True)
+                reboxed = dw.to_winrt_object(exact)
+                again = dw.unbox_object(reboxed, preserve_type=True)
+                if (
+                    stored_type(boxed) != expected_kind
+                    or stored_type(reboxed) != expected_kind
+                    or type(exact) is not type(expected)
+                    or exact != expected
+                    or type(again) is not type(expected)
+                    or again != expected
+                ):
+                    cr['error'] = (
+                        f'{factory}: expected {expected!r} as {kind_name}, read {exact!r}, '
+                        f'then {again!r} as {stored_type(reboxed)}'
+                    )
+                    return cr
+            if dw.unbox_object(uri._obj) is not uri._obj:
+                cr['error'] = 'a non-IPropertyValue object lost its identity'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'object_value_storage_properties':
+            from datetime import datetime, timezone
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix='dynwinrt-values-') as temp_dir:
+                path = Path(temp_dir) / 'sample.txt'
+                path.write_bytes(b'dynwinrt' * 3)
+                modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                storage_file = await getattr(cls, member)(str(path))
+                properties = await storage_file.properties.retrieve_properties_async(
+                    ['System.Size', 'System.DateModified']
+                )
+                size = properties['System.Size']
+                modified = dw.unbox_object(properties['System.DateModified'])
+                exact_size = dw.unbox_object(size, preserve_type=True)
+                reboxed = dw.to_winrt_object(exact_size)
+                if type(dw.unbox_object(size)) is not int or dw.unbox_object(size) != 24:
+                    cr['error'] = f'System.Size unboxed as {dw.unbox_object(size)!r}'
+                elif type(exact_size) is not dw.values.UInt64 or exact_size != 24:
+                    cr['error'] = f'System.Size preserved as {exact_size!r}'
+                elif type(dw.unbox_object(reboxed, preserve_type=True)) is not dw.values.UInt64:
+                    cr['error'] = 'System.Size did not re-box as UInt64'
+                elif (
+                    not isinstance(modified, datetime)
+                    or modified.tzinfo is not timezone.utc
+                    or abs((modified - modified_at).total_seconds()) > 5
+                ):
+                    cr['error'] = (
+                        f'System.DateModified unboxed as {modified!r}, '
+                        f'expected about {modified_at!r}'
+                    )
+                else:
+                    cr['pass'] = True
+
+        elif kind == 'object_value_device_properties':
+            from uuid import UUID
+
+            devices = await getattr(cls, member)()
+            checked = {}
+            for device in devices:
+                properties = device.properties
+                for key, expected_type in (
+                    ('System.ItemNameDisplay', str),
+                    ('System.Devices.InterfaceEnabled', bool),
+                    ('System.Devices.ContainerId', UUID),
+                ):
+                    if key in checked or key not in properties:
+                        continue
+                    raw = properties[key]
+                    value = dw.unbox_object(raw)
+                    if value is None:
+                        continue
+                    if (
+                        type(value) is not expected_type
+                        or dw.unbox_object(raw, preserve_type=True) != value
+                    ):
+                        cr['error'] = f'{key} unboxed as {value!r}'
+                        return cr
+                    checked[key] = value
+                if len(checked) == 3:
+                    break
+            if 'System.ItemNameDisplay' not in checked:
+                print('  skipped DeviceInformation.properties string: no device exposes one')
+            cr['pass'] = True
+
         elif kind == 'bitmap_encoder_async_create':
             stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')
             stream = (
