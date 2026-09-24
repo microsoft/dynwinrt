@@ -165,7 +165,8 @@
         { "kind": "nullable_object_array_roundtrip", "member": "create_inspectable_array", "langs": ["py"] },
         { "kind": "static_uuid_input", "member": "create_guid", "langs": ["py"] },
         { "kind": "static_bytes_input", "member": "create_u_int8_array", "langs": ["py"] },
-        { "kind": "static_sequence_input", "member": "create_int32_array", "langs": ["py"] }
+        { "kind": "static_sequence_input", "member": "create_int32_array", "langs": ["py"] },
+        { "kind": "object_value_roundtrip", "member": "create_uint8", "langs": ["py"] }
       ]
     },
     {
@@ -453,6 +454,19 @@
       ]
     },
     {
+      "id": "explicit_object_values_storage_properties",
+      "namespace": "Windows.Storage",
+      "class": "StorageFile",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "object_value_storage_properties",
+          "member": "get_file_from_path_async"
+        }
+      ]
+    },
+    {
       "id": "issue_69_device_information_async_collection",
       "namespace": "Windows.Devices.Enumeration",
       "class": "DeviceInformation",
@@ -462,6 +476,11 @@
         {
           "kind": "device_information_async_collection",
           "member": "find_all_async"
+        },
+        {
+          "kind": "object_value_device_properties",
+          "member": "find_all_async",
+          "langs": ["py"]
         }
       ]
     },
