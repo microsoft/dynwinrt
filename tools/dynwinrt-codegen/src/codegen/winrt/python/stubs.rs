@@ -353,18 +353,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
             out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
         }
     }
-    if observable_vector.is_some() {
-        let event_args = "IVectorChangedEventArgs";
-        let identity = crate::types::TypeIdentity::named(
-            crate::types::TypeIdentityKind::Interface,
-            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-            event_args,
-        );
-        let module = context.implementation_module(&identity);
-        out.push_str(&format!(
-            "from .{module} import {event_args}  # noqa: F401\n"
-        ));
-    }
 
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
@@ -718,30 +706,6 @@ pub fn generate_class_stub(
             };
             out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
             imported_names.insert(reference_name);
-        }
-    }
-    for iface in class.all_interfaces() {
-        if iface.generic_piid.as_deref() == Some(super::collections::IOBSERVABLE_VECTOR_PIID) {
-            let identity = iface.type_identity();
-            let projected_name = context.projected_name(&identity);
-            if imported_names.insert(projected_name.clone()) {
-                let module = context.implementation_module(&identity);
-                out.push_str(&format!(
-                    "from .{module} import {projected_name}  # noqa: F401\n"
-                ));
-            }
-            let event_args = "IVectorChangedEventArgs";
-            if imported_names.insert(event_args.into()) {
-                let identity = crate::types::TypeIdentity::named(
-                    crate::types::TypeIdentityKind::Interface,
-                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                    event_args,
-                );
-                let module = context.implementation_module(&identity);
-                out.push_str(&format!(
-                    "from .{module} import {event_args}  # noqa: F401\n"
-                ));
-            }
         }
     }
 

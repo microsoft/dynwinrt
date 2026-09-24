@@ -164,18 +164,6 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             type_checking_imports.push(format!("from .{module} import {import}  # noqa: F401\n"));
         }
     }
-    if observable_vector.is_some() {
-        let event_args = "IVectorChangedEventArgs";
-        let identity = TypeIdentity::named(
-            TypeIdentityKind::Interface,
-            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-            event_args,
-        );
-        let module = context.implementation_module(&identity);
-        type_checking_imports.push(format!(
-            "from .{module} import {event_args}  # noqa: F401\n"
-        ));
-    }
 
     // Import delegate IID + PARAM_TYPES
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();

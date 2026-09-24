@@ -111,12 +111,14 @@ def _dynwinrt_create_delegate(iid, parameter_types, callback):
         _dynwinrt_wrap_delegate_callback(callback),
     )
 
-def _dynwinrt_delegate(value, iid, parameter_types):
+def _dynwinrt_delegate(value, iid, parameter_types, project=None):
     raw = getattr(value, '_obj', value)
     if isinstance(raw, DynWinRTValue):
         return raw
     if not callable(value):
         raise TypeError('delegate value must be callable or a DynWinRTValue')
+    if project is not None:
+        value = project(value)
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
 def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)

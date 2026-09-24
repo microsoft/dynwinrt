@@ -287,17 +287,16 @@ pub(super) fn emit_method_stub_named(
         );
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
-        let param_type = if in_params
+        let param_type = in_params
             .first()
-            .is_some_and(|p| is_delegate_type(Some(&p.typ)))
-        {
-            "Callable[..., object] | 'DynWinRTValue'".to_string()
-        } else {
-            in_params
-                .first()
-                .map(|p| py_param_type_safe(&p.typ, context))
-                .unwrap_or_else(|| "object".to_string())
-        };
+            .map(|p| {
+                if is_delegate_type(Some(&p.typ)) {
+                    super::delegates::py_delegate_param_type(&p.typ, context)
+                } else {
+                    py_param_type_safe(&p.typ, context)
+                }
+            })
+            .unwrap_or_else(|| "object".to_string());
         if property_has_getter {
             out.push_str(&format!("{indent}@{}.setter\n", prop_name));
             emit_documented_stub(

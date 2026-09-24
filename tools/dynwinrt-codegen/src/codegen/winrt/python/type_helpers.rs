@@ -324,7 +324,7 @@ pub(super) fn py_method_return_type(
     }
 }
 
-fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> String {
+pub(super) fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> String {
     match typ {
         Some(TypeMeta::String) => "str".to_string(),
         Some(TypeMeta::Guid) => "UUID".to_string(),

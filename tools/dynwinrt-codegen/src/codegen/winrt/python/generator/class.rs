@@ -142,34 +142,6 @@ pub fn generate_class(
             imported_names.insert(reference_name);
         }
     }
-    for iface in class.all_interfaces() {
-        if iface.generic_piid.as_deref()
-            == Some(crate::codegen::winrt::python::collections::IOBSERVABLE_VECTOR_PIID)
-        {
-            let identity = iface.type_identity();
-            let reference_name = context.reference_name(&identity);
-            if imported_names.insert(reference_name) {
-                type_checking_imports.push(format_py_type_import(
-                    context,
-                    &iface.namespace,
-                    &iface.name,
-                    crate::types::TypeKind::Interface,
-                ));
-            }
-            let event_args = "IVectorChangedEventArgs";
-            if imported_names.insert(event_args.into()) {
-                let identity = TypeIdentity::named(
-                    TypeIdentityKind::Interface,
-                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                    event_args,
-                );
-                type_checking_imports.push(format!(
-                    "from .{} import {event_args}  # noqa: F401\n",
-                    context.implementation_module(&identity)
-                ));
-            }
-        }
-    }
 
     // Import delegate IID + PARAM_TYPES
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
