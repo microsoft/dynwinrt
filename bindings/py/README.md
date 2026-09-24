@@ -207,27 +207,76 @@ produce a wrapper unless the input actually implements that default interface.
 Incompatible types raise the ordinary WinRT `OSError`. Static-only metadata
 classes with no instance surface are not projection targets.
 
-### Explicit boxed-value unboxing
+### WinRT `Object` values: automatic boxing and unboxing (experimental)
 
-Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRTValue`
-instances. Use `unbox_object()` only where the application expects a boxed
-`Windows.Foundation.IPropertyValue`, such as values from
-`DeviceInformation.properties`:
+> **Experimental prototype.** This section describes the draft automatic
+> boxing model under evaluation; the design, names and rules may change.
+
+Every metadata position typed `Object` (`IInspectable`) — parameters, property
+setters and getters, returns, out parameters, collection keys, values and
+elements, arrays, async results, event arguments, and the inputs and outputs of
+Python-implemented interfaces — converts through one pair of functions:
+`to_winrt_object(value)` on the way in and `from_winrt_object(value)` on the
+way out. Values boxed as `Windows.Foundation.IPropertyValue` therefore read and
+write as ordinary Python values:
 
 ```python
-from dynwinrt import unbox_object
+from dynwinrt import UInt32
 
-raw = device_information.properties["System.Devices.DeviceInstanceId"]
-instance_id = unbox_object(raw)
+properties = PropertySet()
+properties["count"] = 5                  # boxed as Int32
+properties["tags"] = ["a", "b"]          # boxed as StringArray
+properties["id"] = UInt32(7)             # boxed as UInt32
+assert properties["count"] == 5
+assert dict(properties) == {"count": 5, "tags": ["a", "b"], "id": 7}
+
+size = file_properties["System.Size"]    # dynwinrt.UInt64(11)
+copy["System.Size"] = size               # written back as UInt64, not Int32
 ```
 
-The helper borrows its argument. It maps supported numeric, Boolean, string,
-character, GUID, and corresponding array property types to Python values;
-64-bit integers use `int`, GUIDs use `uuid.UUID`, and `UInt8Array` uses `bytes`.
-`None` stays `None`. If the object does not implement `IPropertyValue`, the
-exact same Python object is returned, so identity and later projection remain
-intact. Unsupported property types (including `DateTime`, `TimeSpan`, geometry,
-inspectable, and other types) and native getter failures raise an exception.
+Writing (`to_winrt_object`) applies these rules in order:
+
+| Python value | WinRT value |
+|---|---|
+| `None` | null |
+| `DynWinRTValue` object, projected wrapper | passed through unchanged (wrappers as `_obj`) |
+| `DynWinRTValue` holding a primitive, string, GUID, enum or foundation struct | boxed by its exact kind |
+| `bool` | `Boolean` |
+| `dynwinrt.UInt8` … `dynwinrt.Char16` tag | exactly that `PropertyType` |
+| generated WinRT enum member | `IReference<Enum>` (as C#) |
+| `dynwinrt.Point/Size/Rect`, generated `Windows.Foundation.Point/Size/Rect` | `Point` / `Size` / `Rect` |
+| other `int` (including unmarked `IntEnum`) | `Int32`, else `Int64`, else `UInt64`, else `OverflowError` |
+| `float` | `Double` |
+| `str` | `String` |
+| timezone-aware `datetime` / `timedelta` / `uuid.UUID` | `DateTime` / `TimeSpan` / `Guid` (naive `datetime` raises `ValueError`) |
+| `bytes`, `bytearray`, `memoryview` | `UInt8Array` |
+| `dynwinrt.<Type>Array` | that array type |
+| `list` / `tuple` | inferred array: homogeneous items give the matching array; plain ints the smallest of `Int32Array`/`Int64Array`/`UInt64Array`; ints mixed with floats `DoubleArray`; plain numbers adopt a single numeric tag present; anything else `InspectableArray` (items converted one by one, `None` as null); empty sequences raise `TypeError` |
+| anything else | `TypeError` listing the supported types |
+
+Reading (`from_winrt_object`) returns `None` for null, the same `DynWinRTValue`
+for objects that are not boxed values, and otherwise:
+
+| `PropertyType` | Python value |
+|---|---|
+| `Boolean`, `Int32`, `Double`, `String`, `Guid` | `bool`, `int`, `float`, `str`, `uuid.UUID` |
+| `UInt8`, `Int16`, `UInt16`, `UInt32`, `Int64`, `UInt64`, `Single`, `Char16` | tagged `dynwinrt.UInt8` … `dynwinrt.Char16` (`int`/`float`/`str` subclasses) |
+| `DateTime`, `TimeSpan` | timezone-aware UTC `datetime`, `timedelta` (microsecond resolution) |
+| `Point`, `Size`, `Rect` | immutable `dynwinrt.Point`, `dynwinrt.Size`, `dynwinrt.Rect` |
+| `UInt8Array` | `bytes` |
+| other arrays | `dynwinrt.<Type>Array` list subclasses with tagged elements; `InspectableArray` items are converted recursively |
+| `Empty`, `Inspectable`, `OtherType`, `OtherTypeArray`, unrepresentable values | the same `DynWinRTValue` (never an exception) |
+
+A value that is read and written back keeps its `PropertyType` (`DateTime` and
+`TimeSpan` keep microseconds). Tags behave like the plain value for `==`,
+`hash`, `str`, `format`, `json` and `pickle`; only `repr` shows the tag, and
+arithmetic returns plain numbers. Boxes have value semantics: a write creates a
+new box, so the COM identity of a boxed value is not preserved; every other
+object keeps its identity and still works with `project_as()`.
+`unbox_object()` is the same function as `from_winrt_object()`: it is
+idempotent and returns plain Python values unchanged. Generated annotations use
+`dynwinrt.WinRTObjectValue | None` for outputs and
+`dynwinrt.WinRTObjectInput | None` for inputs.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw

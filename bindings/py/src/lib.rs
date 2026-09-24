@@ -7,6 +7,8 @@ mod async_runtime;
 mod delegate_method;
 mod errors;
 mod implementation;
+mod object_value;
+mod package_source;
 mod runtime;
 mod values;
 #[cfg(feature = "test-hooks")]
@@ -572,6 +574,9 @@ def _dynwinrt_dispatch_progress(dispatch_state, value):
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
         super::implementation::init(m)?;
+        // The public Object value model; the conversion layer binds its types.
+        super::package_source::exec_package_source(m, "_values.py", "dynwinrt._values")?;
+        super::object_value::init(m)?;
         m.py().run(
             c"
 _Coroutine.register(_DynWinRTAsync)
@@ -585,7 +590,11 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
-        m.add_function(wrap_pyfunction!(super::runtime::unbox_object, m)?)?;
+        m.add_function(wrap_pyfunction!(super::object_value::to_winrt_object, m)?)?;
+        m.add_function(wrap_pyfunction!(super::object_value::from_winrt_object, m)?)?;
+        // Compatibility name: explicit unboxing is now the idempotent
+        // from_winrt_object conversion.
+        m.add("unbox_object", m.getattr("from_winrt_object")?)?;
         m.add_function(wrap_pyfunction!(
             super::runtime::register_xaml_runtime_class,
             m

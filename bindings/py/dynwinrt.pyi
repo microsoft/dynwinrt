@@ -1,5 +1,7 @@
 from collections.abc import Coroutine
-from typing import Any, Awaitable, Callable, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, ClassVar, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, SupportsFloat, SupportsIndex, TypeAlias, TypeVar, Union, final, overload
+from typing import Self
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -49,7 +51,44 @@ __all__ = [
     "projected_lifetime_scope",
     "project_as",
     "release_projected",
+    "to_winrt_object",
+    "from_winrt_object",
     "unbox_object",
+    "WinRTScalar",
+    "UInt8",
+    "Int16",
+    "UInt16",
+    "Int32",
+    "UInt32",
+    "Int64",
+    "UInt64",
+    "Single",
+    "Double",
+    "Char16",
+    "WinRTArray",
+    "Int16Array",
+    "UInt16Array",
+    "Int32Array",
+    "UInt32Array",
+    "Int64Array",
+    "UInt64Array",
+    "SingleArray",
+    "DoubleArray",
+    "Char16Array",
+    "BooleanArray",
+    "StringArray",
+    "InspectableArray",
+    "DateTimeArray",
+    "TimeSpanArray",
+    "GuidArray",
+    "PointArray",
+    "SizeArray",
+    "RectArray",
+    "Point",
+    "Size",
+    "Rect",
+    "WinRTObjectValue",
+    "WinRTObjectInput",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -123,26 +162,146 @@ def project_as(
 
 def release_projected(value: object) -> None: ...
 
-_UnboxedPropertyValue = Union[
-    bool,
-    int,
-    float,
-    str,
-    UUID,
-    bytes,
-    List[int],
-    List[float],
-    List[bool],
-    List[str],
-    List[UUID],
-]
+# ----------------------------------------------------------------------
+# WinRT Object value model (see python/dynwinrt/_values.py)
+# ----------------------------------------------------------------------
 
+class WinRTScalar:
+    property_type: ClassVar[str]
+
+class UInt8(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class Int16(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class UInt16(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class Int32(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class UInt32(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class Int64(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class UInt64(WinRTScalar, int):
+    def __new__(cls, value: SupportsIndex = ..., /) -> Self: ...
+
+class Single(WinRTScalar, float):
+    def __new__(cls, value: SupportsFloat | SupportsIndex = ..., /) -> Self: ...
+
+class Double(WinRTScalar, float):
+    def __new__(cls, value: SupportsFloat | SupportsIndex = ..., /) -> Self: ...
+
+class Char16(WinRTScalar, str):
+    def __new__(cls, value: str, /) -> Self: ...
+
+_ArrayItem = TypeVar("_ArrayItem")
+
+class WinRTArray(list[_ArrayItem]):
+    property_type: ClassVar[str]
+    def copy(self) -> Self: ...
+
+class Int16Array(WinRTArray[int]): ...
+class UInt16Array(WinRTArray[int]): ...
+class Int32Array(WinRTArray[int]): ...
+class UInt32Array(WinRTArray[int]): ...
+class Int64Array(WinRTArray[int]): ...
+class UInt64Array(WinRTArray[int]): ...
+class SingleArray(WinRTArray[float]): ...
+class DoubleArray(WinRTArray[float]): ...
+class Char16Array(WinRTArray[str]): ...
+class BooleanArray(WinRTArray[bool]): ...
+class StringArray(WinRTArray[str]): ...
+class InspectableArray(WinRTArray["WinRTObjectInput | None"]): ...
+class DateTimeArray(WinRTArray[datetime]): ...
+class TimeSpanArray(WinRTArray[timedelta]): ...
+class GuidArray(WinRTArray[UUID]): ...
+class PointArray(WinRTArray["Point | _WinRTPointLike"]): ...
+class SizeArray(WinRTArray["Size | _WinRTSizeLike"]): ...
+class RectArray(WinRTArray["Rect | _WinRTRectLike"]): ...
+
+class Point:
+    __match_args__ = ("x", "y")
+    property_type: ClassVar[str]
+    def __init__(self, x: float = ..., y: float = ...) -> None: ...
+    @property
+    def x(self) -> float: ...
+    @property
+    def y(self) -> float: ...
+    def __hash__(self) -> int: ...
+
+class Size:
+    __match_args__ = ("width", "height")
+    property_type: ClassVar[str]
+    def __init__(self, width: float = ..., height: float = ...) -> None: ...
+    @property
+    def width(self) -> float: ...
+    @property
+    def height(self) -> float: ...
+    def __hash__(self) -> int: ...
+
+class Rect:
+    __match_args__ = ("x", "y", "width", "height")
+    property_type: ClassVar[str]
+    def __init__(
+        self, x: float = ..., y: float = ..., width: float = ..., height: float = ...
+    ) -> None: ...
+    @property
+    def x(self) -> float: ...
+    @property
+    def y(self) -> float: ...
+    @property
+    def width(self) -> float: ...
+    @property
+    def height(self) -> float: ...
+    def __hash__(self) -> int: ...
+
+class _WinRTObjectWrapper(Protocol):
+    @property
+    def _obj(self) -> DynWinRTValue: ...
+
+# Generated windows.foundation Point/Size/Rect structs.
+class _WinRTPointLike(Protocol):
+    x: float
+    y: float
+
+class _WinRTSizeLike(Protocol):
+    width: float
+    height: float
+
+class _WinRTRectLike(Protocol):
+    x: float
+    y: float
+    width: float
+    height: float
+
+# Values read from WinRT Object positions. Generated signatures add `| None`.
+WinRTObjectValue: TypeAlias = (
+    bool | int | float | str | UUID | datetime | timedelta | bytes
+    | Point | Size | Rect | list[Any] | DynWinRTValue
+)
+# Values accepted by WinRT Object positions besides None; generated enums are
+# int subclasses.
+WinRTObjectInput: TypeAlias = (
+    WinRTObjectValue | _WinRTObjectWrapper | tuple[Any, ...] | bytearray | memoryview
+    | _WinRTPointLike | _WinRTSizeLike | _WinRTRectLike
+)
+
+_Passthrough = TypeVar("_Passthrough")
+
+def to_winrt_object(value: WinRTObjectInput | None, /) -> DynWinRTValue: ...
 @overload
-def unbox_object(value: None) -> None: ...
+def from_winrt_object(value: None, /) -> None: ...
 @overload
-def unbox_object(
-    value: "DynWinRTValue",
-) -> Union[_UnboxedPropertyValue, "DynWinRTValue", None]: ...
+def from_winrt_object(value: DynWinRTValue, /) -> WinRTObjectValue | None: ...
+@overload
+def from_winrt_object(value: _Passthrough, /) -> _Passthrough: ...
+
+unbox_object = from_winrt_object
 
 
 @final

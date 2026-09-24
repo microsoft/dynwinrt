@@ -1,1 +1,3 @@
 dynwinrt\.dynwinrt
+# Executed into the native module namespace; never imported on its own.
+dynwinrt\._values

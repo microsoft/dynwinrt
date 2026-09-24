@@ -453,13 +453,16 @@ class TestPropertyValue:
             )
         )
         date_time.set_i64(0, 0)
-        unsupported = statics_h["CreateDateTime"].invoke(
+        boxed_date_time = statics_h["CreateDateTime"].invoke(
             factory, [date_time.to_value()]
         )
-        import pytest
+        from datetime import datetime, timezone
 
-        with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
-            unbox_object(unsupported)
+        # DateTime is part of the full PropertyType model: tick 0 is 1601-01-01 UTC.
+        assert unbox_object(boxed_date_time) == datetime(1601, 1, 1, tzinfo=timezone.utc)
+        # Explicit unboxing is idempotent on values that are already unboxed.
+        assert unbox_object("BLE Device") == "BLE Device"
+        assert unbox_object(unbox_object(boxed_int64)) == -(2**63)
 
         key_type = DynWinRTType.hstring()
         object_type = DynWinRTType.object()

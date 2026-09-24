@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -448,28 +447,11 @@ pub(crate) fn init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         (runtime.bind(module.py()).getattr("shutdown")?,),
     )?;
     module.add("_dynwinrt_implementation_runtime", runtime)?;
-    // Load from the installed package, not an embedded string or a build-time
-    // path. Keep native globals (including __name__) for API/identity compatibility.
-    let source_path = module
-        .getattr("__spec__")?
-        .getattr("origin")?
-        .extract::<PathBuf>()?
-        .with_file_name("_implementation.py");
-    let source_path = module
-        .py()
-        .import("os")?
-        .call_method1("fspath", (source_path,))?;
-    let loader = module
-        .py()
-        .import("importlib.machinery")?
-        .getattr("SourceFileLoader")?
-        .call1(("dynwinrt._implementation", source_path))?;
-    let source = loader.call_method1("get_code", ("dynwinrt._implementation",))?;
-    module
-        .py()
-        .import("builtins")?
-        .call_method1("exec", (source, module.dict()))?;
-    Ok(())
+    crate::package_source::exec_package_source(
+        module,
+        "_implementation.py",
+        "dynwinrt._implementation",
+    )
 }
 
 #[cfg(test)]

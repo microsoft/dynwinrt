@@ -55,6 +55,17 @@ fn null_unknown<'env>(env: Env) -> napi::Result<Unknown<'env>> {
   unsafe { Unknown::from_napi_value(env.raw(), value) }
 }
 
+/// JavaScript does not project these PropertyTypes yet. Report them with the
+/// exact error the core raised before it modeled every PropertyType, so the
+/// JavaScript contract stays unchanged.
+fn unsupported_property_type(property_type: windows::Foundation::PropertyType) -> napi::Error {
+  let error = dynwinrt::Error::WindowsError(windows::core::Error::new(
+    windows::core::HRESULT(0x80004001_u32 as i32),
+    format!("Unsupported WinRT IPropertyValue type: {}", property_type.0),
+  ));
+  napi::Error::from_reason(error.message())
+}
+
 fn property_value_to_javascript<'env>(
   env: Env,
   value: dynwinrt::PropertyValueData,
@@ -104,6 +115,17 @@ fn property_value_to_javascript<'env>(
         .map(property_value_guid)
         .collect::<Vec<_>>(),
     ),
+    value @ (PropertyValueData::DateTime(_)
+    | PropertyValueData::TimeSpan(_)
+    | PropertyValueData::Point(_)
+    | PropertyValueData::Size(_)
+    | PropertyValueData::Rect(_)
+    | PropertyValueData::InspectableArray(_)
+    | PropertyValueData::DateTimeArray(_)
+    | PropertyValueData::TimeSpanArray(_)
+    | PropertyValueData::PointArray(_)
+    | PropertyValueData::SizeArray(_)
+    | PropertyValueData::RectArray(_)) => Err(unsupported_property_type(value.property_type())),
   }
 }
 
@@ -129,6 +151,9 @@ pub fn unbox_object<'env>(env: Env, value: Unknown<'env>) -> napi::Result<Unknow
       {
         dynwinrt::PropertyValueUnboxResult::Null => null_unknown(env),
         dynwinrt::PropertyValueUnboxResult::NotPropertyValue => Ok(value),
+        dynwinrt::PropertyValueUnboxResult::Unsupported(property_type) => {
+          Err(unsupported_property_type(property_type))
+        }
         dynwinrt::PropertyValueUnboxResult::Value(value) => {
           property_value_to_javascript(env, value)
         }
