@@ -374,6 +374,7 @@ async def run_check(
                 'release_projected() / DynWinRTValue.release() was called) and '
                 'can no longer be used.'
             )
+            receiver = f'This WinRT object {reason}'
             args = [literal_arg(a) for a in check.get('args', [])]
             with dw.projected_lifetime_scope():
                 scoped = cls(*args)
@@ -382,20 +383,37 @@ async def run_check(
             value_released = cls(*args)
             value_released._obj.release()
             live = cls(*args)
+            property_value = generated_type(pkg_name, 'PropertyValue')
             uses = (
-                ('scope exit', lambda: getattr(scoped, member)),
-                ('release_projected', lambda: getattr(released, member)),
-                ('DynWinRTValue.release()', lambda: getattr(value_released, member)),
-                ('interface cast', released.to_string),
-                ('argument', lambda: live.equals(released)),
+                ('scope exit', lambda: getattr(scoped, member), receiver),
+                ('release_projected', lambda: getattr(released, member), receiver),
+                (
+                    'DynWinRTValue.release()',
+                    lambda: getattr(value_released, member),
+                    receiver,
+                ),
+                ('interface cast', released.to_string, receiver),
+                # A runtime-class parameter is cast first, which receives it.
+                ('runtime-class argument', lambda: live.equals(released), receiver),
+                # An Object parameter reaches the native invocation unchanged.
+                (
+                    'object argument',
+                    lambda: property_value.create_inspectable(released),
+                    f'This WinRT object (argument 0 of invoke()) {reason}',
+                ),
+                (
+                    'array element',
+                    lambda: property_value.create_inspectable_array([live, released]),
+                    'This WinRT object (element 1 of '
+                    f'DynWinRTArray.from_values()) {reason}',
+                ),
             )
-            for label, use in uses:
+            for label, use, expected in uses:
                 try:
                     use()
                 except RuntimeError as error:
-                    message = str(error)
-                    if not message.endswith(reason):
-                        cr['error'] = f'{label}: unclear released-object error: {message}'
+                    if str(error) != expected:
+                        cr['error'] = f'{label}: expected {expected!r}, got {str(error)!r}'
                         return cr
                 else:
                     cr['error'] = f'{label}: released projection allowed a WinRT call'
