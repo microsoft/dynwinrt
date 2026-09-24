@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import operator
 import struct
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from datetime import datetime, timedelta
 from enum import IntEnum
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Self,
@@ -48,6 +49,9 @@ from typing import (
 from uuid import UUID
 
 from dynwinrt import DynWinRTType, DynWinRTValue, WinGUID, to_winrt_object, unbox_object
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsKeysAndGetItem
 
 __all__ = [
     "PropertyType",
@@ -800,6 +804,29 @@ class MutableObjectValueView(ObjectValueView[_K], MutableMapping[_K, WinRTObject
 
     def clear(self) -> None:
         self.raw.clear()
+
+    # update() writes through __setitem__, so like item assignment it accepts
+    # any value that to_winrt_object accepts.
+    @overload
+    def update(self, other: SupportsKeysAndGetItem[_K, object], /) -> None: ...
+    @overload
+    def update(
+        self: MutableObjectValueView[str],
+        other: SupportsKeysAndGetItem[str, object],
+        /,
+        **kwargs: object,
+    ) -> None: ...
+    @overload
+    def update(self, other: Iterable[tuple[_K, object]], /) -> None: ...
+    @overload
+    def update(
+        self: MutableObjectValueView[str], other: Iterable[tuple[str, object]], /, **kwargs: object
+    ) -> None: ...
+    @overload
+    def update(self: MutableObjectValueView[str], /, **kwargs: object) -> None: ...
+    def update(self, other: Any = (), /, **kwargs: object) -> None:
+        mapping_update: Callable[..., None] = MutableMapping.update
+        mapping_update(self, other, **kwargs)
 
 
 @overload

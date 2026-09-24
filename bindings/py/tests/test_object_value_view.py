@@ -343,6 +343,10 @@ def test_mutable_mapping_methods():
     view.update([("c", values.Int16(3))])
     assert dict(view) == {"a": 1, "b": "x", "c": 3}
     assert property_type(view.raw["c"]) == PropertyType.Int16
+    view.update(pair=(1, 2), guid=WinGUID.parse("01234567-89ab-cdef-0123-456789abcdef"))
+    assert property_type(view.raw["pair"]) == PropertyType.Int32Array
+    assert view.pop("pair") == [1, 2] and view.pop("guid") == UUID("01234567-89ab-cdef-0123-456789abcdef")
+    view.update()
 
     assert view.setdefault("a", 9) == 1
     default = values.UInt8(4)

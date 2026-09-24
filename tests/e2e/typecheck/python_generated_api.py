@@ -178,6 +178,7 @@ def check_object_value_views(
     view["port"] = UInt32(8080)
     view["uri"] = Uri("https://example.com")
     view.update({"name": "text"}, empty=None)
+    view.update([("sizes", (1, 2))], uri=Uri("https://example.com"))
     count: WinRTObjectValue = view["count"]
     native: DynWinRTValue | None = view.raw["count"]
     exact: MutableObjectValueView[str] = object_value_view(value_set, preserve_type=True)
