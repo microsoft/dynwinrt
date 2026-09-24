@@ -629,8 +629,9 @@ fn plan_scopes<'a>(
                 continue;
             };
             let expected = reachable(&previous_groups[scope][previous_key]);
+            let current = reachable(members);
             let needs_compatibility_dispatcher = expected.iter().any(|&index| {
-                !members.contains(&index) && members.iter().any(|&member| equivalent(member, index))
+                !current.contains(&index) && members.iter().any(|&member| equivalent(member, index))
             });
             if !needs_compatibility_dispatcher {
                 continue;
@@ -661,10 +662,21 @@ fn plan_scopes<'a>(
                 .iter()
                 .flat_map(|(name, members)| members.iter().map(move |&index| (index, name.clone())))
                 .collect::<HashMap<_, _>>();
+            let borrowed = effective_groups[scope]
+                .iter()
+                .flat_map(|(name, members)| {
+                    members
+                        .iter()
+                        .copied()
+                        .filter(|index| primary_group_of[index] != *name)
+                })
+                .collect::<HashSet<_>>();
             let mut attribute_of = HashMap::new();
             for (name, members) in &groups[scope] {
                 let ordered = dispatch_order(members);
-                let names = if effective_groups[scope][name].len() == 1 {
+                let names = if effective_groups[scope][name].len() == 1
+                    && members.iter().all(|index| !borrowed.contains(index))
+                {
                     vec![name.clone()]
                 } else {
                     private_overload_names(name, ordered.iter().map(|&index| entries[index].method))
@@ -1284,9 +1296,15 @@ mod tests {
             choose
                 .candidates
                 .iter()
-                .map(|candidate| (candidate.interface.name.as_str(), candidate.define))
+                .map(|candidate| {
+                    (
+                        candidate.interface.name.as_str(),
+                        candidate.attribute.as_str(),
+                        candidate.define,
+                    )
+                })
                 .collect::<Vec<_>>(),
-            [("IFirst", true)]
+            [("IFirst", "_choose_6", true)]
         );
         assert_eq!(
             pick.candidates
@@ -1299,8 +1317,35 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>(),
-            [("IFirst", "choose", false), ("ISecond", "_pick_6", true),],
+            [("IFirst", "_choose_6", false), ("ISecond", "_pick_6", true),],
             "pick() must still call IFirst first, while ISecond.Pick remains projected"
+        );
+    }
+
+    #[test]
+    fn compatibility_dispatcher_pins_exact_target_within_a_canonical_group() {
+        let first = interface(
+            "IFirst",
+            vec![overload("Foo", "Foo", 6, &[("value", TypeMeta::String)])],
+        );
+        let second = interface(
+            "ISecond",
+            vec![overload("Bar", "Foo", 6, &[("value", TypeMeta::String)])],
+        );
+        let plans = plan_scopes(&[vec![&first, &second]], &HashSet::new());
+        let foo = plans[0]
+            .groups
+            .iter()
+            .find(|group| group.name == "foo")
+            .unwrap();
+
+        assert_eq!(
+            foo.candidates
+                .iter()
+                .map(|candidate| candidate.interface.name.as_str())
+                .collect::<Vec<_>>(),
+            ["IFirst", "ISecond"],
+            "Foo must keep the exact IFirst target first even though Bar sorts before Foo"
         );
     }
 

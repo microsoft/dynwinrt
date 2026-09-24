@@ -556,6 +556,7 @@ pub(crate) fn generate_instance_method_group<'a>(
         })
         .collect::<Vec<_>>();
     let mut out = String::new();
+    let public_name = &group.name;
     for (overload, attribute, define) in &overloads {
         if *define {
             out.push_str(&generate_method_body(
@@ -569,6 +570,9 @@ pub(crate) fn generate_instance_method_group<'a>(
             ));
         }
         if overloads.len() == 1 {
+            if *attribute != public_name {
+                out.push_str(&format!("\n    {public_name} = {attribute}\n"));
+            }
             return out;
         }
         if *define {
@@ -576,7 +580,6 @@ pub(crate) fn generate_instance_method_group<'a>(
         }
     }
 
-    let public_name = &group.name;
     out.push_str(&format!("    def {public_name}(self, *args, **kwargs):\n"));
     let public_params = get_in_params(group.candidates[0].method);
     out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
@@ -645,6 +648,7 @@ pub(crate) fn generate_static_method_group<'a>(
         })
         .collect::<Vec<_>>();
     let mut out = String::new();
+    let public_name = &group.name;
     for (overload, attribute, define) in &overloads {
         if *define {
             out.push_str(&match overload.kind {
@@ -665,6 +669,9 @@ pub(crate) fn generate_static_method_group<'a>(
             });
         }
         if overloads.len() == 1 {
+            if *attribute != public_name {
+                out.push_str(&format!("\n    {public_name} = {attribute}\n"));
+            }
             return out;
         }
         if *define {
@@ -672,7 +679,6 @@ pub(crate) fn generate_static_method_group<'a>(
         }
     }
 
-    let public_name = &group.name;
     out.push_str("    @staticmethod\n");
     out.push_str(&format!("    def {public_name}(*args, **kwargs):\n"));
     let public_params = get_in_params(group.candidates[0].method);
@@ -1015,6 +1021,37 @@ mod tests {
         assert_eq!(code.matches("def _register_6_").count(), 2, "{code}");
         assert!(code.contains("self._register_6_0(*_bound)"), "{code}");
         assert!(code.contains("self._register_6_1(*_bound)"), "{code}");
+    }
+
+    #[test]
+    fn shared_single_candidate_uses_a_private_implementation() {
+        let method = overloaded_method("Choose", 6, TypeMeta::String);
+        let interface = interface("IChooser", &[&method]);
+        let group = MethodGroup {
+            name: "choose".into(),
+            candidates: vec![Candidate {
+                interface: &interface,
+                method: &method,
+                attribute: "_choose_6".into(),
+                define: true,
+            }],
+        };
+
+        let code = generate_instance_method_group(
+            &group,
+            |candidate| InstanceOverload {
+                iface_var: "_IChooser".into(),
+                obj_expr: "self._obj".into(),
+                method: candidate.method,
+                sibling_methods: None,
+                property_has_getter: true,
+            },
+            &PythonProjectionContext::default(),
+        );
+
+        assert!(code.contains("def _choose_6(self, value: str)"), "{code}");
+        assert!(code.contains("\n    choose = _choose_6\n"), "{code}");
+        assert!(!code.contains("def choose(self, value: str)"), "{code}");
     }
 
     fn enum_type(name: &str, is_flags: bool) -> TypeMeta {
