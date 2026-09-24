@@ -26,6 +26,7 @@ use crate::codegen::winrt::shared::structs::{
 
 use super::collections::{
     CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
+    projected_interface_kind,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
@@ -265,7 +266,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         return out;
     }
     let implementation = super::implementation::project(context, iface);
-    let collection_kind = interface_kind(iface);
+    let collection_kind = projected_interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     let has_projection = !iface.iid.is_empty() || iface.generic_piid.is_some();
     let has_factory = implementation.supported || (is_protocol && has_projection);
@@ -1255,7 +1256,7 @@ fn collection_protocol_stubs(
     context: &PythonProjectionContext,
     indent_spaces: usize,
 ) -> String {
-    let Some(kind) = interface_kind(iface) else {
+    let Some(kind) = projected_interface_kind(iface) else {
         return String::new();
     };
     let indent = " ".repeat(indent_spaces);
