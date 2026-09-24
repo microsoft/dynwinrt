@@ -144,6 +144,10 @@ of a dynamic projection.
       `unbox_object(raw, preserve_type=...)` and
       `to_winrt_object(value, property_type=...)`, covering every
       `PropertyType` with a payload; generated `Object` positions stay native.
+- [x] Offer `dynwinrt.values.object_value_view(map)`, an opt-in live view that
+      converts the values of maps that QueryInterface confirms as
+      `IMap`/`IMapView<String or Guid, Object>`; `view.raw` stays native.
+      JavaScript parity is still open.
 - [x] Declare non-suppressing runtime and generated context managers as
       `Literal[False]`.
 - [x] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.

@@ -286,6 +286,52 @@ wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
 `DynWinRTValue`. Do not call the internal `_from_native()` method from
 application code.
 
+### Views of `Object`-valued maps
+
+`dynwinrt.values.object_value_view(mapping, *, preserve_type=False)` is an
+opt-in view that applies these conversions to the values of a generated map
+whose values are `Object`: `PropertySet`, `ValueSet`,
+`DeviceInformation.properties`, the map returned by
+`StorageItemContentProperties.retrieve_properties_async()`, and other
+`IMap<K, Object>` or `IMapView<K, Object>` maps with `str` or `uuid.UUID`
+keys:
+
+```python
+from dynwinrt.values import UInt32, object_value_view
+
+view = object_value_view(properties)
+view["count"] = 5                    # to_winrt_object(5): Int32
+view["port"] = UInt32(8080)          # UInt32
+count = view["count"]                # 5
+box = view.raw["count"]              # the native DynWinRTValue box
+```
+
+- The view is live: every operation goes to the map, and the view holds no
+  WinRT reference of its own. An `IMap` gets a `MutableObjectValueView`, a
+  `collections.abc.MutableMapping`; an `IMapView` gets a read-only
+  `ObjectValueView`, a `Mapping`.
+- Reads return `None` for WinRT null, a runtime object that is not a box as
+  its `DynWinRTValue`, and `unbox_object(value, preserve_type=preserve_type)`
+  for a box. Where `unbox_object` raises for a box without a Python form, the
+  view returns the box's `DynWinRTValue`, so `dict(view)` does not fail on one
+  odd entry: an unsupported `PropertyType` such as `OtherType` anywhere inside
+  the box, or a `DateTime` outside the range of `datetime`. Other errors
+  propagate. Each read returns a new `DynWinRTValue` for a runtime object, so
+  compare those with `identity_raw()`.
+- Writes store `to_winrt_object(value)` and raise its errors unchanged: a
+  plain `int` boxes as `Int32` only, and an empty or mixed list needs a typed
+  array or an explicit `property_type`.
+- `view.raw` is the generated map, which keeps returning native
+  `DynWinRTValue` objects. Use it to keep a box's COM identity: with
+  `preserve_type=True`, a value that is read and written back keeps its
+  `PropertyType`, but it is a new box.
+- `QueryInterface` confirms the map's value type, so other maps, such as
+  `StringMap` or `JsonObject`, raise `TypeError`; the type stubs reject them
+  too.
+- Generated `IPropertySet` wrappers, such as `ApplicationDataContainer.values`,
+  are not Python mappings. Pass
+  `container.values.as_interface(IMap_String_Object)` instead.
+
 ## COM apartments and cleanup
 
 Use `RoApartment` to initialize COM for a thread and balance every successful

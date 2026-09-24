@@ -1768,6 +1768,179 @@ async def run_check(
                 print('  skipped DeviceInformation.properties string: no device exposes one')
             cr['pass'] = True
 
+        elif kind == 'object_value_view_maps':
+            from datetime import datetime, timedelta, timezone
+
+            v = dw.values
+            kinds = v.PropertyType
+            property_value_iid = dw.WinGUID.parse('4bd682dd-7554-40e9-9a9b-82654ede7e62')
+
+            def stored_type(raw):
+                view = raw.cast(property_value_iid)
+                try:
+                    return view.call_0(6, dw.DynWinRTType.i32_type()).to_number()
+                finally:
+                    view.release()
+
+            moment = datetime(2024, 5, 6, 7, 8, 9, 123456, tzinfo=timezone(timedelta(hours=2)))
+            writes = [
+                # (key, value, PropertyType, value read back)
+                ('count', 5, kinds.Int32, 5),
+                ('name', 'text', kinds.String, 'text'),
+                ('when', moment, kinds.DateTime, moment),
+                ('port', v.UInt32(8080), kinds.UInt32, 8080),
+                ('sizes', v.UInt16Array([1, 2]), kinds.UInt16Array, [1, 2]),
+            ]
+            expected = {key: read for key, _, _, read in writes}
+            expected['empty'] = None
+            for mapping in (obj, generated_type(pkg_name, 'ValueSet')()):
+                label = type(mapping).__name__
+                view = v.object_value_view(mapping)
+                if type(view) is not v.MutableObjectValueView or view.raw is not mapping:
+                    cr['error'] = f'{label}: object_value_view returned {view!r}'
+                    return cr
+                for key, value, kind_, read in writes:
+                    view[key] = value
+                    stored = stored_type(mapping[key])
+                    if stored != kind_ or view[key] != read:
+                        cr['error'] = f'{label}: {value!r} was stored as {stored}'
+                        return cr
+                view['empty'] = None
+                if mapping['empty'] is not None or dict(view) != expected or view != expected:
+                    cr['error'] = f'{label}: the view reads {dict(view)!r}'
+                    return cr
+                view.update({'extra': 1.5}, other=True)
+                if (
+                    view.setdefault('count', 9) != 5
+                    or view.setdefault('small', v.Int16(3)) != 3
+                    or stored_type(mapping['small']) != kinds.Int16
+                    or view.pop('extra') != 1.5
+                    or view.pop('extra', None) is not None
+                ):
+                    cr['error'] = f'{label}: update, setdefault or pop failed'
+                    return cr
+                del view['other']
+                if 'other' in view or 'extra' in mapping or len(view) != len(expected) + 1:
+                    cr['error'] = f'{label}: deletion did not reach the map'
+                    return cr
+
+                exact = v.object_value_view(mapping, preserve_type=True)
+                box = mapping['port']
+                if type(exact['port']) is not v.UInt32:
+                    cr['error'] = f'{label}: preserve_type read {exact["port"]!r}'
+                    return cr
+                exact['port'] = exact['port']
+                if (
+                    stored_type(mapping['port']) != kinds.UInt32
+                    or mapping['port'].identity_raw() == box.identity_raw()
+                ):
+                    cr['error'] = f'{label}: writing back did not create a UInt32 box'
+                    return cr
+                invalid = ((2**31, OverflowError), ([], TypeError), ([1, 'a'], TypeError))
+                for bad, error_type in invalid:
+                    try:
+                        view['bad'] = bad
+                    except error_type:
+                        continue
+                    cr['error'] = f'{label}: writing {bad!r} did not raise {error_type.__name__}'
+                    return cr
+                if 'bad' in view:
+                    cr['error'] = f'{label}: a failed write changed the map'
+                    return cr
+
+            view = v.object_value_view(obj)
+            uri = generated_type(pkg_name, 'Uri')('https://example.com/view')
+            view['uri'] = uri
+            if view['uri'].identity_raw() != uri._obj.identity_raw():
+                cr['error'] = 'a runtime object lost its COM identity'
+                return cr
+            read_only = v.object_value_view(obj.get_view())
+            if type(read_only) is not v.ObjectValueView or read_only['count'] != 5:
+                cr['error'] = f'the IMapView view read {dict(read_only)!r}'
+                return cr
+
+            try:
+                v.object_value_view(generated_type(pkg_name, 'StringMap')())
+                cr['error'] = 'a StringMap was accepted'
+                return cr
+            except TypeError as error:
+                if 'not a WinRT map with Object values' not in str(error):
+                    raise
+            interface = obj.as_interface(generated_type(pkg_name, 'IPropertySet'))
+            try:
+                v.object_value_view(interface)
+                cr['error'] = 'an IPropertySet wrapper was accepted'
+                return cr
+            except TypeError as error:
+                if 'as_interface(IMap_String_Object)' not in str(error):
+                    raise
+            through = v.object_value_view(
+                interface.as_interface(generated_type(pkg_name, 'IMap_String_Object'))
+            )
+            through['through'] = 7
+            if view['through'] != 7:
+                cr['error'] = 'the IPropertySet workaround did not reach the map'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'object_value_view_storage_properties':
+            from datetime import datetime
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix='dynwinrt-view-') as temp_dir:
+                path = Path(temp_dir) / 'sample.txt'
+                path.write_bytes(b'dynwinrt' * 3)
+                storage_file = await getattr(cls, member)(str(path))
+                properties = await storage_file.properties.retrieve_properties_async(
+                    ['System.Size', 'System.DateModified']
+                )
+                view = dw.values.object_value_view(properties)
+                exact = dw.values.object_value_view(properties, preserve_type=True)
+                converted = dict(view)
+                if (
+                    type(view) is not dw.values.MutableObjectValueView
+                    or view.raw is not properties
+                    or set(converted) != {'System.Size', 'System.DateModified'}
+                    or type(converted['System.Size']) is not int
+                    or converted['System.Size'] != 24
+                    or not isinstance(converted['System.DateModified'], datetime)
+                ):
+                    cr['error'] = f'the properties view read {converted!r}'
+                elif type(exact['System.Size']) is not dw.values.UInt64:
+                    cr['error'] = f'System.Size preserved as {exact["System.Size"]!r}'
+                else:
+                    exact['System.Size'] = exact['System.Size']
+                    written = dw.unbox_object(properties['System.Size'], preserve_type=True)
+                    if type(written) is not dw.values.UInt64 or written != 24:
+                        cr['error'] = f'System.Size was written back as {written!r}'
+                    else:
+                        cr['pass'] = True
+
+        elif kind == 'object_value_view_device_properties':
+            devices = await getattr(cls, member)()
+            checked = 0
+            for device in devices:
+                properties = device.properties
+                view = dw.values.object_value_view(properties)
+                if type(view) is not dw.values.ObjectValueView or view.raw is not properties:
+                    cr['error'] = f'DeviceInformation.properties view is {view!r}'
+                    return cr
+                converted = dict(view)
+                if set(converted) != set(properties) or len(view) != len(properties):
+                    cr['error'] = 'the device properties view lost keys'
+                    return cr
+                name = converted.get('System.ItemNameDisplay')
+                if name is not None and type(name) is not str:
+                    cr['error'] = f'System.ItemNameDisplay read as {name!r}'
+                    return cr
+                checked += 1
+                if checked == 20:
+                    break
+            if not checked:
+                print('  skipped DeviceInformation.properties view: no devices')
+            cr['pass'] = True
+
         elif kind == 'bitmap_encoder_async_create':
             stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')
             stream = (

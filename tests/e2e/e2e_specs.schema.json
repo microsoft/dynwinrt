@@ -104,7 +104,10 @@
              "generated_helper_matrix",
              "object_value_roundtrip",
              "object_value_storage_properties",
-             "object_value_device_properties"
+             "object_value_device_properties",
+             "object_value_view_maps",
+             "object_value_view_storage_properties",
+             "object_value_view_device_properties"
            ]
          },
          "member": { "type": "string", "description": "Property or method name (snake_case)" },
