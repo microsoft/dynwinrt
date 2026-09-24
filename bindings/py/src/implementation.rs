@@ -20,7 +20,7 @@ use windows::core::{Error, HRESULT};
 use crate::errors::map_windows_error;
 use crate::runtime::{
     DynWinRTMethodSig, DynWinRTType, DynWinRTValue, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID,
-    wrap_python_callback_context,
+    native_outputs, wrap_python_callback_context,
 };
 
 const RO_E_CLOSED: HRESULT = HRESULT(0x80000013_u32 as i32);
@@ -210,11 +210,7 @@ impl CallbackCell {
                     .collect::<PyResult<Vec<_>>>()?;
                 let inputs = PyList::new(py, inputs)?;
                 let outputs = callback.call1(py, (interface_index, vtable_index, inputs))?;
-                Ok(outputs
-                    .extract::<Vec<DynWinRTValue>>(py)?
-                    .into_iter()
-                    .map(|value| value.0)
-                    .collect())
+                native_outputs("implementation callback", outputs.extract(py)?)
             })();
             result.map_err(|error| {
                 let message = format!(

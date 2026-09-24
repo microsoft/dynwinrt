@@ -32,7 +32,7 @@ pub(crate) fn released_receiver_error() -> PyErr {
     PyRuntimeError::new_err(format!("This WinRT object {RELEASED_REASON}"))
 }
 
-/// Where a value was passed to an operation, with a 0-based index.
+/// Where a value was handed to native code, with a 0-based index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputSlot {
     Argument(usize),
@@ -40,6 +40,8 @@ pub(crate) enum InputSlot {
     Key(usize),
     Value(usize),
     Field(usize),
+    /// A value a Python callback returned to its native caller.
+    Output(usize),
 }
 
 impl std::fmt::Display for InputSlot {
@@ -50,6 +52,7 @@ impl std::fmt::Display for InputSlot {
             Self::Key(index) => ("key", index),
             Self::Value(index) => ("value", index),
             Self::Field(index) => ("field", index),
+            Self::Output(index) => ("output", index),
         };
         write!(f, "{slot} {index}")
     }

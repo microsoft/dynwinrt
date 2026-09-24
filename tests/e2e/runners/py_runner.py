@@ -580,8 +580,43 @@ async def run_check(
                     f'wrapper IReference roundtrip returned {actual!r}, '
                     f'expected {check["compatibility_value"]!r}'
                 )
-            else:
-                cr['pass'] = True
+                return cr
+
+            # A released wrapper is neither passed nor unboxed as a null
+            # reference. Generated struct IReference field setters share the
+            # module's unbox helper.
+            reason = (
+                'has been released (its projected_lifetime_scope() exited, or '
+                'release_projected() / DynWinRTValue.release() was called) and '
+                'can no longer be used.'
+            )
+            released_box = factory(check['compatibility_value'])
+            released = reference_cls.from_value(getattr(released_box, '_obj', released_box))
+            dw.release_projected(released)
+            unbox = importlib.import_module(
+                implementation_module_name(pkg_name, namespace, cls.__name__)
+            )._dynwinrt_unbox_reference
+            if unbox(None) is not None or unbox(reference) != check['compatibility_value']:
+                cr['error'] = 'IReference unbox helper changed a null or live value'
+                return cr
+            for label, use, expected in (
+                (
+                    'argument',
+                    lambda: setattr(obj, member, released),
+                    f'This WinRT object (argument 0 of invoke()) {reason}',
+                ),
+                ('unbox', lambda: unbox(released), f'This WinRT object {reason}'),
+            ):
+                try:
+                    use()
+                except RuntimeError as error:
+                    if str(error) != expected:
+                        cr['error'] = f'{label}: expected {expected!r}, got {str(error)!r}'
+                        return cr
+                else:
+                    cr['error'] = f'{label}: a released IReference was accepted'
+                    return cr
+            cr['pass'] = True
 
         elif kind == 'struct_roundtrip':
             struct_module = check.get(

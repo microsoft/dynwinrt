@@ -1275,6 +1275,15 @@ pub(crate) fn native_arguments(
     native_inputs(operation, args, InputSlot::Argument)
 }
 
+/// The native values a Python `operation` callback returned, rejecting
+/// released values instead of returning them as WinRT null.
+pub(crate) fn native_outputs(
+    operation: &str,
+    outputs: Vec<DynWinRTValue>,
+) -> PyResult<Vec<dynwinrt::WinRTValue>> {
+    native_inputs(operation, outputs, InputSlot::Output)
+}
+
 fn value_kind(value: &dynwinrt::WinRTValue) -> &'static str {
     use dynwinrt::WinRTValue;
     match value {
@@ -1442,6 +1451,7 @@ impl DynWinRTValue {
 
     #[staticmethod]
     fn box_reference(value: &DynWinRTValue, value_type: &DynWinRTType) -> PyResult<DynWinRTValue> {
+        value.check_input("DynWinRTValue.box_reference()", InputSlot::Argument(0))?;
         dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
             .map(DynWinRTValue::new)
             .map_err(map_dynwinrt_error)
@@ -1709,6 +1719,15 @@ impl DynWinRTValue {
 
     fn is_null(&self) -> bool {
         self.0.is_null_object()
+    }
+
+    /// Whether `release()` has run on this value, directly or through
+    /// `release_projected()` or a closing `projected_lifetime_scope()`.
+    ///
+    /// A released value is also `is_null()`; this tells it apart from a WinRT
+    /// null reference, which remains usable as a null input.
+    fn is_released(&self) -> bool {
+        matches!(self.1, Lifecycle::Released)
     }
 
     /// Release resources owned by this value and replace it with Null.

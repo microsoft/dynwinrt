@@ -183,7 +183,12 @@ def _dynwinrt_box_reference(value, value_type, wrap):
 def _dynwinrt_unbox_reference(value):
     raw = getattr(value, '_obj', None)
     if isinstance(raw, DynWinRTValue):
-        return None if raw.is_null() else value.value
+        # A released wrapper is not a null reference: reading its value raises.
+        # Runtimes without is_released() keep treating it as None.
+        is_released = getattr(raw, 'is_released', None)
+        if raw.is_null() and not (is_released is not None and is_released()):
+            return None
+        return value.value
     return value
 
 

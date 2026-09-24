@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+from uuid import uuid4
 
 import pytest
 
@@ -18,6 +19,9 @@ from dynwinrt import (
     RO_INIT_MULTITHREADED,
     RO_INIT_SINGLETHREADED,
     DynWinRTArray,
+    DynWinRTImplementation,
+    DynWinRTImplementationMethod,
+    DynWinRTInterfacePlan,
     DynWinRTMethodSig,
     DynWinRTStruct,
     DynWinRTType,
@@ -42,6 +46,7 @@ IID_IURI = WinGUID.parse("9E365E57-48B2-4160-956F-C7385120BBFC")
 IID_ISTRINGABLE = WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
 IID_TEST_DELEGATE = WinGUID.parse("5A0F1C3E-7B24-4D69-8E1F-2C3B4A5D6E7F")
 IID_IPROPERTY_VALUE_STATICS = WinGUID.parse("629BDBC8-D932-4FF4-96B9-8D96C5C1E858")
+PYTHON_EXCEPTION = -1594998779  # 0xA0EE4005
 RPC_E_CHANGED_MODE = -2147417850
 CO_E_NOTINITIALIZED = -2147221008
 NOT_INITIALIZED_HINT = (
@@ -305,6 +310,73 @@ def test_unbox_object_distinguishes_released_values_from_null():
         boxed.release()
         with pytest.raises(RuntimeError, match=released_argument(0, "unbox_object()")):
             unbox_object(boxed)
+
+
+def test_is_released_tells_released_values_from_winrt_null():
+    null = DynWinRTValue.null_value()
+    assert null.is_null() and not null.is_released()
+    value = DynWinRTValue.from_i32(1)
+    assert not value.is_released()
+    value.release()
+    value.release()
+    assert value.is_null() and value.is_released()
+
+
+def test_box_reference_rejects_released_values():
+    with RoApartment():
+        boxed = DynWinRTValue.box_reference(DynWinRTValue.from_i32(7), DynWinRTType.i32_type())
+        assert not boxed.is_null()
+        boxed.release()
+        released = DynWinRTValue.from_i32(7)
+        released.release()
+        with pytest.raises(
+            RuntimeError, match=released_argument(0, "DynWinRTValue.box_reference()")
+        ):
+            DynWinRTValue.box_reference(released, DynWinRTType.i32_type())
+
+
+def test_implementation_callbacks_reject_released_outputs(monkeypatch):
+    objects = DynWinRTType.object()
+    iid = WinGUID.parse(str(uuid4()))
+    # GetPair(out Object first) -> Object: one out parameter, then the result.
+    signature = DynWinRTMethodSig().add_out(objects).add_out(objects)
+    typ = DynWinRTType.register_interface("Tests.ReleasedOutputs", iid).add_method(
+        "GetPair", signature
+    )
+    plan = DynWinRTInterfacePlan.create(
+        "Tests.ReleasedOutputs", typ, [DynWinRTImplementationMethod("GetPair", 6, signature)]
+    )
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    with RoApartment():
+        live = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        outputs = [live, DynWinRTValue.null_value()]
+        owner = DynWinRTImplementation.create([plan], lambda _interface, _slot, _args: outputs)
+        canonical = owner.to_value()
+        view = canonical.cast(iid)
+        canonical.release()
+        try:
+            first, result = typ.method(6).invoke_all(view, [])
+            assert first.identity_raw() == live.identity_raw() and result.is_null()
+            first.release()
+
+            for position in (0, 1):
+                outputs = [live, DynWinRTValue.null_value()]
+                outputs[position] = _released_uri_value()
+                with pytest.raises(OSError) as caught:
+                    typ.method(6).invoke_all(view, [])
+                assert caught.value.winerror == PYTHON_EXCEPTION
+                expected = released_input(f"output {position}", "implementation callback")
+                assert re.match(expected, str(unraisable.pop().exc_value))
+                assert f"(output {position} of implementation callback)" in owner.take_error()
+            assert not unraisable
+
+            outputs = [DynWinRTValue.null_value(), DynWinRTValue.null_value()]
+            assert all(value.is_null() for value in typ.method(6).invoke_all(view, []))
+        finally:
+            view.release()
+            owner.dispose()
+            live.release()
 
 
 def test_delegate_invocation_rejects_released_receivers_and_arguments():
