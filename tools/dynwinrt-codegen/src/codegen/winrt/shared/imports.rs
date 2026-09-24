@@ -105,8 +105,11 @@ pub(crate) fn collect_used_generic_identities_from_class(class: &ClassMeta) -> V
 }
 
 /// `Invoke` signatures of the delegates an interface accepts as inputs. Python
-/// callback annotations name their parameter types.
-fn input_delegate_invokes(interface: &InterfaceMeta) -> impl Iterator<Item = &MethodMeta> {
+/// callback annotations name their parameter types, and callback adapters
+/// project those parameters.
+pub(crate) fn input_delegate_invokes(
+    interface: &InterfaceMeta,
+) -> impl Iterator<Item = &MethodMeta> {
     interface
         .implementation_metadata
         .delegates

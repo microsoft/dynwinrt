@@ -20,7 +20,7 @@ use crate::codegen::winrt::shared::imports::{
     collect_used_generic_identities_from_type,
 };
 use crate::codegen::winrt::shared::structs::{
-    collect_used_structs_from_class, collect_used_structs_from_iface,
+    collect_used_structs_from_class_and_callbacks, collect_used_structs_from_iface,
     collect_used_structs_from_struct,
 };
 
@@ -612,7 +612,7 @@ pub fn generate_class_stub(
     class: &ClassMeta,
     shared_iids: &HashSet<String>,
 ) -> String {
-    let used_structs = collect_used_structs_from_class(class);
+    let used_structs = collect_used_structs_from_class_and_callbacks(class);
     let context = context.for_class_module(class, &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
