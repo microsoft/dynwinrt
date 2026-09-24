@@ -102,6 +102,16 @@
       ]
     },
     {
+      "id": "python_released_projection_error",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "released_projection_error", "member": "host", "args": ["https://example.com/released"] }
+      ]
+    },
+    {
       "id": "calendar_default_ctor",
       "namespace": "Windows.Globalization",
       "class": "Calendar",

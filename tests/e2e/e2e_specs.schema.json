@@ -67,6 +67,7 @@
              "nullable_object_array_roundtrip",
              "interface_cast",
              "projection_identity",
+             "released_projection_error",
              "struct_roundtrip",
              "array_roundtrip",
              "static_string_length",

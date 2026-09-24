@@ -8,6 +8,29 @@ use pyo3::prelude::*;
 #[cfg(test)]
 pub(crate) static UNRAISABLE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+const RELEASED_REASON: &str = "its projected_lifetime_scope() exited or release_projected() \
+     was called. Use the object inside its scope, or don't release it.";
+
+/// A call on a value after `release()`, including release by its lifetime scope.
+pub(crate) fn released_receiver_error() -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "This WinRT object has been released: {RELEASED_REASON}"
+    ))
+}
+
+/// A released value passed as argument `position` (0-based) of `operation`.
+pub(crate) fn released_argument_error(operation: &str, position: usize) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "This WinRT object (argument {position} of {operation}) has been released: \
+         {RELEASED_REASON}"
+    ))
+}
+
+/// A live value of `kind` used where `operation` needs a WinRT object.
+pub(crate) fn non_object_receiver_error(operation: &str, kind: &str) -> PyErr {
+    PyRuntimeError::new_err(format!("{operation} requires an Object value, got {kind}"))
+}
+
 pub(crate) fn map_windows_error(error: windows::core::Error) -> PyErr {
     windows_error(error, None)
 }

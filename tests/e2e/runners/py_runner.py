@@ -341,6 +341,36 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'released_projection_error':
+            with dw.projected_lifetime_scope():
+                scoped = cls(*[literal_arg(a) for a in check.get('args', [])])
+            released = cls(*[literal_arg(a) for a in check.get('args', [])])
+            dw.release_projected(released)
+            live = cls(*[literal_arg(a) for a in check.get('args', [])])
+            uses = (
+                ('scope exit', lambda: getattr(scoped, member)),
+                ('release_projected', lambda: getattr(released, member)),
+                ('interface cast', released.to_string),
+                ('argument', lambda: live.equals(released)),
+            )
+            for label, use in uses:
+                try:
+                    use()
+                except RuntimeError as error:
+                    message = str(error)
+                    if (
+                        'has been released' not in message
+                        or 'projected_lifetime_scope()' not in message
+                        or 'release_projected()' not in message
+                    ):
+                        cr['error'] = f'{label}: unclear released-object error: {message}'
+                        return cr
+                else:
+                    cr['error'] = f'{label}: released projection allowed a WinRT call'
+                    return cr
+            dw.release_projected(live)
+            cr['pass'] = True
+
         elif kind == 'narrow_integer_overflow':
             cases = (
                 ('create_uint8', (256,)),
