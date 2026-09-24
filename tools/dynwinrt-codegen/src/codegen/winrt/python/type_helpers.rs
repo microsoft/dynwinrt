@@ -946,6 +946,136 @@ mod tests {
     }
 
     #[test]
+    fn stub_outputs_are_non_null_except_policy_exceptions() {
+        let widget = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: None,
+        };
+        let interface = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "IWidget".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let unknown = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "NotGenerated".into(),
+            default_interface: None,
+        };
+        let context = PythonProjectionContext::standalone([
+            widget.type_identity(),
+            interface.type_identity(),
+        ])
+        .unwrap();
+        let widgets = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVectorView`1".into(),
+            piid: crate::codegen::winrt::python::collections::IVECTOR_VIEW_PIID.into(),
+            args: vec![widget.clone()],
+        };
+        let stub = AnnotationSurface::Stub;
+        let async_of = |typ: &TypeMeta| TypeMeta::AsyncOperation(Box::new(typ.clone()));
+        let method = |raw_name: &str, params: Vec<ParamMeta>, return_type: TypeMeta| MethodMeta {
+            name: raw_name.into(),
+            raw_name: raw_name.into(),
+            params,
+            return_type: Some(return_type),
+            ..Default::default()
+        };
+
+        assert_eq!(returned(&widget, stub, &context), "Widget");
+        assert_eq!(returned(&interface, stub, &context), "IWidget");
+        assert_eq!(returned(&unknown, stub, &context), "DynWinRTValue");
+        assert_eq!(
+            returned(&TypeMeta::Array(Box::new(widget.clone())), stub, &context),
+            "list[Widget]"
+        );
+        assert_eq!(
+            returned(&async_of(&widget), stub, &context),
+            "WinRTCoroutine[Widget]"
+        );
+        assert_eq!(
+            returned(&async_of(&widgets), stub, &context),
+            "WinRTCoroutine[Sequence[Widget]]"
+        );
+        assert_eq!(
+            returned(&TypeMeta::Object, stub, &context),
+            "DynWinRTValue | None"
+        );
+        assert_eq!(py_property_type(&widget, stub, &context), "Widget");
+        assert_eq!(py_collection_item_type(&widget, stub, &context), "Widget");
+        assert_eq!(
+            py_collection_base_type("Sequence", std::slice::from_ref(&widget), stub, &context),
+            Some("Sequence[Widget]".to_string())
+        );
+
+        let get_item = method("GetItemAsync", vec![], async_of(&widget));
+        let try_get_item = method("TryGetItemAsync", vec![], async_of(&widget));
+        let try_get_items = method("TryGetItemsAsync", vec![], async_of(&widgets));
+        let try_parse = method(
+            "TryParse",
+            vec![
+                ParamMeta {
+                    name: "input".into(),
+                    typ: TypeMeta::String,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "result".into(),
+                    typ: widget.clone(),
+                    direction: ParamDirection::Out,
+                },
+            ],
+            TypeMeta::Bool,
+        );
+        for (method, stub_type, runtime_type) in [
+            (
+                &get_item,
+                "WinRTCoroutine[Widget]",
+                "WinRTCoroutine[Widget | None]",
+            ),
+            (
+                &try_get_item,
+                "WinRTCoroutine[Widget | None]",
+                "WinRTCoroutine[Widget | None]",
+            ),
+            (
+                &try_get_items,
+                "WinRTCoroutine[Sequence[Widget] | None]",
+                "WinRTCoroutine[Sequence[Widget | None] | None]",
+            ),
+            (
+                &try_parse,
+                "tuple[Widget | None, bool]",
+                "tuple[Widget | None, bool]",
+            ),
+        ] {
+            assert_eq!(py_method_return_type(method, stub, &context), stub_type);
+            assert_eq!(
+                py_method_return_type(method, AnnotationSurface::Runtime, &context),
+                runtime_type
+            );
+        }
+
+        let create = method("CreateWidget", vec![], widget.clone());
+        let try_create = method("TryCreateWidget", vec![], widget.clone());
+        for surface in [AnnotationSurface::Runtime, stub] {
+            assert_eq!(
+                py_factory_return_type("Widget", &create, surface, &context),
+                "'Widget'"
+            );
+        }
+        assert_eq!(
+            py_factory_return_type("Widget", &try_create, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_factory_return_type("Widget", &try_create, AnnotationSurface::Runtime, &context),
+            "'Widget'"
+        );
+    }
+
+    #[test]
     fn delegate_inputs_accept_callables_and_runtime_values() {
         let param = ParamMeta {
             name: "handler".into(),

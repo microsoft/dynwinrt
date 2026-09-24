@@ -328,10 +328,11 @@ pub(super) fn emit_method_stub_named(
         } else {
             format!("self, {}", py_params)
         };
-        // WinRT vectors may reject null on mutation while returning null
-        // interface elements. That asymmetric native contract cannot satisfy
-        // MutableSequence[T | None]'s append signature exactly. Empty
-        // structural protocols can make mypy consider the override compatible.
+        // `append` takes the projected input annotation, which can differ from
+        // the element annotation of the MutableSequence base: WinRT vectors
+        // may reject null on mutation, while `Object` elements are read back
+        // as `DynWinRTValue | None`. Empty structural protocols can make mypy
+        // consider the override compatible.
         let override_ignore = if overrides_mutable_sequence
             && method_name == "append"
             && in_params.first().is_some_and(|param| {

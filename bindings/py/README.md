@@ -19,6 +19,31 @@ Generated package manifests pin `dynwinrt` to the exact version of
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
 
+### Nullability in type stubs
+
+WinRT metadata does not record which values can be null, and most APIs raise
+an exception instead of returning null. The generated `.pyi` stubs therefore
+type the values you receive as non-null by default: method and property
+results, async results, out values, and the elements, keys and values of
+returned collections. For example, `StorageFolder.create_file_async()` returns
+`WinRTCoroutine[StorageFile]` and `get_files_async()` returns
+`WinRTCoroutine[Sequence[StorageFile]]`.
+
+These values keep `| None`:
+
+- `IReference<T>` values, projected as `T | None` everywhere;
+- results of `Try*` members, such as `try_get_item_async()` or
+  `JsonObject.try_parse()`, where null means "not found";
+- `Object`/`IInspectable` values (`DynWinRTValue | None`) and delegate-typed
+  values, which are often null.
+
+Arguments keep accepting `None` where they did before. The stubs are
+optimistic, like the generated TypeScript declarations: the runtime still
+returns `None` when a WinRT API returns null, so check the API documentation
+when a result can legitimately be absent. The inline annotations of the
+generated `.py` modules, which `typing.get_type_hints()` and `--no-pyi` output
+expose, still mark every object result `| None`.
+
 ## Async WinRT operations
 
 Generated async methods return typed, asyncio-compatible operation objects:

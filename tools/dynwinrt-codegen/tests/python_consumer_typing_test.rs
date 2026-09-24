@@ -421,7 +421,7 @@ def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
     mapping[resource] = derived
     assert_type(vector[0], DynWinRTValue | None)
     assert_type(vector[:], list[DynWinRTValue | None])
-    assert_type(resources[0], Resource | None)
+    assert_type(resources[0], Resource)
     assert_type(mapping[resource], DynWinRTValue | None)
     del mapping[resource]
 "#,
@@ -811,6 +811,97 @@ print("collection-subscript-native-ok", flush=True)
             diagnostics(&output)
         );
     }
+}
+
+#[test]
+fn natural_sdk_consumers_need_no_none_guards() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping natural SDK consumers: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Foundation.Uri,Windows.Foundation.Collections.PropertySet,\
+             Windows.Data.Json.JsonObject,Windows.Globalization.Calendar,\
+             Windows.Security.Cryptography.CryptographicBuffer,\
+             Windows.Security.Cryptography.Core.HashAlgorithmProvider,\
+             Windows.Storage.StorageFolder,Windows.Storage.FileIO,\
+             Windows.Storage.Streams.DataReader,Windows.Storage.Streams.DataWriter,\
+             Windows.Storage.Streams.InMemoryRandomAccessStream",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    let imports = r#"from collections.abc import Sequence
+from typing import assert_type
+from dynwinrt import DynWinRTValue, WinRTCoroutine
+from sdk.windows.data.json import JsonObject
+from sdk.windows.foundation import Uri
+from sdk.windows.foundation.collections import PropertySet
+from sdk.windows.globalization import Calendar
+from sdk.windows.security.cryptography import CryptographicBuffer
+from sdk.windows.security.cryptography.core import HashAlgorithmProvider
+from sdk.windows.storage import CreationCollisionOption, FileIO, IStorageItem, StorageFile, StorageFolder
+from sdk.windows.storage.streams import DataReader, DataWriter, InMemoryRandomAccessStream
+"#;
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+def uri_demo() -> str:
+    uri = Uri("https://example.com/a/b?x=1&y=two")
+    query = {{entry.name: entry.value for entry in uri.query_parsed}}
+    return uri.combine_uri("c/d").absolute_uri + str(query)
+
+def json_demo() -> list[str]:
+    parsed = JsonObject.parse('{{"tags": ["a", "b"]}}')
+    assert_type(JsonObject.try_parse("{{}}"), tuple[JsonObject | None, bool])
+    return [value.get_string() for value in parsed.get_named_array("tags")]
+
+def calendar_demo(calendar: Calendar) -> str:
+    languages: Sequence[str] = calendar.languages
+    return languages[0]
+
+def crypto_demo(data: bytes) -> str:
+    buffer = CryptographicBuffer.create_from_byte_array(data)
+    digest = HashAlgorithmProvider.open_algorithm("SHA256").hash_data(buffer)
+    return CryptographicBuffer.encode_to_hex_string(digest)
+
+def object_values(properties: PropertySet) -> DynWinRTValue | None:
+    assert_type(properties["count"], DynWinRTValue | None)
+    return properties.lookup("count")
+
+async def streams_demo() -> str:
+    stream = InMemoryRandomAccessStream()
+    writer = DataWriter(stream.get_output_stream_at(0))
+    writer.write_string("streamed text")
+    written = await writer.store_async()
+    reader = DataReader(stream.get_input_stream_at(0))
+    return reader.read_string(await reader.load_async(written))
+
+async def storage_demo(path: str) -> list[str]:
+    folder = await StorageFolder.get_folder_from_path_async(path)
+    file = await folder.create_file_async("notes.txt", CreationCollisionOption.ReplaceExisting)
+    await FileIO.write_text_async(file, "first line")
+    assert_type(folder.create_file_async("a.txt"), WinRTCoroutine[StorageFile])
+    assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
+    return [item.name for item in await folder.get_files_async()]
+"#
+        ),
+        &[],
+    );
 }
 
 #[test]
