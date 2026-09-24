@@ -98,7 +98,8 @@
       },
       "checks": [
         { "kind": "interface_cast", "member": "as_interface", "interface_module": "uri", "interface_class": "IStringable", "method": "to_string", "contains": "example.com" },
-        { "kind": "projection_identity", "member": "as_interface", "langs": ["py"], "interface_class": "IStringable" }
+        { "kind": "projection_identity", "member": "as_interface", "langs": ["py"], "interface_class": "IStringable" },
+        { "kind": "as_interface_rejects_runtime_class", "member": "as_interface", "langs": ["py"] }
       ]
     },
     {

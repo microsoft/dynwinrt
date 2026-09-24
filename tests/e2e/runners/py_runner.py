@@ -341,6 +341,18 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'as_interface_rejects_runtime_class':
+            try:
+                obj.as_interface(cls)
+            except TypeError as error:
+                expected = f'dynwinrt.project_as(obj, {cls.__name__})'
+                if expected not in str(error):
+                    cr['error'] = f'TypeError did not suggest {expected}: {error}'
+                else:
+                    cr['pass'] = True
+            else:
+                cr['error'] = 'as_interface() accepted a runtime class'
+
         elif kind == 'released_projection_error':
             with dw.projected_lifetime_scope():
                 scoped = cls(*[literal_arg(a) for a in check.get('args', [])])

@@ -231,8 +231,9 @@ inspectable, and other types) and native getter failures raise an exception.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
-`DynWinRTValue`. Do not call the internal `_from_native()` method from
-application code.
+`DynWinRTValue`. `as_interface()` accepts generated interface classes only;
+passing a runtime class raises `TypeError` that points to `project_as()`. Do not
+call the internal `_from_native()` method from application code.
 
 ## COM apartments and cleanup
 

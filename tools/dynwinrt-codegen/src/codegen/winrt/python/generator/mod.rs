@@ -53,7 +53,7 @@ from ._runtime import (
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
-    _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_as_interface, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
@@ -128,11 +128,26 @@ def _dynwinrt_can_cast(value, iid):
         return False
     projected.release()
     return True
+
+
+def _dynwinrt_as_interface(native, interface_class):
+    from_value = getattr(interface_class, 'from_value', None)
+    if from_value is not None:
+        return from_value(native)
+    name = getattr(interface_class, '__name__', type(interface_class).__name__)
+    if getattr(interface_class, '_dynwinrt_runtime_class_type', False) or getattr(
+        interface_class, '_dynwinrt_projectable_class_type', False
+    ):
+        raise TypeError(
+            f'as_interface() requires a generated interface class, but {name} is a '
+            f'runtime class. Use dynwinrt.project_as(obj, {name}) to cast to a runtime class.'
+        )
+    raise TypeError(f'as_interface() requires a generated interface class, not {name}.')
 \n";
 
 /// `as_interface()`, emitted for every generated class and interface view.
 const AS_INTERFACE_METHOD: &str = "    def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 ";
 
 pub fn generate_runtime_support_module() -> String {
