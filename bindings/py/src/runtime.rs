@@ -13,8 +13,8 @@ use windows::Win32::System::WinRT::{
 use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
 use crate::errors::{
-    map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error,
-    non_object_receiver_error, released_argument_error, released_receiver_error,
+    InputSlot, map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error,
+    non_object_receiver_error, released_input_error, released_receiver_error,
 };
 
 /// Shared MetadataTable — created once, used everywhere.
@@ -321,6 +321,8 @@ pub fn unbox_object(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Py<PyA
 
     let result = {
         let raw = value.extract::<PyRef<'_, DynWinRTValue>>()?;
+        // A released value is not a WinRT null; do not unbox it as `None`.
+        raw.check_input("unbox_object()", InputSlot::Argument(0))?;
         dynwinrt::unbox_property_value(&raw.0).map_err(map_dynwinrt_error)?
     };
     match result {
@@ -1239,13 +1241,30 @@ impl DynWinRTValue {
         }
     }
 
-    /// Reject this value as argument `position` of `operation` if released.
-    fn check_argument(&self, operation: &str, position: usize) -> PyResult<()> {
+    /// Reject this value if released; `slot` names where `operation` received it.
+    fn check_input(&self, operation: &str, slot: InputSlot) -> PyResult<()> {
         match self.1 {
             Lifecycle::Live => Ok(()),
-            Lifecycle::Released => Err(released_argument_error(operation, position)),
+            Lifecycle::Released => Err(released_input_error(operation, slot)),
         }
     }
+}
+
+/// The native values `operation` received, rejecting released values. `slot`
+/// maps each position to where it was passed, such as an argument or element.
+fn native_inputs(
+    operation: &str,
+    values: Vec<DynWinRTValue>,
+    slot: fn(usize) -> InputSlot,
+) -> PyResult<Vec<dynwinrt::WinRTValue>> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value.check_input(operation, slot(index))?;
+            Ok(value.0)
+        })
+        .collect()
 }
 
 /// The native arguments of `operation`, rejecting released values.
@@ -1253,13 +1272,7 @@ pub(crate) fn native_arguments(
     operation: &str,
     args: Vec<DynWinRTValue>,
 ) -> PyResult<Vec<dynwinrt::WinRTValue>> {
-    args.into_iter()
-        .enumerate()
-        .map(|(position, arg)| {
-            arg.check_argument(operation, position)?;
-            Ok(arg.0)
-        })
-        .collect()
+    native_inputs(operation, args, InputSlot::Argument)
 }
 
 fn value_kind(value: &dynwinrt::WinRTValue) -> &'static str {
@@ -1455,8 +1468,8 @@ impl DynWinRTValue {
         items: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
     ) -> PyResult<DynWinRTValue> {
+        let wrt_items = native_inputs("DynWinRTValue.create_vector()", items, InputSlot::Element)?;
         let iids = TABLE.vector_iids(&element_type.0);
-        let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
         let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
             .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(vector)))
@@ -1475,12 +1488,12 @@ impl DynWinRTValue {
                 "create_map: keys and values must have the same length",
             ));
         }
+        const OPERATION: &str = "DynWinRTValue.create_map()";
+        let keys = native_inputs(OPERATION, keys, InputSlot::Key)?;
+        let values = native_inputs(OPERATION, values, InputSlot::Value)?;
         let iids = TABLE.map_iids(&key_type.0, &value_type.0);
-        let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> = keys
-            .iter()
-            .zip(values.iter())
-            .map(|(key, value)| (key.0.clone(), value.0.clone()))
-            .collect();
+        let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> =
+            keys.into_iter().zip(values).collect();
         let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
             .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(map)))
@@ -1769,7 +1782,7 @@ impl DynWinRTValue {
         v1: &DynWinRTValue,
     ) -> PyResult<DynWinRTValue> {
         let obj_raw = self.com_receiver("call_1()")?.as_raw();
-        v1.check_argument("call_1()", 0)?;
+        v1.check_input("call_1()", InputSlot::Argument(0))?;
         let in_type = TABLE.handle_from_kind(v1.0.get_type_kind());
         let method = dynwinrt::MethodSignature::new(&*TABLE)
             .add_in(in_type)
@@ -1849,6 +1862,20 @@ impl DynWinRTValue {
 #[pyclass(unsendable, from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTArray(dynwinrt::ArrayData);
+
+impl DynWinRTArray {
+    fn from_elements(
+        operation: &str,
+        values: Vec<DynWinRTValue>,
+        element_type: &DynWinRTType,
+    ) -> PyResult<Self> {
+        let values = native_inputs(operation, values, InputSlot::Element)?;
+        Ok(Self(dynwinrt::ArrayData::from_values(
+            element_type.0.clone(),
+            &values,
+        )))
+    }
+}
 
 #[pymethods]
 impl DynWinRTArray {
@@ -2055,13 +2082,11 @@ impl DynWinRTArray {
     }
 
     #[staticmethod]
-    fn from_values(values: Vec<DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
-        let values: Vec<dynwinrt::WinRTValue> =
-            values.iter().map(|value| value.0.clone()).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(
-            element_type.0.clone(),
-            &values,
-        ))
+    fn from_values(
+        values: Vec<DynWinRTValue>,
+        element_type: &DynWinRTType,
+    ) -> PyResult<DynWinRTArray> {
+        Self::from_elements("DynWinRTArray.from_values()", values, element_type)
     }
 
     /// Build a DynWinRTArray of WinRT object/interface elements.
@@ -2074,8 +2099,8 @@ impl DynWinRTArray {
     fn from_object_values(
         values: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
-    ) -> DynWinRTArray {
-        Self::from_values(values, element_type)
+    ) -> PyResult<DynWinRTArray> {
+        Self::from_elements("DynWinRTArray.from_object_values()", values, element_type)
     }
 
     /// Return the u8 array data as a Python `bytes` object. Safe for both
@@ -2344,6 +2369,7 @@ impl DynWinRTStruct {
 
     fn set_object(&mut self, index: i64, value: &DynWinRTValue) -> PyResult<()> {
         let index = checked_index(index)?;
+        value.check_input("DynWinRTStruct.set_object()", InputSlot::Field(index))?;
         match &value.0 {
             dynwinrt::WinRTValue::Object(obj) => self
                 .0

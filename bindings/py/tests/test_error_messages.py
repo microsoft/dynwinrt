@@ -17,7 +17,9 @@ import dynwinrt
 from dynwinrt import (
     RO_INIT_MULTITHREADED,
     RO_INIT_SINGLETHREADED,
+    DynWinRTArray,
     DynWinRTMethodSig,
+    DynWinRTStruct,
     DynWinRTType,
     DynWinRTValue,
     DynWinRtDelegate,
@@ -27,6 +29,7 @@ from dynwinrt import (
     release_projected,
     ro_initialize,
     ro_uninitialize,
+    unbox_object,
 )
 from dynwinrt.dynwinrt import (
     _dynwinrt_cache_projected,
@@ -38,6 +41,7 @@ IID_IURI_FACTORY = WinGUID.parse("44A9796F-723E-4FDF-A218-033E75B0C084")
 IID_IURI = WinGUID.parse("9E365E57-48B2-4160-956F-C7385120BBFC")
 IID_ISTRINGABLE = WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
 IID_TEST_DELEGATE = WinGUID.parse("5A0F1C3E-7B24-4D69-8E1F-2C3B4A5D6E7F")
+IID_IPROPERTY_VALUE_STATICS = WinGUID.parse("629BDBC8-D932-4FF4-96B9-8D96C5C1E858")
 RPC_E_CHANGED_MODE = -2147417850
 CO_E_NOTINITIALIZED = -2147221008
 NOT_INITIALIZED_HINT = (
@@ -66,11 +70,15 @@ _STRINGABLE = DynWinRTType.register_interface(
 ).add_method("ToString", DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
 
 
-def released_argument(position, operation):
+def released_input(slot, operation):
     return (
-        rf"^This WinRT object \(argument {position} of {re.escape(operation)}\) "
+        rf"^This WinRT object \({slot} of {re.escape(operation)}\) "
         rf"{RELEASED_REASON}"
     )
+
+
+def released_argument(position, operation):
+    return released_input(f"argument {position}", operation)
 
 
 class ProjectedUri:
@@ -222,6 +230,81 @@ def test_released_arguments_are_rejected_by_position():
 
         release_projected(uri)
         release_projected(other)
+
+
+def test_released_values_nested_in_inputs_are_rejected_by_position():
+    with RoApartment():
+        live = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        released = _released_uri_value()
+        key = DynWinRTValue.from_hstring("key")
+        objects = DynWinRTType.object()
+        try:
+            vector = DynWinRTValue.create_vector([live, DynWinRTValue.null_value()], objects)
+            vector.release()
+            with pytest.raises(
+                RuntimeError,
+                match=released_input("element 1", "DynWinRTValue.create_vector()"),
+            ):
+                DynWinRTValue.create_vector([live, released], objects)
+
+            strings = DynWinRTType.hstring()
+            mapping = DynWinRTValue.create_map([key], [live], strings, objects)
+            mapping.release()
+            with pytest.raises(
+                RuntimeError, match=released_input("key 0", "DynWinRTValue.create_map()")
+            ):
+                DynWinRTValue.create_map([released], [live], objects, objects)
+            with pytest.raises(
+                RuntimeError, match=released_input("value 1", "DynWinRTValue.create_map()")
+            ):
+                DynWinRTValue.create_map(
+                    [key, DynWinRTValue.from_hstring("other")],
+                    [live, released],
+                    strings,
+                    objects,
+                )
+
+            for operation, build in (
+                ("DynWinRTArray.from_values()", DynWinRTArray.from_values),
+                ("DynWinRTArray.from_object_values()", DynWinRTArray.from_object_values),
+            ):
+                assert len(build([live, DynWinRTValue.null_value()], objects)) == 2
+                with pytest.raises(RuntimeError, match=released_input("element 1", operation)):
+                    build([live, released], objects)
+
+            fields = DynWinRTStruct.create(
+                DynWinRTType.struct_type("Tests.ReleasedObjectField", [objects])
+            )
+            fields.set_object(0, live)
+            fields.set_object(0, DynWinRTValue.null_value())
+            assert fields.get_object(0).is_null()
+            with pytest.raises(
+                RuntimeError, match=released_input("field 0", "DynWinRTStruct.set_object()")
+            ):
+                fields.set_object(0, released)
+        finally:
+            live.release()
+
+
+def test_unbox_object_distinguishes_released_values_from_null():
+    assert unbox_object(None) is None
+    assert unbox_object(DynWinRTValue.null_value()) is None
+    with RoApartment():
+        statics = DynWinRTValue.activation_factory("Windows.Foundation.PropertyValue").cast(
+            IID_IPROPERTY_VALUE_STATICS
+        )
+        # IPropertyValueStatics.CreateString is vtable slot 18.
+        boxed = statics.call(
+            18,
+            DynWinRTType.object(),
+            [DynWinRTType.hstring()],
+            [DynWinRTValue.from_hstring("boxed")],
+        )
+        statics.release()
+        assert unbox_object(boxed) == "boxed"
+        boxed.release()
+        with pytest.raises(RuntimeError, match=released_argument(0, "unbox_object()")):
+            unbox_object(boxed)
 
 
 def test_delegate_invocation_rejects_released_receivers_and_arguments():

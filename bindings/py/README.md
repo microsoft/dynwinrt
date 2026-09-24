@@ -490,11 +490,13 @@ with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
 
 Scopes nest in LIFO order. Wrappers that survive a closed scope remain Python
 objects, but their native values are released: using one afterwards, as the
-object of a call or as an argument, raises `RuntimeError` explaining that it
-was released, as it does after `release_projected(wrapper)`. Each scope is
-thread-affine: enter, use, and close it inside that thread's `RoApartment`.
-Same-thread asyncio tasks inherit the active scope, while worker threads must
-open their own ordered `with RoApartment(...), projected_lifetime_scope():`.
+object of a call, as an argument, or inside a sequence, mapping, array, or
+struct input, raises `RuntimeError` explaining that it was released, as it
+does after `release_projected(wrapper)` or `DynWinRTValue.release()`. Each
+scope is thread-affine: enter, use, and close it inside that thread's
+`RoApartment`. Same-thread asyncio tasks inherit the active scope, while worker
+threads must open their own ordered
+`with RoApartment(...), projected_lifetime_scope():`.
 Native callbacks invoked
 on a foreign thread preserve other captured context but do not inherit the
 creator thread's lifetime scope. This includes generated delegates, raw progress

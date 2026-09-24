@@ -32,10 +32,33 @@ pub(crate) fn released_receiver_error() -> PyErr {
     PyRuntimeError::new_err(format!("This WinRT object {RELEASED_REASON}"))
 }
 
-/// A released value passed as argument `position` (0-based) of `operation`.
-pub(crate) fn released_argument_error(operation: &str, position: usize) -> PyErr {
+/// Where a value was passed to an operation, with a 0-based index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputSlot {
+    Argument(usize),
+    Element(usize),
+    Key(usize),
+    Value(usize),
+    Field(usize),
+}
+
+impl std::fmt::Display for InputSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (slot, index) = match *self {
+            Self::Argument(index) => ("argument", index),
+            Self::Element(index) => ("element", index),
+            Self::Key(index) => ("key", index),
+            Self::Value(index) => ("value", index),
+            Self::Field(index) => ("field", index),
+        };
+        write!(f, "{slot} {index}")
+    }
+}
+
+/// A released value passed in `slot` of `operation`.
+pub(crate) fn released_input_error(operation: &str, slot: InputSlot) -> PyErr {
     PyRuntimeError::new_err(format!(
-        "This WinRT object (argument {position} of {operation}) {RELEASED_REASON}"
+        "This WinRT object ({slot} of {operation}) {RELEASED_REASON}"
     ))
 }
 
