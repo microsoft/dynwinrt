@@ -547,23 +547,33 @@ pub(crate) fn generate_instance_method_group<'a>(
     let overloads = group
         .candidates
         .iter()
-        .map(|candidate| (overload(candidate), candidate.attribute.as_str()))
+        .map(|candidate| {
+            (
+                overload(candidate),
+                candidate.attribute.as_str(),
+                candidate.define,
+            )
+        })
         .collect::<Vec<_>>();
     let mut out = String::new();
-    for (overload, attribute) in &overloads {
-        out.push_str(&generate_method_body(
-            &overload.iface_var,
-            &overload.obj_expr,
-            overload.method,
-            context,
-            Some(attribute),
-            overload.sibling_methods,
-            overload.property_has_getter,
-        ));
+    for (overload, attribute, define) in &overloads {
+        if *define {
+            out.push_str(&generate_method_body(
+                &overload.iface_var,
+                &overload.obj_expr,
+                overload.method,
+                context,
+                Some(attribute),
+                overload.sibling_methods,
+                overload.property_has_getter,
+            ));
+        }
         if overloads.len() == 1 {
             return out;
         }
-        out.push('\n');
+        if *define {
+            out.push('\n');
+        }
     }
 
     let public_name = &group.name;
@@ -572,7 +582,7 @@ pub(crate) fn generate_instance_method_group<'a>(
     out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
     let candidates = overloads
         .iter()
-        .map(|(overload, attribute)| DispatchCandidate {
+        .map(|(overload, attribute, _)| DispatchCandidate {
             params: get_in_params(overload.method),
             body: vec![format!("return self.{attribute}(*_bound)")],
         })
@@ -626,30 +636,40 @@ pub(crate) fn generate_static_method_group<'a>(
     let overloads = group
         .candidates
         .iter()
-        .map(|candidate| (overload(candidate), candidate.attribute.as_str()))
+        .map(|candidate| {
+            (
+                overload(candidate),
+                candidate.attribute.as_str(),
+                candidate.define,
+            )
+        })
         .collect::<Vec<_>>();
     let mut out = String::new();
-    for (overload, attribute) in &overloads {
-        out.push_str(&match overload.kind {
-            StaticOverloadKind::Factory => generate_factory_method_invoke_named(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-                Some(attribute),
-            ),
-            StaticOverloadKind::Static => generate_static_method_invoke_named(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-                Some(attribute),
-            ),
-        });
+    for (overload, attribute, define) in &overloads {
+        if *define {
+            out.push_str(&match overload.kind {
+                StaticOverloadKind::Factory => generate_factory_method_invoke_named(
+                    overload.class,
+                    overload.iface,
+                    overload.method,
+                    context,
+                    Some(attribute),
+                ),
+                StaticOverloadKind::Static => generate_static_method_invoke_named(
+                    overload.class,
+                    overload.iface,
+                    overload.method,
+                    context,
+                    Some(attribute),
+                ),
+            });
+        }
         if overloads.len() == 1 {
             return out;
         }
-        out.push('\n');
+        if *define {
+            out.push('\n');
+        }
     }
 
     let public_name = &group.name;
@@ -659,7 +679,7 @@ pub(crate) fn generate_static_method_group<'a>(
     out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
     let candidates = overloads
         .iter()
-        .map(|(overload, attribute)| DispatchCandidate {
+        .map(|(overload, attribute, _)| DispatchCandidate {
             params: get_in_params(overload.method),
             body: vec![format!(
                 "return {}.{attribute}(*_bound)",

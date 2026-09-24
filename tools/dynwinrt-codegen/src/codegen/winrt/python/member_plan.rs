@@ -79,6 +79,10 @@ pub(crate) struct Candidate<'a> {
     /// Attribute implementing this overload: the group name when it is the only
     /// candidate, otherwise its private dispatch name.
     pub(crate) attribute: String,
+    /// Whether this group defines the implementation attribute. Compatibility
+    /// dispatchers may also call an implementation defined by its canonical
+    /// CLR-name group.
+    pub(crate) define: bool,
 }
 
 /// Methods projected as one Python method, in dispatch order.
@@ -542,13 +546,14 @@ fn plan_scopes<'a>(
                 }
             }
         };
-        let covers = |members: &[usize], index: usize| {
+        let covers_exact = |members: &[usize], index: usize| members.contains(&index);
+        let covers_shape = |members: &[usize], index: usize| {
             members.iter().any(|&member| equivalent(member, index))
         };
         // Whether a new overload could take a call that reached `expected`.
         let takes_calls = |members: &[usize], expected: &[usize]| {
             members.iter().any(|&member| {
-                !covers(expected, member)
+                !covers_shape(expected, member)
                     && expected.iter().any(|&index| {
                         overloads_may_overlap(entries[member].method, entries[index].method)
                     })
@@ -562,7 +567,7 @@ fn plan_scopes<'a>(
                     // An existing public method keeps every overload it reached
                     // and gains none that could take its calls.
                     for &index in &expected {
-                        if covers(members, index) {
+                        if covers_exact(members, index) || covers_shape(members, index) {
                             continue;
                         }
                         if can_fall_back(members) {
@@ -612,7 +617,36 @@ fn plan_scopes<'a>(
         fallback.extend(blamed);
     };
 
-    let attributes = |name: &str, members: &[usize]| {
+    // An existing name can now be the documented name of a different,
+    // identically shaped interface method. Keep its old dispatcher exact by
+    // prepending the methods it previously dispatched to, while the same
+    // implementations remain available from their canonical CLR-name group.
+    let mut effective_groups = groups.clone();
+    let mut compatibility_dispatchers = BTreeSet::new();
+    for scope in 0..scopes.len() {
+        for (name, previous_key) in &existing[scope] {
+            let Some(members) = groups[scope].get(name) else {
+                continue;
+            };
+            let expected = reachable(&previous_groups[scope][previous_key]);
+            let needs_compatibility_dispatcher = expected.iter().any(|&index| {
+                !members.contains(&index) && members.iter().any(|&member| equivalent(member, index))
+            });
+            if !needs_compatibility_dispatcher {
+                continue;
+            }
+            let mut combined = dispatch_order(&previous_groups[scope][previous_key]);
+            let extras = dispatch_order(members)
+                .into_iter()
+                .filter(|index| !combined.contains(index))
+                .collect::<Vec<_>>();
+            combined.extend(extras);
+            effective_groups[scope].insert(name.clone(), combined);
+            compatibility_dispatchers.insert((scope, name.clone()));
+        }
+    }
+
+    let previous_attributes = |name: &str, members: &[usize]| {
         let ordered = dispatch_order(members);
         let names = if ordered.len() == 1 {
             vec![name.to_string()]
@@ -623,22 +657,44 @@ fn plan_scopes<'a>(
     };
     (0..scopes.len())
         .map(|scope| {
-            let mut ordered_groups = groups[scope].iter().collect::<Vec<_>>();
-            ordered_groups.sort_by_key(|(_, members)| members[0]);
+            let primary_group_of = groups[scope]
+                .iter()
+                .flat_map(|(name, members)| members.iter().map(move |&index| (index, name.clone())))
+                .collect::<HashMap<_, _>>();
+            let mut attribute_of = HashMap::new();
+            for (name, members) in &groups[scope] {
+                let ordered = dispatch_order(members);
+                let names = if effective_groups[scope][name].len() == 1 {
+                    vec![name.clone()]
+                } else {
+                    private_overload_names(name, ordered.iter().map(|&index| entries[index].method))
+                };
+                attribute_of.extend(ordered.into_iter().zip(names));
+            }
+
+            let mut ordered_groups = effective_groups[scope].iter().collect::<Vec<_>>();
+            ordered_groups.sort_by_key(|(name, _)| groups[scope][*name][0]);
             let mut plan_groups = Vec::with_capacity(ordered_groups.len());
             let mut group_of = HashMap::new();
-            let mut attribute_of = HashMap::new();
             for (position, (name, members)) in ordered_groups.into_iter().enumerate() {
-                let candidates = attributes(name, members)
+                let ordered = if compatibility_dispatchers.contains(&(scope, name.clone())) {
+                    members.clone()
+                } else {
+                    dispatch_order(members)
+                };
+                let candidates = ordered
                     .into_iter()
-                    .map(|(index, attribute)| {
+                    .map(|index| {
                         let entry = &entries[index];
-                        group_of.insert(entry.method as *const MethodMeta, position);
-                        attribute_of.insert(index, attribute.clone());
+                        let define = primary_group_of[&index] == *name;
+                        if define {
+                            group_of.insert(entry.method as *const MethodMeta, position);
+                        }
                         Candidate {
                             interface: entry.interface,
                             method: entry.method,
-                            attribute,
+                            attribute: attribute_of[&index].clone(),
+                            define,
                         }
                     })
                     .collect();
@@ -649,7 +705,7 @@ fn plan_scopes<'a>(
             }
             let previous_attributes = previous_groups[scope]
                 .iter()
-                .flat_map(|(name, members)| attributes(name, members))
+                .flat_map(|(name, members)| previous_attributes(name, members))
                 .map(|(index, attribute)| (entries[index].method as *const MethodMeta, attribute))
                 .collect();
             let aliases = existing[scope]
@@ -1168,12 +1224,84 @@ mod tests {
             groups,
             [
                 ("format", vec!["INumberFormatter", "INumberFormatter"]),
-                ("format_int", vec!["INumberFormatter2"]),
-                ("format_u_int", vec!["INumberFormatter2"]),
+                ("format_int", vec!["INumberFormatter", "INumberFormatter2"]),
+                (
+                    "format_u_int",
+                    vec!["INumberFormatter", "INumberFormatter2"]
+                ),
             ]
         );
+        for (name, canonical_attribute, real_attribute) in [
+            ("format_int", "_format_6", "_format_int_6"),
+            ("format_u_int", "_format_7", "_format_u_int_7"),
+        ] {
+            let group = plans[0]
+                .groups
+                .iter()
+                .find(|group| group.name == name)
+                .unwrap();
+            assert_eq!(
+                group
+                    .candidates
+                    .iter()
+                    .map(|candidate| (candidate.attribute.as_str(), candidate.define))
+                    .collect::<Vec<_>>(),
+                [(canonical_attribute, false), (real_attribute, true)]
+            );
+        }
         assert!(planned.aliases.is_empty(), "{planned:?}");
         assert!(planned.fallbacks.is_empty(), "{planned:?}");
+    }
+
+    #[test]
+    fn compatibility_dispatcher_keeps_the_exact_previously_selected_interface() {
+        let first = interface(
+            "IFirst",
+            vec![overload(
+                "Pick",
+                "Choose",
+                6,
+                &[("value", TypeMeta::String)],
+            )],
+        );
+        let second = interface(
+            "ISecond",
+            vec![overload("Pick", "Pick", 6, &[("value", TypeMeta::String)])],
+        );
+        let plans = plan_scopes(&[vec![&first, &second]], &HashSet::new());
+        let choose = plans[0]
+            .groups
+            .iter()
+            .find(|group| group.name == "choose")
+            .unwrap();
+        let pick = plans[0]
+            .groups
+            .iter()
+            .find(|group| group.name == "pick")
+            .unwrap();
+
+        assert_eq!(
+            choose
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.interface.name.as_str(), candidate.define))
+                .collect::<Vec<_>>(),
+            [("IFirst", true)]
+        );
+        assert_eq!(
+            pick.candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.interface.name.as_str(),
+                        candidate.attribute.as_str(),
+                        candidate.define,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [("IFirst", "choose", false), ("ISecond", "_pick_6", true),],
+            "pick() must still call IFirst first, while ISecond.Pick remains projected"
+        );
     }
 
     #[test]

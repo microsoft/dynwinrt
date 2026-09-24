@@ -481,6 +481,17 @@ fn real_classes_project_overloads_under_documented_clr_names() {
     for method in ["format_int", "format_u_int", "format_double"] {
         assert_eq!(members.get(method), Some(&single_definition()), "{runtime}");
     }
+    let format_int = member_body(runtime, "format_int");
+    assert!(
+        format_int.find("self._format_6(").unwrap()
+            < format_int.find("self._format_int_6(").unwrap(),
+        "the compatibility dispatcher must try the exact interface method that format_int used before CLR grouping:\n{runtime}"
+    );
+    assert_eq!(
+        runtime.matches("    def _format_6(").count(),
+        1,
+        "the canonical implementation should be defined once:\n{runtime}"
+    );
     assert!(
         runtime.contains("return _INumberFormatter2.method(6)"),
         "{runtime}"
