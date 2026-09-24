@@ -240,11 +240,14 @@ Use `RoApartment` to initialize COM for a thread and balance every successful
 initialization:
 
 ```python
-with RoApartment(0):  # RO_INIT_SINGLETHREADED
+from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment
+
+with RoApartment(RO_INIT_SINGLETHREADED):
     use_winrt()
 ```
 
-Use `RoApartment(1)` for `RO_INIT_MULTITHREADED`. Nested contexts using the same
+`RoApartment()` uses `RO_INIT_MULTITHREADED`, the same as
+`RoApartment(RO_INIT_MULTITHREADED)`. Nested contexts using the same
 model are supported. Requesting a conflicting model raises `OSError` with
 `RPC_E_CHANGED_MODE`. The low-level `ro_initialize()` API remains available, but
 each successful call, including `S_FALSE`, must be paired with one
@@ -473,9 +476,9 @@ Use a projection lifetime scope inside the COM apartment so wrappers release
 their native values before `RoUninitialize`:
 
 ```python
-from dynwinrt import RoApartment, projected_lifetime_scope
+from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment, projected_lifetime_scope
 
-with RoApartment(0), projected_lifetime_scope():
+with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
     app = Application.create()
     # Create and use WinUI objects here.
 ```

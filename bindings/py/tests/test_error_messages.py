@@ -4,10 +4,14 @@
 """Actionable errors for common runtime misuse."""
 
 import re
+import threading
 
 import pytest
 
+import dynwinrt
 from dynwinrt import (
+    RO_INIT_MULTITHREADED,
+    RO_INIT_SINGLETHREADED,
     DynWinRTMethodSig,
     DynWinRTType,
     DynWinRTValue,
@@ -16,6 +20,8 @@ from dynwinrt import (
     WinGUID,
     projected_lifetime_scope,
     release_projected,
+    ro_initialize,
+    ro_uninitialize,
 )
 from dynwinrt.dynwinrt import (
     _dynwinrt_cache_projected,
@@ -27,6 +33,7 @@ IID_IURI_FACTORY = WinGUID.parse("44A9796F-723E-4FDF-A218-033E75B0C084")
 IID_IURI = WinGUID.parse("9E365E57-48B2-4160-956F-C7385120BBFC")
 IID_ISTRINGABLE = WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
 IID_TEST_DELEGATE = WinGUID.parse("5A0F1C3E-7B24-4D69-8E1F-2C3B4A5D6E7F")
+RPC_E_CHANGED_MODE = -2147417850
 RELEASED_REASON = (
     r"has been released: its projected_lifetime_scope\(\) exited or "
     r"release_projected\(\) was called\. Use the object inside its scope, or "
@@ -225,3 +232,35 @@ def test_delegate_invocation_rejects_released_receivers_and_arguments():
         RuntimeError, match=r"^delegate Invoke\(\) requires an Object value, got null$"
     ):
         DynWinRTValue.null_value().invoke_delegate(IID_TEST_DELEGATE, signature, [])
+
+
+def test_apartment_constants_name_the_ro_init_models():
+    assert (RO_INIT_SINGLETHREADED, RO_INIT_MULTITHREADED) == (0, 1)
+    assert {"RO_INIT_SINGLETHREADED", "RO_INIT_MULTITHREADED"} <= set(dynwinrt.__all__)
+    assert repr(RoApartment()) == repr(RoApartment(RO_INIT_MULTITHREADED))
+    observed = []
+    errors = []
+
+    def worker():
+        # Keep no traceback cycles: unsendable apartments must drop on this thread.
+        try:
+            ro_initialize(RO_INIT_MULTITHREADED)
+            ro_uninitialize()
+            with RoApartment(RO_INIT_SINGLETHREADED) as apartment:
+                observed.append(repr(apartment))
+                try:
+                    with RoApartment(RO_INIT_MULTITHREADED):
+                        pass
+                except OSError as error:
+                    observed.append(error.winerror)
+        except BaseException as error:
+            errors.append(repr(error))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert not errors
+    assert observed == [
+        "RoApartment(apartment_type=0, active=true)",
+        RPC_E_CHANGED_MODE,
+    ]

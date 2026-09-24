@@ -137,6 +137,13 @@ pub struct RoApartment {
 /// `apartment_type` used when Python omits it: the multithreaded apartment.
 const DEFAULT_APARTMENT_TYPE: i32 = RO_INIT_MULTITHREADED.0;
 
+/// Module constants naming the `apartment_type` values Python passes to
+/// `RoApartment(...)` and `ro_initialize(...)`.
+pub(crate) const APARTMENT_TYPE_CONSTANTS: [(&str, RO_INIT_TYPE); 2] = [
+    ("RO_INIT_SINGLETHREADED", RO_INIT_SINGLETHREADED),
+    ("RO_INIT_MULTITHREADED", RO_INIT_MULTITHREADED),
+];
+
 /// The `RoInitialize` model for a Python `apartment_type`. Values other than
 /// `RO_INIT_SINGLETHREADED` keep their historical multithreaded meaning.
 fn ro_init_type(apartment_type: i32) -> RO_INIT_TYPE {

@@ -1,5 +1,5 @@
 from collections.abc import Coroutine
-from typing import Any, Awaitable, Callable, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from typing import Any, Awaitable, Callable, Final, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -24,6 +24,8 @@ class _DynWinRTRuntimeClass(_DynWinRTProjectableClass): ...
 __all__ = [
     "WinAppSDKContext",
     "RoApartment",
+    "RO_INIT_SINGLETHREADED",
+    "RO_INIT_MULTITHREADED",
     "WinGUID",
     "DynWinRTType",
     "DynWinRTMethodSig",
@@ -62,6 +64,12 @@ __all__ = [
 @final
 class WinAppSDKContext:
     def resource_pri_path(self) -> str: ...
+
+
+# apartment_type values for RoApartment(...) and ro_initialize(...);
+# RoApartment() uses RO_INIT_MULTITHREADED.
+RO_INIT_SINGLETHREADED: Final = 0
+RO_INIT_MULTITHREADED: Final = 1
 
 
 @final

@@ -27,7 +27,7 @@ async def run_primary(
 ) -> None:
     runtime = init_winappsdk(major, minor)
     try:
-        with RoApartment(1), projected_lifetime_scope():
+        with RoApartment(), projected_lifetime_scope():
             instance = AppInstance.find_or_register_for_key(key)
             if instance is None or not instance.is_current:
                 raise RuntimeError("Could not register the primary instance")
@@ -64,7 +64,7 @@ async def run_primary(
 async def redirect_to_primary(key: str, major: int, minor: int) -> None:
     runtime = init_winappsdk(major, minor)
     try:
-        with RoApartment(1), projected_lifetime_scope():
+        with RoApartment(), projected_lifetime_scope():
             current = AppInstance.get_current()
             target = AppInstance.find_or_register_for_key(key)
             if current is None or target is None:
