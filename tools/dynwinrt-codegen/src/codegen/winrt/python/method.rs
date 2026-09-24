@@ -10,8 +10,8 @@ use crate::codegen::winrt::shared::imports::{
 };
 
 use super::delegates::{
-    py_delegate_callable_type, py_delegate_input_arg, py_delegate_param_type,
-    py_event_handler_arg, py_once_callback_check,
+    py_delegate_callable_type, py_delegate_input_arg, py_delegate_param_type, py_event_handler_arg,
+    py_once_callback_check,
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::signature::{
@@ -1156,7 +1156,9 @@ mod tests {
         );
 
         assert!(code.contains("def on_changed(self, callback:"));
-        assert!(code.contains("return _IWidget.method(6).invoke(self._obj, [_dynwinrt_delegate(callback, "));
+        assert!(code.contains(
+            "return _IWidget.method(6).invoke(self._obj, [_dynwinrt_delegate(callback, "
+        ));
         assert!(code.contains("def subscribe_changed(self, callback:"));
         assert!(code.contains("if not _active[0]:"));
         assert!(code.contains("self.off_changed(_token)"));

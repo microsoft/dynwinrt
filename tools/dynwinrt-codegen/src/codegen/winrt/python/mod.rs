@@ -238,7 +238,10 @@ pub fn validate_struct_symbol_uniqueness(
     }
 
     for class in classes {
-        validate(&class.full_name, collect_used_structs_from_class_and_callbacks(class))?;
+        validate(
+            &class.full_name,
+            collect_used_structs_from_class_and_callbacks(class),
+        )?;
     }
     for interface in interfaces {
         validate(

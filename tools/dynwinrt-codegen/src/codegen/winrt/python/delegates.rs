@@ -143,7 +143,11 @@ fn py_callback_projection(typ: &TypeMeta, context: &PythonProjectionContext) -> 
         .zip(&names)
         .map(|(param, name)| py_delegate_argument(name, &param.typ, context))
         .collect::<Vec<_>>();
-    if arguments.iter().zip(&names).all(|(argument, name)| argument == name) {
+    if arguments
+        .iter()
+        .zip(&names)
+        .all(|(argument, name)| argument == name)
+    {
         return None;
     }
     let tuple = if arguments.len() == 1 {
@@ -315,9 +319,7 @@ mod tests {
 
         let delegate = py_delegate_input_arg("handler", &handler, &context).unwrap();
         assert!(
-            delegate.ends_with(
-                "lambda __p0__, __p1__: (__p0__.to_number(), __p1__.to_number()))"
-            ),
+            delegate.ends_with("lambda __p0__, __p1__: (__p0__.to_number(), __p1__.to_number()))"),
             "{delegate}"
         );
     }

@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dynwinrt_codegen::meta::{
-    ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
-};
+use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::{FieldMeta, TypeMeta};
 
 const WINDOWS_WINMD: &str =
@@ -155,9 +153,7 @@ fn static_events_callback_parameters_and_setters_project_callables() {
         "{thread_pool}"
     );
     assert!(
-        thread_pool.contains(
-            "'WorkItemHandler_PARAM_TYPES'))"
-        ),
+        thread_pool.contains("'WorkItemHandler_PARAM_TYPES'))"),
         "{thread_pool}"
     );
     assert!(
@@ -193,8 +189,7 @@ fn static_events_callback_parameters_and_setters_project_callables() {
         "{timer_stub}"
     );
 
-    let command_callback =
-        "Callable[['IUICommand'], object] | 'DynWinRTValue | DynWinRtDelegate'";
+    let command_callback = "Callable[['IUICommand'], object] | 'DynWinRTValue | DynWinRtDelegate'";
     let command = output.read("windows__ui__popups__ui_command", "py");
     assert!(
         command.contains(&format!("def invoked(self, value: {command_callback}):")),
@@ -296,7 +291,10 @@ fn class_event_struct_adapter_has_helpers_and_executes() {
         source.contains("\ndef unpack_payload(v: DynWinRTValue) -> Payload:\n"),
         "{source}"
     );
-    assert!(source.contains("_unpack_payload = unpack_payload\n"), "{source}");
+    assert!(
+        source.contains("_unpack_payload = unpack_payload\n"),
+        "{source}"
+    );
     assert!(
         source.contains("lambda __p0__: (_unpack_payload(__p0__),)"),
         "{source}"

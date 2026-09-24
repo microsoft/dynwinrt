@@ -13,9 +13,7 @@ use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 /// `subscribe_` also accept native delegates.
 pub fn event_signatures(event: &str, callback: &str) -> [String; 3] {
     [
-        format!(
-            "def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
-        ),
+        format!("def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"),
         format!(
             "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
         ),
