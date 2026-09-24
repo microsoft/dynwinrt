@@ -118,6 +118,12 @@ arguments. `on_*` and `subscribe_*` accept those native delegates.
 `once_*` requires a Python callable because it must wrap the callback to remove
 the subscription after the first invocation.
 
+Delegate-accepting constructors accept the `DynWinRtDelegate` object, but their
+stubs intentionally do not advertise its raw `DynWinRTValue`. A single raw
+value passed to a runtime class is reserved for wrapping an existing native
+instance before constructor overload dispatch. Keep the delegate object for a
+constructor, or pass the raw delegate to a named factory/method instead.
+
 Callback parameter annotations are non-null by default, matching generated
 method-output typing. This is an intentionally optimistic typing policy, not a
 guarantee from the `Invoke` metadata: WinMD carries no nullability information,
