@@ -916,6 +916,58 @@ async def storage_demo(path: str) -> list[str]:
 }
 
 #[test]
+fn mutable_collection_mutators_accept_none() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping mutable collection mutators: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Storage.StorageLibrary,Windows.Data.Json.JsonObject",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    // Inherited MutableSequence and MutableMapping mutators take the element
+    // type of the collection base, which keeps `| None` for mutable
+    // collections, like the generated item setters.
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from typing import assert_type
+from sdk.windows.data.json import IJsonValue, JsonObject
+from sdk.windows.foundation.collections import IObservableVector_StorageFolder
+from sdk.windows.storage import StorageFolder
+
+def vector(folders: IObservableVector_StorageFolder) -> None:
+    folders.append(None)
+    folders.extend([None])
+    folders.insert(0, None)
+    folders[0] = None
+    assert_type(folders[0], StorageFolder | None)
+
+def mapping(values: JsonObject) -> None:
+    values.update({"k": None})
+    values.setdefault("k", None)
+    values["k"] = None
+    assert_type(values["k"], IJsonValue | None)
+"#,
+        &[],
+    );
+}
+
+#[test]
 fn native_object_inputs_keep_projection_factories_and_context_lifetimes() {
     if !has_implementation_runtime() {
         return;
