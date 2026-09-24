@@ -25,10 +25,11 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
+    CollectionKind, class_interface, interface_kind, observable_vector_identity,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
+use super::nullability::{AnnotationSurface, ElementContainer};
 use super::shared::reorder_getters_before_setters;
 use super::signature::py_dynwinrt_type;
 use super::stub_helpers::{
@@ -451,23 +452,14 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         }
     }
 
-    let collection_base =
-        collection_kind
-            .and_then(abc_name)
-            .and_then(|abc| match iface.generic_args.as_slice() {
-                [element] => Some(format!(
-                    "{}[{}]",
-                    abc,
-                    super::type_helpers::py_return_type_safe(Some(element), context)
-                )),
-                [key, value] => Some(format!(
-                    "{}[{}, {}]",
-                    abc,
-                    super::type_helpers::py_return_type_safe(Some(key), context),
-                    super::type_helpers::py_return_type_safe(Some(value), context)
-                )),
-                _ => None,
-            });
+    let collection_base = collection_kind.and_then(|kind| {
+        super::type_helpers::py_collection_base_type(
+            kind,
+            &iface.generic_args,
+            AnnotationSurface::Stub,
+            context,
+        )
+    });
     let identity_name = format!("_{}Identity", iface.name);
     out.push_str(&format!("\nclass {identity_name}(Protocol):\n"));
     out.push_str(&format!("    def {marker}(self) -> None: ...\n"));
@@ -864,20 +856,14 @@ pub fn generate_class_stub(
     }
 
     let collection_base = collection_iface
-        .zip(collection_kind.and_then(abc_name))
-        .and_then(|(iface, abc)| match iface.generic_args.as_slice() {
-            [element] => Some(format!(
-                "{}[{}]",
-                abc,
-                super::type_helpers::py_return_type_safe(Some(element), context)
-            )),
-            [key, value] => Some(format!(
-                "{}[{}, {}]",
-                abc,
-                super::type_helpers::py_return_type_safe(Some(key), context),
-                super::type_helpers::py_return_type_safe(Some(value), context)
-            )),
-            _ => None,
+        .zip(collection_kind)
+        .and_then(|(iface, kind)| {
+            super::type_helpers::py_collection_base_type(
+                kind,
+                &iface.generic_args,
+                AnnotationSurface::Stub,
+                context,
+            )
         });
     let mut instance_stub_body =
         emit_class_instance_stubs(class, context, collection_iface, false, has_closable);
@@ -1059,22 +1045,14 @@ pub fn generate_class_stub(
             continue;
         }
         out.push('\n');
-        let required_base = interface_kind(req_iface)
-            .and_then(abc_name)
-            .and_then(|abc| match req_iface.generic_args.as_slice() {
-                [element] => Some(format!(
-                    "{}[{}]",
-                    abc,
-                    super::type_helpers::py_return_type_safe(Some(element), context)
-                )),
-                [key, value] => Some(format!(
-                    "{}[{}, {}]",
-                    abc,
-                    super::type_helpers::py_return_type_safe(Some(key), context),
-                    super::type_helpers::py_return_type_safe(Some(value), context)
-                )),
-                _ => None,
-            });
+        let required_base = interface_kind(req_iface).and_then(|kind| {
+            super::type_helpers::py_collection_base_type(
+                kind,
+                &req_iface.generic_args,
+                AnnotationSurface::Stub,
+                context,
+            )
+        });
         if let Some(base) = required_base {
             out.push_str(&format!("\nclass {symbol}({base}):\n"));
         } else {
@@ -1295,10 +1273,19 @@ fn collection_protocol_stubs(
         return String::new();
     };
     let indent = " ".repeat(indent_spaces);
+    // Item positions inherit the element rule of the collection that owns them.
+    let container = ElementContainer::of(kind);
     let item_type = iface
         .generic_args
         .first()
-        .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), context))
+        .map(|typ| {
+            super::type_helpers::py_collection_item_type(
+                typ,
+                container,
+                AnnotationSurface::Stub,
+                context,
+            )
+        })
         .unwrap_or_else(|| "object".to_string());
     let item_input = iface
         .generic_args
@@ -1341,7 +1328,14 @@ fn collection_protocol_stubs(
             let value_type = iface
                 .generic_args
                 .get(1)
-                .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), context))
+                .map(|typ| {
+                    super::type_helpers::py_collection_item_type(
+                        typ,
+                        container,
+                        AnnotationSurface::Stub,
+                        context,
+                    )
+                })
                 .unwrap_or_else(|| "object".to_string());
             let mut result = format!(
                 "\n{indent}def __len__(self) -> int: ...\n\

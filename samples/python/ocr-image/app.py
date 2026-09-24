@@ -17,30 +17,21 @@ def normalized_words(value: str) -> set[str]:
 async def recognize(path: Path) -> str:
     with RoApartment(1), projected_lifetime_scope():
         file = await StorageFile.get_file_from_path_async(str(path.resolve()))
-        if file is None:
-            raise RuntimeError("StorageFile returned no image file")
         stream = await file.open_read_async()
-        if stream is None:
-            raise RuntimeError("StorageFile returned no image stream")
 
         decoder = await BitmapDecoder.create_async(
             stream.as_interface(IRandomAccessStream)
         )
-        if decoder is None:
-            raise RuntimeError("BitmapDecoder returned no decoder")
         bitmap = await decoder.get_software_bitmap_async()
-        if bitmap is None:
-            raise RuntimeError("BitmapDecoder returned no SoftwareBitmap")
 
         with bitmap:
+            # Try* members return None instead of raising when nothing matches.
             engine = OcrEngine.try_create_from_user_profile_languages()
             if engine is None:
                 raise RuntimeError(
                     "No OCR engine is available for the user profile languages"
                 )
             result = await engine.recognize_async(bitmap)
-            if result is None:
-                raise RuntimeError("OcrEngine returned no result")
             return result.text
 
 

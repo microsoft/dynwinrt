@@ -3,7 +3,7 @@
 
 import asyncio
 from collections.abc import Coroutine, Generator, Sequence
-from typing import Any, Awaitable, List, Tuple
+from typing import Any, Awaitable, List, Tuple, assert_type
 
 from dynwinrt import (
     DynWinRTArray,
@@ -22,7 +22,9 @@ from python_bindings.windows.foundation import (
     IWwwFormUrlDecoderEntry,
     Uri,
 )
+from python_bindings.windows.foundation.collections import ValueSet
 from python_bindings.windows.globalization import Calendar
+from python_bindings.windows.storage import IStorageItem, StorageFile, StorageFolder
 from python_bindings.windows.storage.streams import (
     Buffer as WinRTBuffer,
     DataWriter,
@@ -69,8 +71,9 @@ def check_uri() -> None:
     uri: Uri = Uri("https://example.com")
     relative: Uri = Uri("https://example.com/root/", "child")
     host: str = uri.host
-    combined: Uri | None = uri.combine_uri("child")
-    _: Tuple[str, Uri, Uri | None] = (host, relative, combined)
+    combined: Uri = uri.combine_uri("child")
+    absolute: str = combined.absolute_uri
+    _: Tuple[str, Uri, Uri, str] = (host, relative, combined, absolute)
 
 
 def check_nullable_value(
@@ -86,8 +89,7 @@ def check_nullable_value(
 
 
 def check_string_vector(calendar: Calendar) -> None:
-    languages: Sequence[str] | None = calendar.languages
-    assert languages is not None
+    languages: Sequence[str] = calendar.languages
     first: str = languages[0]
     located: int = languages.index(first)
     many: List[str] = list(languages[:4])
@@ -152,3 +154,11 @@ def check_ibuffer_bytes() -> None:
     interface_bytes: bytes = interface_buffer.to_bytes()
     runtime_bytes: bytes = runtime_buffer.to_bytes()
     _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)
+
+
+async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> None:
+    created: StorageFile = await folder.create_file_async("notes.txt")
+    names: List[str] = [item.name for item in await folder.get_files_async()]
+    assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
+    assert_type(values["key"], DynWinRTValue | None)
+    _: Tuple[StorageFile, List[str]] = (created, names)

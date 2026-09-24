@@ -19,6 +19,45 @@ Generated package manifests pin `dynwinrt` to the exact version of
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
 
+### Nullability in type stubs
+
+WinRT metadata does not record which values can be null, and most APIs raise
+an exception instead of returning null. The generated `.pyi` stubs therefore
+type the values you receive as non-null by default: method and property
+results, async results and out values. For example,
+`StorageFolder.create_file_async()` returns `WinRTCoroutine[StorageFile]`.
+
+These values keep `| None`:
+
+- `IReference<T>` values, projected as `T | None` everywhere;
+- results of `Try*` members, such as `try_get_item_async()` or
+  `JsonObject.try_parse()`, where null means "not found";
+- results of Windows SDK members whose documentation says they can return
+  null, such as `Accelerometer.get_default()`,
+  `DispatcherQueue.get_for_current_thread()` or
+  `StorageFolder.get_parent_async()`. The codegen embeds this list, derived
+  from the Windows SDK API reference; it does not cover Windows App SDK
+  (`Microsoft.*`) APIs;
+- `Object`/`IInspectable` values (`DynWinRTValue | None`) and delegate-typed
+  values, which are often null.
+
+Collection elements follow the collection holding them. Anyone can store null
+in a mutable `IVector`, `IMap` or observable collection, so their elements,
+item positions (`[index]`, iteration, `get_at()`, `lookup()`) and
+`items()`/`values()` are typed `T | None`: a `JsonArray` holds
+`IJsonValue | None`. Read-only views, iterators and arrays keep non-null
+elements: `get_files_async()` returns `WinRTCoroutine[Sequence[StorageFile]]`.
+A view, iterator or key-value pair obtained from a mutable collection, such as
+the result of `get_view()` or `first()`, can still contain nulls although its
+elements are typed non-null.
+
+Arguments keep accepting `None` where they did before. The stubs are
+optimistic, like the generated TypeScript declarations: the runtime still
+returns `None` when a WinRT API returns null, so check the API documentation
+when a result can legitimately be absent. The inline annotations of the
+generated `.py` modules, which `typing.get_type_hints()` and `--no-pyi` output
+expose, still mark every object result `| None`.
+
 ## Async WinRT operations
 
 Generated async methods return typed, asyncio-compatible operation objects:

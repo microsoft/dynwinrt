@@ -814,6 +814,160 @@ print("collection-subscript-native-ok", flush=True)
 }
 
 #[test]
+fn natural_sdk_consumers_guard_only_nullable_results() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping natural SDK consumers: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Foundation.Uri,Windows.Foundation.Collections.PropertySet,\
+             Windows.Data.Json.JsonObject,Windows.Globalization.Calendar,\
+             Windows.Security.Cryptography.CryptographicBuffer,\
+             Windows.Security.Cryptography.Core.HashAlgorithmProvider,\
+             Windows.Storage.StorageFolder,Windows.Storage.FileIO,\
+             Windows.Storage.Streams.DataReader,Windows.Storage.Streams.DataWriter,\
+             Windows.Storage.Streams.InMemoryRandomAccessStream,\
+             Windows.Devices.Sensors.Accelerometer",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    let imports = r#"from collections.abc import Sequence
+from typing import assert_type
+from dynwinrt import DynWinRTValue, WinRTCoroutine
+from sdk.windows.data.json import IJsonValue, JsonObject
+from sdk.windows.devices.sensors import Accelerometer
+from sdk.windows.foundation import Uri
+from sdk.windows.foundation.collections import PropertySet
+from sdk.windows.globalization import Calendar
+from sdk.windows.security.cryptography import CryptographicBuffer
+from sdk.windows.security.cryptography.core import HashAlgorithmProvider
+from sdk.windows.storage import CreationCollisionOption, FileIO, IStorageItem, StorageFile, StorageFolder
+from sdk.windows.storage.streams import DataReader, DataWriter, InMemoryRandomAccessStream
+"#;
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+def uri_demo() -> str:
+    uri = Uri("https://example.com/a/b?x=1&y=two")
+    query = {{entry.name: entry.value for entry in uri.query_parsed}}
+    return uri.combine_uri("c/d").absolute_uri + str(query)
+
+def json_demo() -> list[str]:
+    parsed = JsonObject.parse('{{"tags": ["a", "b"]}}')
+    assert_type(JsonObject.try_parse("{{}}"), tuple[JsonObject | None, bool])
+    tags = parsed.get_named_array("tags")
+    assert_type(tags[0], IJsonValue | None)
+    return [value.get_string() for value in tags if value is not None]
+
+def sensor_demo() -> float | None:
+    accelerometer = Accelerometer.get_default()
+    if accelerometer is None:
+        return None
+    return accelerometer.get_current_reading().acceleration_x
+
+def calendar_demo(calendar: Calendar) -> str:
+    languages: Sequence[str] = calendar.languages
+    return languages[0]
+
+def crypto_demo(data: bytes) -> str:
+    buffer = CryptographicBuffer.create_from_byte_array(data)
+    digest = HashAlgorithmProvider.open_algorithm("SHA256").hash_data(buffer)
+    return CryptographicBuffer.encode_to_hex_string(digest)
+
+def object_values(properties: PropertySet) -> DynWinRTValue | None:
+    assert_type(properties["count"], DynWinRTValue | None)
+    return properties.lookup("count")
+
+async def streams_demo() -> str:
+    stream = InMemoryRandomAccessStream()
+    writer = DataWriter(stream.get_output_stream_at(0))
+    writer.write_string("streamed text")
+    written = await writer.store_async()
+    reader = DataReader(stream.get_input_stream_at(0))
+    return reader.read_string(await reader.load_async(written))
+
+async def storage_demo(path: str) -> list[str]:
+    folder = await StorageFolder.get_folder_from_path_async(path)
+    file = await folder.create_file_async("notes.txt", CreationCollisionOption.ReplaceExisting)
+    await FileIO.write_text_async(file, "first line")
+    assert_type(folder.create_file_async("a.txt"), WinRTCoroutine[StorageFile])
+    assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
+    assert_type(folder.get_parent_async(), WinRTCoroutine[StorageFolder | None])
+    return [item.name for item in await folder.get_files_async()]
+"#
+        ),
+        &[],
+    );
+}
+
+#[test]
+fn mutable_collection_mutators_accept_none() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping mutable collection mutators: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Storage.StorageLibrary,Windows.Data.Json.JsonObject",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    // Inherited MutableSequence and MutableMapping mutators take the element
+    // type of the collection base, which keeps `| None` for mutable
+    // collections, like the generated item setters.
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from typing import assert_type
+from sdk.windows.data.json import IJsonValue, JsonObject
+from sdk.windows.foundation.collections import IObservableVector_StorageFolder
+from sdk.windows.storage import StorageFolder
+
+def vector(folders: IObservableVector_StorageFolder) -> None:
+    folders.append(None)
+    folders.extend([None])
+    folders.insert(0, None)
+    folders[0] = None
+    assert_type(folders[0], StorageFolder | None)
+
+def mapping(values: JsonObject) -> None:
+    values.update({"k": None})
+    values.setdefault("k", None)
+    values["k"] = None
+    assert_type(values["k"], IJsonValue | None)
+"#,
+        &[],
+    );
+}
+
+#[test]
 fn native_object_inputs_keep_projection_factories_and_context_lifetimes() {
     if !has_implementation_runtime() {
         return;

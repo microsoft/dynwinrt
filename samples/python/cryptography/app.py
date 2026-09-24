@@ -9,12 +9,8 @@ from generated.windows.storage.streams import IBuffer
 def sha256(text: str) -> str:
     with RoApartment(1), projected_lifetime_scope():
         provider = HashAlgorithmProvider.open_algorithm("SHA256")
-        if provider is None:
-            raise RuntimeError("SHA256 provider is unavailable")
         data = IBuffer.from_bytes(text.encode("utf-8"))
         digest = provider.hash_data(data)
-        if digest is None:
-            raise RuntimeError("HashAlgorithmProvider returned no digest")
         copied_digest = digest.to_bytes()
         expected_length = provider.hash_length
         if len(copied_digest) != expected_length:

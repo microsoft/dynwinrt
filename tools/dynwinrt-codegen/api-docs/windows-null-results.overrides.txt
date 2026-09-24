@@ -1,0 +1,17 @@
+# Reviewed corrections for windows-null-results.txt, applied last by
+# scripts/extract-null-results.py. "+pattern" adds and "-pattern" removes
+# members. A pattern is an api-id that may use fnmatch wildcards; it must match
+# a member documented at the pinned winrt-api commit.
+
+# Sensors report a missing device through null across the whole family, as
+# most of their pages state ("or null if no integrated ... are found").
++M:Windows.Devices.Sensors.*.GetDefault*
+
+# Device lookups complete with null when the device is missing or access is
+# denied, as many of their pages state.
++M:Windows.Devices.*.FromIdAsync(*)
++M:Windows.Devices.*.GetDefaultAsync*
+
+# Overridable implementation callbacks, not results that consumers receive.
+-M:Windows.UI.Xaml.Automation.Peers.AutomationPeer.GetPatternCore(*)
+-M:Windows.UI.Xaml.Controls.StyleSelector.SelectStyleCore(*)

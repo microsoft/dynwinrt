@@ -10,11 +10,15 @@ use crate::codegen::winrt::shared::imports::{
 use crate::meta::MethodMeta;
 use crate::types::TypeMeta;
 
-use super::collections::{CollectionKind, is_mapping_input, type_kind};
+use super::collections::{CollectionKind, abc_name, is_mapping_input, type_kind};
 use super::docs::format_pydoc;
 use super::naming::to_snake_case;
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use super::native_types::{FoundationType, foundation_type};
+use super::nullability::{
+    AnnotationSurface, ElementContainer, OutputPosition, OutputSite, may_project_none,
+    output_admits_none,
+};
 
 /// Build the Python docstring for a method body. Uses snake_case param display
 /// names (matching the generated signature). Returns an empty string when no
@@ -58,25 +62,17 @@ pub(super) fn method_pydoc_with_indent(
 // ======================================================================
 
 pub(crate) fn py_optional_type(typ: String) -> String {
-    let unquoted = typ
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-        .unwrap_or(&typ);
+    let unquoted = unquoted(&typ);
     if unquoted.split('|').any(|part| part.trim() == "None") {
         return unquoted.to_string();
     }
     format!("{} | None", unquoted)
 }
 
-fn is_nullable_reference_type(typ: &TypeMeta) -> bool {
-    matches!(
-        typ,
-        TypeMeta::Object
-            | TypeMeta::Delegate { .. }
-            | TypeMeta::RuntimeClass { .. }
-            | TypeMeta::Interface { .. }
-            | TypeMeta::Parameterized { .. }
-    )
+fn unquoted(typ: &str) -> &str {
+    typ.strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .unwrap_or(typ)
 }
 
 fn py_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
@@ -152,85 +148,335 @@ pub(super) fn py_collection_input_type(
 ) -> String {
     let input = py_param_type_safe(typ, context);
     // Keep the existing nullable ABC contract; only widen its projected inputs.
-    if is_nullable_reference_type(typ) {
+    if may_project_none(typ) {
         py_optional_type(input)
     } else {
         input
     }
 }
 
+// ======================================================================
+// Output annotations
+//
+// Rendering and nullability are separate layers: the `spell_*` functions
+// produce the non-null type expression for a position, and
+// `nullability::output_admits_none` alone decides whether `| None` is added.
+// ======================================================================
+
+/// Spelling rules of the rendering layer. They predate the nullability policy
+/// and are preserved byte-for-byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spelling {
+    /// Method, out and property results: delegates are raw `DynWinRTValue`
+    /// handles, also inside async results and arrays.
+    Member,
+    /// A standalone value, such as the item type of a collection class.
+    Value,
+    /// An element of a returned collection or array: nested generics are
+    /// named by their projected class.
+    Element,
+}
+
+impl Spelling {
+    fn at(position: OutputPosition) -> Self {
+        match position {
+            OutputPosition::CollectionElement | OutputPosition::CallbackParam => Self::Value,
+            OutputPosition::Return
+            | OutputPosition::OutParam
+            | OutputPosition::Property
+            | OutputPosition::AsyncResult
+            | OutputPosition::AsyncProgress
+            | OutputPosition::Activation => Self::Member,
+        }
+    }
+}
+
+/// Renders the annotation of a value the consumer receives at `site`.
+///
+/// Nullability never changes how the base type is spelled: a value that may
+/// project as `None` renders the same unquoted expression with or without
+/// ` | None`.
+pub(crate) fn py_output_annotation(
+    typ: &TypeMeta,
+    site: OutputSite,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    render_output(typ, Spelling::at(site.position), site, surface, context)
+}
+
+fn render_output(
+    typ: &TypeMeta,
+    spelling: Spelling,
+    site: OutputSite,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    let base = match spelling {
+        Spelling::Member => spell_member(typ, site, surface, context),
+        Spelling::Value => spell_value(typ, site, surface, context),
+        Spelling::Element => py_native_element_type(typ, context),
+    };
+    if !may_project_none(typ) {
+        return base;
+    }
+    if output_admits_none(typ, site, surface, context) {
+        py_optional_type(base)
+    } else {
+        unquoted(&base).to_string()
+    }
+}
+
+fn spell_member(
+    typ: &TypeMeta,
+    site: OutputSite,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    if context.is_delegate_type(typ) {
+        return "DynWinRTValue".to_string();
+    }
+    let nested = |typ: &TypeMeta, position: OutputPosition| {
+        render_output(
+            typ,
+            Spelling::Member,
+            site.nested(position),
+            surface,
+            context,
+        )
+    };
+    match typ {
+        TypeMeta::Array(inner) if context.is_delegate_type(inner) => format!(
+            "list[{}]",
+            render_output(
+                inner,
+                Spelling::Member,
+                array_element(site),
+                surface,
+                context
+            )
+        ),
+        TypeMeta::AsyncOperation(result) => {
+            format!(
+                "WinRTCoroutine[{}]",
+                nested(result, OutputPosition::AsyncResult)
+            )
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
+            "WinRTCoroutineWithProgress[{}, {}]",
+            nested(result, OutputPosition::AsyncResult),
+            nested(progress, OutputPosition::AsyncProgress)
+        ),
+        TypeMeta::AsyncActionWithProgress(progress) => format!(
+            "WinRTCoroutineWithProgress[None, {}]",
+            nested(progress, OutputPosition::AsyncProgress)
+        ),
+        _ => spell_value(typ, site, surface, context),
+    }
+}
+
+fn spell_value(
+    typ: &TypeMeta,
+    site: OutputSite,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        return render_output(inner, Spelling::Value, site, surface, context);
+    }
+    if let Some(collection) = spell_collection(typ, site, surface, context) {
+        return collection;
+    }
+    let nested = |typ: &TypeMeta, spelling: Spelling, position: OutputPosition| {
+        render_output(typ, spelling, site.nested(position), surface, context)
+    };
+    match typ {
+        TypeMeta::AsyncAction => "WinRTCoroutine[None]".to_string(),
+        TypeMeta::AsyncOperation(result) => format!(
+            "WinRTCoroutine[{}]",
+            nested(result, Spelling::Value, OutputPosition::AsyncResult)
+        ),
+        TypeMeta::AsyncActionWithProgress(progress) => format!(
+            "WinRTCoroutineWithProgress[None, {}]",
+            nested(progress, Spelling::Value, OutputPosition::AsyncProgress)
+        ),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
+            "WinRTCoroutineWithProgress[{}, {}]",
+            nested(result, Spelling::Value, OutputPosition::AsyncResult),
+            nested(progress, Spelling::Value, OutputPosition::AsyncProgress)
+        ),
+        TypeMeta::Enum { .. } if !context.is_known_type(typ) => "int".to_string(),
+        TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }
+            if !context.is_known_type(typ) =>
+        {
+            "DynWinRTValue".to_string()
+        }
+        TypeMeta::Array(inner) if matches!(inner.as_ref(), TypeMeta::U8) => "bytes".to_string(),
+        TypeMeta::Array(inner) => format!(
+            "list[{}]",
+            render_output(
+                inner,
+                Spelling::Element,
+                array_element(site),
+                surface,
+                context
+            )
+        ),
+        TypeMeta::String | TypeMeta::Char16 => "str".to_string(),
+        TypeMeta::Guid => "UUID".to_string(),
+        TypeMeta::Bool => "bool".to_string(),
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::I64
+        | TypeMeta::U64 => "int".to_string(),
+        TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
+        TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Enum { .. }
+        | TypeMeta::Interface { .. }
+        | TypeMeta::Parameterized { .. } => {
+            format!("'{}'", context.reference_name_for_type(typ))
+        }
+        TypeMeta::Object | TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+        TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
+        TypeMeta::Struct { .. } => format!("'{}'", context.reference_name_for_type(typ)),
+    }
+}
+
+fn spell_collection(
+    typ: &TypeMeta,
+    site: OutputSite,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> Option<String> {
+    let TypeMeta::Parameterized { args, .. } = typ else {
+        return None;
+    };
+    let kind = type_kind(typ)?;
+    let abc = abc_name(kind)?;
+    let element = site.element_in(ElementContainer::of(kind));
+    let elements = args
+        .iter()
+        .map(|arg| render_output(arg, Spelling::Element, element, surface, context))
+        .collect::<Vec<_>>();
+    Some(format!("{abc}[{}]", elements.join(", ")))
+}
+
+/// The elements of an array filled by a member that reads collection
+/// elements (`get_many`) follow that collection; other arrays are snapshots.
+fn array_element(site: OutputSite) -> OutputSite {
+    site.element_in(site.container.unwrap_or(ElementContainer::Array))
+}
+
+/// Pessimistic rendering for callers outside the output policy (callback
+/// parameters and the `IReference<T>` input arm): every value that may
+/// project as `None` admits it, as on the runtime surface.
 pub(crate) fn py_return_type_safe(
     typ: Option<&TypeMeta>,
     context: &PythonProjectionContext,
 ) -> String {
-    if let Some(inner) = typ.and_then(ireference_inner_type) {
-        return py_optional_type(py_return_type_safe(Some(inner), context));
-    }
-    if let Some(async_type) = typ.and_then(|typ| py_async_return_type(typ, context)) {
-        return async_type;
-    }
-    if let Some(annotation) = typ.and_then(|typ| py_collection_return_type(typ, context)) {
-        return py_optional_type(annotation);
-    }
-
-    match typ {
-        Some(typ @ TypeMeta::Enum { .. }) if !context.is_known_type(typ) => "int".to_string(),
-        Some(typ @ (TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }))
-            if !context.is_known_type(typ) =>
-        {
-            "DynWinRTValue | None".to_string()
-        }
-        Some(TypeMeta::Array(inner)) => py_array_return_type(inner, context),
-        Some(typ) if is_nullable_reference_type(typ) => {
-            py_optional_type(py_return_type(Some(typ), context))
-        }
-        _ => py_return_type(typ, context),
-    }
+    typ.map(|typ| {
+        render_output(
+            typ,
+            Spelling::Value,
+            OutputSite::of(OutputPosition::CallbackParam),
+            AnnotationSurface::Runtime,
+            context,
+        )
+    })
+    .unwrap_or_else(|| "None".to_string())
 }
 
-fn py_async_return_type_with_result(
+/// Annotation of the value read by a property getter.
+pub(super) fn py_property_type(
+    getter: &MethodMeta,
     typ: &TypeMeta,
-    result_override: Option<String>,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    py_output_annotation(
+        typ,
+        OutputSite::for_method(getter, OutputPosition::Property),
+        surface,
+        context,
+    )
+}
+
+/// Item, key or value type of a projected collection held by `container`.
+pub(super) fn py_collection_item_type(
+    typ: &TypeMeta,
+    container: ElementContainer,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    py_output_annotation(typ, OutputSite::element_of(container), surface, context)
+}
+
+/// `Sequence[T]` / `Mapping[K, V]` base of a projected collection of `kind`.
+pub(super) fn py_collection_base_type(
+    kind: CollectionKind,
+    args: &[TypeMeta],
+    surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> Option<String> {
-    match typ {
-        TypeMeta::AsyncAction => Some("WinRTCoroutine[None]".to_string()),
-        TypeMeta::AsyncOperation(result) => Some(format!(
-            "WinRTCoroutine[{}]",
-            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), context))
-        )),
-        TypeMeta::AsyncActionWithProgress(progress) => Some(format!(
-            "WinRTCoroutineWithProgress[None, {}]",
-            py_return_type_safe(Some(progress), context)
-        )),
-        TypeMeta::AsyncOperationWithProgress(result, progress) => Some(format!(
-            "WinRTCoroutineWithProgress[{}, {}]",
-            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), context)),
-            py_return_type_safe(Some(progress), context)
-        )),
+    let abc = abc_name(kind)?;
+    let item = |typ| py_collection_item_type(typ, ElementContainer::of(kind), surface, context);
+    match args {
+        [element] => Some(format!("{abc}[{}]", item(element))),
+        [key, value] => Some(format!("{abc}[{}, {}]", item(key), item(value))),
         _ => None,
     }
 }
 
-pub(super) fn py_async_return_type(
-    typ: &TypeMeta,
-    context: &PythonProjectionContext,
-) -> Option<String> {
-    py_async_return_type_with_result(typ, None, context)
-}
-
+/// Result annotation of an activation factory creating `class_name`.
 pub(super) fn py_factory_return_type(
     class_name: &str,
     method: &MethodMeta,
+    surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> String {
-    method
-        .return_type
-        .as_ref()
-        .and_then(|typ| {
-            py_async_return_type_with_result(typ, Some(format!("'{}'", class_name)), context)
-        })
-        .unwrap_or_else(|| format!("'{}'", class_name))
+    let instance = |typ: &TypeMeta| {
+        let instance = format!("'{class_name}'");
+        let site = OutputSite::for_method(method, OutputPosition::Activation);
+        if output_admits_none(typ, site, surface, context) {
+            py_optional_type(instance)
+        } else {
+            instance
+        }
+    };
+    let progress = |typ: &TypeMeta| {
+        render_output(
+            typ,
+            Spelling::Value,
+            OutputSite::for_method(method, OutputPosition::AsyncProgress),
+            surface,
+            context,
+        )
+    };
+    match method.return_type.as_ref() {
+        None => format!("'{class_name}'"),
+        Some(TypeMeta::AsyncAction) => "WinRTCoroutine[None]".to_string(),
+        Some(TypeMeta::AsyncOperation(result)) => {
+            format!("WinRTCoroutine[{}]", instance(result))
+        }
+        Some(TypeMeta::AsyncActionWithProgress(progress_type)) => {
+            format!(
+                "WinRTCoroutineWithProgress[None, {}]",
+                progress(progress_type)
+            )
+        }
+        Some(TypeMeta::AsyncOperationWithProgress(result, progress_type)) => format!(
+            "WinRTCoroutineWithProgress[{}, {}]",
+            instance(result),
+            progress(progress_type)
+        ),
+        Some(typ) => instance(typ),
+    }
 }
 
 pub(super) fn methods_have_async_output<'a>(
@@ -249,20 +495,26 @@ pub(super) fn py_method_abi_output_count(method: &MethodMeta) -> usize {
 }
 
 pub(super) fn py_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
-    let mut result_index = 0;
+    py_method_output_positions(method)
+        .into_iter()
+        .enumerate()
+        .map(|(result_index, (typ, _))| (result_index, typ))
+        .collect()
+}
+
+/// Logical outputs in result order: out values first, then the return value.
+fn py_method_output_positions(method: &MethodMeta) -> Vec<(&TypeMeta, OutputPosition)> {
     let mut outputs = Vec::new();
 
     for param in &method.params {
         match param.direction {
             crate::meta::ParamDirection::Out => {
-                outputs.push((result_index, &param.typ));
-                result_index += 1;
+                outputs.push((&param.typ, OutputPosition::OutParam));
             }
             crate::meta::ParamDirection::OutFill => {
                 // The runtime allocates a distinct filled result buffer; the
                 // caller-provided array supplies capacity and is not mutated.
-                outputs.push((result_index, &param.typ));
-                result_index += 1;
+                outputs.push((&param.typ, OutputPosition::OutParam));
             }
             crate::meta::ParamDirection::In => {}
         }
@@ -273,108 +525,32 @@ pub(super) fn py_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> 
         .as_ref()
         .filter(|_| !fill_array_uses_retval_count(method))
     {
-        outputs.push((result_index, return_type));
+        outputs.push((return_type, OutputPosition::Return));
     }
 
     outputs
 }
 
-fn is_delegate_output(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
-    context.is_delegate_type(typ)
-}
-
-pub(super) fn py_output_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
-    match typ {
-        _ if is_delegate_output(typ, context) => "DynWinRTValue | None".to_string(),
-        TypeMeta::Array(inner) if is_delegate_output(inner, context) => {
-            "list[DynWinRTValue | None]".to_string()
-        }
-        TypeMeta::AsyncOperation(inner) => {
-            format!("WinRTCoroutine[{}]", py_output_type(inner, context))
-        }
-        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "WinRTCoroutineWithProgress[{}, {}]",
-            py_output_type(result, context),
-            py_output_type(progress, context)
-        ),
-        TypeMeta::AsyncActionWithProgress(progress) => format!(
-            "WinRTCoroutineWithProgress[None, {}]",
-            py_output_type(progress, context)
-        ),
-        _ => py_return_type_safe(Some(typ), context),
-    }
-}
-
 pub(super) fn py_method_return_type(
     method: &MethodMeta,
+    surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> String {
-    let outputs = py_method_outputs(method);
+    let outputs = py_method_output_positions(method)
+        .into_iter()
+        .map(|(typ, position)| {
+            py_output_annotation(
+                typ,
+                OutputSite::for_method(method, position),
+                surface,
+                context,
+            )
+        })
+        .collect::<Vec<_>>();
     match outputs.as_slice() {
         [] => "None".to_string(),
-        [(_, typ)] => py_output_type(typ, context),
-        _ => format!(
-            "tuple[{}]",
-            outputs
-                .iter()
-                .map(|(_, typ)| py_output_type(typ, context))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> String {
-    match typ {
-        Some(TypeMeta::String) => "str".to_string(),
-        Some(TypeMeta::Guid) => "UUID".to_string(),
-        Some(TypeMeta::Bool) => "bool".to_string(),
-        Some(
-            TypeMeta::I8
-            | TypeMeta::U8
-            | TypeMeta::I16
-            | TypeMeta::U16
-            | TypeMeta::I32
-            | TypeMeta::U32
-            | TypeMeta::I64
-            | TypeMeta::U64,
-        ) => "int".to_string(),
-        Some(TypeMeta::Char16) => "str".to_string(),
-        Some(TypeMeta::F32 | TypeMeta::F64) => "float".to_string(),
-        Some(typ @ TypeMeta::RuntimeClass { .. })
-        | Some(typ @ TypeMeta::Enum { .. })
-        | Some(typ @ TypeMeta::Interface { .. }) => {
-            format!("'{}'", context.reference_name_for_type(typ))
-        }
-        Some(typ @ TypeMeta::Parameterized { .. }) => {
-            format!("'{}'", context.reference_name_for_type(typ))
-        }
-        Some(TypeMeta::AsyncOperation(inner)) => {
-            format!("WinRTCoroutine[{}]", py_return_type(Some(inner), context))
-        }
-        Some(TypeMeta::AsyncOperationWithProgress(result, progress)) => format!(
-            "WinRTCoroutineWithProgress[{}, {}]",
-            py_return_type(Some(result), context),
-            py_return_type(Some(progress), context)
-        ),
-        Some(TypeMeta::AsyncAction) => "WinRTCoroutine[None]".to_string(),
-        Some(TypeMeta::AsyncActionWithProgress(progress)) => format!(
-            "WinRTCoroutineWithProgress[None, {}]",
-            py_return_type(Some(progress), context)
-        ),
-        Some(TypeMeta::Array(inner)) => py_array_return_type(inner, context),
-        Some(TypeMeta::Object) | Some(TypeMeta::Delegate { .. }) => "'DynWinRTValue'".to_string(),
-        Some(TypeMeta::Struct { name, .. }) if name == "HResult" => "int".to_string(),
-        Some(typ) if foundation_type(typ) == Some(FoundationType::DateTime) => {
-            "datetime".to_string()
-        }
-        Some(typ) if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
-            "timedelta".to_string()
-        }
-        Some(typ @ TypeMeta::Struct { .. }) => {
-            format!("'{}'", context.reference_name_for_type(typ))
-        }
-        None => "None".to_string(),
+        [output] => output.clone(),
+        _ => format!("tuple[{}]", outputs.join(", ")),
     }
 }
 
@@ -441,20 +617,6 @@ fn py_native_param_element_type(inner: &TypeMeta, context: &PythonProjectionCont
     }
 }
 
-fn py_array_return_type(inner: &TypeMeta, context: &PythonProjectionContext) -> String {
-    if matches!(inner, TypeMeta::U8) {
-        "bytes".to_string()
-    } else {
-        let element = py_native_element_type(inner, context);
-        let element = if is_nullable_reference_type(inner) {
-            py_optional_type(element)
-        } else {
-            element
-        };
-        format!("list[{element}]")
-    }
-}
-
 fn py_collection_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {
     let TypeMeta::Parameterized { args, .. } = typ else {
         return None;
@@ -498,26 +660,6 @@ fn py_collection_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -
         )),
         _ => None,
     }
-}
-
-fn py_collection_return_type(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {
-    let TypeMeta::Parameterized { args, .. } = typ else {
-        return None;
-    };
-    let kind = type_kind(typ)?;
-    let abc = super::collections::abc_name(kind)?;
-    let types = args
-        .iter()
-        .map(|arg| {
-            let element = py_native_element_type(arg, context);
-            if is_nullable_reference_type(arg) {
-                py_optional_type(element)
-            } else {
-                element
-            }
-        })
-        .collect::<Vec<_>>();
-    Some(format!("{abc}[{}]", types.join(", ")))
 }
 
 pub(super) fn py_param_list(
@@ -587,6 +729,19 @@ mod tests {
     use super::*;
     use crate::meta::{ParamDirection, ParamMeta};
 
+    fn returned(
+        typ: &TypeMeta,
+        surface: AnnotationSurface,
+        context: &PythonProjectionContext,
+    ) -> String {
+        py_output_annotation(
+            typ,
+            OutputSite::of(OutputPosition::Return),
+            surface,
+            context,
+        )
+    }
+
     #[test]
     fn multi_out_returns_typed_tuple_in_abi_order() {
         let method = MethodMeta {
@@ -613,7 +768,11 @@ mod tests {
         assert_eq!(outputs[0], (0, &TypeMeta::U32));
         assert_eq!(outputs[1], (1, &TypeMeta::Bool));
         assert_eq!(
-            py_method_return_type(&method, &PythonProjectionContext::default()),
+            py_method_return_type(
+                &method,
+                AnnotationSurface::Stub,
+                &PythonProjectionContext::default()
+            ),
             "tuple[int, bool]"
         );
     }
@@ -646,7 +805,11 @@ mod tests {
             (0, &TypeMeta::Array(Box::new(TypeMeta::String)))
         );
         assert_eq!(
-            py_method_return_type(&method, &PythonProjectionContext::default()),
+            py_method_return_type(
+                &method,
+                AnnotationSurface::Stub,
+                &PythonProjectionContext::default()
+            ),
             "list[str]"
         );
         assert_eq!(
@@ -665,10 +828,13 @@ mod tests {
 
     #[test]
     fn object_arrays_return_typed_runtime_values() {
-        assert_eq!(
-            py_array_return_type(&TypeMeta::Object, &PythonProjectionContext::default()),
-            "list[DynWinRTValue | None]"
-        );
+        let array = TypeMeta::Array(Box::new(TypeMeta::Object));
+        for surface in [AnnotationSurface::Runtime, AnnotationSurface::Stub] {
+            assert_eq!(
+                returned(&array, surface, &PythonProjectionContext::default()),
+                "list[DynWinRTValue | None]"
+            );
+        }
     }
 
     #[test]
@@ -705,7 +871,7 @@ mod tests {
             assert_eq!(py_param_type_safe(&typ, &context), expected);
         }
         assert_eq!(
-            py_return_type_safe(Some(&TypeMeta::Object), &context),
+            returned(&TypeMeta::Object, AnnotationSurface::Stub, &context),
             "DynWinRTValue | None"
         );
         assert_eq!(
@@ -739,17 +905,21 @@ mod tests {
             "DynWinRTValue | _DynWinRTObject_2 | None"
         );
         assert_eq!(
-            py_return_type_safe(Some(&TypeMeta::Object), &context),
+            returned(&TypeMeta::Object, AnnotationSurface::Stub, &context),
             "DynWinRTValue | None"
         );
         assert_eq!(
-            py_array_return_type(&TypeMeta::Object, &context),
+            returned(
+                &TypeMeta::Array(Box::new(TypeMeta::Object)),
+                AnnotationSurface::Stub,
+                &context
+            ),
             "list[DynWinRTValue | None]"
         );
     }
 
     #[test]
-    fn reference_returns_are_annotated_as_nullable() {
+    fn runtime_reference_outputs_stay_nullable() {
         let runtime_class = TypeMeta::RuntimeClass {
             namespace: "Contoso".into(),
             name: "Widget".into(),
@@ -765,22 +935,214 @@ mod tests {
             interface.type_identity(),
         ])
         .unwrap();
+        let runtime = AnnotationSurface::Runtime;
 
+        assert_eq!(returned(&runtime_class, runtime, &context), "Widget | None");
+        assert_eq!(returned(&interface, runtime, &context), "IWidget | None");
+        assert_eq!(
+            returned(&TypeMeta::Object, runtime, &context),
+            "DynWinRTValue | None"
+        );
+        assert_eq!(
+            returned(
+                &TypeMeta::Array(Box::new(runtime_class.clone())),
+                runtime,
+                &context
+            ),
+            "list[Widget | None]"
+        );
         assert_eq!(
             py_return_type_safe(Some(&runtime_class), &context),
             "Widget | None"
         );
+    }
+
+    #[test]
+    fn stub_outputs_are_non_null_except_policy_exceptions() {
+        let widget = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: None,
+        };
+        let interface = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "IWidget".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let unknown = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "NotGenerated".into(),
+            default_interface: None,
+        };
+        let context = PythonProjectionContext::standalone([
+            widget.type_identity(),
+            interface.type_identity(),
+        ])
+        .unwrap();
+        let widgets = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVectorView`1".into(),
+            piid: crate::codegen::winrt::python::collections::IVECTOR_VIEW_PIID.into(),
+            args: vec![widget.clone()],
+        };
+        let stub = AnnotationSurface::Stub;
+        let async_of = |typ: &TypeMeta| TypeMeta::AsyncOperation(Box::new(typ.clone()));
+        let method = |raw_name: &str, params: Vec<ParamMeta>, return_type: TypeMeta| MethodMeta {
+            name: raw_name.into(),
+            raw_name: raw_name.into(),
+            params,
+            return_type: Some(return_type),
+            ..Default::default()
+        };
+
+        assert_eq!(returned(&widget, stub, &context), "Widget");
+        assert_eq!(returned(&interface, stub, &context), "IWidget");
+        assert_eq!(returned(&unknown, stub, &context), "DynWinRTValue");
         assert_eq!(
-            py_return_type_safe(Some(&interface), &context),
-            "IWidget | None"
+            returned(&TypeMeta::Array(Box::new(widget.clone())), stub, &context),
+            "list[Widget]"
         );
         assert_eq!(
-            py_return_type_safe(Some(&TypeMeta::Object), &context),
+            returned(&async_of(&widget), stub, &context),
+            "WinRTCoroutine[Widget]"
+        );
+        assert_eq!(
+            returned(&async_of(&widgets), stub, &context),
+            "WinRTCoroutine[Sequence[Widget]]"
+        );
+        assert_eq!(
+            returned(&TypeMeta::Object, stub, &context),
             "DynWinRTValue | None"
         );
+        let getter = method("get_Widget", vec![], widget.clone());
+        assert_eq!(py_property_type(&getter, &widget, stub, &context), "Widget");
+        let documented_getter = MethodMeta {
+            documented_null_result: true,
+            ..getter.clone()
+        };
         assert_eq!(
-            py_array_return_type(&runtime_class, &context),
+            py_property_type(&documented_getter, &widget, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_collection_item_type(&widget, ElementContainer::View, stub, &context),
+            "Widget"
+        );
+        assert_eq!(
+            py_collection_item_type(&widget, ElementContainer::Mutable, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::Sequence,
+                std::slice::from_ref(&widget),
+                stub,
+                &context
+            ),
+            Some("Sequence[Widget]".to_string())
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::MutableMapping,
+                &[TypeMeta::String, widget.clone()],
+                stub,
+                &context
+            ),
+            Some("MutableMapping[str, Widget | None]".to_string())
+        );
+        let vector = |piid: &str| TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            piid: piid.into(),
+            args: vec![widget.clone()],
+        };
+        for piid in [
+            crate::codegen::winrt::python::collections::IVECTOR_PIID,
+            crate::codegen::winrt::python::collections::IOBSERVABLE_VECTOR_PIID,
+        ] {
+            assert_eq!(
+                returned(&vector(piid), stub, &context),
+                "MutableSequence[Widget | None]"
+            );
+        }
+        let get_many = MethodMeta {
+            params: vec![ParamMeta {
+                name: "items".into(),
+                typ: TypeMeta::Array(Box::new(widget.clone())),
+                direction: ParamDirection::OutFill,
+            }],
+            return_type: Some(TypeMeta::U32),
+            element_access: Some(crate::meta::ElementAccess::Mutable),
+            ..method("GetMany", vec![], TypeMeta::U32)
+        };
+        assert_eq!(
+            py_method_return_type(&get_many, stub, &context),
             "list[Widget | None]"
+        );
+
+        let get_item = method("GetItemAsync", vec![], async_of(&widget));
+        let try_get_item = method("TryGetItemAsync", vec![], async_of(&widget));
+        let try_get_items = method("TryGetItemsAsync", vec![], async_of(&widgets));
+        let try_parse = method(
+            "TryParse",
+            vec![
+                ParamMeta {
+                    name: "input".into(),
+                    typ: TypeMeta::String,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "result".into(),
+                    typ: widget.clone(),
+                    direction: ParamDirection::Out,
+                },
+            ],
+            TypeMeta::Bool,
+        );
+        for (method, stub_type, runtime_type) in [
+            (
+                &get_item,
+                "WinRTCoroutine[Widget]",
+                "WinRTCoroutine[Widget | None]",
+            ),
+            (
+                &try_get_item,
+                "WinRTCoroutine[Widget | None]",
+                "WinRTCoroutine[Widget | None]",
+            ),
+            (
+                &try_get_items,
+                "WinRTCoroutine[Sequence[Widget] | None]",
+                "WinRTCoroutine[Sequence[Widget | None] | None]",
+            ),
+            (
+                &try_parse,
+                "tuple[Widget | None, bool]",
+                "tuple[Widget | None, bool]",
+            ),
+        ] {
+            assert_eq!(py_method_return_type(method, stub, &context), stub_type);
+            assert_eq!(
+                py_method_return_type(method, AnnotationSurface::Runtime, &context),
+                runtime_type
+            );
+        }
+
+        let create = method("CreateWidget", vec![], widget.clone());
+        let try_create = method("TryCreateWidget", vec![], widget.clone());
+        for surface in [AnnotationSurface::Runtime, stub] {
+            assert_eq!(
+                py_factory_return_type("Widget", &create, surface, &context),
+                "'Widget'"
+            );
+        }
+        assert_eq!(
+            py_factory_return_type("Widget", &try_create, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_factory_return_type("Widget", &try_create, AnnotationSurface::Runtime, &context),
+            "'Widget'"
         );
     }
 
@@ -815,10 +1177,12 @@ mod tests {
             args: vec![TypeMeta::U32],
         };
 
-        assert_eq!(
-            py_return_type_safe(Some(&reference), &PythonProjectionContext::default()),
-            "int | None"
-        );
+        for surface in [AnnotationSurface::Runtime, AnnotationSurface::Stub] {
+            assert_eq!(
+                returned(&reference, surface, &PythonProjectionContext::default()),
+                "int | None"
+            );
+        }
         assert_eq!(
             py_param_type_safe(&reference, &PythonProjectionContext::default()),
             "int | None | IReference_UInt32"
