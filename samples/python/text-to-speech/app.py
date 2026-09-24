@@ -13,8 +13,6 @@ async def speak(text: str, smoke: bool) -> None:
     with RoApartment(1), projected_lifetime_scope():
         with SpeechSynthesizer() as synthesizer:
             stream = await synthesizer.synthesize_text_to_stream_async(text)
-            if stream is None:
-                raise RuntimeError("SpeechSynthesizer returned no stream")
 
             with stream:
                 if smoke:

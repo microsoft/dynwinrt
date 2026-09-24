@@ -15,12 +15,7 @@ async def run() -> None:
     with tempfile.TemporaryDirectory(prefix="dynwinrt-python-") as directory:
         with RoApartment(1), projected_lifetime_scope():
             folder = await StorageFolder.get_folder_from_path_async(directory)
-            if folder is None:
-                raise RuntimeError("StorageFolder returned no temporary folder")
-
             file = await folder.create_file_async("sample.txt")
-            if file is None:
-                raise RuntimeError("StorageFolder returned no file")
             await FileIO.write_text_async(file, "Hello from dynwinrt.")
             await FileIO.append_text_async(
                 file,
