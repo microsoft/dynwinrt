@@ -344,6 +344,71 @@
       ]
     },
     {
+      "id": "property_set_map_changed_projection",
+      "namespace": "Windows.Foundation.Collections",
+      "class": "PropertySet",
+      "langs": ["py"],
+      "instantiate": { "kind": "constructor", "args": [] },
+      "checks": [
+        {
+          "kind": "map_changed_event_projection",
+          "member": "map_changed",
+          "set_key": "k",
+          "values": [1, 2],
+          "expected_type": "IObservableMap_String_Object"
+        }
+      ]
+    },
+    {
+      "id": "string_map_map_changed_projection",
+      "namespace": "Windows.Foundation.Collections",
+      "class": "StringMap",
+      "langs": ["py"],
+      "instantiate": { "kind": "constructor", "args": [] },
+      "checks": [
+        {
+          "kind": "map_changed_event_projection",
+          "member": "map_changed",
+          "set_key": "k",
+          "values": ["first", "second"],
+          "expected_type": "IObservableMap_String_String"
+        }
+      ]
+    },
+    {
+      "id": "thread_pool_work_item_passthrough",
+      "namespace": "Windows.System.Threading",
+      "class": "ThreadPool",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "work_item_callback_passthrough", "member": "run_async" }
+      ]
+    },
+    {
+      "id": "thread_pool_timer_callback_projection",
+      "namespace": "Windows.System.Threading",
+      "class": "ThreadPoolTimer",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "timer_callback_projection", "member": "create_timer" }
+      ]
+    },
+    {
+      "id": "gamepad_static_event_native_delegate",
+      "namespace": "Windows.Gaming.Input",
+      "class": "Gamepad",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "static_event_native_delegate_passthrough",
+          "member": "gamepad_added"
+        }
+      ]
+    },
+    {
       "id": "notification_data_mapping",
       "namespace": "Windows.UI.Notifications",
       "class": "NotificationData",
@@ -483,6 +548,7 @@
       "namespace": "Windows.System.Threading",
       "class": "ThreadPool",
       "langs": ["py"],
+      "extra_classes": ["Windows.Foundation.IAsyncInfo"],
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_cancellation", "member": "run_async" }

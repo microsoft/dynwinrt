@@ -324,7 +324,7 @@ pub(super) fn py_method_return_type(
     }
 }
 
-fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> String {
+pub(super) fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> String {
     match typ {
         Some(TypeMeta::String) => "str".to_string(),
         Some(TypeMeta::Guid) => "UUID".to_string(),
@@ -528,7 +528,9 @@ pub(super) fn py_param_list(
         .iter()
         .map(|p| {
             let param_type = match &p.typ {
-                typ if context.is_delegate_type(typ) => py_delegate_param_type(typ, context),
+                typ if context.is_delegate_type(typ) => {
+                    super::delegates::py_delegate_param_type(typ, context)
+                }
                 _ => py_param_type_safe(&p.typ, context),
             };
             format!("{}: {}", to_snake_case(&p.name), param_type)
@@ -537,49 +539,22 @@ pub(super) fn py_param_list(
         .join(", ")
 }
 
-/// Produce a typed Python annotation for a delegate parameter, with
-/// `TypedEventHandler` / `EventHandler` unwrapped. Bespoke non-parametric
-/// delegates fall back to `Callable[..., object]`.
-pub(crate) fn py_delegate_callable_type(
-    typ: &TypeMeta,
+pub(super) fn py_constructor_param_list(
+    in_params: &[&crate::meta::ParamMeta],
     context: &PythonProjectionContext,
 ) -> String {
-    match typ {
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
-        {
-            let sender = py_return_type_safe(Some(&args[0]), context);
-            let arg = py_return_type_safe(Some(&args[1]), context);
-            format!("Callable[[{}, {}], object]", sender, arg)
-        }
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
-        {
-            let arg = py_return_type_safe(Some(&args[0]), context);
-            format!("Callable[[object, {}], object]", arg)
-        }
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
-        {
-            let observable_identity = crate::types::TypeIdentity::closed_generic(
-                crate::types::TypeIdentityKind::Interface,
-                crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                "IObservableVector",
-                args.iter().map(TypeMeta::type_identity),
-            );
-            let observable = context.reference_name(&observable_identity);
-            format!(
-                "Callable[['{}', 'IVectorChangedEventArgs'], object]",
-                observable
-            )
-        }
-        _ => "Callable[..., object]".to_string(),
-    }
-}
-
-fn py_delegate_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
-    let sig = py_delegate_callable_type(typ, context);
-    format!("{sig} | 'DynWinRTValue'")
+    in_params
+        .iter()
+        .map(|param| {
+            let param_type = if context.is_delegate_type(&param.typ) {
+                super::delegates::py_delegate_constructor_param_type(&param.typ, context)
+            } else {
+                py_param_type_safe(&param.typ, context)
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -802,7 +777,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             py_param_list(&[&param], &context),
-            "handler: Callable[..., object] | 'DynWinRTValue'"
+            "handler: Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'"
         );
     }
 

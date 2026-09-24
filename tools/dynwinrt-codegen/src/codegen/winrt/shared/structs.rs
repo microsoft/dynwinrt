@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use crate::codegen::winrt::shared::imports::input_delegate_invokes;
 use crate::meta::{ClassMeta, InterfaceMeta};
 use crate::types::TypeMeta;
 
@@ -83,6 +84,27 @@ pub(crate) fn collect_used_structs_from_class(class: &ClassMeta) -> Vec<TypeMeta
             if let Some(ref rt) = m.return_type {
                 collect_used_structs_from_type(rt, &mut seen, &mut result);
             }
+        }
+    }
+    result
+}
+
+/// Structs used by a class, followed by structs that only the delegates its
+/// methods accept pass to Python callbacks.
+pub(crate) fn collect_used_structs_from_class_and_callbacks(class: &ClassMeta) -> Vec<TypeMeta> {
+    let mut result = collect_used_structs_from_class(class);
+    let mut seen = result
+        .iter()
+        .filter_map(|typ| match typ {
+            TypeMeta::Struct {
+                namespace, name, ..
+            } => Some(format!("{namespace}.{name}")),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for invoke in class.all_interfaces().flat_map(input_delegate_invokes) {
+        for p in &invoke.params {
+            collect_used_structs_from_type(&p.typ, &mut seen, &mut result);
         }
     }
     result

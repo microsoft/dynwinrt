@@ -20,12 +20,13 @@ use crate::codegen::winrt::shared::imports::{
     collect_used_generic_identities_from_type,
 };
 use crate::codegen::winrt::shared::structs::{
-    collect_used_structs_from_class, collect_used_structs_from_iface,
+    collect_used_structs_from_class_and_callbacks, collect_used_structs_from_iface,
     collect_used_structs_from_struct,
 };
 
 use super::collections::{
     CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
+    projected_interface_kind,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
@@ -265,7 +266,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         return out;
     }
     let implementation = super::implementation::project(context, iface);
-    let collection_kind = interface_kind(iface);
+    let collection_kind = projected_interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     let has_projection = !iface.iid.is_empty() || iface.generic_piid.is_some();
     let has_factory = implementation.supported || (is_protocol && has_projection);
@@ -352,18 +353,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
             };
             out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
         }
-    }
-    if observable_vector.is_some() {
-        let event_args = "IVectorChangedEventArgs";
-        let identity = crate::types::TypeIdentity::named(
-            crate::types::TypeIdentityKind::Interface,
-            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-            event_args,
-        );
-        let module = context.implementation_module(&identity);
-        out.push_str(&format!(
-            "from .{module} import {event_args}  # noqa: F401\n"
-        ));
     }
 
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
@@ -623,7 +612,7 @@ pub fn generate_class_stub(
     class: &ClassMeta,
     shared_iids: &HashSet<String>,
 ) -> String {
-    let used_structs = collect_used_structs_from_class(class);
+    let used_structs = collect_used_structs_from_class_and_callbacks(class);
     let context = context.for_class_module(class, &used_structs);
     let context = context.as_ref();
     let collection_iface = class_interface(class);
@@ -718,30 +707,6 @@ pub fn generate_class_stub(
             };
             out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
             imported_names.insert(reference_name);
-        }
-    }
-    for iface in class.all_interfaces() {
-        if iface.generic_piid.as_deref() == Some(super::collections::IOBSERVABLE_VECTOR_PIID) {
-            let identity = iface.type_identity();
-            let projected_name = context.projected_name(&identity);
-            if imported_names.insert(projected_name.clone()) {
-                let module = context.implementation_module(&identity);
-                out.push_str(&format!(
-                    "from .{module} import {projected_name}  # noqa: F401\n"
-                ));
-            }
-            let event_args = "IVectorChangedEventArgs";
-            if imported_names.insert(event_args.into()) {
-                let identity = crate::types::TypeIdentity::named(
-                    crate::types::TypeIdentityKind::Interface,
-                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                    event_args,
-                );
-                let module = context.implementation_module(&identity);
-                out.push_str(&format!(
-                    "from .{module} import {event_args}  # noqa: F401\n"
-                ));
-            }
         }
     }
 
@@ -1291,7 +1256,7 @@ fn collection_protocol_stubs(
     context: &PythonProjectionContext,
     indent_spaces: usize,
 ) -> String {
-    let Some(kind) = interface_kind(iface) else {
+    let Some(kind) = projected_interface_kind(iface) else {
         return String::new();
     };
     let indent = " ".repeat(indent_spaces);
@@ -1462,7 +1427,7 @@ fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) 
         if count > 1 {
             out.push_str("    @overload\n");
         }
-        let param_str = super::type_helpers::py_param_list(params, context);
+        let param_str = super::type_helpers::py_constructor_param_list(params, context);
         if param_str.is_empty() {
             out.push_str("    def __init__(self) -> None: ...\n");
         } else {

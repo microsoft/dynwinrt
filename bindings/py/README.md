@@ -101,6 +101,70 @@ registration thread or an asyncio event-loop thread. Keep each token returned by
 needed. For callback-style cleanup, `subscribe_*` returns an idempotent
 unsubscribe function. `once_*` subscribes for at most one callback invocation.
 
+A Python callable passed as a delegate (an event handler, a callback
+parameter such as `ThreadPool.run_async(handler)`, or a delegate-typed
+property) receives the delegate's arguments as projected Python values, typed
+from the delegate's `Invoke` signature. WinRT `Object` arguments stay
+`DynWinRTValue | None`, and `IReference<T>` arguments are native values or
+`None`. Async-operation arguments stay raw `DynWinRTValue` objects so a
+callback projection cannot take over or cancel the operation's completion.
+For example, `map_changed` handlers of `PropertySet`, `StringMap`,
+`ValueSet`, and other `IObservableMap<K, V>` implementations receive the
+`IObservableMap<K, V>` projection, which is a mutable mapping, and an
+`IMapChangedEventArgs<K>` with `collection_change` and `key`. An existing
+native delegate, such as one built with `DynWinRtDelegate.create`, is passed
+through unchanged, and its callback keeps receiving raw `DynWinRTValue`
+arguments. `on_*` and `subscribe_*` accept those native delegates.
+`once_*` requires a Python callable because it must wrap the callback to remove
+the subscription after the first invocation.
+
+Delegate-accepting constructors accept the `DynWinRtDelegate` object, but their
+stubs intentionally do not advertise its raw `DynWinRTValue`. A single raw
+value passed to a runtime class is reserved for wrapping an existing native
+instance before constructor overload dispatch. Keep the delegate object for a
+constructor, or pass the raw delegate to a named factory/method instead.
+
+Callback parameter annotations are non-null by default, matching generated
+method-output typing. This is an intentionally optimistic typing policy, not a
+guarantee from the `Invoke` metadata: WinMD carries no nullability information,
+and the runtime still passes `None` when WinRT supplies a null reference.
+
+Projected callback arguments are created outside the lifetime scope that was
+active when the callback was subscribed. Short-lived arguments are therefore
+released when their Python wrappers are dropped instead of accumulating in a
+long-lived UI/application scope. If a callback retains an argument, its wrapper
+owns the native reference and remains valid after the callback and after that
+subscription-time scope closes; drop it normally or call `release_projected()`
+when deterministic release is needed.
+
+```python
+def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String) -> None:
+    if args.collection_change == CollectionChange.ItemInserted:
+        print(args.key, sender[args.key])
+
+unsubscribe = properties.subscribe_map_changed(changed)
+```
+
+Async-operation arguments deliberately stay raw. A work item can inspect its
+`IAsyncInfo` status without installing another completion handler:
+
+```python
+from dynwinrt import DynWinRTValue, release_projected
+from generated.windows.foundation import AsyncStatus, IAsyncInfo
+from generated.windows.system.threading import ThreadPool
+
+def work(action: DynWinRTValue) -> None:
+    info = IAsyncInfo.from_value(action)
+    try:
+        if info.status == AsyncStatus.Canceled:
+            return
+        # Do work, polling info.status when cooperative cancellation is needed.
+    finally:
+        release_projected(info)
+
+operation = ThreadPool.run_async(work)
+```
+
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
 Activatable runtime classes use normal constructors, for example

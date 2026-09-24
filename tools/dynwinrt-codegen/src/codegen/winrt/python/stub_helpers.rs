@@ -7,12 +7,13 @@ use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
 use crate::types::{FieldMeta, TypeMeta};
 
+use super::delegates::{py_delegate_callable_type, py_delegate_param_type};
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
-    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_factory_return_type, py_method_return_type, py_output_type,
+    py_param_list, py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -229,17 +230,24 @@ pub(super) fn emit_method_stub_named(
     if method.is_event_add {
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
-        // Build a typed callback signature matching the runtime .py side.
+        // on_/subscribe_ also accept native delegates; once_ requires a callable.
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let callback_sig = delegate_typ
-            .map(|typ| py_delegate_callable_type(typ, context))
-            .unwrap_or_else(|| "Callable[..., object]".to_string());
+        let (input_sig, callable_sig) = match delegate_typ {
+            Some(typ) => (
+                py_delegate_param_type(typ, context),
+                py_delegate_callable_type(typ, context),
+            ),
+            None => (
+                "Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'".to_string(),
+                "Callable[..., object]".to_string(),
+            ),
+        };
         emit_documented_stub(
             &mut out,
             &indent,
             &format!(
                 "def on_{}(self, callback: {}) -> 'DynWinRTValue'",
-                event_name, callback_sig
+                event_name, input_sig
             ),
             &doc,
             "",
@@ -247,11 +255,11 @@ pub(super) fn emit_method_stub_named(
         if event_has_remove {
             out.push_str(&format!(
                 "{indent}def subscribe_{}(self, callback: {}) -> Callable[[], None]: ...\n",
-                event_name, callback_sig
+                event_name, input_sig
             ));
             out.push_str(&format!(
                 "{indent}def once_{}(self, callback: {}) -> Callable[[], None]: ...\n",
-                event_name, callback_sig
+                event_name, callable_sig
             ));
         }
         return out;
@@ -286,17 +294,16 @@ pub(super) fn emit_method_stub_named(
         );
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
-        let param_type = if in_params
+        let param_type = in_params
             .first()
-            .is_some_and(|p| is_delegate_type(Some(&p.typ)))
-        {
-            "Callable[..., object] | 'DynWinRTValue'".to_string()
-        } else {
-            in_params
-                .first()
-                .map(|p| py_param_type_safe(&p.typ, context))
-                .unwrap_or_else(|| "object".to_string())
-        };
+            .map(|p| {
+                if is_delegate_type(Some(&p.typ)) {
+                    super::delegates::py_delegate_param_type(&p.typ, context)
+                } else {
+                    py_param_type_safe(&p.typ, context)
+                }
+            })
+            .unwrap_or_else(|| "object".to_string());
         if property_has_getter {
             out.push_str(&format!("{indent}@{}.setter\n", prop_name));
             emit_documented_stub(

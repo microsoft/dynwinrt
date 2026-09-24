@@ -859,6 +859,312 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'map_changed_event_projection':
+            key = check['set_key']
+            sender_type = generated_type(pkg_name, check['expected_type'])
+            args_type = generated_type(pkg_name, 'IMapChangedEventArgs_String')
+            change_type = generated_type(pkg_name, 'CollectionChange')
+
+            def box(value):
+                if isinstance(value, str):
+                    return value
+                return generated_type(pkg_name, 'PropertyValue').create_int32(value)
+
+            def same_value(actual, expected):
+                if isinstance(expected, str):
+                    return actual == expected
+                expected = getattr(expected, '_obj', expected)
+                return (
+                    isinstance(actual, dw.DynWinRTValue)
+                    and actual.identity_raw() == expected.identity_raw()
+                )
+
+            first, second = (box(value) for value in check['values'])
+            observed = []
+
+            def handler(sender, args):
+                change = args.collection_change
+                observed.append((
+                    sender,
+                    args,
+                    change,
+                    args.key,
+                    len(sender),
+                    key in sender,
+                    None if change == change_type.ItemRemoved else sender[key],
+                ))
+
+            once_changes = []
+            token_keys = []
+            unsubscribe = getattr(obj, f'subscribe_{member}')(handler)
+            getattr(obj, f'once_{member}')(
+                lambda _sender, args: once_changes.append(args.collection_change)
+            )
+            token = getattr(obj, f'on_{member}')(
+                lambda _sender, args: token_keys.append(args.key)
+            )
+            obj[key] = first
+            obj[key] = second
+            del obj[key]
+            getattr(obj, f'off_{member}')(token)
+            unsubscribe()
+            unsubscribe()
+            obj[key] = first
+            del obj[key]
+
+            expected = [
+                (change_type.ItemInserted, 1, True, first),
+                (change_type.ItemChanged, 1, True, second),
+                (change_type.ItemRemoved, 0, False, None),
+            ]
+            if len(observed) != len(expected):
+                cr['error'] = f'expected {len(expected)} map changes, got {len(observed)}'
+                return cr
+            for (sender, args, change, changed_key, size, present, value), (
+                expected_change, expected_size, expected_present, expected_value
+            ) in zip(observed, expected):
+                if not isinstance(sender, sender_type):
+                    cr['error'] = f'sender was {type(sender).__name__}, not {sender_type.__name__}'
+                    return cr
+                if not isinstance(args, args_type):
+                    cr['error'] = f'args were {type(args).__name__}, not {args_type.__name__}'
+                    return cr
+                if not isinstance(change, change_type) or change != expected_change:
+                    cr['error'] = f'expected {expected_change!r}, got {change!r}'
+                    return cr
+                if changed_key != key:
+                    cr['error'] = f'expected changed key {key!r}, got {changed_key!r}'
+                    return cr
+                if size != expected_size or present != expected_present:
+                    cr['error'] = (
+                        f'{expected_change.name}: sender had size {size} and '
+                        f'membership {present}'
+                    )
+                    return cr
+                if expected_value is not None and not same_value(value, expected_value):
+                    cr['error'] = f'{expected_change.name}: sender[{key!r}] was {value!r}'
+                    return cr
+            if once_changes != [change_type.ItemInserted]:
+                cr['error'] = f'once handler observed {once_changes!r}'
+            elif token_keys != [key, key, key]:
+                cr['error'] = f'token handler observed {token_keys!r}'
+            else:
+                collection_namespace = importlib.import_module(
+                    namespace_module_name(
+                        pkg_name, 'Windows.Foundation.Collections'
+                    )
+                )
+                suffix = check['expected_type'].removeprefix(
+                    'IObservableMap_'
+                )
+                delegate = dw.DynWinRtDelegate.create(
+                    getattr(
+                        collection_namespace,
+                        f'IID_MapChangedEventHandler_{suffix}',
+                    ),
+                    getattr(
+                        collection_namespace,
+                        f'MapChangedEventHandler_{suffix}_PARAM_TYPES',
+                    ),
+                    lambda *args: raw_events.append(args),
+                )
+                raw_events = []
+                raw_value = delegate.to_value()
+                native_token = getattr(obj, f'on_{member}')(delegate)
+                native_unsubscribe = getattr(obj, f'subscribe_{member}')(
+                    raw_value
+                )
+                for native in (delegate, raw_value):
+                    try:
+                        getattr(obj, f'once_{member}')(native)
+                    except TypeError as error:
+                        expected_error = (
+                            f'once_{member} requires a Python callable; '
+                            f'use on_{member} or subscribe_{member} '
+                            'for native delegates'
+                        )
+                        if str(error) != expected_error:
+                            cr['error'] = (
+                                'native once rejection was unclear: '
+                                f'{error}'
+                            )
+                            return cr
+                    else:
+                        cr['error'] = (
+                            f'once_{member} accepted a native delegate'
+                        )
+                        return cr
+                obj[key] = second
+                getattr(obj, f'off_{member}')(native_token)
+                native_unsubscribe()
+                native_unsubscribe()
+                del obj[key]
+                raw_value.release()
+                if len(raw_events) != 2 or any(
+                    len(args) != 2
+                    or not all(
+                        isinstance(arg, dw.DynWinRTValue)
+                        for arg in args
+                    )
+                    for args in raw_events
+                ):
+                    cr['error'] = (
+                        'native MapChanged delegate did not receive raw '
+                        f'values: {raw_events!r}'
+                    )
+                    return cr
+
+                # Project callback arguments outside the subscription-time
+                # lifetime scope. Ephemeral events must not accumulate native
+                # refs there, while a retained argument remains owned and
+                # usable after the scope closes.
+                if check['expected_type'] == 'IObservableMap_String_String':
+                    retained = []
+
+                    def retain_first(sender, args):
+                        if not retained:
+                            retained.append((sender, args))
+
+                    with dw.projected_lifetime_scope() as scope:
+                        before = len(scope._registry)
+                        scoped_unsubscribe = getattr(
+                            obj, f'subscribe_{member}'
+                        )(retain_first)
+                        for index in range(1000):
+                            obj[key] = (
+                                check['values'][index % len(check['values'])]
+                            )
+                        scoped_unsubscribe()
+                        growth = len(scope._registry) - before
+                    if growth != 0:
+                        cr['error'] = (
+                            'callback projections accumulated '
+                            f'{growth} native refs in the active scope'
+                        )
+                        return cr
+                    retained_sender, retained_args = retained[0]
+                    if (
+                        retained_args.key != key
+                        or retained_sender[key] != check['values'][-1]
+                    ):
+                        cr['error'] = (
+                            'retained callback arguments were invalid after '
+                            'the lifetime scope closed'
+                        )
+                        return cr
+                    dw.release_projected(retained_args)
+                    dw.release_projected(retained_sender)
+                    del obj[key]
+                cr['pass'] = True
+
+        elif kind == 'work_item_callback_passthrough':
+            received = []
+            await getattr(cls, member)(received.append)
+            if len(received) != 1:
+                cr['error'] = f'work item ran {len(received)} times'
+                return cr
+            if not isinstance(received[0], dw.DynWinRTValue):
+                cr['error'] = (
+                    'work item callable did not receive the raw IAsyncAction: '
+                    f'{type(received[0]).__name__}'
+                )
+                return cr
+
+            threading_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.System.Threading')
+            )
+            native_received = []
+            delegate = dw.DynWinRtDelegate.create(
+                threading_namespace.IID_WorkItemHandler,
+                threading_namespace.WorkItemHandler_PARAM_TYPES,
+                native_received.append,
+            )
+            await getattr(cls, member)(delegate)
+            raw_value = delegate.to_value()
+            await getattr(cls, member)(raw_value)
+            raw_value.release()
+            if len(native_received) != 2 or not all(
+                isinstance(value, dw.DynWinRTValue)
+                for value in native_received
+            ):
+                cr['error'] = (
+                    'native work-item delegate did not pass through: '
+                    f'{native_received!r}'
+                )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_event_native_delegate_passthrough':
+            gaming_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Gaming.Input')
+            )
+            foundation_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Foundation')
+            )
+            delegate = dw.DynWinRtDelegate.create(
+                foundation_namespace.IID_EventHandler_Gamepad,
+                foundation_namespace.EventHandler_Gamepad_PARAM_TYPES,
+                lambda *_args: None,
+            )
+            add = getattr(cls, f'add_{member}')
+            remove = getattr(cls, f'remove_{member}')
+            token = add(delegate)
+            remove(token)
+            raw_value = delegate.to_value()
+            token = add(raw_value)
+            remove(token)
+            raw_value.release()
+            removed_token = cls.add_gamepad_removed(delegate)
+            cls.remove_gamepad_removed(removed_token)
+            gamepads = cls.get_gamepads()
+
+            reading_type = generated_type(pkg_name, 'GamepadReading')
+            reading = reading_type(timestamp=7, left_trigger=0.5)
+            same_reading = reading_type(timestamp=7, left_trigger=0.5)
+            vibration_type = generated_type(pkg_name, 'GamepadVibration')
+            vibration = vibration_type(left_motor=0.25, right_motor=0.75)
+            same_vibration = vibration_type(
+                left_motor=0.25, right_motor=0.75
+            )
+            # Keep the namespace module import live: it is also the intended
+            # public home of the Gamepad static event.
+            if cls is not gaming_namespace.Gamepad:
+                cr['error'] = 'Gamepad namespace export was inconsistent'
+            elif gamepads is None:
+                cr['error'] = 'Gamepad.gamepads returned null'
+            elif reading != same_reading or 'timestamp=7' not in repr(reading):
+                cr['error'] = 'GamepadReading value semantics failed'
+            elif (
+                vibration != same_vibration
+                or 'left_motor=0.25' not in repr(vibration)
+            ):
+                cr['error'] = 'GamepadVibration value semantics failed'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'timer_callback_projection':
+            from datetime import timedelta
+
+            delay = timedelta(milliseconds=10)
+            fired = threading.Event()
+            received = []
+
+            def elapsed(timer):
+                received.append((timer, timer.delay))
+                fired.set()
+
+            timer = getattr(cls, member)(elapsed, delay)
+            if not fired.wait(10):
+                cr['error'] = 'timer handler was not invoked'
+            elif not isinstance(received[0][0], cls):
+                cr['error'] = f'timer handler received {type(received[0][0]).__name__}'
+            elif received[0][0]._obj.identity_raw() != timer._obj.identity_raw():
+                cr['error'] = 'timer handler received a different timer'
+            elif received[0][1] != delay:
+                cr['error'] = f'timer delay was {received[0][1]!r}'
+            else:
+                cr['pass'] = True
+
         elif kind == 'mutable_sequence_protocol':
             sequence = getattr(obj, member)
             values = check['set_value']
@@ -1493,19 +1799,11 @@ async def run_check(
         elif kind == 'async_cancellation':
             import dynwinrt as dw
 
-            info_iid = dw.WinGUID.parse('00000036-0000-0000-c000-000000000046')
-            info_type = (
-                dw.DynWinRTType.register_interface('IAsyncInfoE2E', info_iid)
-                .add_method(
-                    'get_Id',
-                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.u32_type()),
-                )
-                .add_method(
-                    'get_Status',
-                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.i32_type()),
-                )
+            foundation_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Foundation')
             )
-            status_method = info_type.method(7)
+            async_info_type = foundation_namespace.IAsyncInfo
+            async_status_type = foundation_namespace.AsyncStatus
             started = threading.Event()
             release = threading.Event()
             cancel_seen = threading.Event()
@@ -1513,15 +1811,22 @@ async def run_check(
 
             def work(action):
                 started.set()
+                info = None
                 try:
-                    action = action.cast(info_iid)
+                    info = async_info_type.from_value(action)
                     while not release.wait(0.01):
-                        if status_method.invoke(action, []).to_number() == 2:
+                        if info.status == async_status_type.Canceled:
                             cancel_seen.set()
                             break
                 except BaseException as error:
                     worker_errors.append(error)
+                finally:
+                    if info is not None:
+                        dw.release_projected(info)
 
+            # Generated ThreadPool.run_async keeps the IAsyncAction argument
+            # raw, so the work item can inspect IAsyncInfo without installing
+            # another completion handler.
             operation = cls.run_async(work)
             loop = asyncio.get_running_loop()
 

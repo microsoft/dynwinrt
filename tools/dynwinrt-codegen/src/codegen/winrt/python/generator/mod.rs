@@ -15,10 +15,10 @@ use crate::types::{TypeKind, TypeMeta};
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports_by_identity, collect_struct_field_type_imports,
     collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
-    collect_used_generic_identities_from_type, ireference_inner_type,
+    collect_used_generic_identities_from_type, get_in_params, ireference_inner_type,
 };
 use crate::codegen::winrt::shared::structs::{
-    collect_used_structs_from_class, collect_used_structs_from_iface,
+    collect_used_structs_from_class_and_callbacks, collect_used_structs_from_iface,
     collect_used_structs_from_struct,
 };
 
@@ -81,7 +81,7 @@ from dynwinrt.dynwinrt import (
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
     _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
-    _dynwinrt_wrap_delegate_callback,
+    _dynwinrt_wrap_delegate_callback, _active_projected_lifetime_scope,
 )
 
 
@@ -111,13 +111,30 @@ def _dynwinrt_create_delegate(iid, parameter_types, callback):
         _dynwinrt_wrap_delegate_callback(callback),
     )
 
-def _dynwinrt_delegate(value, iid, parameter_types):
+def _dynwinrt_delegate(value, iid, parameter_types, project=None):
+    if isinstance(value, DynWinRtDelegate):
+        return value.to_value()
     raw = getattr(value, '_obj', value)
     if isinstance(raw, DynWinRTValue):
         return raw
     if not callable(value):
         raise TypeError('delegate value must be callable or a DynWinRTValue')
+    if project is not None:
+        value = _dynwinrt_project_callback(value, project)
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
+
+
+def _dynwinrt_project_callback(callback, project):
+    # Projected arguments belong to the callback, not to a lifetime scope that
+    # was active when it subscribed.
+    def invoke(*args):
+        token = _active_projected_lifetime_scope.set(None)
+        try:
+            arguments = project(*args)
+        finally:
+            _active_projected_lifetime_scope.reset(token)
+        return callback(*arguments)
+    return invoke
 def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
@@ -216,5 +233,23 @@ mod tests {
         assert!(runtime.contains("_dynwinrt_wrap_delegate_callback,"));
         assert!(runtime.contains("_dynwinrt_wrap_delegate_callback(callback),"));
         assert!(!runtime.contains("copy_context"));
+    }
+
+    #[test]
+    fn delegate_inputs_pass_native_delegates_and_project_outside_lifetime_scopes() {
+        let runtime = generate_runtime_support_module();
+
+        assert!(runtime.contains(
+            "    if isinstance(value, DynWinRtDelegate):\n        return value.to_value()\n"
+        ));
+        assert!(runtime.contains("        value = _dynwinrt_project_callback(value, project)\n"));
+        assert!(runtime.contains(
+            "        token = _active_projected_lifetime_scope.set(None)\n\
+             \x20       try:\n\
+             \x20           arguments = project(*args)\n\
+             \x20       finally:\n\
+             \x20           _active_projected_lifetime_scope.reset(token)\n\
+             \x20       return callback(*arguments)\n"
+        ));
     }
 }

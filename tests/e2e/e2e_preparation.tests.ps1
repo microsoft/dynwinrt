@@ -18,6 +18,7 @@ $shell = (Get-Process -Id $PID).Path
 try {
     New-Item -ItemType Directory -Path $scripts, (Split-Path $venv), (Split-Path $standard) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "e2e_test.ps1") -Destination $scripts
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "check_generated_python.py") -Destination $scripts
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "codegen.ps1") -Destination $scripts
     New-Item -ItemType File -Path $venv, $explicit, $codegen | Out-Null
     Set-Content -LiteralPath $standard -Value '{"retained": true}' -NoNewline

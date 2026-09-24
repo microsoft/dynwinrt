@@ -7,8 +7,8 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_identity, observable_vector_identity,
-    runtime_mixin,
+    CollectionKind, interface_kind, map_iterable_identity, observable_collection_identity,
+    observable_vector_identity, runtime_mixin,
 };
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
@@ -103,6 +103,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
     let collection_kind = interface_kind(iface);
     let observable_vector = observable_vector_identity(iface);
+    let observable_collection = observable_collection_identity(iface);
     if observable_vector.is_none()
         && let Some(mixin) = collection_kind.and_then(runtime_mixin)
     {
@@ -164,18 +165,6 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             type_checking_imports.push(format!("from .{module} import {import}  # noqa: F401\n"));
         }
     }
-    if observable_vector.is_some() {
-        let event_args = "IVectorChangedEventArgs";
-        let identity = TypeIdentity::named(
-            TypeIdentityKind::Interface,
-            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-            event_args,
-        );
-        let module = context.implementation_module(&identity);
-        type_checking_imports.push(format!(
-            "from .{module} import {event_args}  # noqa: F401\n"
-        ));
-    }
 
     // Import delegate IID + PARAM_TYPES
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
@@ -227,10 +216,8 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
     let mut argument_iids = Vec::new();
     for method in &iface.methods {
-        for parameter in &method.params {
-            if parameter.direction == ParamDirection::In {
-                py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
-            }
+        for parameter in get_in_params(method) {
+            py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
         }
     }
     argument_iids.sort();
@@ -260,12 +247,12 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str(&implementation.support_code);
 
     // Wrapper class
-    if let Some(identity) = &observable_vector {
-        let vector_name = context.projected_name(identity);
+    if let Some(identity) = &observable_collection {
+        let companion_name = context.projected_name(identity);
         out.push_str(&format!(
             "\nclass {}({}):\n",
             iface.name,
-            py_runtime_symbol(context, identity, &vector_name)
+            py_runtime_symbol(context, identity, &companion_name)
         ));
     } else if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
         out.push_str(&format!("\nclass {}({mixin}):\n", iface.name));
@@ -299,11 +286,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
          \x20       return super().__new__(cls)\n\n",
     );
     out.push_str("    def _set_native(self, obj: DynWinRTValue, *, cache=True):\n");
-    if let Some(identity) = &observable_vector {
-        let vector_name = context.projected_name(identity);
+    if let Some(identity) = &observable_collection {
+        let companion_name = context.projected_name(identity);
         out.push_str(&format!(
             "        {}._set_native(self, obj)\n",
-            py_runtime_symbol(context, identity, &vector_name)
+            py_runtime_symbol(context, identity, &companion_name)
         ));
         out.push_str(&format!(
             "        self._observable_obj = obj.cast(IID_{})\n",
@@ -573,7 +560,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
 
     // Instance methods (reorder so @property comes before @x.setter)
     let iface_var = registration_symbol;
-    let obj_expr = if observable_vector.is_some() {
+    let obj_expr = if observable_collection.is_some() {
         "self._observable_obj"
     } else {
         "self._obj"

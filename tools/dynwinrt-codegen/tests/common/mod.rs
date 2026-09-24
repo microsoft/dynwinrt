@@ -4,8 +4,57 @@ use std::collections::HashSet;
 
 use dynwinrt_codegen::codegen::python::{self, PythonProjectionContext};
 use dynwinrt_codegen::codegen::python_stub;
-use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta};
+use dynwinrt_codegen::meta::{
+    ClassMeta, ImplementationDelegateMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
+};
 use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
+
+/// Generated `on_`, `subscribe_` and `once_` signatures for an event. `on_` and
+/// `subscribe_` also accept native delegates.
+pub fn event_signatures(event: &str, callback: &str) -> [String; 3] {
+    [
+        format!("def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"),
+        format!(
+            "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
+        ),
+        format!("def once_{event}(self, callback: {callback}):"),
+    ]
+}
+
+/// Stub declarations matching [`event_signatures`].
+pub fn event_stub_signatures(event: &str, callback: &str) -> [String; 3] {
+    [
+        format!(
+            "def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate') -> 'DynWinRTValue'"
+        ),
+        format!(
+            "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate') -> Callable[[], None]: ..."
+        ),
+        format!("def once_{event}(self, callback: {callback}) -> Callable[[], None]: ..."),
+    ]
+}
+
+/// Metadata for a delegate type and its `Invoke(inputs...)` signature, as
+/// recorded on the interfaces that reference it.
+pub fn delegate_invoke(typ: TypeMeta, inputs: &[(&str, TypeMeta)]) -> ImplementationDelegateMeta {
+    ImplementationDelegateMeta {
+        typ,
+        invoke: MethodMeta {
+            name: "Invoke".into(),
+            raw_name: "Invoke".into(),
+            vtable_index: 3,
+            params: inputs
+                .iter()
+                .map(|(name, typ)| ParamMeta {
+                    name: (*name).into(),
+                    typ: typ.clone(),
+                    direction: ParamDirection::In,
+                })
+                .collect(),
+            ..Default::default()
+        },
+    }
+}
 
 fn compatibility_name(typ: &TypeMeta) -> String {
     match typ {
@@ -88,6 +137,23 @@ fn collect_methods(
     }
 }
 
+/// Generation also emits the types named by delegate `Invoke` signatures.
+fn collect_delegate_invokes(
+    interface: &InterfaceMeta,
+    known: &HashSet<String>,
+    delegates: &HashSet<String>,
+    identities: &mut HashSet<TypeIdentity>,
+) {
+    for delegate in &interface.implementation_metadata.delegates {
+        collect_methods(
+            std::slice::from_ref(&delegate.invoke),
+            known,
+            delegates,
+            identities,
+        );
+    }
+}
+
 fn context(
     classes: &[&ClassMeta],
     interfaces: &[&InterfaceMeta],
@@ -117,13 +183,22 @@ fn context(
         {
             identities.insert(interface.type_identity());
             collect_methods(&interface.methods, known, delegates, &mut identities);
+            collect_delegate_invokes(interface, known, delegates, &mut identities);
         }
     }
     for interface in interfaces {
         identities.insert(interface.type_identity());
         collect_methods(&interface.methods, known, delegates, &mut identities);
+        collect_delegate_invokes(interface, known, delegates, &mut identities);
     }
-    PythonProjectionContext::new(identities, packaged).unwrap()
+    let mut context = PythonProjectionContext::new(identities, packaged).unwrap();
+    context.register_delegate_invokes(
+        classes
+            .iter()
+            .flat_map(|class| class.all_interfaces())
+            .chain(interfaces.iter().copied()),
+    );
+    context
 }
 
 pub fn projection_context(
