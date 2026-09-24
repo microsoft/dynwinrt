@@ -10,13 +10,14 @@ use crate::codegen::winrt::shared::imports::{
 };
 
 use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
+use super::nullability::AnnotationSurface;
 use super::signature::{
     py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
     py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
-    py_method_outputs, py_method_return_type, py_output_type, py_param_list,
+    py_method_outputs, py_method_return_type, py_param_list, py_property_type,
 };
 
 fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
@@ -282,7 +283,12 @@ fn generate_factory_method_invoke_named(
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, context);
 
-    let return_py_type = py_factory_return_type(&context.class_name(class), method, context);
+    let return_py_type = py_factory_return_type(
+        &context.class_name(class),
+        method,
+        AnnotationSurface::Runtime,
+        context,
+    );
 
     let mut out = String::new();
     let method_name = name_override
@@ -360,7 +366,7 @@ fn generate_static_method_invoke_named(
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, context);
 
-    let py_return = py_method_return_type(method, context);
+    let py_return = py_method_return_type(method, AnnotationSurface::Runtime, context);
 
     let mut out = String::new();
     let iface_symbol = context.reference_name(&iface.type_identity());
@@ -780,7 +786,7 @@ pub(crate) fn generate_method_body(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_output_type(typ, context))
+            .map(|typ| py_property_type(typ, AnnotationSurface::Runtime, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
@@ -830,7 +836,7 @@ pub(crate) fn generate_method_body(
         ));
     } else {
         let py_params = py_param_list(&in_params, context);
-        let py_return = py_method_return_type(method, context);
+        let py_return = py_method_return_type(method, AnnotationSurface::Runtime, context);
         let method_name = name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| to_snake_case(&method.name));

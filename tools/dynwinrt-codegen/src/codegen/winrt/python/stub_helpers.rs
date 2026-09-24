@@ -9,10 +9,12 @@ use crate::types::{FieldMeta, TypeMeta};
 
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
+use super::nullability::AnnotationSurface;
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
-    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_collection_item_type, py_delegate_callable_type,
+    py_factory_return_type, py_method_return_type, py_param_list, py_param_type_safe,
+    py_property_type,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -274,7 +276,7 @@ pub(super) fn emit_method_stub_named(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_output_type(typ, context))
+            .map(|typ| py_property_type(typ, AnnotationSurface::Stub, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str(&format!("{indent}@builtins.property\n"));
         emit_documented_stub(
@@ -317,7 +319,7 @@ pub(super) fn emit_method_stub_named(
         }
     } else {
         let py_params = py_param_list(&in_params, context);
-        let py_return = py_method_return_type(method, context);
+        let py_return = py_method_return_type(method, AnnotationSurface::Stub, context);
         let method_name = name_override
             .map(str::to_string)
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -334,7 +336,7 @@ pub(super) fn emit_method_stub_named(
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
                 py_param_type_safe(&param.typ, context)
-                    != super::type_helpers::py_return_type_safe(Some(&param.typ), context)
+                    != py_collection_item_type(&param.typ, AnnotationSurface::Stub, context)
             }) {
             "  # type: ignore[override, unused-ignore]"
         } else {
@@ -372,9 +374,9 @@ pub(super) fn emit_static_method_stub_named(
     let py_params = py_param_list(&in_params, context);
 
     let py_return = if is_factory {
-        py_factory_return_type(class_name, method, context)
+        py_factory_return_type(class_name, method, AnnotationSurface::Stub, context)
     } else {
-        py_method_return_type(method, context)
+        py_method_return_type(method, AnnotationSurface::Stub, context)
     };
 
     let mut out = String::new();
