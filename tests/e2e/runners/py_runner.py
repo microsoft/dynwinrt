@@ -1012,8 +1012,50 @@ async def run_check(
                         'native MapChanged delegate did not receive raw '
                         f'values: {raw_events!r}'
                     )
-                else:
-                    cr['pass'] = True
+                    return cr
+
+                # Project callback arguments outside the subscription-time
+                # lifetime scope. Ephemeral events must not accumulate native
+                # refs there, while a retained argument remains owned and
+                # usable after the scope closes.
+                if check['expected_type'] == 'IObservableMap_String_String':
+                    retained = []
+
+                    def retain_first(sender, args):
+                        if not retained:
+                            retained.append((sender, args))
+
+                    with dw.projected_lifetime_scope() as scope:
+                        before = len(scope._registry)
+                        scoped_unsubscribe = getattr(
+                            obj, f'subscribe_{member}'
+                        )(retain_first)
+                        for index in range(1000):
+                            obj[key] = (
+                                check['values'][index % len(check['values'])]
+                            )
+                        scoped_unsubscribe()
+                        growth = len(scope._registry) - before
+                    if growth != 0:
+                        cr['error'] = (
+                            'callback projections accumulated '
+                            f'{growth} native refs in the active scope'
+                        )
+                        return cr
+                    retained_sender, retained_args = retained[0]
+                    if (
+                        retained_args.key != key
+                        or retained_sender[key] != check['values'][-1]
+                    ):
+                        cr['error'] = (
+                            'retained callback arguments were invalid after '
+                            'the lifetime scope closed'
+                        )
+                        return cr
+                    dw.release_projected(retained_args)
+                    dw.release_projected(retained_sender)
+                    del obj[key]
+                cr['pass'] = True
 
         elif kind == 'work_item_callback_passthrough':
             received = []
@@ -1736,19 +1778,11 @@ async def run_check(
         elif kind == 'async_cancellation':
             import dynwinrt as dw
 
-            info_iid = dw.WinGUID.parse('00000036-0000-0000-c000-000000000046')
-            info_type = (
-                dw.DynWinRTType.register_interface('IAsyncInfoE2E', info_iid)
-                .add_method(
-                    'get_Id',
-                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.u32_type()),
-                )
-                .add_method(
-                    'get_Status',
-                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.i32_type()),
-                )
+            foundation_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Foundation')
             )
-            status_method = info_type.method(7)
+            async_info_type = foundation_namespace.IAsyncInfo
+            async_status_type = foundation_namespace.AsyncStatus
             started = threading.Event()
             release = threading.Event()
             cancel_seen = threading.Event()
@@ -1756,26 +1790,23 @@ async def run_check(
 
             def work(action):
                 started.set()
+                info = None
                 try:
-                    action = action.cast(info_iid)
+                    info = async_info_type.from_value(action)
                     while not release.wait(0.01):
-                        if status_method.invoke(action, []).to_number() == 2:
+                        if info.status == async_status_type.Canceled:
                             cancel_seen.set()
                             break
                 except BaseException as error:
                     worker_errors.append(error)
+                finally:
+                    if info is not None:
+                        dw.release_projected(info)
 
-            # A native delegate passes through unchanged, so this work item
-            # receives its raw IAsyncAction and can poll IAsyncInfo.Status.
-            threading_namespace = importlib.import_module(
-                namespace_module_name(pkg_name, 'Windows.System.Threading')
-            )
-            raw_work = dw.DynWinRtDelegate.create(
-                threading_namespace.IID_WorkItemHandler,
-                threading_namespace.WorkItemHandler_PARAM_TYPES,
-                work,
-            ).to_value()
-            operation = cls.run_async(raw_work)
+            # Generated ThreadPool.run_async keeps the IAsyncAction argument
+            # raw, so the work item can inspect IAsyncInfo without installing
+            # another completion handler.
+            operation = cls.run_async(work)
             loop = asyncio.get_running_loop()
 
             if not await loop.run_in_executor(None, started.wait, 2.0):

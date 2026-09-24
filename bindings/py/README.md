@@ -123,12 +123,40 @@ method-output typing. This is an intentionally optimistic typing policy, not a
 guarantee from the `Invoke` metadata: WinMD carries no nullability information,
 and the runtime still passes `None` when WinRT supplies a null reference.
 
+Projected callback arguments are created outside the lifetime scope that was
+active when the callback was subscribed. Short-lived arguments are therefore
+released when their Python wrappers are dropped instead of accumulating in a
+long-lived UI/application scope. If a callback retains an argument, its wrapper
+owns the native reference and remains valid after the callback and after that
+subscription-time scope closes; drop it normally or call `release_projected()`
+when deterministic release is needed.
+
 ```python
 def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String) -> None:
     if args.collection_change == CollectionChange.ItemInserted:
         print(args.key, sender[args.key])
 
 unsubscribe = properties.subscribe_map_changed(changed)
+```
+
+Async-operation arguments deliberately stay raw. A work item can inspect its
+`IAsyncInfo` status without installing another completion handler:
+
+```python
+from dynwinrt import DynWinRTValue, release_projected
+from generated.windows.foundation import AsyncStatus, IAsyncInfo
+from generated.windows.system.threading import ThreadPool
+
+def work(action: DynWinRTValue) -> None:
+    info = IAsyncInfo.from_value(action)
+    try:
+        if info.status == AsyncStatus.Canceled:
+            return
+        # Do work, polling info.status when cooperative cancellation is needed.
+    finally:
+        release_projected(info)
+
+operation = ThreadPool.run_async(work)
 ```
 
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one

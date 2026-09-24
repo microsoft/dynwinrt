@@ -548,6 +548,7 @@
       "namespace": "Windows.System.Threading",
       "class": "ThreadPool",
       "langs": ["py"],
+      "extra_classes": ["Windows.Foundation.IAsyncInfo"],
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_cancellation", "member": "run_async" }
