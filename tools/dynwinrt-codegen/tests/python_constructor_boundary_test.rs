@@ -403,13 +403,10 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
     assert_eq!(
         pyi.matches("def __init__(self, value: int) -> None: ...")
             .count(),
-        2,
-        "both ABI constructors stay declared even though I8 and I32 project as `int`:\n{pyi}"
+        1,
+        "I8 and I32 both project as one typed `int` constructor signature:\n{pyi}"
     );
-    assert_eq!(pyi.matches("    @overload\n").count(), 4, "{pyi}");
-    assert!(pyi.contains(
-        "def __init__(self, value: int) -> None: ...  # type: ignore[overload-cannot-match]"
-    ));
+    assert_eq!(pyi.matches("    @overload\n").count(), 0, "{pyi}");
 }
 
 #[test]

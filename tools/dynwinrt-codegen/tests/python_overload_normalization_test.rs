@@ -370,7 +370,7 @@ fn real_classes_project_overloads_under_documented_clr_names() {
             "Windows.Globalization.NumberFormatting",
             "DecimalFormatter",
             "format",
-            3,
+            2,
             &[],
         ),
         (

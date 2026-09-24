@@ -1487,24 +1487,21 @@ fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) 
         return out;
     }
     overloads.sort_by(|left, right| super::member_plan::cmp_python_dispatch_params(left, right));
-    let count = overloads.len();
     let mut signatures = HashSet::new();
+    overloads
+        .retain(|params| signatures.insert(super::type_helpers::py_param_list(params, context)));
+
+    let count = overloads.len();
     for params in &overloads {
         if count > 1 {
             out.push_str("    @overload\n");
         }
         let param_str = super::type_helpers::py_param_list(params, context);
-        let duplicate = !signatures.insert(param_str.clone());
-        let ignore = if duplicate {
-            "  # type: ignore[overload-cannot-match]"
-        } else {
-            ""
-        };
         if param_str.is_empty() {
-            out.push_str(&format!("    def __init__(self) -> None: ...{ignore}\n"));
+            out.push_str("    def __init__(self) -> None: ...\n");
         } else {
             out.push_str(&format!(
-                "    def __init__(self, {param_str}) -> None: ...{ignore}\n"
+                "    def __init__(self, {param_str}) -> None: ...\n"
             ));
         }
     }
@@ -1568,27 +1565,26 @@ fn has_constructor_stub_overload(class: &ClassMeta) -> bool {
         })
 }
 
-/// Preserve one declaration per WinRT overload. When two overloads collapse to
-/// the same Python signature (for example Int64 and UInt64 both become `int`),
-/// mark the later declaration so strict type checkers accept the metadata-exact
-/// overload count without reporting it as unreachable.
+/// Keep one declaration per distinct full Python signature. When parameter
+/// signatures are identical but return types differ, keep both declarations
+/// and mark the later one so strict type checkers accept it.
 fn typed_signatures<'m>(
     methods: impl IntoIterator<Item = &'m MethodMeta>,
     return_type: impl Fn(&MethodMeta) -> String,
     context: &PythonProjectionContext,
 ) -> Vec<(&'m MethodMeta, bool)> {
     let mut signatures = HashSet::new();
+    let mut parameter_signatures = HashSet::new();
     methods
         .into_iter()
-        .map(|method| {
-            let signature = (
-                super::type_helpers::py_param_list(
-                    &crate::codegen::winrt::shared::imports::get_in_params(method),
-                    context,
-                ),
-                return_type(method),
+        .filter_map(|method| {
+            let parameters = super::type_helpers::py_param_list(
+                &crate::codegen::winrt::shared::imports::get_in_params(method),
+                context,
             );
-            (method, !signatures.insert(signature))
+            signatures
+                .insert((parameters.clone(), return_type(method)))
+                .then(|| (method, !parameter_signatures.insert(parameters)))
         })
         .collect()
 }
@@ -2001,4 +1997,57 @@ pub fn generate_public_struct_index_stub(
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{ParamDirection, ParamMeta};
+
+    fn method(vtable_index: usize) -> MethodMeta {
+        MethodMeta {
+            name: format!("Read{vtable_index}"),
+            raw_name: "Read".into(),
+            vtable_index,
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ: TypeMeta::I32,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn typed_signatures_deduplicate_full_matches_but_keep_distinct_returns() {
+        let first = method(6);
+        let different_return = method(7);
+        let duplicate = method(8);
+        let context = PythonProjectionContext::default();
+        let signatures = typed_signatures(
+            [&first, &different_return, &duplicate],
+            |method| {
+                if method.vtable_index == 7 {
+                    "bytes".to_string()
+                } else {
+                    "str".to_string()
+                }
+            },
+            &context,
+        );
+
+        assert_eq!(
+            signatures
+                .iter()
+                .map(|(method, duplicate)| (method.vtable_index, *duplicate))
+                .collect::<Vec<_>>(),
+            [(6, false), (7, true)]
+        );
+        assert_eq!(
+            ignore_unreachable_overload(
+                "    def read(self, value: int) -> bytes: ...\n".to_string()
+            ),
+            "    def read(self, value: int) -> bytes: ...  # type: ignore[overload-cannot-match]\n"
+        );
+    }
 }
