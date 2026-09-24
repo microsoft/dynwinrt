@@ -61,7 +61,7 @@ impl DynWinRTDelegateMethod {
         };
         let args = args.into_iter().map(|arg| arg.0).collect::<Vec<_>>();
         (self.call.0)(object, &args)
-            .map(|outputs| outputs.into_iter().map(DynWinRTValue).collect())
+            .map(|outputs| outputs.into_iter().map(DynWinRTValue::new).collect())
             .map_err(map_windows_error)
     }
 }

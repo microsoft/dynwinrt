@@ -130,6 +130,11 @@ def _dynwinrt_can_cast(value, iid):
     return True
 \n";
 
+/// `as_interface()`, emitted for every generated class and interface view.
+const AS_INTERFACE_METHOD: &str = "    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
+";
+
 pub fn generate_runtime_support_module() -> String {
     format!(
         "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}",

@@ -474,7 +474,7 @@ impl ProgressDispatcher {
             return Ok(());
         }
 
-        let raw = Py::new(py, DynWinRTValue(value))?;
+        let raw = Py::new(py, DynWinRTValue::new(value))?;
         let context = self.callback_context.call_method0(py, "copy")?;
         let context_run = context.getattr(py, "run")?;
         self.event_loop.call_method1(
@@ -585,7 +585,7 @@ impl AsyncOperation {
         let raw_future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = winrt_future.await;
             let result = result.map_err(map_dynwinrt_error)?;
-            Ok(DynWinRTValue(result))
+            Ok(DynWinRTValue::new(result))
         })?;
 
         let converter = self.converter.clone_ref(py);
@@ -632,7 +632,7 @@ impl AsyncOperation {
             *state = ExecutionState::Idle;
         }
 
-        let raw = Py::new(py, DynWinRTValue(result?))?;
+        let raw = Py::new(py, DynWinRTValue::new(result?))?;
         self.converter.call1(py, (raw,))
     }
 

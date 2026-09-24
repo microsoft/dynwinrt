@@ -351,8 +351,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             iface.name
         ));
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class):\n");
-        out.push_str("        return interface_class.from_value(self._obj)\n");
+        out.push_str(AS_INTERFACE_METHOD);
         out.push('\n');
     }
 

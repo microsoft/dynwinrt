@@ -206,7 +206,7 @@ impl CallbackCell {
             let result = (|| -> PyResult<Vec<dynwinrt::WinRTValue>> {
                 let inputs = args
                     .iter()
-                    .map(|value| Py::new(py, DynWinRTValue(value.clone())))
+                    .map(|value| Py::new(py, DynWinRTValue::new(value.clone())))
                     .collect::<PyResult<Vec<_>>>()?;
                 let inputs = PyList::new(py, inputs)?;
                 let outputs = callback.call1(py, (interface_index, vtable_index, inputs))?;
@@ -353,7 +353,7 @@ impl DynWinRTImplementation {
         self.with_native(|native| {
             native
                 .to_value()
-                .map(DynWinRTValue)
+                .map(DynWinRTValue::new)
                 .map_err(map_windows_error)
         })
     }
@@ -572,7 +572,7 @@ mod tests {
             globals
                 .set_item(
                     "result",
-                    DynWinRTValue(dynwinrt::WinRTValue::HString("finished".into())),
+                    DynWinRTValue::new(dynwinrt::WinRTValue::HString("finished".into())),
                 )
                 .unwrap();
             let function = py
