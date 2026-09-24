@@ -57,6 +57,7 @@
         "kind": {
           "enum": [
             "property_equals",
+            "language_comprehensive",
             "property_exists",
             "property_in_range",
             "method_equals",
@@ -98,6 +99,7 @@
              "value_set_mapping",
              "data_stream_scalar_roundtrip",
              "data_stream_constructor_roundtrip",
+             "can_cast_non_object",
              "calendar_comprehensive",
              "storage_query_temp_folder",
              "storage_file_copy_overloads",

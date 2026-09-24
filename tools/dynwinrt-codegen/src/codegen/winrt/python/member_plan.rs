@@ -89,6 +89,14 @@ pub(crate) struct Candidate<'a> {
 pub(crate) struct MethodGroup<'a> {
     pub(crate) name: String,
     pub(crate) candidates: Vec<Candidate<'a>>,
+    /// The exact formerly standalone method to call, without type guards,
+    /// when no typed overload candidate accepts the call.
+    pub(crate) legacy_fallback: Option<LegacyFallback<'a>>,
+}
+
+pub(crate) struct LegacyFallback<'a> {
+    pub(crate) method: &'a MethodMeta,
+    pub(crate) attribute: String,
 }
 
 /// A previously emitted method name kept as a class attribute alias.
@@ -168,6 +176,12 @@ impl<'a> ScopePlan<'a> {
     /// Previously emitted names kept as aliases, sorted by name.
     pub(crate) fn aliases(&self) -> &[Alias<'a>] {
         &self.aliases
+    }
+
+    pub(crate) fn has_legacy_fallback(&self) -> bool {
+        self.groups
+            .iter()
+            .any(|group| group.legacy_fallback.is_some())
     }
 
     /// CLR names that kept their previous Python names because of a collision.
@@ -709,10 +723,21 @@ fn plan_scopes<'a>(
                             define,
                         }
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
+                let legacy_fallback = existing[scope].get(name).and_then(|previous_key| {
+                    let previous = &previous_groups[scope][previous_key];
+                    (previous.len() == 1 && candidates.len() > 1).then(|| {
+                        let index = previous[0];
+                        LegacyFallback {
+                            method: entries[index].method,
+                            attribute: attribute_of[&index].clone(),
+                        }
+                    })
+                });
                 plan_groups.push(MethodGroup {
                     name: name.clone(),
                     candidates,
+                    legacy_fallback,
                 });
             }
             let previous_attributes = previous_groups[scope]
@@ -971,6 +996,7 @@ mod tests {
         methods: BTreeMap<(String, usize), (String, String)>,
         aliases: Vec<(String, String)>,
         fallbacks: Vec<String>,
+        legacy_fallbacks: BTreeMap<String, (String, usize, String)>,
     }
 
     impl Planned {
@@ -1003,6 +1029,22 @@ mod tests {
                 .map(|alias| (alias.name.clone(), alias.target.clone()))
                 .collect(),
             fallbacks: plan.fallbacks().to_vec(),
+            legacy_fallbacks: plan
+                .groups
+                .iter()
+                .filter_map(|group| {
+                    group.legacy_fallback.as_ref().map(|fallback| {
+                        (
+                            group.name.clone(),
+                            (
+                                fallback.method.name.clone(),
+                                fallback.method.vtable_index,
+                                fallback.attribute.clone(),
+                            ),
+                        )
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -1541,6 +1583,10 @@ mod tests {
             planned.aliases,
             aliases(&[("show_kind", "_show_9"), ("show_text", "_show_8")])
         );
+        assert_eq!(
+            planned.legacy_fallbacks["show"],
+            ("Show".to_string(), 6, "_show_6".to_string())
+        );
     }
 
     #[test]
@@ -1603,5 +1649,86 @@ mod tests {
             Some("create_with_name")
         );
         assert_eq!(plan.previous_attribute(&widget.methods[1]), Some("create"));
+    }
+
+    #[test]
+    fn windows_corpus_marks_every_new_dispatcher_with_its_old_standalone_method() {
+        use crate::codegen::winrt::python::naming::PythonProjectionContext;
+        use crate::meta;
+        use std::path::Path;
+
+        const WINMD: &str =
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
+        if !Path::new(WINMD).is_file() {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+
+        fn assert_scope(interfaces: &[&InterfaceMeta], plan: &ScopePlan<'_>) -> usize {
+            let methods = interfaces
+                .iter()
+                .flat_map(|interface| interface.methods.iter())
+                .filter(|method| !is_accessor(method))
+                .collect::<Vec<_>>();
+            let names = methods.iter().map(|method| abi_name(method)).collect();
+            let mut previous = BTreeMap::<String, Vec<&MethodMeta>>::new();
+            for method in methods {
+                previous
+                    .entry(suffix_group_key(&abi_name(method), &names))
+                    .or_default()
+                    .push(method);
+            }
+
+            let mut count = 0;
+            for group in &plan.groups {
+                let Some(methods) = previous.get(&group.name) else {
+                    continue;
+                };
+                if methods.len() != 1 || group.candidates.len() <= 1 {
+                    continue;
+                }
+                let fallback = group.legacy_fallback.as_ref().unwrap_or_else(|| {
+                    panic!("{} became a dispatcher without a legacy tier", group.name)
+                });
+                assert!(
+                    std::ptr::eq(fallback.method, methods[0]),
+                    "{} legacy tier changed its native method",
+                    group.name
+                );
+                count += 1;
+            }
+            count
+        }
+
+        let context = PythonProjectionContext::default();
+        let mut runtime_count = 0;
+        let mut all_plan_sites = 0;
+        for namespace in meta::list_namespaces(WINMD) {
+            for class in meta::parse_namespace(WINMD, &namespace) {
+                let statics = class
+                    .factory_interfaces
+                    .iter()
+                    .chain(class.static_interfaces.iter())
+                    .collect::<Vec<_>>();
+                let instance = class_instance_interfaces(&class).collect::<Vec<_>>();
+                let plan = ClassMemberPlan::new(&class, &context);
+                let count =
+                    assert_scope(&statics, &plan.statics) + assert_scope(&instance, &plan.instance);
+                runtime_count += count;
+                all_plan_sites += count;
+                for interface in &class.required_interfaces {
+                    all_plan_sites += assert_scope(&[interface], &interface_member_plan(interface));
+                }
+            }
+            for interface in meta::parse_interfaces(WINMD, &namespace) {
+                if !interface.is_delegate() {
+                    all_plan_sites +=
+                        assert_scope(&[&interface], &interface_member_plan(&interface));
+                }
+            }
+        }
+
+        assert_eq!(runtime_count, 766);
+        assert_eq!(all_plan_sites, 897);
     }
 }

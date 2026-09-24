@@ -196,6 +196,65 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'language_comprehensive':
+            properties = (
+                obj.language_tag,
+                obj.display_name,
+                obj.native_name,
+                obj.script,
+                obj.layout_direction,
+                obj.abbreviated_name,
+            )
+            extension_subtags = obj.get_extension_subtags('u')
+            mui_languages = cls.get_mui_compatible_language_list_from_language_tags(
+                ['en-US', 'fr-FR']
+            )
+            static_values = (
+                cls.is_well_formed('en-US'),
+                cls.is_well_formed('not a language tag!'),
+                cls.get_current_input_method_language_tag(),
+            )
+            language_module = importlib.import_module(
+                implementation_module_name(
+                    pkg_name, 'Windows.Globalization', 'Language'
+                )
+            )
+            projections = [
+                obj.as_interface(language_module.ILanguageExtensionSubtags),
+                obj.as_interface(language_module.ILanguage2),
+                obj.as_interface(language_module.ILanguage3),
+            ]
+            try:
+                projected_values = (
+                    projections[0].get_extension_subtags('u'),
+                    projections[1].layout_direction,
+                    projections[2].abbreviated_name,
+                )
+            finally:
+                for projection in projections:
+                    dw.release_projected(projection)
+            if mui_languages is not None:
+                mui_values = list(mui_languages)
+                dw.release_projected(mui_languages)
+            else:
+                mui_values = None
+            if (
+                not all(value is not None for value in properties)
+                or extension_subtags is None
+                or static_values[0] is not True
+                or static_values[1] is not False
+                or not isinstance(static_values[2], str)
+                or mui_values is None
+                or projected_values[0] is None
+            ):
+                cr['error'] = (
+                    f'Language API coverage failed: properties={properties!r}, '
+                    f'subtags={extension_subtags!r}, static={static_values!r}, '
+                    f'mui={mui_values!r}, projected={projected_values!r}'
+                )
+            else:
+                cr['pass'] = True
+
         elif kind == 'ibuffer_copied_roundtrip':
             empty = cls.from_bytes(b'')
             if empty.capacity != 0 or empty.length != 0 or empty.to_bytes() != b'':
@@ -901,6 +960,36 @@ async def run_check(
                             return cr
                         except IndexError:
                             pass
+                    view_mode = obj.view_mode
+                    settings_identifier = obj.settings_identifier
+                    suggested_start_location = obj.suggested_start_location
+                    commit_button_text = obj.commit_button_text
+                    obj.view_mode = view_mode
+                    obj.settings_identifier = 'dynwinrt-e2e'
+                    obj.settings_identifier = settings_identifier
+                    obj.suggested_start_location = suggested_start_location
+                    obj.commit_button_text = 'Open'
+                    obj.commit_button_text = commit_button_text
+                    picker_module = importlib.import_module(
+                        implementation_module_name(
+                            pkg_name,
+                            'Windows.Storage.Pickers',
+                            'FileOpenPicker',
+                        )
+                    )
+                    picker_interfaces = [
+                        obj.as_interface(picker_module.IFileOpenPicker2),
+                        obj.as_interface(
+                            picker_module.IFileOpenPickerWithOperationId
+                        ),
+                        obj.as_interface(picker_module.IFileOpenPicker3),
+                    ]
+                    try:
+                        _ = picker_interfaces[0].continuation_data
+                        _ = picker_interfaces[2].user
+                    finally:
+                        for projected in picker_interfaces:
+                            dw.release_projected(projected)
                     cr['pass'] = True
 
         elif kind == 'datetime_roundtrip':
@@ -1343,6 +1432,46 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'can_cast_non_object':
+            runtime = importlib.import_module(f'{pkg_name}._runtime')
+            iid = dw.WinGUID.parse('00000000-0000-0000-c000-000000000046')
+            values = [
+                dw.DynWinRTValue.null_value(),
+                dw.DynWinRTValue.from_i32(1),
+                dw.DynWinRTValue.from_hstring('not an object'),
+                object(),
+            ]
+            results = [runtime._dynwinrt_can_cast(value, iid) for value in values]
+            legacy = runtime._dynwinrt_legacy_call(
+                lambda first, second: (first, second),
+                ('first', 'second'),
+                (1,),
+                {'second': 2},
+                'example',
+            )
+            legacy_error = None
+            try:
+                runtime._dynwinrt_legacy_call(
+                    lambda value: value,
+                    ('value',),
+                    (),
+                    {},
+                    'example',
+                )
+            except TypeError as error:
+                legacy_error = str(error)
+            if (
+                results != [False, False, False, False]
+                or legacy != (1, 2)
+                or legacy_error != 'No matching overload for example'
+            ):
+                cr['error'] = (
+                    'runtime dispatch helpers failed: '
+                    f'casts={results!r}, legacy={legacy!r}, error={legacy_error!r}'
+                )
+            else:
+                cr['pass'] = True
+
         elif kind == 'calendar_comprehensive':
             obj.year = 2024
             obj.month = 1
@@ -1431,26 +1560,59 @@ async def run_check(
             obj.change_clock(clock)
             obj.change_time_zone(time_zone)
             obj.numeral_system = numeral_system
+            constructed = [
+                cls(),
+                cls(['en-US']),
+                cls(['en-US'], calendar_system, clock),
+                cls(['en-US'], calendar_system, clock, time_zone),
+            ]
+            try:
+                constructor_values = [
+                    (
+                        value.get_calendar_system(),
+                        value.get_clock(),
+                        value.get_time_zone(),
+                    )
+                    for value in constructed
+                ]
+            finally:
+                for value in constructed:
+                    dw.release_projected(value)
+            if any(
+                not all(isinstance(item, str) for item in values)
+                for values in constructor_values
+            ):
+                cr['error'] = (
+                    f'Calendar constructors returned invalid values: '
+                    f'{constructor_values!r}'
+                )
+                return cr
 
             string_calls = [
                 ('era_as_full_string', ()),
+                ('era_as_string', ()),
                 ('era_as_string', (3,)),
                 ('year_as_string', ()),
                 ('year_as_truncated_string', (2,)),
                 ('year_as_padded_string', (4,)),
                 ('month_as_full_string', ()),
+                ('month_as_string', ()),
                 ('month_as_string', (3,)),
                 ('month_as_full_solo_string', ()),
+                ('month_as_solo_string', ()),
                 ('month_as_solo_string', (3,)),
                 ('month_as_numeric_string', ()),
                 ('month_as_padded_numeric_string', (2,)),
                 ('day_as_string', ()),
                 ('day_as_padded_string', (2,)),
                 ('day_of_week_as_full_string', ()),
+                ('day_of_week_as_string', ()),
                 ('day_of_week_as_string', (3,)),
                 ('day_of_week_as_full_solo_string', ()),
+                ('day_of_week_as_solo_string', ()),
                 ('day_of_week_as_solo_string', (3,)),
                 ('period_as_full_string', ()),
+                ('period_as_string', ()),
                 ('period_as_string', (2,)),
                 ('hour_as_string', ()),
                 ('hour_as_padded_string', (2,)),
@@ -1461,6 +1623,7 @@ async def run_check(
                 ('nanosecond_as_string', ()),
                 ('nanosecond_as_padded_string', (3,)),
                 ('time_zone_as_full_string', ()),
+                ('time_zone_as_string', ()),
                 ('time_zone_as_string', (3,)),
             ]
             formatted = [
@@ -1504,13 +1667,38 @@ async def run_check(
                 direct_files = await (
                     folder.get_files_async_overload_default_options_start_and_count()
                 )
+                common_file_query = generated_type(pkg_name, 'CommonFileQuery').DefaultQuery
+                common_folder_query = generated_type(pkg_name, 'CommonFolderQuery').DefaultQuery
+                canonical_files = [
+                    await folder.get_files_async(),
+                    await folder.get_files_async(common_file_query),
+                    await folder.get_files_async(common_file_query, 0, 10),
+                ]
+                canonical_folders = [
+                    await folder.get_folders_async(),
+                    await folder.get_folders_async(common_folder_query),
+                    await folder.get_folders_async(common_folder_query, 0, 10),
+                ]
+                canonical_items = [
+                    await folder.get_items_async(),
+                    await folder.get_items_async(0, 10),
+                ]
                 query = folder.create_file_query_overload_default()
                 if query is None:
                     cr['error'] = 'StorageFolder.create_file_query returned null'
                     return cr
                 count = await query.get_item_count_async()
                 query_files = await query.get_files_async_default_start_and_count()
+                canonical_query_files = [
+                    await query.get_files_async(),
+                    await query.get_files_async(0, 10),
+                ]
                 options = query.get_current_query_options()
+                canonical_queries = [
+                    folder.create_file_query(),
+                    folder.create_file_query(common_file_query),
+                    folder.create_file_query(options),
+                ]
                 query_folder = query.folder
                 missing = await folder.try_get_item_async('missing.file')
                 alpha = await folder.get_file_async('alpha.txt')
@@ -1518,11 +1706,72 @@ async def run_check(
                 if options is not None:
                     query.apply_new_query_options(options)
 
+                folder_interface = folder.as_interface(
+                    generated_type(pkg_name, 'IStorageFolder')
+                )
+                item_interface = alpha.as_interface(
+                    generated_type(pkg_name, 'IStorageItem')
+                )
+                creation = generated_type(
+                    pkg_name, 'CreationCollisionOption'
+                ).ReplaceExisting
+                created_file = await folder_interface.create_file_async(
+                    'interface-file.txt'
+                )
+                replaced_file = await folder_interface.create_file_async(
+                    'interface-file.txt', creation
+                )
+                created_folder = await folder_interface.create_folder_async(
+                    'interface-folder'
+                )
+                replaced_folder = await folder_interface.create_folder_async(
+                    'interface-folder', creation
+                )
+                interface_results = [
+                    await folder_interface.get_file_async('alpha.txt'),
+                    await folder_interface.get_item_async('alpha.txt'),
+                    await folder_interface.get_files_async(),
+                    await folder_interface.get_folders_async(),
+                    await folder_interface.get_items_async(),
+                    item_interface.name,
+                    item_interface.path,
+                    item_interface.attributes,
+                    item_interface.date_created,
+                    item_interface.is_of_type(
+                        generated_type(pkg_name, 'StorageItemTypes').File
+                    ),
+                    await item_interface.get_basic_properties_async(),
+                ]
+                await replaced_file.delete_async()
+                await replaced_folder.delete_async()
+                dw.release_projected(folder_interface)
+                dw.release_projected(item_interface)
+
                 direct_names = sorted(file.name for file in direct_files or [])
                 query_names = sorted(file.name for file in query_files or [])
+                canonical_file_names = [
+                    sorted(file.name for file in files or [])
+                    for files in canonical_files
+                ]
+                canonical_query_names = [
+                    sorted(file.name for file in files or [])
+                    for files in canonical_query_files
+                ]
                 if (
                     direct_names != ['alpha.txt', 'beta.txt']
                     or query_names != direct_names
+                    or any(names != direct_names for names in canonical_file_names)
+                    or any(names != direct_names for names in canonical_query_names)
+                    or any(folders for folders in canonical_folders)
+                    or any(
+                        sorted(item.name for item in items or [])
+                        != ['alpha.txt', 'beta.txt']
+                        for items in canonical_items
+                    )
+                    or any(value is None for value in canonical_queries)
+                    or any(value is None for value in interface_results)
+                    or created_file is None
+                    or created_folder is None
                     or count != 2
                     or query_folder is None
                     or not query_folder.is_equal(folder)
@@ -1536,6 +1785,8 @@ async def run_check(
                     cr['error'] = (
                         f'Storage query failed: direct={direct_names!r}, '
                         f'query={query_names!r}, count={count}, '
+                        f'canonical_files={canonical_file_names!r}, '
+                        f'canonical_query={canonical_query_names!r}, '
                         f'missing={missing!r}, alpha={alpha!r}'
                     )
                 else:
@@ -1550,9 +1801,13 @@ async def run_check(
             with TemporaryDirectory(prefix='dynwinrt-copy-') as temp_dir:
                 root = Path(temp_dir)
                 (root / 'source.txt').write_text('payload', encoding='utf-8')
+                for name in ('move1.txt', 'move2.txt', 'move3.txt'):
+                    (root / name).write_text('move payload', encoding='utf-8')
                 for name in ('documented', 'legacy'):
                     (root / name).mkdir()
                 source = await cls.get_file_from_path_async(str(root / 'source.txt'))
+                opened = await source.open_async(0)
+                legacy_opened = await source.open_with_options_async(0, 0)
                 documented = await folder_cls.get_folder_from_path_async(
                     str(root / 'documented')
                 )
@@ -1579,6 +1834,14 @@ async def run_check(
                     await source.copy_overload(legacy, 'named.txt', collision.ReplaceExisting),
                     await source.copy_overload(legacy, 'named.txt', 1),
                 ]
+                move1 = await cls.get_file_from_path_async(str(root / 'move1.txt'))
+                move2 = await cls.get_file_from_path_async(str(root / 'move2.txt'))
+                move3 = await cls.get_file_from_path_async(str(root / 'move3.txt'))
+                await move1.move_async(documented)
+                await move2.move_async(documented, 'moved2.txt')
+                await move3.move_async(
+                    documented, 'moved3.txt', collision.ReplaceExisting
+                )
                 rejected = []
                 for arguments in (('not a folder',), (documented, 42)):
                     try:
@@ -1595,19 +1858,33 @@ async def run_check(
                     for path in (root / 'documented').iterdir()
                     if path.read_text(encoding='utf-8') == 'payload'
                 )
+                moved = sorted(
+                    path.name
+                    for path in (root / 'documented').iterdir()
+                    if path.read_text(encoding='utf-8') == 'move payload'
+                )
                 if (
                     names != ['source.txt', 'named.txt', 'named.txt', 'keyword.txt']
                     or legacy_names != ['source.txt', 'named.txt', 'named.txt', 'named.txt']
                     or contents != ['keyword.txt', 'named.txt', 'source.txt']
+                    or moved != ['move1.txt', 'moved2.txt', 'moved3.txt']
+                    or opened is None
+                    or legacy_opened is None
                     or rejected
                 ):
                     cr['error'] = (
                         f'StorageFile copy overloads failed: names={names!r}, '
                         f'legacy={legacy_names!r}, contents={contents!r}, '
+                        f'moved={moved!r}, '
+                        f'opened={opened!r}, legacy_opened={legacy_opened!r}, '
                         f'rejected={rejected!r}'
                     )
                 else:
                     cr['pass'] = True
+                if opened is not None:
+                    opened.close()
+                if legacy_opened is not None:
+                    legacy_opened.close()
 
         elif kind == 'random_access_stream_copy_overloads':
             stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')
@@ -1635,13 +1912,41 @@ async def run_check(
                 destination = stream_cls()
                 copied = await copy(destination)
                 results.append((copied, await read_all(destination)))
+            random_access = source.as_interface(
+                generated_type(pkg_name, 'IRandomAccessStream')
+            )
+            stream_views = [
+                random_access.get_input_stream_at(0),
+                random_access.get_output_stream_at(random_access.size),
+                random_access.clone_stream(),
+            ]
+            stream_properties = (
+                random_access.can_read,
+                random_access.can_write,
+                random_access.position,
+                random_access.size,
+            )
+            random_access.seek(0)
+            random_access.size = random_access.size
+            for view in stream_views:
+                dw.release_projected(view)
+            dw.release_projected(random_access)
             if results != [(10, '0123456789'), (4, '0123'), (4, '0123')]:
                 cr['error'] = f'RandomAccessStream copy overloads failed: {results!r}'
+            elif (
+                stream_properties[0] is not True
+                or stream_properties[1] is not True
+                or not all(isinstance(value, int) for value in stream_properties[2:])
+            ):
+                cr['error'] = (
+                    f'IRandomAccessStream properties failed: {stream_properties!r}'
+                )
             else:
                 cr['pass'] = True
 
         elif kind == 'decimal_formatter_overloads':
             formatter = cls()
+            localized = cls(['en-US'], 'US')
             beyond_double = 2**53 + 1
             beyond_int64 = 2**64 - 1
             pairs = {
@@ -1656,16 +1961,130 @@ async def run_check(
                     formatter.format_u_int(beyond_int64),
                 ),
             }
+            property_values = {
+                'languages': formatter.languages,
+                'geographic_region': formatter.geographic_region,
+                'integer_digits': formatter.integer_digits,
+                'fraction_digits': formatter.fraction_digits,
+                'is_grouped': formatter.is_grouped,
+                'is_decimal_point_always_displayed': (
+                    formatter.is_decimal_point_always_displayed
+                ),
+                'numeral_system': formatter.numeral_system,
+                'resolved_language': formatter.resolved_language,
+                'resolved_geographic_region': formatter.resolved_geographic_region,
+                'significant_digits': formatter.significant_digits,
+                'number_rounder': formatter.number_rounder,
+                'is_zero_signed': formatter.is_zero_signed,
+            }
+            for name in (
+                'integer_digits',
+                'fraction_digits',
+                'is_grouped',
+                'is_decimal_point_always_displayed',
+                'numeral_system',
+                'significant_digits',
+                'is_zero_signed',
+            ):
+                setattr(formatter, name, property_values[name])
+
+            formatted_int = formatter.format_int(5)
+            formatted_uint = formatter.format_u_int(5)
+            formatted_double = formatter.format_double(2.5)
+            parsed = (
+                formatter.parse_int(formatted_int),
+                formatter.parse_u_int(formatted_uint),
+                formatter.parse_double(formatted_double),
+            )
+
+            formatter_module = importlib.import_module(
+                implementation_module_name(
+                    pkg_name,
+                    'Windows.Globalization.NumberFormatting',
+                    'DecimalFormatter',
+                )
+            )
+            interface_values = []
+            options = formatter.as_interface(
+                formatter_module.INumberFormatterOptions
+            )
+            formatter2 = formatter.as_interface(
+                formatter_module.INumberFormatter2
+            )
+            parser = formatter.as_interface(formatter_module.INumberParser)
+            significant = formatter.as_interface(
+                formatter_module.ISignificantDigitsOption
+            )
+            rounder = formatter.as_interface(
+                formatter_module.INumberRounderOption
+            )
+            signed = formatter.as_interface(
+                formatter_module.ISignedZeroOption
+            )
+            projected_interfaces = [
+                options,
+                formatter2,
+                parser,
+                significant,
+                rounder,
+                signed,
+            ]
+            try:
+                interface_values.extend(
+                    [
+                        options.languages,
+                        options.geographic_region,
+                        options.integer_digits,
+                        options.fraction_digits,
+                        options.is_grouped,
+                        options.is_decimal_point_always_displayed,
+                        options.numeral_system,
+                        options.resolved_language,
+                        options.resolved_geographic_region,
+                        formatter2.format_int(5),
+                        formatter2.format_u_int(5),
+                        formatter2.format_double(2.5),
+                        parser.parse_int(formatted_int),
+                        parser.parse_u_int(formatted_uint),
+                        parser.parse_double(formatted_double),
+                        significant.significant_digits,
+                        rounder.number_rounder,
+                        signed.is_zero_signed,
+                    ]
+                )
+                options.integer_digits = options.integer_digits
+                options.fraction_digits = options.fraction_digits
+                options.is_grouped = options.is_grouped
+                options.is_decimal_point_always_displayed = (
+                    options.is_decimal_point_always_displayed
+                )
+                options.numeral_system = options.numeral_system
+                significant.significant_digits = significant.significant_digits
+                signed.is_zero_signed = signed.is_zero_signed
+                for projected in projected_interfaces:
+                    same_interface = projected.as_interface(type(projected))
+                    dw.release_projected(same_interface)
+            finally:
+                for projected in projected_interfaces:
+                    dw.release_projected(projected)
+
             mismatches = {
                 name: values for name, values in pairs.items() if values[0] != values[1]
             }
             if (
                 mismatches
+                or localized.resolved_language == ''
+                or parsed[0] != 5
+                or parsed[1] != 5
+                or parsed[2] != 2.5
+                or any(value is None for value in interface_values[:9])
                 or formatter.format(beyond_double)
                 == formatter.format_double(float(beyond_double))
             ):
                 cr['error'] = (
-                    f'DecimalFormatter.format overload dispatch failed: pairs={pairs!r}'
+                    'DecimalFormatter overloads/options failed: '
+                    f'pairs={pairs!r}, parsed={parsed!r}, '
+                    f'properties={property_values!r}, interfaces={interface_values!r}'
                 )
             else:
                 cr['pass'] = True

@@ -106,6 +106,132 @@ fn default_option_method_is_one_python_overload_group_with_legacy_alias() {
 }
 
 #[test]
+fn newly_dispatched_methods_end_with_their_guard_free_legacy_tier() {
+    let mode = TypeMeta::Enum {
+        namespace: "Contoso".into(),
+        name: "Mode".into(),
+        underlying: Box::new(TypeMeta::I32),
+        members: Vec::new(),
+        is_flags: false,
+        doc: None,
+        deprecated: None,
+    };
+    let iterable = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IIterable`1".into(),
+        piid: "faa585ea-6214-4217-afda-7f46de5869b3".into(),
+        args: vec![TypeMeta::String],
+    };
+    let param = |name: &str, typ| ParamMeta {
+        name: name.into(),
+        typ,
+        direction: ParamDirection::In,
+    };
+    let overload = |name: &str, raw_name: &str, index: usize, params: Vec<ParamMeta>| MethodMeta {
+        name: name.into(),
+        raw_name: raw_name.into(),
+        vtable_index: index,
+        params,
+        ..Default::default()
+    };
+    let interface = InterfaceMeta {
+        name: "IWidget".into(),
+        namespace: "Contoso".into(),
+        iid: "11111111-1111-1111-1111-111111111111".into(),
+        methods: vec![
+            overload(
+                "OpenAsync",
+                "OpenAsync",
+                6,
+                vec![param("mode", mode.clone())],
+            ),
+            overload(
+                "OpenWithOptionsAsync",
+                "OpenAsync",
+                7,
+                vec![param("mode", mode.clone()), param("options", mode.clone())],
+            ),
+            overload(
+                "FindAsync",
+                "FindAsync",
+                8,
+                vec![param("id", TypeMeta::Guid)],
+            ),
+            overload(
+                "FindWithOptionsAsync",
+                "FindAsync",
+                9,
+                vec![
+                    param("id", TypeMeta::Guid),
+                    param("options", TypeMeta::String),
+                ],
+            ),
+            overload(
+                "CountAsync",
+                "CountAsync",
+                10,
+                vec![param("count", TypeMeta::I32)],
+            ),
+            overload(
+                "CountWithOptionsAsync",
+                "CountAsync",
+                11,
+                vec![
+                    param("count", TypeMeta::I32),
+                    param("options", TypeMeta::Bool),
+                ],
+            ),
+            overload(
+                "LoadAsync",
+                "LoadAsync",
+                12,
+                vec![param("items", iterable.clone())],
+            ),
+            overload(
+                "LoadWithOptionsAsync",
+                "LoadAsync",
+                13,
+                vec![param("items", iterable), param("options", TypeMeta::Bool)],
+            ),
+        ],
+        ..Default::default()
+    };
+    let known = HashSet::from(["IWidget".into(), "Mode".into()]);
+    let runtime = common::generate_interface(&interface, &known, &HashSet::new());
+    let wrapper = &runtime[runtime.rfind("\nclass IWidget:").unwrap()..];
+
+    for (name, parameter, private, conversion) in [
+        ("open_async", "mode", "_open_async_6", "int(mode)"),
+        ("find_async", "id", "_find_async_8", "_dynwinrt_guid(id)"),
+        (
+            "count_async",
+            "count",
+            "_count_async_10",
+            "DynWinRTValue.from_i32(count)",
+        ),
+        (
+            "load_async",
+            "items",
+            "_load_async_12",
+            "_dynwinrt_vector(items",
+        ),
+    ] {
+        let body = member_body(wrapper, name);
+        let tier = format!(
+            "return _dynwinrt_legacy_call(self.{private}, ('{parameter}',), args, kwargs, '{name}')"
+        );
+        assert!(
+            body.contains(&tier),
+            "{name} lacks its final legacy tier:\n{body}"
+        );
+        assert!(
+            member_body(wrapper, private).contains(conversion),
+            "{private} lost its permissive conversion:\n{runtime}"
+        );
+    }
+}
+
+#[test]
 fn real_storage_folder_default_options_method_is_normalized() {
     if !Path::new(WINDOWS_WINMD).exists() {
         eprintln!("Skipping: Windows.winmd not found");

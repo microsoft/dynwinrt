@@ -198,16 +198,25 @@ pub(crate) struct DispatchCandidate<'a> {
     pub(crate) body: Vec<String>,
 }
 
+pub(crate) struct LegacyDispatch<'a> {
+    pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
+    pub(crate) target: String,
+    pub(crate) public_name: String,
+}
+
 /// Emit argument binding and guards for an overload dispatcher.
 ///
 /// The first pass tries every candidate, in order, with its strict guards.
 /// Candidates with permissive guards are retried in a second pass that runs
 /// only after the first pass matched nothing, so a permissive guard can never
-/// change which overload an already-matching call reaches.
+/// change which overload an already-matching call reaches. A final legacy
+/// candidate has no type guards and reproduces the conversions of the method
+/// that occupied this public name before it became a dispatcher.
 pub(crate) fn emit_dispatch(
     out: &mut String,
     indent: &str,
     candidates: &[DispatchCandidate<'_>],
+    legacy: Option<&LegacyDispatch<'_>>,
     context: &PythonProjectionContext,
 ) {
     let guards = candidates
@@ -233,6 +242,27 @@ pub(crate) fn emit_dispatch(
             emit_dispatch_candidate(out, indent, candidate, permissive);
         }
     }
+    if let Some(legacy) = legacy {
+        out.push_str(&format!(
+            "{indent}return _dynwinrt_legacy_call({}, {}, args, kwargs, '{}')\n",
+            legacy.target,
+            dispatch_parameter_names(&legacy.params),
+            legacy.public_name,
+        ));
+    }
+}
+
+fn dispatch_parameter_names(params: &[&crate::meta::ParamMeta]) -> String {
+    let names = params
+        .iter()
+        .map(|param| format!("'{}'", to_snake_case(&param.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.is_empty() {
+        "()".to_string()
+    } else {
+        format!("({names},)")
+    }
 }
 
 fn emit_dispatch_candidate<'g>(
@@ -241,17 +271,7 @@ fn emit_dispatch_candidate<'g>(
     candidate: &DispatchCandidate<'_>,
     guards: impl Iterator<Item = &'g str>,
 ) {
-    let parameter_names = candidate
-        .params
-        .iter()
-        .map(|param| format!("'{}'", to_snake_case(&param.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let parameter_names = if parameter_names.is_empty() {
-        "()".to_string()
-    } else {
-        format!("({parameter_names},)")
-    };
+    let parameter_names = dispatch_parameter_names(&candidate.params);
     out.push_str(&format!(
         "{indent}_bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
     ));
@@ -590,10 +610,20 @@ pub(crate) fn generate_instance_method_group<'a>(
             body: vec![format!("return self.{attribute}(*_bound)")],
         })
         .collect::<Vec<_>>();
-    emit_dispatch(&mut out, "        ", &candidates, context);
-    out.push_str(&format!(
-        "        raise TypeError(\"No matching overload for {public_name}\")\n"
-    ));
+    let legacy = group
+        .legacy_fallback
+        .as_ref()
+        .map(|fallback| LegacyDispatch {
+            params: get_in_params(fallback.method),
+            target: format!("self.{}", fallback.attribute),
+            public_name: public_name.clone(),
+        });
+    emit_dispatch(&mut out, "        ", &candidates, legacy.as_ref(), context);
+    if legacy.is_none() {
+        out.push_str(&format!(
+            "        raise TypeError(\"No matching overload for {public_name}\")\n"
+        ));
+    }
     out
 }
 
@@ -693,10 +723,24 @@ pub(crate) fn generate_static_method_group<'a>(
             )],
         })
         .collect::<Vec<_>>();
-    emit_dispatch(&mut out, "        ", &candidates, context);
-    out.push_str(&format!(
-        "        raise TypeError(\"No matching overload for {public_name}\")\n"
-    ));
+    let legacy = group
+        .legacy_fallback
+        .as_ref()
+        .map(|fallback| LegacyDispatch {
+            params: get_in_params(fallback.method),
+            target: format!(
+                "{}.{}",
+                context.class_name(overloads[0].0.class),
+                fallback.attribute
+            ),
+            public_name: public_name.clone(),
+        });
+    emit_dispatch(&mut out, "        ", &candidates, legacy.as_ref(), context);
+    if legacy.is_none() {
+        out.push_str(&format!(
+            "        raise TypeError(\"No matching overload for {public_name}\")\n"
+        ));
+    }
     out
 }
 
@@ -1035,6 +1079,7 @@ mod tests {
                 attribute: "_choose_6".into(),
                 define: true,
             }],
+            legacy_fallback: None,
         };
 
         let code = generate_instance_method_group(

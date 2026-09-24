@@ -89,11 +89,12 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         return generate_delegate(iface);
     }
     let implementation = super::super::implementation::project(context, iface);
+    let plan = interface_member_plan(iface);
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context));
+    out.push_str(&import_line(context, plan.has_legacy_fallback()));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
     }
@@ -577,7 +578,6 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     } else {
         "self._obj"
     };
-    let plan = interface_member_plan(iface);
     let overload = |method| InstanceOverload {
         iface_var: iface_var.clone(),
         obj_expr: obj_expr.to_string(),

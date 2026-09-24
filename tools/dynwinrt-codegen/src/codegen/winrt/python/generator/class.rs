@@ -63,12 +63,18 @@ pub fn generate_class<'a>(
     let projectable = super::super::has_projectable_default_interface(class);
     let native_projectable = super::super::has_native_projector(class);
     let plan = ClassMemberPlan::new(class, context);
+    let needs_legacy_helper = plan.statics.has_legacy_fallback()
+        || plan.instance.has_legacy_fallback()
+        || class
+            .required_interfaces
+            .iter()
+            .any(|interface| interface_member_plan(interface).has_legacy_fallback());
     let mut out = String::new();
 
     // Header
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context));
+    out.push_str(&import_line(context, needs_legacy_helper));
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -1280,7 +1286,7 @@ fn generate_python_constructor(
                 )],
             })
             .collect::<Vec<_>>();
-        emit_dispatch(&mut out, "            ", &dispatch, context);
+        emit_dispatch(&mut out, "            ", &dispatch, None, context);
     }
     out.push_str("        return super().__new__(cls)\n\n");
 
@@ -1488,7 +1494,7 @@ fn generate_python_constructor(
             }
         })
         .collect::<Vec<_>>();
-    emit_dispatch(&mut out, "        ", &dispatch, context);
+    emit_dispatch(&mut out, "        ", &dispatch, None, context);
     if candidates.is_empty() {
         out.push_str(&format!(
             "        raise TypeError(\"{} cannot be constructed directly\")\n\n",

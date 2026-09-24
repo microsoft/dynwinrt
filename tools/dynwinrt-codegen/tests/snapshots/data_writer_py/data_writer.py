@@ -8,6 +8,7 @@ from ._runtime import (
     _DynWinRTObject, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
+    _dynwinrt_legacy_call,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
     _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
@@ -196,7 +197,7 @@ class DataWriter:
         _bound = _dynwinrt_bind_overload(('buffer', 'start', 'count',), args, kwargs)
         if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_buffer', 'IBuffer')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IBuffer)) and isinstance(_bound[1], int) and not isinstance(_bound[1], bool) and not isinstance(_bound[1], __import__('enum').Enum) and 0 <= _bound[1] <= 4294967295 and isinstance(_bound[2], int) and not isinstance(_bound[2], bool) and not isinstance(_bound[2], __import__('enum').Enum) and 0 <= _bound[2] <= 4294967295:
             return self._write_buffer_14(*_bound)
-        raise TypeError("No matching overload for write_buffer")
+        return _dynwinrt_legacy_call(self._write_buffer_13, ('buffer',), args, kwargs, 'write_buffer')
 
     def write_boolean(self, value: bool) -> None:
         _IDataWriter.method(15).invoke(self._obj, [DynWinRTValue.from_bool(value)])
