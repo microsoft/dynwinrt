@@ -20,16 +20,34 @@ types below wherever a plain Python value would box as a different
   form.
 - ``Point``, ``Size`` and ``Rect`` are immutable ``Windows.Foundation``
   geometry values whose fields are stored as float32, as WinRT stores them.
+- ``object_value_view(mapping)`` is an opt-in, live view of a generated map
+  whose values are ``Object``, such as ``PropertySet``: it unboxes values on
+  read and boxes them with ``to_winrt_object`` on write. ``view.raw`` is the
+  generated map, which keeps returning native ``DynWinRTValue`` objects.
 """
 
 from __future__ import annotations
 
 import operator
 import struct
+from collections.abc import Iterator, Mapping, MutableMapping
 from datetime import datetime, timedelta
 from enum import IntEnum
-from typing import Any, ClassVar, Self, SupportsFloat, SupportsIndex, TypeVar
+from typing import (
+    Any,
+    ClassVar,
+    Self,
+    SupportsFloat,
+    SupportsIndex,
+    TypeAlias,
+    TypeVar,
+    Union,
+    cast,
+    overload,
+)
 from uuid import UUID
+
+from dynwinrt import DynWinRTType, DynWinRTValue, WinGUID, to_winrt_object, unbox_object
 
 __all__ = [
     "PropertyType",
@@ -66,6 +84,10 @@ __all__ = [
     "PointArray",
     "SizeArray",
     "RectArray",
+    "WinRTObjectValue",
+    "ObjectValueView",
+    "MutableObjectValueView",
+    "object_value_view",
 ]
 
 
@@ -551,3 +573,255 @@ class RectArray(WinRTArray[Rect]):
 
     __slots__ = ()
     property_type = PropertyType.RectArray
+
+
+# ----------------------------------------------------------------------
+# Object-valued map views
+# ----------------------------------------------------------------------
+
+# A value read through an Object map view: None, an unboxed Python value (a
+# tag or typed array with preserve_type=True), or a native DynWinRTValue for a
+# runtime object or a box without a Python form.
+WinRTObjectValue: TypeAlias = Union[
+    None,
+    bool,
+    int,
+    float,
+    str,
+    UUID,
+    datetime,
+    timedelta,
+    bytes,
+    Point,
+    Size,
+    Rect,
+    list[Any],
+    DynWinRTValue,
+]
+
+_K = TypeVar("_K")
+
+# Signed HRESULTs, as OSError.winerror reports them.
+_E_NOTIMPL = 0x80004001 - 2**32
+_E_NOINTERFACE = 0x80004002 - 2**32
+
+_GENERIC_MAPS = {
+    "IMap": "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+    "IMapView": "e480ce40-a338-4ada-adcf-272272e48cb9",
+}
+_OBJECT_MAPS = (
+    "IMap<K, Object> or IMapView<K, Object> with String or Guid keys, such as "
+    "PropertySet, ValueSet or DeviceInformation.properties"
+)
+_object_map_iids: dict[str, tuple[tuple[str, WinGUID], ...]] = {}
+
+
+def _object_maps(generic: str) -> tuple[tuple[str, WinGUID], ...]:
+    """The generated names and IIDs of ``generic<K, Object>`` for String and Guid keys."""
+    maps = _object_map_iids.get(generic)
+    if maps is None:
+        piid = WinGUID.parse(_GENERIC_MAPS[generic])
+        maps = tuple(
+            (
+                f"{generic}_{name}_Object",
+                DynWinRTType.parameterized(piid, [key, DynWinRTType.object()]).iid(),
+            )
+            for name, key in (
+                ("String", DynWinRTType.hstring()),
+                ("Guid", DynWinRTType.guid_type()),
+            )
+        )
+        _object_map_iids[generic] = maps
+    return maps
+
+
+def _implemented_object_map(native: DynWinRTValue, generic: str) -> str | None:
+    """The generated name of the ``generic<K, Object>`` that ``native`` implements."""
+    for name, iid in _object_maps(generic):
+        try:
+            interface = native.cast(iid)
+        except OSError as error:
+            if error.winerror == _E_NOINTERFACE:
+                continue
+            raise
+        interface.release()
+        return name
+    return None
+
+
+def _check_object_map(mapping: object, *, mutable: bool) -> None:
+    """Raise ``TypeError`` unless ``mapping`` wraps an Object-valued WinRT map.
+
+    The wrapper's own protocol says which interface it projects: a
+    ``MutableMapping`` wraps ``IMap`` and a ``Mapping`` wraps ``IMapView``.
+    ``QueryInterface`` for the ``Object``-valued instantiation confirms the
+    value type.
+    """
+    name = type(mapping).__qualname__
+    native = getattr(mapping, "_obj", None)
+    if not isinstance(native, DynWinRTValue):
+        hint = ""
+        if isinstance(mapping, DynWinRTValue):
+            hint = "; project a raw value first, for example with IMap_String_Object.from_value()"
+        raise TypeError(
+            f"object_value_view() requires a generated WinRT map wrapper ({_OBJECT_MAPS}), "
+            f"not {name}{hint}"
+        )
+    if not isinstance(mapping, Mapping):
+        implemented = _implemented_object_map(native, "IMap") or _implemented_object_map(
+            native, "IMapView"
+        )
+        if implemented is not None:
+            raise TypeError(
+                f"{name} is not a Python mapping in generated bindings; pass "
+                f"value.as_interface({implemented}) to object_value_view()"
+            )
+        raise TypeError(
+            f"object_value_view() requires a generated WinRT map wrapper ({_OBJECT_MAPS}), "
+            f"not {name}"
+        )
+    writable = isinstance(mapping, MutableMapping)
+    if mutable and not writable:
+        raise TypeError(
+            f"MutableObjectValueView requires a mutable map; {name} is read-only, so use "
+            "ObjectValueView"
+        )
+    if _implemented_object_map(native, "IMap" if writable else "IMapView") is None:
+        raise TypeError(
+            f"{name} is not a WinRT map with Object values; object_value_view() accepts "
+            f"{_OBJECT_MAPS}"
+        )
+
+
+def _read(raw: DynWinRTValue | None, preserve_type: bool) -> WinRTObjectValue:
+    if raw is None:
+        return None
+    try:
+        return cast(WinRTObjectValue, unbox_object(raw, preserve_type=preserve_type))
+    except OSError as error:
+        # An unsupported PropertyType, anywhere inside the box.
+        if error.winerror != _E_NOTIMPL:
+            raise
+    except OverflowError:
+        # A DateTime outside the range of datetime.datetime.
+        pass
+    return raw
+
+
+class ObjectValueView(Mapping[_K, WinRTObjectValue]):
+    """A live, read-only view of a generated WinRT map whose values are ``Object``.
+
+    Keys go to the map unchanged. Reading a value returns ``None`` for WinRT
+    null, a runtime object that is not a box as its ``DynWinRTValue``, and
+    ``unbox_object(value, preserve_type=preserve_type)`` for a box. Where
+    ``unbox_object`` raises for a box without a Python form, the view returns
+    the box's ``DynWinRTValue``: an unsupported ``PropertyType`` anywhere
+    inside the box, or a ``DateTime`` outside the range of
+    ``datetime.datetime``. Other errors propagate.
+
+    Every operation goes to the map; the view holds no WinRT reference of its
+    own. ``raw`` is the generated map, whose values stay native.
+    """
+
+    __slots__ = ("_map", "_preserve_type")
+    _map: Mapping[_K, DynWinRTValue | None]
+    _preserve_type: bool
+
+    def __init__(
+        self, mapping: Mapping[_K, DynWinRTValue | None], *, preserve_type: bool = False
+    ) -> None:
+        self._bind(mapping, preserve_type, mutable=False)
+
+    def _bind(
+        self, mapping: Mapping[_K, DynWinRTValue | None], preserve_type: bool, *, mutable: bool
+    ) -> None:
+        if not isinstance(preserve_type, bool):
+            raise TypeError(f"preserve_type must be a bool, not {type(preserve_type).__name__}")
+        _check_object_map(mapping, mutable=mutable)
+        self._map = mapping
+        self._preserve_type = preserve_type
+
+    @property
+    def raw(self) -> Mapping[_K, DynWinRTValue | None]:
+        """The generated map, whose values are native ``DynWinRTValue`` objects."""
+        return self._map
+
+    @property
+    def preserve_type(self) -> bool:
+        """Whether reads return tags and typed arrays that box as the same ``PropertyType``."""
+        return self._preserve_type
+
+    def __getitem__(self, key: _K) -> WinRTObjectValue:
+        return _read(self._map[key], self._preserve_type)
+
+    def __iter__(self) -> Iterator[_K]:
+        return iter(self._map)
+
+    def __len__(self) -> int:
+        return len(self._map)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._map
+
+    def __repr__(self) -> str:
+        options = ", preserve_type=True" if self._preserve_type else ""
+        return f"dynwinrt.values.{type(self).__name__}({self._map!r}{options})"
+
+
+class MutableObjectValueView(ObjectValueView[_K], MutableMapping[_K, WinRTObjectValue]):
+    """A live view of a generated ``IMap<K, Object>`` that converts values both ways.
+
+    Reads follow ``ObjectValueView``. A write stores ``to_winrt_object(value)``,
+    whose default rules pick the WinRT type and whose errors propagate: a plain
+    ``int`` boxes as Int32 only, and an empty or mixed list needs a typed array
+    or a value boxed with an explicit ``property_type``. With
+    ``preserve_type=True``, a value read and written back keeps its
+    ``PropertyType``, but it is a new box; ``raw`` keeps the original box's COM
+    identity.
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self, mapping: MutableMapping[_K, DynWinRTValue | None], *, preserve_type: bool = False
+    ) -> None:
+        self._bind(mapping, preserve_type, mutable=True)
+
+    @property
+    def raw(self) -> MutableMapping[_K, DynWinRTValue | None]:
+        """The generated map, whose values are native ``DynWinRTValue`` objects."""
+        return cast("MutableMapping[_K, DynWinRTValue | None]", self._map)
+
+    def __setitem__(self, key: _K, value: object) -> None:
+        self.raw[key] = to_winrt_object(value)
+
+    def __delitem__(self, key: _K) -> None:
+        del self.raw[key]
+
+    def clear(self) -> None:
+        self.raw.clear()
+
+
+@overload
+def object_value_view(
+    mapping: MutableMapping[_K, DynWinRTValue | None], *, preserve_type: bool = False
+) -> MutableObjectValueView[_K]: ...
+@overload
+def object_value_view(
+    mapping: Mapping[_K, DynWinRTValue | None], *, preserve_type: bool = False
+) -> ObjectValueView[_K]: ...
+def object_value_view(
+    mapping: Mapping[_K, DynWinRTValue | None], *, preserve_type: bool = False
+) -> ObjectValueView[_K]:
+    """A live view of a generated WinRT map that converts its ``Object`` values.
+
+    ``mapping`` is a generated wrapper of ``IMap<K, Object>`` or
+    ``IMapView<K, Object>`` with String or Guid keys, such as ``PropertySet``,
+    ``ValueSet`` or ``DeviceInformation.properties``. ``QueryInterface``
+    confirms the value type, so other maps, such as ``StringMap``, raise
+    ``TypeError``. A mutable map returns a ``MutableObjectValueView`` and a
+    read-only map an ``ObjectValueView``; see them for the conversion rules.
+    """
+    if isinstance(mapping, MutableMapping):
+        return MutableObjectValueView(mapping, preserve_type=preserve_type)
+    return ObjectValueView(mapping, preserve_type=preserve_type)

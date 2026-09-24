@@ -3,7 +3,7 @@
 
 import asyncio
 from collections.abc import Coroutine, Generator, Sequence
-from typing import Any, Awaitable, List, Tuple
+from typing import Any, Awaitable, Dict, List, Tuple
 
 from dynwinrt import (
     DynWinRTArray,
@@ -16,11 +16,24 @@ from dynwinrt import (
     DynWinRTValue,
     WinGUID,
 )
+from dynwinrt.values import (
+    MutableObjectValueView,
+    ObjectValueView,
+    UInt32,
+    WinRTObjectValue,
+    object_value_view,
+)
 from python_bindings.windows.application_model.contacts import ContactDate
+from python_bindings.windows.devices.enumeration import DeviceInformation
 from python_bindings.windows.foundation import (
     IReference_UInt32,
     IWwwFormUrlDecoderEntry,
     Uri,
+)
+from python_bindings.windows.foundation.collections import (
+    PropertySet,
+    StringMap,
+    ValueSet,
 )
 from python_bindings.windows.globalization import Calendar
 from python_bindings.windows.storage.streams import (
@@ -152,3 +165,31 @@ def check_ibuffer_bytes() -> None:
     interface_bytes: bytes = interface_buffer.to_bytes()
     runtime_bytes: bytes = runtime_buffer.to_bytes()
     _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)
+
+
+def check_object_value_views(
+    properties: PropertySet,
+    value_set: ValueSet,
+    device: DeviceInformation,
+    strings: StringMap,
+) -> None:
+    view: MutableObjectValueView[str] = object_value_view(properties)
+    view["count"] = 5
+    view["port"] = UInt32(8080)
+    view["uri"] = Uri("https://example.com")
+    view.update({"name": "text"}, empty=None)
+    count: WinRTObjectValue = view["count"]
+    native: DynWinRTValue | None = view.raw["count"]
+    exact: MutableObjectValueView[str] = object_value_view(value_set, preserve_type=True)
+    device_properties = device.properties
+    assert device_properties is not None
+    read_only: ObjectValueView[str] = object_value_view(device_properties)
+    snapshot: Dict[str, WinRTObjectValue] = dict(read_only)
+    read_only["count"] = 5  # type: ignore[index]
+    object_value_view(strings)  # type: ignore[arg-type]
+    _: Tuple[
+        WinRTObjectValue,
+        DynWinRTValue | None,
+        MutableObjectValueView[str],
+        Dict[str, WinRTObjectValue],
+    ] = (count, native, exact, snapshot)

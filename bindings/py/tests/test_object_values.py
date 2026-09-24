@@ -635,7 +635,8 @@ def test_the_data_model_lives_in_its_own_namespace():
     assert dynwinrt.values is values
     for name in values.__all__:
         assert name not in dynwinrt.__all__
-        assert getattr(values, name).__module__ == "dynwinrt.values"
+        if name != "WinRTObjectValue":  # a typing.Union alias
+            assert getattr(values, name).__module__ == "dynwinrt.values"
     assert "to_winrt_object" in dynwinrt.__all__ and "unbox_object" in dynwinrt.__all__
     namespace = {}
     exec("from dynwinrt import *", namespace)

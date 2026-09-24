@@ -463,7 +463,22 @@
         {
           "kind": "object_value_storage_properties",
           "member": "get_file_from_path_async"
+        },
+        {
+          "kind": "object_value_view_storage_properties",
+          "member": "get_file_from_path_async"
         }
+      ]
+    },
+    {
+      "id": "object_value_view_maps",
+      "namespace": "Windows.Foundation.Collections",
+      "class": "PropertySet",
+      "extra_classes": ["ValueSet", "StringMap"],
+      "langs": ["py"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "object_value_view_maps", "member": "insert" }
       ]
     },
     {
@@ -479,6 +494,11 @@
         },
         {
           "kind": "object_value_device_properties",
+          "member": "find_all_async",
+          "langs": ["py"]
+        },
+        {
+          "kind": "object_value_view_device_properties",
           "member": "find_all_async",
           "langs": ["py"]
         }
