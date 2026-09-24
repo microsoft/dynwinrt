@@ -351,7 +351,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             iface.name
         ));
         out.push('\n');
-        out.push_str(AS_INTERFACE_METHOD);
+        out.push_str(&as_interface_method(context));
         out.push('\n');
     }
 
