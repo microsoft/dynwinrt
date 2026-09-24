@@ -143,7 +143,8 @@
         "args": ["en-US"]
       },
       "checks": [
-        { "kind": "property_equals", "member": "language_tag", "expected": "en-US" }
+        { "kind": "property_equals", "member": "language_tag", "expected": "en-US" },
+        { "kind": "language_comprehensive", "member": "self", "langs": ["py"] }
       ]
     },
     {
@@ -326,7 +327,8 @@
       "checks": [
         { "kind": "sequence_protocol", "member": "languages", "expected_size": 1 },
         { "kind": "datetime_roundtrip", "member": "date_time", "langs": ["py"] },
-        { "kind": "calendar_comprehensive", "member": "self" }
+        { "kind": "calendar_comprehensive", "member": "self" },
+        { "kind": "calendar_documented_overloads", "member": "month_as_string", "langs": ["py"] }
       ]
     },
     {
@@ -429,7 +431,9 @@
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 },
-        { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] }
+        { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] },
+        { "kind": "data_stream_constructor_roundtrip", "member": "__init__", "langs": ["py"] },
+        { "kind": "can_cast_non_object", "member": "_dynwinrt_can_cast", "langs": ["py"] }
       ]
     },
     {
@@ -450,6 +454,37 @@
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "storage_query_temp_folder", "member": "query" }
+      ]
+    },
+    {
+      "id": "python_storage_file_copy_overloads",
+      "namespace": "Windows.Storage",
+      "class": "StorageFile",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "storage_file_copy_overloads", "member": "copy_async" }
+      ]
+    },
+    {
+      "id": "python_stream_copy_overloads",
+      "namespace": "Windows.Storage.Streams",
+      "class": "RandomAccessStream",
+      "langs": ["py"],
+      "extra_classes": ["InMemoryRandomAccessStream", "DataWriter", "DataReader"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "random_access_stream_copy_overloads", "member": "copy_async" }
+      ]
+    },
+    {
+      "id": "python_decimal_formatter_overloads",
+      "namespace": "Windows.Globalization.NumberFormatting",
+      "class": "DecimalFormatter",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "decimal_formatter_overloads", "member": "format" }
       ]
     },
     {
@@ -569,7 +604,8 @@
           "args": ["<root><child /></root>"],
           "property_path": ["document_element", "tag_name"],
           "expected": "root"
-        }
+        },
+        { "kind": "xml_document_load_overloads", "member": "load_xml", "langs": ["py"] }
       ]
     },
     {

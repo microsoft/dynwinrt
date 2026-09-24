@@ -17,17 +17,26 @@ from dynwinrt import (
     WinGUID,
 )
 from python_bindings.windows.application_model.contacts import ContactDate
+from python_bindings.windows.data.xml.dom import XmlDocument, XmlLoadSettings
 from python_bindings.windows.foundation import (
     IReference_UInt32,
     IWwwFormUrlDecoderEntry,
     Uri,
 )
 from python_bindings.windows.globalization import Calendar
+from python_bindings.windows.globalization.number_formatting import DecimalFormatter
+from python_bindings.windows.storage import (
+    NameCollisionOption,
+    StorageFile,
+    StorageFolder,
+)
 from python_bindings.windows.storage.streams import (
     Buffer as WinRTBuffer,
     DataWriter,
     IBuffer,
+    InMemoryRandomAccessStream,
     IOutputStream,
+    RandomAccessStream,
 )
 
 
@@ -144,6 +153,49 @@ def check_async_types(
         progress_coroutine,
         progress_task,
     )
+
+
+def check_documented_overload_names(
+    formatter: DecimalFormatter,
+    calendar: Calendar,
+    document: XmlDocument,
+    settings: XmlLoadSettings,
+) -> None:
+    formatted: List[str] = [
+        formatter.format(5),
+        formatter.format(2.5),
+        formatter.format_int(5),
+        formatter.format_u_int(5),
+        calendar.month_as_string(),
+        calendar.month_as_string(3),
+        calendar.month_as_full_string(),
+    ]
+    document.load_xml("<root />")
+    document.load_xml("<root />", settings)
+    document.load_xml_with_settings("<root />", settings)
+    _: List[str] = formatted
+
+
+async def check_documented_async_overload_names(
+    file: StorageFile,
+    folder: StorageFolder,
+    source: InMemoryRandomAccessStream,
+    target: InMemoryRandomAccessStream,
+) -> None:
+    option = NameCollisionOption.ReplaceExisting
+    copies: List[StorageFile | None] = [
+        await file.copy_async(folder),
+        await file.copy_async(folder, "copy.txt"),
+        await file.copy_async(folder, "copy.txt", option),
+        await file.copy_overload(folder, "copy.txt", option),
+    ]
+    copied: List[int] = [
+        await RandomAccessStream.copy_async(source, target),
+        await RandomAccessStream.copy_async(source, target, 4),
+        await RandomAccessStream.copy_size_async(source, target, 4),
+    ]
+    writer: DataWriter = DataWriter(source)
+    _: Tuple[List[StorageFile | None], List[int], DataWriter] = (copies, copied, writer)
 
 
 def check_ibuffer_bytes() -> None:

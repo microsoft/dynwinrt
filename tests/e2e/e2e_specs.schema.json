@@ -57,6 +57,7 @@
         "kind": {
           "enum": [
             "property_equals",
+            "language_comprehensive",
             "property_exists",
             "property_in_range",
             "method_equals",
@@ -97,8 +98,15 @@
              "constructor_overload_dispatch",
              "value_set_mapping",
              "data_stream_scalar_roundtrip",
+             "data_stream_constructor_roundtrip",
+             "can_cast_non_object",
              "calendar_comprehensive",
              "storage_query_temp_folder",
+             "storage_file_copy_overloads",
+             "random_access_stream_copy_overloads",
+             "decimal_formatter_overloads",
+             "xml_document_load_overloads",
+             "calendar_documented_overloads",
              "value_set_event_lifecycle",
              "nested_struct_runtime",
              "generated_helper_matrix"

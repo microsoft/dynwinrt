@@ -8,6 +8,7 @@ from ._runtime import (
     _DynWinRTObject, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
+    _dynwinrt_legacy_call,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
     _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
 IID_IDataWriter = WinGUID.parse('64b89265-d341-4922-b38a-dd4af8808c4e')
 IID_IDataWriterFactory = WinGUID.parse('338c67c2-8b84-4c2b-9c50-7b8767847a1f')
 IID_IClosable = WinGUID.parse('30d5a829-7fa4-4026-83bb-d75bae4ea99e')
+IID_ARG_Windows_Storage_Streams_IBuffer = WinGUID.parse('905a0fe0-bc53-11df-8c49-001e4fc686da')
+IID_ARG_Windows_Storage_Streams_IOutputStream = WinGUID.parse('905a0fe6-bc53-11df-8c49-001e4fc686da')
 
 _IDataWriter = DynWinRTType.register_interface(
     "IDataWriter", IID_IDataWriter) \
@@ -108,6 +111,9 @@ class DataWriter:
             _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
             if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')):
                 return cls.create_data_writer(_bound[0])
+            _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
+            if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IOutputStream)):
+                return cls.create_data_writer(_bound[0])
         return super().__new__(cls)
 
     def _set_native(self, obj: DynWinRTValue):
@@ -133,6 +139,10 @@ class DataWriter:
             return
         _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
         if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')):
+            self._set_native(type(self).create_data_writer(_bound[0])._obj)
+            return
+        _bound = _dynwinrt_bind_overload(('output_stream',), args, kwargs)
+        if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IOutputStream)):
             self._set_native(type(self).create_data_writer(_bound[0])._obj)
             return
         raise TypeError("No matching constructor for DataWriter")
@@ -168,11 +178,26 @@ class DataWriter:
     def write_bytes(self, value: DynWinRTArray | bytes | bytearray | Sequence[int]) -> None:
         _IDataWriter.method(12).invoke(self._obj, [_dynwinrt_array(value, lambda item: DynWinRTValue.from_u8(item), DynWinRTType.u8_type(), True)])
 
-    def write_buffer(self, buffer: 'IBuffer') -> None:
+    def _write_buffer_13(self, buffer: 'IBuffer') -> None:
         _IDataWriter.method(13).invoke(self._obj, [getattr(buffer, '_obj', buffer)])
 
-    def write_buffer_range(self, buffer: 'IBuffer', start: int, count: int) -> None:
+    def _write_buffer_14(self, buffer: 'IBuffer', start: int, count: int) -> None:
         _IDataWriter.method(14).invoke(self._obj, [getattr(buffer, '_obj', buffer), DynWinRTValue.from_u32(start), DynWinRTValue.from_u32(count)])
+
+    def write_buffer(self, *args, **kwargs):
+        _bound = _dynwinrt_bind_overload(('buffer',), args, kwargs)
+        if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_buffer', 'IBuffer')):
+            return self._write_buffer_13(*_bound)
+        _bound = _dynwinrt_bind_overload(('buffer', 'start', 'count',), args, kwargs)
+        if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_buffer', 'IBuffer')) and isinstance(_bound[1], int) and not isinstance(_bound[1], bool) and not isinstance(_bound[1], __import__('enum').Enum) and 0 <= _bound[1] <= 4294967295 and isinstance(_bound[2], int) and not isinstance(_bound[2], bool) and not isinstance(_bound[2], __import__('enum').Enum) and 0 <= _bound[2] <= 4294967295:
+            return self._write_buffer_14(*_bound)
+        _bound = _dynwinrt_bind_overload(('buffer',), args, kwargs)
+        if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_buffer', 'IBuffer')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IBuffer)):
+            return self._write_buffer_13(*_bound)
+        _bound = _dynwinrt_bind_overload(('buffer', 'start', 'count',), args, kwargs)
+        if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_buffer', 'IBuffer')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IBuffer)) and isinstance(_bound[1], int) and not isinstance(_bound[1], bool) and not isinstance(_bound[1], __import__('enum').Enum) and 0 <= _bound[1] <= 4294967295 and isinstance(_bound[2], int) and not isinstance(_bound[2], bool) and not isinstance(_bound[2], __import__('enum').Enum) and 0 <= _bound[2] <= 4294967295:
+            return self._write_buffer_14(*_bound)
+        return _dynwinrt_legacy_call(self._write_buffer_13, ('buffer',), args, kwargs, 'write_buffer')
 
     def write_boolean(self, value: bool) -> None:
         _IDataWriter.method(15).invoke(self._obj, [DynWinRTValue.from_bool(value)])
@@ -235,6 +260,8 @@ class DataWriter:
     @byte_order.setter
     def byte_order(self, value: 'ByteOrder'):
         _IDataWriter.method(10).invoke(self._obj, [DynWinRTValue.enum_value(DynWinRTType.enum_type('Windows.Storage.Streams.ByteOrder', ['LittleEndian', 'BigEndian'], [0, 1]), int(value))])
+
+    write_buffer_range = _write_buffer_14
 
     def close(self):
         if self._closed:

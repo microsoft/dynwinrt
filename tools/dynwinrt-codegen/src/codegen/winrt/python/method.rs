@@ -9,10 +9,11 @@ use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
+use super::member_plan::{Candidate, MethodGroup};
 use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
 use super::signature::{
-    py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
-    py_wrap_async, py_wrap_async_with_converters,
+    py_convert_return, py_interface_cast_guard, py_runtime_named_symbol, py_runtime_symbol,
+    py_type_guard, py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
@@ -159,6 +160,131 @@ pub(crate) fn py_method_type_guard(
     py_type_guard(name, typ, context)
 }
 
+/// Dispatch guard for one bound argument of an overload candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParamGuard {
+    /// Exact guard used by the first dispatch pass.
+    pub(crate) strict: String,
+    /// Broader guard for a second pass that runs only after every candidate's
+    /// strict guards failed. `None` keeps the strict guard.
+    pub(crate) permissive: Option<String>,
+}
+
+/// Guards for one overload parameter.
+///
+/// Generated runtime-class wrappers do not inherit interface wrappers, so the
+/// strict `isinstance` guard of a known interface parameter rejects runtime
+/// class instances and raw `DynWinRTValue`s that implement the interface. Its
+/// permissive guard also accepts anything that supports the interface through
+/// QueryInterface.
+pub(crate) fn param_guard(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> ParamGuard {
+    ParamGuard {
+        strict: py_method_type_guard(name, typ, context),
+        permissive: (!is_delegate_type(typ, context))
+            .then(|| py_interface_cast_guard(name, typ, context))
+            .flatten(),
+    }
+}
+
+/// One candidate of a generated `*args, **kwargs` overload dispatcher.
+pub(crate) struct DispatchCandidate<'a> {
+    /// Python-visible input parameters, in call order.
+    pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
+    /// Statements run when the candidate matches, relative to its `if` block.
+    pub(crate) body: Vec<String>,
+}
+
+pub(crate) struct LegacyDispatch<'a> {
+    pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
+    pub(crate) target: String,
+    pub(crate) public_name: String,
+}
+
+/// Emit argument binding and guards for an overload dispatcher.
+///
+/// The first pass tries every candidate, in order, with its strict guards.
+/// Candidates with permissive guards are retried in a second pass that runs
+/// only after the first pass matched nothing, so a permissive guard can never
+/// change which overload an already-matching call reaches. A final legacy
+/// candidate has no type guards and reproduces the conversions of the method
+/// that occupied this public name before it became a dispatcher.
+pub(crate) fn emit_dispatch(
+    out: &mut String,
+    indent: &str,
+    candidates: &[DispatchCandidate<'_>],
+    legacy: Option<&LegacyDispatch<'_>>,
+    context: &PythonProjectionContext,
+) {
+    let guards = candidates
+        .iter()
+        .map(|candidate| {
+            candidate
+                .params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| param_guard(&format!("_bound[{index}]"), &param.typ, context))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (candidate, guards) in candidates.iter().zip(&guards) {
+        let strict = guards.iter().map(|guard| guard.strict.as_str());
+        emit_dispatch_candidate(out, indent, candidate, strict);
+    }
+    for (candidate, guards) in candidates.iter().zip(&guards) {
+        if guards.iter().any(|guard| guard.permissive.is_some()) {
+            let permissive = guards
+                .iter()
+                .map(|guard| guard.permissive.as_deref().unwrap_or(&guard.strict));
+            emit_dispatch_candidate(out, indent, candidate, permissive);
+        }
+    }
+    if let Some(legacy) = legacy {
+        out.push_str(&format!(
+            "{indent}return _dynwinrt_legacy_call({}, {}, args, kwargs, '{}')\n",
+            legacy.target,
+            dispatch_parameter_names(&legacy.params),
+            legacy.public_name,
+        ));
+    }
+}
+
+fn dispatch_parameter_names(params: &[&crate::meta::ParamMeta]) -> String {
+    let names = params
+        .iter()
+        .map(|param| format!("'{}'", to_snake_case(&param.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.is_empty() {
+        "()".to_string()
+    } else {
+        format!("({names},)")
+    }
+}
+
+fn emit_dispatch_candidate<'g>(
+    out: &mut String,
+    indent: &str,
+    candidate: &DispatchCandidate<'_>,
+    guards: impl Iterator<Item = &'g str>,
+) {
+    let parameter_names = dispatch_parameter_names(&candidate.params);
+    out.push_str(&format!(
+        "{indent}_bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
+    ));
+    let condition = std::iter::once("_bound is not None")
+        .chain(guards)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    out.push_str(&format!("{indent}if {condition}:\n"));
+    for line in &candidate.body {
+        out.push_str(&format!("{indent}    {line}\n"));
+    }
+}
+
 fn convert_method_output(expr: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     if let Some(converter) = delegate_value_converter(typ, context) {
         return format!("({converter})({expr})");
@@ -263,15 +389,6 @@ fn emit_method_result(
 
 // ======================================================================
 // Method generation — Python call pattern
-pub(crate) fn generate_factory_method_invoke(
-    class: &ClassMeta,
-    iface: &InterfaceMeta,
-    method: &MethodMeta,
-    context: &PythonProjectionContext,
-) -> String {
-    generate_factory_method_invoke_named(class, iface, method, context, None)
-}
-
 fn generate_factory_method_invoke_named(
     class: &ClassMeta,
     iface: &InterfaceMeta,
@@ -424,114 +541,89 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) property_has_getter: bool,
 }
 
-pub(crate) fn private_overload_names<'a>(
-    public_name: &str,
-    methods: impl IntoIterator<Item = &'a MethodMeta>,
-) -> Vec<String> {
-    let base_names = methods
-        .into_iter()
-        .map(|method| format!("_{public_name}_{}", method.vtable_index))
-        .collect::<Vec<_>>();
-    base_names
-        .iter()
-        .enumerate()
-        .map(|(index, base)| {
-            if base_names
-                .iter()
-                .filter(|candidate| *candidate == base)
-                .count()
-                > 1
-            {
-                format!("{base}_{index}")
-            } else {
-                base.clone()
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn generate_instance_method_group(
-    overloads: &[InstanceOverload<'_>],
+/// Render an instance accessor (property or event method).
+pub(crate) fn generate_instance_accessor(
+    overload: &InstanceOverload<'_>,
     context: &PythonProjectionContext,
 ) -> String {
-    if overloads.len() == 1 {
-        let overload = &overloads[0];
-        return generate_method_body(
-            &overload.iface_var,
-            &overload.obj_expr,
-            overload.method,
-            context,
-            None,
-            overload.sibling_methods,
-            overload.property_has_getter,
-        );
-    }
+    generate_method_body(
+        &overload.iface_var,
+        &overload.obj_expr,
+        overload.method,
+        context,
+        None,
+        overload.sibling_methods,
+        overload.property_has_getter,
+    )
+}
 
-    let mut ordered_overloads = overloads.iter().collect::<Vec<_>>();
-    ordered_overloads.sort_by(|left, right| {
-        super::overloads::cmp_python_dispatch_methods(left.method, right.method)
-    });
-
-    let overload_names =
-        super::overloads::method_names(ordered_overloads.iter().map(|overload| overload.method));
-    let public_name =
-        super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
+/// Render a planned instance method group; `overload` supplies each candidate's
+/// interface binding.
+pub(crate) fn generate_instance_method_group<'a>(
+    group: &MethodGroup<'a>,
+    overload: impl Fn(&Candidate<'a>) -> InstanceOverload<'a>,
+    context: &PythonProjectionContext,
+) -> String {
+    let overloads = group
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                overload(candidate),
+                candidate.attribute.as_str(),
+                candidate.define,
+            )
+        })
+        .collect::<Vec<_>>();
     let mut out = String::new();
-    let private_names = private_overload_names(
-        &public_name,
-        ordered_overloads.iter().map(|overload| overload.method),
-    );
-    for (overload, private_name) in ordered_overloads.iter().zip(&private_names) {
-        out.push_str(&generate_method_body(
-            &overload.iface_var,
-            &overload.obj_expr,
-            overload.method,
-            context,
-            Some(private_name),
-            overload.sibling_methods,
-            overload.property_has_getter,
-        ));
-        out.push('\n');
+    let public_name = &group.name;
+    for (overload, attribute, define) in &overloads {
+        if *define {
+            out.push_str(&generate_method_body(
+                &overload.iface_var,
+                &overload.obj_expr,
+                overload.method,
+                context,
+                Some(attribute),
+                overload.sibling_methods,
+                overload.property_has_getter,
+            ));
+        }
+        if overloads.len() == 1 {
+            if *attribute != public_name {
+                out.push_str(&format!("\n    {public_name} = {attribute}\n"));
+            }
+            return out;
+        }
+        if *define {
+            out.push('\n');
+        }
     }
 
     out.push_str(&format!("    def {public_name}(self, *args, **kwargs):\n"));
-    let public_params = get_in_params(ordered_overloads[0].method);
-    out.push_str(&method_pydoc(ordered_overloads[0].method, &public_params));
-    for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
-        let in_params = get_in_params(overload.method);
-        let parameter_names = in_params
-            .iter()
-            .map(|param| format!("'{}'", to_snake_case(&param.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let parameter_names = if parameter_names.is_empty() {
-            "()".to_string()
-        } else {
-            format!("({parameter_names},)")
-        };
+    let public_params = get_in_params(group.candidates[0].method);
+    out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
+    let candidates = overloads
+        .iter()
+        .map(|(overload, attribute, _)| DispatchCandidate {
+            params: get_in_params(overload.method),
+            body: vec![format!("return self.{attribute}(*_bound)")],
+        })
+        .collect::<Vec<_>>();
+    let legacy = group
+        .legacy_fallback
+        .as_ref()
+        .map(|fallback| LegacyDispatch {
+            params: get_in_params(fallback.method),
+            target: format!("self.{}", fallback.attribute),
+            public_name: public_name.clone(),
+        });
+    emit_dispatch(&mut out, "        ", &candidates, legacy.as_ref(), context);
+    if legacy.is_none() {
         out.push_str(&format!(
-            "        _bound = _dynwinrt_bind_overload({}, args, kwargs)\n",
-            parameter_names
-        ));
-        let guards = in_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
-            })
-            .collect::<Vec<_>>();
-        let condition = if guards.is_empty() {
-            "_bound is not None".to_string()
-        } else {
-            format!("_bound is not None and {}", guards.join(" and "))
-        };
-        out.push_str(&format!(
-            "        if {condition}:\n            return self.{private_name}(*_bound)\n"
+            "        raise TypeError(\"No matching overload for {public_name}\")\n"
         ));
     }
-    out.push_str(&format!(
-        "        raise TypeError(\"No matching overload for {public_name}\")\n"
-    ));
     out
 }
 
@@ -548,102 +640,107 @@ pub(crate) struct StaticOverload<'a> {
     pub(crate) kind: StaticOverloadKind,
 }
 
-pub(crate) fn generate_static_method_group(
-    overloads: &[StaticOverload<'_>],
+/// Render a static accessor (property or event method).
+pub(crate) fn generate_static_accessor(
+    overload: &StaticOverload<'_>,
     context: &PythonProjectionContext,
 ) -> String {
-    if overloads.len() == 1 {
-        let overload = &overloads[0];
-        return match overload.kind {
-            StaticOverloadKind::Factory => generate_factory_method_invoke(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-            ),
-            StaticOverloadKind::Static => generate_static_method_invoke(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-            ),
-        };
+    match overload.kind {
+        StaticOverloadKind::Factory => generate_factory_method_invoke_named(
+            overload.class,
+            overload.iface,
+            overload.method,
+            context,
+            None,
+        ),
+        StaticOverloadKind::Static => {
+            generate_static_method_invoke(overload.class, overload.iface, overload.method, context)
+        }
     }
+}
 
-    let mut ordered_overloads = overloads.iter().collect::<Vec<_>>();
-    ordered_overloads.sort_by(|left, right| {
-        super::overloads::cmp_python_dispatch_methods(left.method, right.method)
-    });
-
-    let overload_names =
-        super::overloads::method_names(ordered_overloads.iter().map(|overload| overload.method));
-    let public_name =
-        super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
+/// Render a planned static or factory method group; `overload` supplies each
+/// candidate's class binding.
+pub(crate) fn generate_static_method_group<'a>(
+    group: &MethodGroup<'a>,
+    overload: impl Fn(&Candidate<'a>) -> StaticOverload<'a>,
+    context: &PythonProjectionContext,
+) -> String {
+    let overloads = group
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                overload(candidate),
+                candidate.attribute.as_str(),
+                candidate.define,
+            )
+        })
+        .collect::<Vec<_>>();
     let mut out = String::new();
-    let private_names = private_overload_names(
-        &public_name,
-        ordered_overloads.iter().map(|overload| overload.method),
-    );
-    for (overload, private_name) in ordered_overloads.iter().zip(&private_names) {
-        let code = match overload.kind {
-            StaticOverloadKind::Factory => generate_factory_method_invoke_named(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-                Some(private_name),
-            ),
-            StaticOverloadKind::Static => generate_static_method_invoke_named(
-                overload.class,
-                overload.iface,
-                overload.method,
-                context,
-                Some(private_name),
-            ),
-        };
-        out.push_str(&code);
-        out.push('\n');
+    let public_name = &group.name;
+    for (overload, attribute, define) in &overloads {
+        if *define {
+            out.push_str(&match overload.kind {
+                StaticOverloadKind::Factory => generate_factory_method_invoke_named(
+                    overload.class,
+                    overload.iface,
+                    overload.method,
+                    context,
+                    Some(attribute),
+                ),
+                StaticOverloadKind::Static => generate_static_method_invoke_named(
+                    overload.class,
+                    overload.iface,
+                    overload.method,
+                    context,
+                    Some(attribute),
+                ),
+            });
+        }
+        if overloads.len() == 1 {
+            if *attribute != public_name {
+                out.push_str(&format!("\n    {public_name} = {attribute}\n"));
+            }
+            return out;
+        }
+        if *define {
+            out.push('\n');
+        }
     }
 
     out.push_str("    @staticmethod\n");
     out.push_str(&format!("    def {public_name}(*args, **kwargs):\n"));
-    let public_params = get_in_params(ordered_overloads[0].method);
-    out.push_str(&method_pydoc(ordered_overloads[0].method, &public_params));
-    for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
-        let in_params = get_in_params(overload.method);
-        let parameter_names = in_params
-            .iter()
-            .map(|param| format!("'{}'", to_snake_case(&param.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let parameter_names = if parameter_names.is_empty() {
-            "()".to_string()
-        } else {
-            format!("({parameter_names},)")
-        };
+    let public_params = get_in_params(group.candidates[0].method);
+    out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
+    let candidates = overloads
+        .iter()
+        .map(|(overload, attribute, _)| DispatchCandidate {
+            params: get_in_params(overload.method),
+            body: vec![format!(
+                "return {}.{attribute}(*_bound)",
+                context.class_name(overload.class)
+            )],
+        })
+        .collect::<Vec<_>>();
+    let legacy = group
+        .legacy_fallback
+        .as_ref()
+        .map(|fallback| LegacyDispatch {
+            params: get_in_params(fallback.method),
+            target: format!(
+                "{}.{}",
+                context.class_name(overloads[0].0.class),
+                fallback.attribute
+            ),
+            public_name: public_name.clone(),
+        });
+    emit_dispatch(&mut out, "        ", &candidates, legacy.as_ref(), context);
+    if legacy.is_none() {
         out.push_str(&format!(
-            "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-        ));
-        let guards = in_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
-            })
-            .collect::<Vec<_>>();
-        let condition = if guards.is_empty() {
-            "_bound is not None".to_string()
-        } else {
-            format!("_bound is not None and {}", guards.join(" and "))
-        };
-        out.push_str(&format!(
-            "        if {condition}:\n            return {}.{private_name}(*_bound)\n",
-            context.class_name(overload.class)
+            "        raise TypeError(\"No matching overload for {public_name}\")\n"
         ));
     }
-    out.push_str(&format!(
-        "        raise TypeError(\"No matching overload for {public_name}\")\n"
-    ));
     out
 }
 
@@ -857,6 +954,9 @@ pub(crate) fn generate_method_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codegen::winrt::python::member_plan::{
+        ClassMemberPlan, PlannedMember, class_instance_interfaces,
+    };
     use crate::meta::{ParamDirection, ParamMeta};
     use std::process::Command;
 
@@ -874,54 +974,129 @@ mod tests {
         }
     }
 
-    fn instance_overload(method: &MethodMeta) -> InstanceOverload<'_> {
-        InstanceOverload {
-            iface_var: "_IReader".into(),
-            obj_expr: "self._obj".into(),
-            method,
-            sibling_methods: None,
-            property_has_getter: true,
+    fn interface(name: &str, methods: &[&MethodMeta]) -> InterfaceMeta {
+        InterfaceMeta {
+            name: name.into(),
+            namespace: "Contoso".into(),
+            methods: methods.iter().map(|method| (*method).clone()).collect(),
+            ..Default::default()
         }
+    }
+
+    /// Plan `interfaces` as the instance members of a class and render the first
+    /// method group.
+    fn instance_group_on(
+        interfaces: &[(&str, &[&MethodMeta])],
+        context: &PythonProjectionContext,
+    ) -> String {
+        let class = ClassMeta {
+            name: "Reader".into(),
+            required_interfaces: interfaces
+                .iter()
+                .map(|(name, methods)| interface(name, methods))
+                .collect(),
+            ..Default::default()
+        };
+        let plan = ClassMemberPlan::new(&class, context);
+        let members = class_instance_interfaces(&class)
+            .flat_map(|iface| iface.methods.iter().map(move |method| (iface, method)));
+        let Some(PlannedMember::Group(group)) = plan.instance.members(members).into_iter().next()
+        else {
+            panic!("expected a method group");
+        };
+        generate_instance_method_group(
+            group,
+            |candidate| InstanceOverload {
+                iface_var: format!("_{}", candidate.interface.name),
+                obj_expr: "self._obj".into(),
+                method: candidate.method,
+                sibling_methods: None,
+                property_has_getter: true,
+            },
+            context,
+        )
+    }
+
+    fn instance_group(methods: &[&MethodMeta], context: &PythonProjectionContext) -> String {
+        instance_group_on(&[("IReader", methods)], context)
+    }
+
+    /// Plan `methods` as the statics of `class_name` and render the first method group.
+    fn static_group(
+        class_name: &str,
+        methods: &[&MethodMeta],
+        context: &PythonProjectionContext,
+    ) -> String {
+        let class = ClassMeta {
+            name: class_name.into(),
+            static_interfaces: vec![interface("IFactoryStatics", methods)],
+            ..Default::default()
+        };
+        let plan = ClassMemberPlan::new(&class, context);
+        let members = class
+            .static_interfaces
+            .iter()
+            .flat_map(|iface| iface.methods.iter().map(move |method| (iface, method)));
+        let Some(PlannedMember::Group(group)) = plan.statics.members(members).into_iter().next()
+        else {
+            panic!("expected a method group");
+        };
+        generate_static_method_group(
+            group,
+            |candidate| StaticOverload {
+                class: &class,
+                iface: candidate.interface,
+                method: candidate.method,
+                kind: StaticOverloadKind::Static,
+            },
+            context,
+        )
     }
 
     #[test]
     fn overloads_with_the_same_vtable_slot_get_unique_private_names() {
         let first = overloaded_method("Register", 6, TypeMeta::String);
         let second = overloaded_method("Register", 6, TypeMeta::I32);
-        let overloads = [
-            InstanceOverload {
-                iface_var: "_IFirst".into(),
-                obj_expr: "self._obj".into(),
-                method: &first,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-            InstanceOverload {
-                iface_var: "_ISecond".into(),
-                obj_expr: "self._obj".into(),
-                method: &second,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-        ];
 
-        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
+        let code = instance_group_on(
+            &[("IFirst", &[&first]), ("ISecond", &[&second])],
+            &PythonProjectionContext::default(),
+        );
         assert_eq!(code.matches("def _register_6_").count(), 2, "{code}");
         assert!(code.contains("self._register_6_0(*_bound)"), "{code}");
         assert!(code.contains("self._register_6_1(*_bound)"), "{code}");
     }
 
-    fn static_overload<'a>(
-        class: &'a ClassMeta,
-        iface: &'a InterfaceMeta,
-        method: &'a MethodMeta,
-    ) -> StaticOverload<'a> {
-        StaticOverload {
-            class,
-            iface,
-            method,
-            kind: StaticOverloadKind::Static,
-        }
+    #[test]
+    fn shared_single_candidate_uses_a_private_implementation() {
+        let method = overloaded_method("Choose", 6, TypeMeta::String);
+        let interface = interface("IChooser", &[&method]);
+        let group = MethodGroup {
+            name: "choose".into(),
+            candidates: vec![Candidate {
+                interface: &interface,
+                method: &method,
+                attribute: "_choose_6".into(),
+                define: true,
+            }],
+            legacy_fallback: None,
+        };
+
+        let code = generate_instance_method_group(
+            &group,
+            |candidate| InstanceOverload {
+                iface_var: "_IChooser".into(),
+                obj_expr: "self._obj".into(),
+                method: candidate.method,
+                sibling_methods: None,
+                property_has_getter: true,
+            },
+            &PythonProjectionContext::default(),
+        );
+
+        assert!(code.contains("def _choose_6(self, value: str)"), "{code}");
+        assert!(code.contains("\n    choose = _choose_6\n"), "{code}");
+        assert!(!code.contains("def choose(self, value: str)"), "{code}");
     }
 
     fn enum_type(name: &str, is_flags: bool) -> TypeMeta {
@@ -1111,24 +1286,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let overloads = vec![
-            InstanceOverload {
-                iface_var: "_IReader".into(),
-                obj_expr: "self._obj".into(),
-                method: &first,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-            InstanceOverload {
-                iface_var: "_IReader".into(),
-                obj_expr: "self._obj".into(),
-                method: &second,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-        ];
-
-        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
+        let code = instance_group(&[&first, &second], &PythonProjectionContext::default());
         assert!(code.contains("def _read_6(self, value: str)"));
         assert!(code.contains("def _read_7(self, value: int)"));
         assert!(code.contains("def read(self, *args, **kwargs)"));
@@ -1166,26 +1324,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        let overloads = vec![
-            InstanceOverload {
-                iface_var: "_IRunner".into(),
-                obj_expr: "self._obj".into(),
-                method: &callback,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-            InstanceOverload {
-                iface_var: "_IRunner".into(),
-                obj_expr: "self._obj".into(),
-                method: &text,
-                sibling_methods: None,
-                property_has_getter: true,
-            },
-        ];
-
         let context =
             PythonProjectionContext::standalone([callback.params[0].typ.type_identity()]).unwrap();
-        let code = generate_instance_method_group(&overloads, &context);
+        let code = instance_group_on(&[("IRunner", &[&callback, &text])], &context);
         assert!(code.contains("callable(_bound[0])"));
         assert!(code.contains("_dynwinrt_delegate(handler,"));
         assert!(code.contains("'work_item_handler', 'IID_WorkItemHandler'"));
@@ -1302,14 +1443,6 @@ mod tests {
 
     #[test]
     fn static_overloads_generate_one_dispatcher() {
-        let class = ClassMeta {
-            name: "Factory".into(),
-            ..Default::default()
-        };
-        let iface = InterfaceMeta {
-            name: "IFactoryStatics".into(),
-            ..Default::default()
-        };
         let first = MethodMeta {
             name: "Create".into(),
             raw_name: "Create".into(),
@@ -1327,22 +1460,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let overloads = vec![
-            StaticOverload {
-                class: &class,
-                iface: &iface,
-                method: &first,
-                kind: StaticOverloadKind::Static,
-            },
-            StaticOverload {
-                class: &class,
-                iface: &iface,
-                method: &second,
-                kind: StaticOverloadKind::Static,
-            },
-        ];
-
-        let code = generate_static_method_group(&overloads, &PythonProjectionContext::default());
+        let code = static_group(
+            "Factory",
+            &[&first, &second],
+            &PythonProjectionContext::default(),
+        );
         assert!(code.contains("def _create_6()"));
         assert!(code.contains("def _create_7(value: str)"));
         assert!(code.contains("def create(*args, **kwargs)"));
@@ -1353,14 +1475,8 @@ mod tests {
         let wide = overloaded_method("Read2", 7, TypeMeta::I32);
         let narrow = overloaded_method("Read", 6, TypeMeta::I8);
 
-        let forward = generate_instance_method_group(
-            &[instance_overload(&wide), instance_overload(&narrow)],
-            &PythonProjectionContext::default(),
-        );
-        let reverse = generate_instance_method_group(
-            &[instance_overload(&narrow), instance_overload(&wide)],
-            &PythonProjectionContext::default(),
-        );
+        let forward = instance_group(&[&wide, &narrow], &PythonProjectionContext::default());
+        let reverse = instance_group(&[&narrow, &wide], &PythonProjectionContext::default());
 
         assert_eq!(forward, reverse);
         assert_contains_in_order(
@@ -1378,16 +1494,10 @@ mod tests {
         let char16 = overloaded_method("Pick3", 8, TypeMeta::Char16);
         let boolean = overloaded_method("Pick2", 7, TypeMeta::Bool);
         let signed = overloaded_method("Pick", 6, TypeMeta::I8);
-        let overloads = vec![
-            instance_overload(&float),
-            instance_overload(&unsigned),
-            instance_overload(&string),
-            instance_overload(&char16),
-            instance_overload(&boolean),
-            instance_overload(&signed),
-        ];
-
-        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
+        let code = instance_group(
+            &[&float, &unsigned, &string, &char16, &boolean, &signed],
+            &PythonProjectionContext::default(),
+        );
 
         assert_contains_in_order(
             &code,
@@ -1420,29 +1530,17 @@ mod tests {
 
     #[test]
     fn python_numeric_overload_static_dispatch_is_declaration_order_independent() {
-        let class = ClassMeta {
-            name: "Factory".into(),
-            ..Default::default()
-        };
-        let iface = InterfaceMeta {
-            name: "IFactoryStatics".into(),
-            ..Default::default()
-        };
         let integer = overloaded_method("Create", 6, TypeMeta::I16);
         let float = overloaded_method("Create2", 7, TypeMeta::F64);
 
-        let forward = generate_static_method_group(
-            &[
-                static_overload(&class, &iface, &float),
-                static_overload(&class, &iface, &integer),
-            ],
+        let forward = static_group(
+            "Factory",
+            &[&float, &integer],
             &PythonProjectionContext::default(),
         );
-        let reverse = generate_static_method_group(
-            &[
-                static_overload(&class, &iface, &integer),
-                static_overload(&class, &iface, &float),
-            ],
+        let reverse = static_group(
+            "Factory",
+            &[&integer, &float],
             &PythonProjectionContext::default(),
         );
 
@@ -1462,14 +1560,8 @@ mod tests {
             PythonProjectionContext::standalone([enum_type("Mode", false).type_identity()])
                 .unwrap();
 
-        let forward = generate_instance_method_group(
-            &[instance_overload(&integer), instance_overload(&enumeration)],
-            &context,
-        );
-        let reverse = generate_instance_method_group(
-            &[instance_overload(&enumeration), instance_overload(&integer)],
-            &context,
-        );
+        let forward = instance_group(&[&integer, &enumeration], &context);
+        let reverse = instance_group(&[&enumeration, &integer], &context);
 
         let forward_dispatcher =
             extract_generated_block(&forward, "    def read(self, *args, **kwargs):\n");
@@ -1546,33 +1638,8 @@ print(json.dumps([exercise(ReaderForward), exercise(ReaderReverse)]))
         let context =
             PythonProjectionContext::standalone([enum_type("Options", true).type_identity()])
                 .unwrap();
-        let iface = InterfaceMeta {
-            name: "IFactoryStatics".into(),
-            ..Default::default()
-        };
-        let class_forward = ClassMeta {
-            name: "FactoryForward".into(),
-            ..Default::default()
-        };
-        let class_reverse = ClassMeta {
-            name: "FactoryReverse".into(),
-            ..Default::default()
-        };
-
-        let forward = generate_static_method_group(
-            &[
-                static_overload(&class_forward, &iface, &integer),
-                static_overload(&class_forward, &iface, &flags),
-            ],
-            &context,
-        );
-        let reverse = generate_static_method_group(
-            &[
-                static_overload(&class_reverse, &iface, &flags),
-                static_overload(&class_reverse, &iface, &integer),
-            ],
-            &context,
-        );
+        let forward = static_group("FactoryForward", &[&integer, &flags], &context);
+        let reverse = static_group("FactoryReverse", &[&flags, &integer], &context);
 
         let forward_dispatcher = extract_generated_block(
             &forward,
@@ -1648,5 +1715,209 @@ print(json.dumps([exercise(FactoryForward), exercise(FactoryReverse)]))
             run_python(&script),
             r#"[["enum", "i32", "TypeError"], ["enum", "i32", "TypeError"]]"#
         );
+    }
+
+    fn interface_type(name: &str, iid: &str) -> TypeMeta {
+        TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: name.into(),
+            iid: iid.into(),
+        }
+    }
+
+    fn widget_type() -> TypeMeta {
+        TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: Some(Box::new(interface_type(
+                "IWidget",
+                "22222222-2222-2222-2222-222222222222",
+            ))),
+        }
+    }
+
+    #[test]
+    fn interface_overloads_accept_query_interface_only_after_exact_guards_fail() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let by_interface = overloaded_method("Write", 6, foo.clone());
+        let by_class = overloaded_method("Write2", 7, widget_type());
+        let by_text = overloaded_method("Write3", 8, TypeMeta::String);
+        let context = PythonProjectionContext::standalone([
+            foo.type_identity(),
+            widget_type().type_identity(),
+        ])
+        .unwrap();
+
+        let code = instance_group(&[&by_text, &by_class, &by_interface], &context);
+        let exact_interface = "if _bound is not None and isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')):";
+        let relaxed_interface = "if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_IFoo)):";
+        assert_eq!(code.matches(exact_interface).count(), 1, "{code}");
+        assert_eq!(code.matches(relaxed_interface).count(), 1, "{code}");
+        assert_eq!(
+            code.matches("_dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_Widget)")
+                .count(),
+            1,
+            "only interface candidates are retried: {code}"
+        );
+        for first_pass in [
+            "isinstance(_bound[0], str):",
+            exact_interface,
+            "_dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_Widget):",
+        ] {
+            assert_contains_in_order(&code, first_pass, relaxed_interface);
+        }
+
+        let dispatcher = extract_generated_block(&code, "    def write(self, *args, **kwargs):\n");
+        let script = format!(
+            r#"import json
+
+class DynWinRTValue:
+    def __init__(self, *interfaces):
+        self.interfaces = set(interfaces)
+
+    def cast(self, iid):
+        if iid not in self.interfaces:
+            raise OSError('E_NOINTERFACE')
+        return DynWinRTValue(*self.interfaces)
+
+    def release(self):
+        pass
+
+IID_ARG_Contoso_IFoo = 'IFoo'
+IID_ARG_Contoso_Widget = 'IWidget'
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if len(args) > len(parameter_names):
+        return None
+    bound = list(args)
+    for name in parameter_names[len(args):]:
+        if name not in kwargs:
+            return None
+        bound.append(kwargs[name])
+    if len(kwargs) != len(parameter_names) - len(args):
+        return None
+    return tuple(bound)
+
+def _dynwinrt_can_cast(value, iid):
+    raw = getattr(value, '_obj', value)
+    if not isinstance(raw, DynWinRTValue):
+        return False
+    try:
+        projected = raw.cast(iid)
+    except OSError:
+        return False
+    projected.release()
+    return True
+
+def _dynwinrt_symbol(module, name):
+    return globals()[name]
+
+class IFoo:
+    def __init__(self, obj):
+        self._obj = obj
+
+class Widget:
+    def __init__(self, obj):
+        self._obj = obj
+
+class PythonFoo(IFoo):
+    def __init__(self):
+        pass
+
+class Writer:
+    def _write_6(self, value):
+        return "interface"
+
+    def _write_7(self, value):
+        return "runtime class"
+
+    def _write_8(self, value):
+        return "text"
+
+{dispatcher}
+
+writer = Writer()
+results = [
+    writer.write(Widget(DynWinRTValue('IWidget', 'IFoo'))),
+    writer.write(IFoo(DynWinRTValue('IFoo'))),
+    writer.write(PythonFoo()),
+    writer.write(Widget(DynWinRTValue('IFoo'))),
+    writer.write(DynWinRTValue('IFoo')),
+    writer.write(value=DynWinRTValue('IFoo')),
+    writer.write('text'),
+]
+for rejected in (DynWinRTValue(), object(), None):
+    try:
+        writer.write(rejected)
+    except TypeError:
+        results.append("TypeError")
+    else:
+        results.append("unexpected")
+print(json.dumps(results))
+"#
+        );
+
+        assert_eq!(
+            run_python(&script),
+            r#"["runtime class", "interface", "interface", "interface", "interface", "interface", "text", "TypeError", "TypeError", "TypeError"]"#
+        );
+    }
+
+    #[test]
+    fn static_interface_overloads_retry_with_query_interface() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let by_interface = overloaded_method("Create", 6, foo.clone());
+        let by_text = overloaded_method("Create2", 7, TypeMeta::String);
+        let context = PythonProjectionContext::standalone([foo.type_identity()]).unwrap();
+
+        let code = static_group("Factory", &[&by_interface, &by_text], &context);
+
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], str):",
+            "if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Contoso_IFoo)):\n            return Factory._create_6(*_bound)\n",
+        );
+    }
+
+    #[test]
+    fn param_guards_are_permissive_only_for_known_interfaces() {
+        let foo = interface_type("IFoo", "11111111-1111-1111-1111-111111111111");
+        let handler = interface_type("Handler", "33333333-3333-3333-3333-333333333333");
+        let context = PythonProjectionContext::standalone([
+            foo.type_identity(),
+            widget_type().type_identity(),
+            handler
+                .type_identity()
+                .with_kind(TypeIdentityKind::Delegate),
+        ])
+        .unwrap();
+
+        let guard = param_guard("value", &foo, &context);
+        assert_eq!(
+            guard.strict,
+            "isinstance(value, _dynwinrt_symbol('contoso__i_foo', 'IFoo'))"
+        );
+        assert_eq!(
+            guard.permissive.as_deref(),
+            Some(
+                "(isinstance(value, _dynwinrt_symbol('contoso__i_foo', 'IFoo')) or _dynwinrt_can_cast(value, IID_ARG_Contoso_IFoo))"
+            )
+        );
+        for strict_only in [
+            widget_type(),
+            handler,
+            TypeMeta::String,
+            TypeMeta::Object,
+            interface_type(
+                "IUnknownToProjection",
+                "44444444-4444-4444-4444-444444444444",
+            ),
+        ] {
+            assert_eq!(
+                param_guard("value", &strict_only, &context).permissive,
+                None,
+                "{strict_only:?}"
+            );
+        }
     }
 }

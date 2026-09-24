@@ -10,6 +10,9 @@ use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
     CollectionKind, class_interface, interface_kind, map_iterable_identity, runtime_mixin,
 };
+use crate::codegen::winrt::python::member_plan::{
+    ClassMemberPlan, PlannedMember, ScopePlan, class_instance_interfaces, interface_member_plan,
+};
 use crate::meta::{ConstructorKind, ParamMeta};
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
@@ -28,9 +31,9 @@ fn interface_symbol(context: &PythonProjectionContext, interface: &InterfaceMeta
 }
 
 /// Generate a Python file for a single RuntimeClass.
-pub fn generate_class(
+pub fn generate_class<'a>(
     context: &PythonProjectionContext,
-    class: &ClassMeta,
+    class: &'a ClassMeta,
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
@@ -59,12 +62,19 @@ pub fn generate_class(
     };
     let projectable = super::super::has_projectable_default_interface(class);
     let native_projectable = super::super::has_native_projector(class);
+    let plan = ClassMemberPlan::new(class, context);
+    let needs_legacy_helper = plan.statics.has_legacy_fallback()
+        || plan.instance.has_legacy_fallback()
+        || class
+            .required_interfaces
+            .iter()
+            .any(|interface| interface_member_plan(interface).has_legacy_fallback());
     let mut out = String::new();
 
     // Header
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context));
+    out.push_str(&import_line(context, needs_legacy_helper));
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -260,10 +270,8 @@ pub fn generate_class(
     let mut argument_iids = Vec::new();
     for iface in &all_class_ifaces {
         for method in &iface.methods {
-            for parameter in &method.params {
-                if parameter.direction == ParamDirection::In {
-                    py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
-                }
+            for parameter in crate::codegen::winrt::shared::imports::get_in_params(method) {
+                py_collect_argument_iid_consts(&parameter.typ, &mut argument_iids);
             }
         }
     }
@@ -337,6 +345,7 @@ pub fn generate_class(
         class,
         collection_iface,
         collection_uses_default,
+        &plan.statics,
     ));
 
     if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
@@ -406,59 +415,39 @@ pub fn generate_class(
         out.push('\n');
     }
 
-    let static_methods = class
+    let static_overload = |iface: &'a InterfaceMeta, method: &'a MethodMeta| StaticOverload {
+        class,
+        iface,
+        method,
+        kind: if class
+            .factory_interfaces
+            .iter()
+            .any(|factory| std::ptr::eq(factory, iface))
+        {
+            StaticOverloadKind::Factory
+        } else {
+            StaticOverloadKind::Static
+        },
+    };
+    let static_members = class
         .factory_interfaces
         .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .chain(
-            class
-                .static_interfaces
-                .iter()
-                .flat_map(|iface| iface.methods.iter()),
-        )
-        .collect::<Vec<_>>();
-    let static_method_names =
-        crate::codegen::winrt::python::overloads::method_names(static_methods.iter().copied());
-    let mut static_groups: Vec<(String, Vec<StaticOverload<'_>>)> = Vec::new();
-    for (kind, interfaces) in [
-        (StaticOverloadKind::Factory, &class.factory_interfaces),
-        (StaticOverloadKind::Static, &class.static_interfaces),
-    ] {
-        for iface in interfaces {
-            for method in &iface.methods {
-                let mut key = crate::codegen::winrt::python::overloads::method_group_key(
-                    method,
-                    &static_method_names,
-                );
-                if method.is_property_getter
-                    || method.is_property_setter
-                    || method.is_event_add
-                    || method.is_event_remove
-                {
-                    key = format!("{}#{key}", interface_symbol(context, iface));
-                }
-                let overload = StaticOverload {
-                    class,
-                    iface,
-                    method,
-                    kind,
-                };
-                if let Some((_, group)) = static_groups
-                    .iter_mut()
-                    .find(|(group_key, _)| group_key == &key)
-                {
-                    group.push(overload);
-                } else {
-                    static_groups.push((key, vec![overload]));
-                }
-            }
-        }
-    }
-    for (_, overloads) in static_groups {
+        .chain(class.static_interfaces.iter())
+        .flat_map(|iface| iface.methods.iter().map(move |method| (iface, method)));
+    for member in plan.statics.members(static_members) {
         out.push('\n');
-        out.push_str(&generate_static_method_group(&overloads, context));
+        out.push_str(&match member {
+            PlannedMember::Accessor(iface, method) => {
+                generate_static_accessor(&static_overload(iface, method), context)
+            }
+            PlannedMember::Group(group) => generate_static_method_group(
+                group,
+                |candidate| static_overload(candidate.interface, candidate.method),
+                context,
+            ),
+        });
     }
-    let static_aliases = generate_compatibility_aliases(static_methods.iter().copied());
+    let static_aliases = generate_compatibility_aliases(&plan.statics);
     if !static_aliases.is_empty() {
         out.push('\n');
         out.push_str(&static_aliases);
@@ -607,18 +596,7 @@ pub fn generate_class(
         out.push_str("        return _app\n");
     }
 
-    let mut method_groups: Vec<(String, Vec<InstanceOverload<'_>>)> = Vec::new();
-    let instance_ifaces = class
-        .default_interface
-        .iter()
-        .chain(class.required_interfaces.iter())
-        .filter(|iface| iface.iid != "30d5a829-7fa4-4026-83bb-d75bae4ea99e")
-        .collect::<Vec<_>>();
-    let instance_method_names = crate::codegen::winrt::python::overloads::method_names(
-        instance_ifaces
-            .iter()
-            .flat_map(|iface| iface.methods.iter()),
-    );
+    let instance_ifaces = class_instance_interfaces(class).collect::<Vec<_>>();
     let property_getters = instance_ifaces
         .iter()
         .flat_map(|iface| iface.methods.iter())
@@ -626,68 +604,59 @@ pub fn generate_class(
         .filter_map(|method| method.name.strip_prefix("get_"))
         .map(str::to_string)
         .collect::<HashSet<_>>();
+    let instance_overload = |iface: &'a InterfaceMeta, method: &'a MethodMeta| {
+        let obj_expr = if collection_iface
+            .is_some_and(|collection| collection.type_identity() == iface.type_identity())
+        {
+            collection_obj_expr.to_string()
+        } else if class
+            .default_interface
+            .as_ref()
+            .is_some_and(|default_iface| default_iface.type_identity() == iface.type_identity())
+        {
+            "self._obj".to_string()
+        } else {
+            format!("self._obj.cast(IID_{})", interface_symbol(context, iface))
+        };
+        InstanceOverload {
+            iface_var: context.registration_symbol(iface),
+            obj_expr,
+            method,
+            sibling_methods: Some(iface.methods.as_slice()),
+            property_has_getter: !method.is_property_setter
+                || method
+                    .name
+                    .strip_prefix("put_")
+                    .is_some_and(|suffix| property_getters.contains(suffix)),
+        }
+    };
     // Python evaluates decorators while building the class. Emit every getter
     // before any cross-interface setter that references it.
+    let mut instance_members = Vec::new();
     for setter_phase in [false, true] {
         for iface in &instance_ifaces {
-            let obj_expr = if collection_iface
-                .is_some_and(|collection| collection.type_identity() == iface.type_identity())
-            {
-                collection_obj_expr
-            } else if class
-                .default_interface
-                .as_ref()
-                .is_some_and(|default_iface| default_iface.type_identity() == iface.type_identity())
-            {
-                "self._obj"
-            } else {
-                ""
-            };
-            let iface_symbol = interface_symbol(context, iface);
-            let obj_expr = if obj_expr.is_empty() {
-                format!("self._obj.cast(IID_{iface_symbol})")
-            } else {
-                obj_expr.to_string()
-            };
-            for method in reorder_getters_before_setters(&iface.methods)
-                .into_iter()
-                .filter(|method| method.is_property_setter == setter_phase)
-            {
-                let key = crate::codegen::winrt::python::overloads::method_group_key(
-                    method,
-                    &instance_method_names,
-                );
-                let overload = InstanceOverload {
-                    iface_var: context.registration_symbol(iface),
-                    obj_expr: obj_expr.clone(),
-                    method,
-                    sibling_methods: Some(iface.methods.as_slice()),
-                    property_has_getter: !method.is_property_setter
-                        || method
-                            .name
-                            .strip_prefix("put_")
-                            .is_some_and(|suffix| property_getters.contains(suffix)),
-                };
-                if let Some((_, group)) = method_groups
-                    .iter_mut()
-                    .find(|(group_key, _)| group_key == &key)
-                {
-                    group.push(overload);
-                } else {
-                    method_groups.push((key, vec![overload]));
-                }
-            }
+            instance_members.extend(
+                reorder_getters_before_setters(&iface.methods)
+                    .into_iter()
+                    .filter(|method| method.is_property_setter == setter_phase)
+                    .map(|method| (*iface, method)),
+            );
         }
     }
-    for (_, overloads) in method_groups {
+    for member in plan.instance.members(instance_members) {
         out.push('\n');
-        out.push_str(&generate_instance_method_group(&overloads, context));
+        out.push_str(&match member {
+            PlannedMember::Accessor(iface, method) => {
+                generate_instance_accessor(&instance_overload(iface, method), context)
+            }
+            PlannedMember::Group(group) => generate_instance_method_group(
+                group,
+                |candidate| instance_overload(candidate.interface, candidate.method),
+                context,
+            ),
+        });
     }
-    let instance_aliases = generate_compatibility_aliases(
-        instance_ifaces
-            .iter()
-            .flat_map(|iface| iface.methods.iter()),
-    );
+    let instance_aliases = generate_compatibility_aliases(&plan.instance);
     if !instance_aliases.is_empty() {
         out.push('\n');
         out.push_str(&instance_aliases);
@@ -892,29 +861,37 @@ pub fn generate_class(
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
         out.push_str("        return interface_class.from_value(self._obj)\n");
-        for methods in crate::codegen::winrt::python::overloads::grouped_methods(
-            reorder_getters_before_setters(&req_iface.methods),
-        ) {
+        let iface_plan = interface_member_plan(req_iface);
+        let overload = |method: &'a MethodMeta| InstanceOverload {
+            iface_var: reg_var.clone(),
+            obj_expr: "self._obj".into(),
+            method,
+            sibling_methods: Some(req_iface.methods.as_slice()),
+            property_has_getter: !method.is_property_setter
+                || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                    req_iface
+                        .methods
+                        .iter()
+                        .any(|candidate| candidate.name == format!("get_{suffix}"))
+                }),
+        };
+        let members = reorder_getters_before_setters(&req_iface.methods)
+            .into_iter()
+            .map(|method| (req_iface, method));
+        for member in iface_plan.members(members) {
             out.push('\n');
-            let overloads = methods
-                .into_iter()
-                .map(|method| InstanceOverload {
-                    iface_var: reg_var.clone(),
-                    obj_expr: "self._obj".into(),
-                    method,
-                    sibling_methods: Some(req_iface.methods.as_slice()),
-                    property_has_getter: !method.is_property_setter
-                        || method.name.strip_prefix("put_").is_some_and(|suffix| {
-                            req_iface
-                                .methods
-                                .iter()
-                                .any(|candidate| candidate.name == format!("get_{suffix}"))
-                        }),
-                })
-                .collect::<Vec<_>>();
-            out.push_str(&generate_instance_method_group(&overloads, context));
+            out.push_str(&match member {
+                PlannedMember::Accessor(_, method) => {
+                    generate_instance_accessor(&overload(method), context)
+                }
+                PlannedMember::Group(group) => generate_instance_method_group(
+                    group,
+                    |candidate| overload(candidate.method),
+                    context,
+                ),
+            });
         }
-        let aliases = generate_compatibility_aliases(req_iface.methods.iter());
+        let aliases = generate_compatibility_aliases(&iface_plan);
         if !aliases.is_empty() {
             out.push('\n');
             out.push_str(&aliases);
@@ -982,6 +959,9 @@ struct PyCtorCandidate<'a> {
     public_params: Vec<&'a ParamMeta>,
     /// Full call expression, e.g. `type(self).create_instance(_bound[0], None)`.
     call_expr: String,
+    /// Tie-breaker between constructors whose parameters sort equally: the call
+    /// under pre-CLR-name method names, so renaming never reorders dispatch.
+    order_key: String,
     /// Aggregated call for Python subclasses. `None` means subclass activation
     /// is not semantically available for this constructor shape.
     composed_call_expr: Option<String>,
@@ -990,7 +970,7 @@ struct PyCtorCandidate<'a> {
 fn build_ctor_candidates<'a>(
     context: &PythonProjectionContext,
     class: &'a ClassMeta,
-    factory_names: &HashSet<String>,
+    statics: &ScopePlan<'_>,
 ) -> Vec<PyCtorCandidate<'a>> {
     fn push_unique<'a>(candidates: &mut Vec<PyCtorCandidate<'a>>, candidate: PyCtorCandidate<'a>) {
         if let Some(existing) = candidates.iter_mut().find(|existing| {
@@ -1021,11 +1001,13 @@ fn build_ctor_candidates<'a>(
         match constructor.kind {
             ConstructorKind::DefaultActivation => {
                 let ctor_name = default_constructor_name(has_create_factory);
+                let call_expr = format!("type(self).{}()", ctor_name);
                 push_unique(
                     &mut candidates,
                     PyCtorCandidate {
                         public_params: Vec::new(),
-                        call_expr: format!("type(self).{}()", ctor_name),
+                        order_key: call_expr.clone(),
+                        call_expr,
                         composed_call_expr: None,
                     },
                 );
@@ -1044,13 +1026,15 @@ fn build_ctor_candidates<'a>(
                         continue;
                     }
                     let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-                    let call_expr =
-                        build_factory_call_expr(class, method, &in_params, None, factory_names);
+                    let (call_name, previous_name) = static_attributes(statics, method);
+                    let call_expr = build_factory_call_expr(call_name, &in_params, None);
+                    let order_key = build_factory_call_expr(previous_name, &in_params, None);
                     push_unique(
                         &mut candidates,
                         PyCtorCandidate {
                             public_params: in_params,
                             call_expr,
+                            order_key,
                             composed_call_expr: None,
                         },
                     );
@@ -1075,13 +1059,11 @@ fn build_ctor_candidates<'a>(
                     else {
                         continue;
                     };
-                    let call_expr = build_factory_call_expr(
-                        class,
-                        method,
-                        &in_params,
-                        Some(outer_index),
-                        factory_names,
-                    );
+                    let (call_name, previous_name) = static_attributes(statics, method);
+                    let call_expr =
+                        build_factory_call_expr(call_name, &in_params, Some(outer_index));
+                    let order_key =
+                        build_factory_call_expr(previous_name, &in_params, Some(outer_index));
                     let inner_output_index = method
                         .params
                         .iter()
@@ -1118,6 +1100,7 @@ fn build_ctor_candidates<'a>(
                         PyCtorCandidate {
                             public_params,
                             call_expr,
+                            order_key,
                             composed_call_expr: Some(composed_call_expr),
                         },
                     );
@@ -1130,47 +1113,22 @@ fn build_ctor_candidates<'a>(
     candidates
 }
 
+/// The attributes implementing a constructor factory method now and before
+/// CLR-name grouping.
+fn static_attributes<'p>(statics: &'p ScopePlan<'_>, method: &MethodMeta) -> (&'p str, &'p str) {
+    let planned = "constructor factory methods are planned static methods";
+    (
+        statics.attribute(method).expect(planned),
+        statics.previous_attribute(method).expect(planned),
+    )
+}
+
 /// Build a `type(self).<method>(_bound[0], _bound[1], ..., None_for_outer)` call.
 fn build_factory_call_expr(
-    class: &ClassMeta,
-    method: &MethodMeta,
+    call_name: &str,
     in_params: &[&ParamMeta],
     outer_index: Option<usize>,
-    factory_names: &HashSet<String>,
 ) -> String {
-    let public_name =
-        crate::codegen::winrt::python::overloads::method_group_key(method, factory_names);
-    let mut overloads = class
-        .factory_interfaces
-        .iter()
-        .flat_map(|interface| interface.methods.iter())
-        .chain(
-            class
-                .static_interfaces
-                .iter()
-                .flat_map(|interface| interface.methods.iter()),
-        )
-        .filter(|candidate| {
-            crate::codegen::winrt::python::overloads::method_group_key(candidate, factory_names)
-                == public_name
-        })
-        .collect::<Vec<_>>();
-    let call_name = if overloads.len() > 1 {
-        overloads.sort_by(|left, right| {
-            crate::codegen::winrt::python::overloads::cmp_python_dispatch_methods(left, right)
-        });
-        let private_names = crate::codegen::winrt::python::method::private_overload_names(
-            &public_name,
-            overloads.iter().copied(),
-        );
-        let index = overloads
-            .iter()
-            .position(|candidate| std::ptr::eq(*candidate, method))
-            .expect("constructor method must be present in its static overload group");
-        private_names[index].clone()
-    } else {
-        to_snake_case(&method.name)
-    };
     let mut public_idx = 0usize;
     let args = in_params
         .iter()
@@ -1250,6 +1208,7 @@ fn generate_python_constructor(
     class: &ClassMeta,
     collection_iface: Option<&InterfaceMeta>,
     collection_uses_default: bool,
+    statics: &ScopePlan<'_>,
 ) -> String {
     let mut out = String::new();
     let native_projectable = super::super::has_native_projector(class);
@@ -1296,26 +1255,13 @@ fn generate_python_constructor(
     supported_override_names.sort();
     supported_override_names.dedup();
     let supported_override_names_expr = python_tuple(&supported_override_names);
-    let static_methods = class
-        .factory_interfaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .chain(
-            class
-                .static_interfaces
-                .iter()
-                .flat_map(|iface| iface.methods.iter()),
-        )
-        .collect::<Vec<_>>();
-    let factory_names =
-        crate::codegen::winrt::python::overloads::method_names(static_methods.iter().copied());
-    let mut candidates = build_ctor_candidates(context, class, &factory_names);
+    let mut candidates = build_ctor_candidates(context, class, statics);
     candidates.sort_by(|left, right| {
-        crate::codegen::winrt::python::overloads::cmp_python_dispatch_params(
+        crate::codegen::winrt::python::member_plan::cmp_python_dispatch_params(
             &left.public_params,
             &right.public_params,
         )
-        .then_with(|| left.call_expr.cmp(&right.call_expr))
+        .then_with(|| left.order_key.cmp(&right.order_key))
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
@@ -1330,39 +1276,17 @@ fn generate_python_constructor(
             "        if cls is {}:\n",
             context.class_name(class)
         ));
-        for candidate in &candidates {
-            let parameter_names = candidate
-                .public_params
-                .iter()
-                .map(|param| format!("'{}'", to_snake_case(&param.name)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let parameter_names = if parameter_names.is_empty() {
-                "()".to_string()
-            } else {
-                format!("({parameter_names},)")
-            };
-            out.push_str(&format!(
-                "            _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-            ));
-            let guards = candidate
-                .public_params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
-                })
-                .collect::<Vec<_>>();
-            let condition = if guards.is_empty() {
-                "_bound is not None".to_string()
-            } else {
-                format!("_bound is not None and {}", guards.join(" and "))
-            };
-            let call_expr = candidate.call_expr.replace("type(self)", "cls");
-            out.push_str(&format!(
-                "            if {condition}:\n                return {call_expr}\n"
-            ));
-        }
+        let dispatch = candidates
+            .iter()
+            .map(|candidate| DispatchCandidate {
+                params: candidate.public_params.clone(),
+                body: vec![format!(
+                    "return {}",
+                    candidate.call_expr.replace("type(self)", "cls")
+                )],
+            })
+            .collect::<Vec<_>>();
+        emit_dispatch(&mut out, "            ", &dispatch, None, context);
     }
     out.push_str("        return super().__new__(cls)\n\n");
 
@@ -1545,54 +1469,32 @@ fn generate_python_constructor(
             ));
         }
     }
-    for candidate in &candidates {
-        let parameter_names = candidate
-            .public_params
-            .iter()
-            .map(|param| format!("'{}'", to_snake_case(&param.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let parameter_names = if parameter_names.is_empty() {
-            "()".to_string()
-        } else {
-            format!("({parameter_names},)")
-        };
-        out.push_str(&format!(
-            "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-        ));
-        let guards = candidate
-            .public_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
-            })
-            .collect::<Vec<_>>();
-        let condition = if guards.is_empty() {
-            "_bound is not None".to_string()
-        } else {
-            format!("_bound is not None and {}", guards.join(" and "))
-        };
-        out.push_str(&format!("        if {condition}:\n"));
-        if let Some(composed_call) = &candidate.composed_call_expr {
-            out.push_str("            if _is_python_subclass:\n");
-            out.push_str(&format!(
-                "                self._set_native({composed_call}, _allow_native_overrides=True)\n\
-                 \x20               return\n"
-            ));
-        } else if has_public_composition {
-            out.push_str("            if _is_python_subclass:\n");
-            out.push_str(&format!(
-                "                raise TypeError(\"{} does not support Python subclass construction for this constructor\")\n",
-                context.class_name(class)
-            ));
-        }
-        out.push_str(&format!(
-            "            self._set_native({}._obj)\n\
-             \x20           return\n",
-            candidate.call_expr
-        ));
-    }
+    let dispatch = candidates
+        .iter()
+        .map(|candidate| {
+            let mut body = Vec::new();
+            if let Some(composed_call) = &candidate.composed_call_expr {
+                body.push("if _is_python_subclass:".to_string());
+                body.push(format!(
+                    "    self._set_native({composed_call}, _allow_native_overrides=True)"
+                ));
+                body.push("    return".to_string());
+            } else if has_public_composition {
+                body.push("if _is_python_subclass:".to_string());
+                body.push(format!(
+                    "    raise TypeError(\"{} does not support Python subclass construction for this constructor\")",
+                    context.class_name(class)
+                ));
+            }
+            body.push(format!("self._set_native({}._obj)", candidate.call_expr));
+            body.push("return".to_string());
+            DispatchCandidate {
+                params: candidate.public_params.clone(),
+                body,
+            }
+        })
+        .collect::<Vec<_>>();
+    emit_dispatch(&mut out, "        ", &dispatch, None, context);
     if candidates.is_empty() {
         out.push_str(&format!(
             "        raise TypeError(\"{} cannot be constructed directly\")\n\n",
@@ -1753,17 +1655,21 @@ mod tests {
         let context =
             PythonProjectionContext::packaged([enum_type("Mode").type_identity()]).unwrap();
 
+        let forward_class = constructor_class(vec![integer.clone(), enumeration.clone()]);
+        let reverse_class = constructor_class(vec![enumeration, integer]);
         let forward = generate_python_constructor(
             &context,
-            &constructor_class(vec![integer.clone(), enumeration.clone()]),
+            &forward_class,
             None,
             false,
+            &ClassMemberPlan::new(&forward_class, &context).statics,
         );
         let reverse = generate_python_constructor(
             &context,
-            &constructor_class(vec![enumeration, integer]),
+            &reverse_class,
             None,
             false,
+            &ClassMemberPlan::new(&reverse_class, &context).statics,
         );
 
         assert_eq!(forward, reverse);

@@ -24,6 +24,7 @@ IID_IWwwFormUrlDecoderRuntimeClass = WinGUID.parse('d45a0451-f225-4542-9296-0e1d
 IID_IWwwFormUrlDecoderRuntimeClassFactory = WinGUID.parse('5b8c6b3d-24ae-41b5-a1bf-f0c3d544845b')
 IID_IVectorView_IWwwFormUrlDecoderEntry = DynWinRTType.parameterized(WinGUID.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))]).iid()
 IID_IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.parameterized(WinGUID.parse('faa585ea-6214-4217-afda-7f46de5869b3'), [DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))]).iid()
+IID_ARG_Windows_Foundation_IWwwFormUrlDecoderEntry = WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')
 
 _IWwwFormUrlDecoderRuntimeClass = DynWinRTType.register_interface(
     "IWwwFormUrlDecoderRuntimeClass", IID_IWwwFormUrlDecoderRuntimeClass) \

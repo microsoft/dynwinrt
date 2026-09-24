@@ -126,6 +126,20 @@ pub(crate) fn py_dispatch_type_sort_key(typ: &TypeMeta) -> (u8, u16, u8, u8, Str
 // Python type expression
 // ======================================================================
 
+fn py_argument_iid_const_name(namespace: &str, name: &str) -> String {
+    let qualified = format!("{}_{}", namespace, name)
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("IID_ARG_{}", qualified)
+}
+
 pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
     let TypeMeta::RuntimeClass {
         namespace,
@@ -141,17 +155,32 @@ pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, Stri
     if iid.is_empty() {
         return None;
     }
-    let qualified = format!("{}_{}", namespace, name)
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    Some((format!("IID_ARG_{}", qualified), iid.clone()))
+    Some((py_argument_iid_const_name(namespace, name), iid.clone()))
+}
+
+/// Module-level IID constant used to QueryInterface-check an interface-typed argument.
+pub(crate) fn py_interface_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
+    let TypeMeta::Interface {
+        namespace,
+        name,
+        iid,
+    } = typ
+    else {
+        return None;
+    };
+    if iid.is_empty() {
+        return None;
+    }
+    Some((py_argument_iid_const_name(namespace, name), iid.clone()))
+}
+
+/// Collect the module-level IID constants needed by an input parameter: runtime-class
+/// casts (including collection elements) and interface-parameter dispatch guards.
+pub(crate) fn py_collect_argument_iid_consts(typ: &TypeMeta, output: &mut Vec<(String, String)>) {
+    if let Some(value) = py_interface_iid_const(typ) {
+        output.push(value);
+    }
+    py_collect_runtime_class_iid_consts(typ, output);
 }
 
 pub(crate) fn py_collect_runtime_class_iid_consts(
@@ -636,6 +665,29 @@ pub(crate) fn py_type_guard(
     }
 }
 
+/// QueryInterface-based guard for a known interface-typed overload parameter.
+///
+/// Generated runtime-class wrappers do not inherit interface wrapper classes, so the
+/// exact `isinstance` guard from [`py_type_guard`] rejects runtime-class objects and raw
+/// `DynWinRTValue`s that implement the interface. This relaxed guard keeps the exact
+/// check (for interface wrappers and Python implementations) and also accepts any
+/// object that supports the interface through QueryInterface. Returns `None` when the
+/// parameter keeps its exact guard.
+pub(crate) fn py_interface_cast_guard(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> Option<String> {
+    if !matches!(typ, TypeMeta::Interface { .. }) || !context.is_known_type(typ) {
+        return None;
+    }
+    let (iid, _) = py_interface_iid_const(typ)?;
+    Some(format!(
+        "({} or _dynwinrt_can_cast({name}, {iid}))",
+        py_type_guard(name, typ, context)
+    ))
+}
+
 /// Convert a Python return expression, given the raw `.call()` result expression.
 pub(crate) fn py_convert_return(
     expr: &str,
@@ -946,6 +998,52 @@ mod tests {
             vec![(
                 "IID_ARG_Microsoft_UI_Xaml_Media_Geometry".into(),
                 "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            )]
+        );
+    }
+
+    #[test]
+    fn known_interface_inputs_get_a_query_interface_dispatch_guard() {
+        let stream = TypeMeta::Interface {
+            namespace: "Windows.Storage.Streams".into(),
+            name: "IOutputStream".into(),
+            iid: "905a0fe6-bc53-11df-8c49-001e4fc686da".into(),
+        };
+        let context = PythonProjectionContext::packaged([stream.type_identity()]).unwrap();
+        let exact = "isinstance(value, _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream'))";
+
+        assert_eq!(py_type_guard("value", &stream, &context), exact);
+        assert_eq!(
+            py_interface_cast_guard("value", &stream, &context),
+            Some(format!(
+                "({exact} or _dynwinrt_can_cast(value, IID_ARG_Windows_Storage_Streams_IOutputStream))"
+            ))
+        );
+        assert_eq!(
+            py_interface_cast_guard("value", &stream, &PythonProjectionContext::default()),
+            None,
+            "unknown interfaces keep their permissive native-object guard"
+        );
+        assert_eq!(
+            py_interface_cast_guard("value", &geometry_type(), &context),
+            None,
+            "runtime classes already use a QueryInterface guard"
+        );
+        let mut constants = Vec::new();
+        py_collect_argument_iid_consts(&stream, &mut constants);
+        py_collect_argument_iid_consts(
+            &TypeMeta::Interface {
+                namespace: "Contoso".into(),
+                name: "IUnnamed".into(),
+                iid: String::new(),
+            },
+            &mut constants,
+        );
+        assert_eq!(
+            constants,
+            vec![(
+                "IID_ARG_Windows_Storage_Streams_IOutputStream".into(),
+                "905a0fe6-bc53-11df-8c49-001e4fc686da".into(),
             )]
         );
     }
