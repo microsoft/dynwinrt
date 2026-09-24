@@ -16,7 +16,8 @@ use super::naming::to_snake_case;
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use super::native_types::{FoundationType, foundation_type};
 use super::nullability::{
-    AnnotationSurface, OutputPosition, OutputSite, may_project_none, output_admits_none,
+    AnnotationSurface, ElementContainer, OutputPosition, OutputSite, may_project_none,
+    output_admits_none,
 };
 
 /// Build the Python docstring for a method body. Uses snake_case param display
@@ -245,9 +246,16 @@ fn spell_member(
         )
     };
     match typ {
-        TypeMeta::Array(inner) if context.is_delegate_type(inner) => {
-            format!("list[{}]", nested(inner, OutputPosition::CollectionElement))
-        }
+        TypeMeta::Array(inner) if context.is_delegate_type(inner) => format!(
+            "list[{}]",
+            render_output(
+                inner,
+                Spelling::Member,
+                array_element(site),
+                surface,
+                context
+            )
+        ),
         TypeMeta::AsyncOperation(result) => {
             format!(
                 "WinRTCoroutine[{}]",
@@ -306,7 +314,13 @@ fn spell_value(
         TypeMeta::Array(inner) if matches!(inner.as_ref(), TypeMeta::U8) => "bytes".to_string(),
         TypeMeta::Array(inner) => format!(
             "list[{}]",
-            nested(inner, Spelling::Element, OutputPosition::CollectionElement)
+            render_output(
+                inner,
+                Spelling::Element,
+                array_element(site),
+                surface,
+                context
+            )
         ),
         TypeMeta::String | TypeMeta::Char16 => "str".to_string(),
         TypeMeta::Guid => "UUID".to_string(),
@@ -343,20 +357,20 @@ fn spell_collection(
     let TypeMeta::Parameterized { args, .. } = typ else {
         return None;
     };
-    let abc = type_kind(typ).and_then(abc_name)?;
+    let kind = type_kind(typ)?;
+    let abc = abc_name(kind)?;
+    let element = site.element_in(ElementContainer::of(kind));
     let elements = args
         .iter()
-        .map(|arg| {
-            render_output(
-                arg,
-                Spelling::Element,
-                site.nested(OutputPosition::CollectionElement),
-                surface,
-                context,
-            )
-        })
+        .map(|arg| render_output(arg, Spelling::Element, element, surface, context))
         .collect::<Vec<_>>();
     Some(format!("{abc}[{}]", elements.join(", ")))
+}
+
+/// The elements of an array filled by a member that reads collection
+/// elements (`get_many`) follow that collection; other arrays are snapshots.
+fn array_element(site: OutputSite) -> OutputSite {
+    site.element_in(site.container.unwrap_or(ElementContainer::Array))
 }
 
 /// Pessimistic rendering for callers outside the output policy (callback
@@ -378,42 +392,40 @@ pub(crate) fn py_return_type_safe(
     .unwrap_or_else(|| "None".to_string())
 }
 
-/// Annotation of a property getter's value.
+/// Annotation of the value read by a property getter.
 pub(super) fn py_property_type(
+    getter: &MethodMeta,
     typ: &TypeMeta,
     surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> String {
     py_output_annotation(
         typ,
-        OutputSite::of(OutputPosition::Property),
+        OutputSite::for_method(getter, OutputPosition::Property),
         surface,
         context,
     )
 }
 
-/// Item, key or value type of a projected collection class.
+/// Item, key or value type of a projected collection held by `container`.
 pub(super) fn py_collection_item_type(
     typ: &TypeMeta,
+    container: ElementContainer,
     surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> String {
-    py_output_annotation(
-        typ,
-        OutputSite::of(OutputPosition::CollectionElement),
-        surface,
-        context,
-    )
+    py_output_annotation(typ, OutputSite::element_of(container), surface, context)
 }
 
-/// `Sequence[T]` / `Mapping[K, V]` base of a projected collection class.
+/// `Sequence[T]` / `Mapping[K, V]` base of a projected collection of `kind`.
 pub(super) fn py_collection_base_type(
-    abc: &str,
+    kind: CollectionKind,
     args: &[TypeMeta],
     surface: AnnotationSurface,
     context: &PythonProjectionContext,
 ) -> Option<String> {
-    let item = |typ| py_collection_item_type(typ, surface, context);
+    let abc = abc_name(kind)?;
+    let item = |typ| py_collection_item_type(typ, ElementContainer::of(kind), surface, context);
     match args {
         [element] => Some(format!("{abc}[{}]", item(element))),
         [key, value] => Some(format!("{abc}[{}, {}]", item(key), item(value))),
@@ -1002,11 +1014,70 @@ mod tests {
             returned(&TypeMeta::Object, stub, &context),
             "DynWinRTValue | None"
         );
-        assert_eq!(py_property_type(&widget, stub, &context), "Widget");
-        assert_eq!(py_collection_item_type(&widget, stub, &context), "Widget");
+        let getter = method("get_Widget", vec![], widget.clone());
+        assert_eq!(py_property_type(&getter, &widget, stub, &context), "Widget");
+        let documented_getter = MethodMeta {
+            documented_null_result: true,
+            ..getter.clone()
+        };
         assert_eq!(
-            py_collection_base_type("Sequence", std::slice::from_ref(&widget), stub, &context),
+            py_property_type(&documented_getter, &widget, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_collection_item_type(&widget, ElementContainer::View, stub, &context),
+            "Widget"
+        );
+        assert_eq!(
+            py_collection_item_type(&widget, ElementContainer::Mutable, stub, &context),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::Sequence,
+                std::slice::from_ref(&widget),
+                stub,
+                &context
+            ),
             Some("Sequence[Widget]".to_string())
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::MutableMapping,
+                &[TypeMeta::String, widget.clone()],
+                stub,
+                &context
+            ),
+            Some("MutableMapping[str, Widget | None]".to_string())
+        );
+        let vector = |piid: &str| TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            piid: piid.into(),
+            args: vec![widget.clone()],
+        };
+        for piid in [
+            crate::codegen::winrt::python::collections::IVECTOR_PIID,
+            crate::codegen::winrt::python::collections::IOBSERVABLE_VECTOR_PIID,
+        ] {
+            assert_eq!(
+                returned(&vector(piid), stub, &context),
+                "MutableSequence[Widget | None]"
+            );
+        }
+        let get_many = MethodMeta {
+            params: vec![ParamMeta {
+                name: "items".into(),
+                typ: TypeMeta::Array(Box::new(widget.clone())),
+                direction: ParamDirection::OutFill,
+            }],
+            return_type: Some(TypeMeta::U32),
+            element_access: Some(crate::meta::ElementAccess::Mutable),
+            ..method("GetMany", vec![], TypeMeta::U32)
+        };
+        assert_eq!(
+            py_method_return_type(&get_many, stub, &context),
+            "list[Widget | None]"
         );
 
         let get_item = method("GetItemAsync", vec![], async_of(&widget));

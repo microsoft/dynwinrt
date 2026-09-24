@@ -9,7 +9,7 @@ use crate::types::{FieldMeta, TypeMeta};
 
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
-use super::nullability::AnnotationSurface;
+use super::nullability::{AnnotationSurface, ElementContainer};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
     method_pydoc_with_indent, py_collection_item_type, py_delegate_callable_type,
@@ -276,7 +276,7 @@ pub(super) fn emit_method_stub_named(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_property_type(typ, AnnotationSurface::Stub, context))
+            .map(|typ| py_property_type(method, typ, AnnotationSurface::Stub, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str(&format!("{indent}@builtins.property\n"));
         emit_documented_stub(
@@ -328,16 +328,21 @@ pub(super) fn emit_method_stub_named(
         } else {
             format!("self, {}", py_params)
         };
-        // `append` takes the projected input annotation, which can differ from
-        // the element annotation of the MutableSequence base: WinRT vectors
-        // may reject null on mutation, while `Object` elements are read back
-        // as `DynWinRTValue | None`. Empty structural protocols can make mypy
-        // consider the override compatible.
+        // `append` takes the projected input annotation, while the
+        // MutableSequence base reads elements back as `T | None`: WinRT
+        // vectors may reject null on mutation, yet anyone can store null in
+        // them. Empty structural protocols can make mypy consider the
+        // override compatible.
         let override_ignore = if overrides_mutable_sequence
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
                 py_param_type_safe(&param.typ, context)
-                    != py_collection_item_type(&param.typ, AnnotationSurface::Stub, context)
+                    != py_collection_item_type(
+                        &param.typ,
+                        ElementContainer::Mutable,
+                        AnnotationSurface::Stub,
+                        context,
+                    )
             }) {
             "  # type: ignore[override, unused-ignore]"
         } else {

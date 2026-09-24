@@ -786,7 +786,7 @@ pub(crate) fn generate_method_body(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_property_type(typ, AnnotationSurface::Runtime, context))
+            .map(|typ| py_property_type(method, typ, AnnotationSurface::Runtime, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));

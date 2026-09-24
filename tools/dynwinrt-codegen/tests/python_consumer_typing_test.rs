@@ -421,7 +421,7 @@ def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
     mapping[resource] = derived
     assert_type(vector[0], DynWinRTValue | None)
     assert_type(vector[:], list[DynWinRTValue | None])
-    assert_type(resources[0], Resource)
+    assert_type(resources[0], Resource | None)
     assert_type(mapping[resource], DynWinRTValue | None)
     del mapping[resource]
 "#,
@@ -814,7 +814,7 @@ print("collection-subscript-native-ok", flush=True)
 }
 
 #[test]
-fn natural_sdk_consumers_need_no_none_guards() {
+fn natural_sdk_consumers_guard_only_nullable_results() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
     );
@@ -834,7 +834,8 @@ fn natural_sdk_consumers_need_no_none_guards() {
              Windows.Security.Cryptography.Core.HashAlgorithmProvider,\
              Windows.Storage.StorageFolder,Windows.Storage.FileIO,\
              Windows.Storage.Streams.DataReader,Windows.Storage.Streams.DataWriter,\
-             Windows.Storage.Streams.InMemoryRandomAccessStream",
+             Windows.Storage.Streams.InMemoryRandomAccessStream,\
+             Windows.Devices.Sensors.Accelerometer",
             "--lang",
             "py",
             "--output",
@@ -846,7 +847,8 @@ fn natural_sdk_consumers_need_no_none_guards() {
     let imports = r#"from collections.abc import Sequence
 from typing import assert_type
 from dynwinrt import DynWinRTValue, WinRTCoroutine
-from sdk.windows.data.json import JsonObject
+from sdk.windows.data.json import IJsonValue, JsonObject
+from sdk.windows.devices.sensors import Accelerometer
 from sdk.windows.foundation import Uri
 from sdk.windows.foundation.collections import PropertySet
 from sdk.windows.globalization import Calendar
@@ -868,7 +870,15 @@ def uri_demo() -> str:
 def json_demo() -> list[str]:
     parsed = JsonObject.parse('{{"tags": ["a", "b"]}}')
     assert_type(JsonObject.try_parse("{{}}"), tuple[JsonObject | None, bool])
-    return [value.get_string() for value in parsed.get_named_array("tags")]
+    tags = parsed.get_named_array("tags")
+    assert_type(tags[0], IJsonValue | None)
+    return [value.get_string() for value in tags if value is not None]
+
+def sensor_demo() -> float | None:
+    accelerometer = Accelerometer.get_default()
+    if accelerometer is None:
+        return None
+    return accelerometer.get_current_reading().acceleration_x
 
 def calendar_demo(calendar: Calendar) -> str:
     languages: Sequence[str] = calendar.languages
@@ -897,6 +907,7 @@ async def storage_demo(path: str) -> list[str]:
     await FileIO.write_text_async(file, "first line")
     assert_type(folder.create_file_async("a.txt"), WinRTCoroutine[StorageFile])
     assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
+    assert_type(folder.get_parent_async(), WinRTCoroutine[StorageFolder | None])
     return [item.name for item in await folder.get_files_async()]
 "#
         ),

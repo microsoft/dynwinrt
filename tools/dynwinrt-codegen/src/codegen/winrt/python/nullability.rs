@@ -12,9 +12,10 @@
 //! `| None` is appended.
 
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
-use crate::meta::MethodMeta;
+use crate::meta::{ElementAccess, MethodMeta};
 use crate::types::TypeMeta;
 
+use super::collections::CollectionKind;
 use super::naming::PythonProjectionContext;
 
 /// The generated artifact an annotation is rendered into.
@@ -50,6 +51,52 @@ pub(crate) enum OutputPosition {
     Activation,
 }
 
+/// The collection holding an element. Whether a reference-type element admits
+/// `None` depends only on this; see [`element_admits_none`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ElementContainer {
+    /// `IIterable`, `IIterator`, `IVectorView`, `IMapView` or `IKeyValuePair`.
+    View,
+    /// `IVector`, `IMap` or their observable forms.
+    Mutable,
+    /// An array returned by a member that does not read collection elements.
+    Array,
+}
+
+impl ElementContainer {
+    pub(crate) fn of(kind: CollectionKind) -> Self {
+        match kind {
+            CollectionKind::MutableSequence | CollectionKind::MutableMapping => Self::Mutable,
+            CollectionKind::Iterable
+            | CollectionKind::Iterator
+            | CollectionKind::Sequence
+            | CollectionKind::Mapping
+            | CollectionKind::KeyValuePair => Self::View,
+        }
+    }
+}
+
+impl From<ElementAccess> for ElementContainer {
+    fn from(access: ElementAccess) -> Self {
+        match access {
+            ElementAccess::ReadOnly => Self::View,
+            ElementAccess::Mutable => Self::Mutable,
+        }
+    }
+}
+
+/// The collection element rule: anyone can store null in a mutable collection,
+/// so its reference-type elements admit `None`. Views, iterators and arrays
+/// are typed like other outputs. Positions that read elements inherit the
+/// rule of their owning collection; a view obtained from a mutable collection
+/// follows the view rule.
+pub(crate) fn element_admits_none(container: ElementContainer) -> bool {
+    match container {
+        ElementContainer::Mutable => true,
+        ElementContainer::View | ElementContainer::Array => false,
+    }
+}
+
 /// A position plus the facts about the member producing the value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OutputSite {
@@ -57,6 +104,12 @@ pub(crate) struct OutputSite {
     /// The member follows the `Try*` pattern, so a null result is part of
     /// its contract ("not found", "could not parse").
     pub(crate) try_method: bool,
+    /// The Windows SDK documentation says the member's result can be null.
+    pub(crate) documented_null: bool,
+    /// The collection holding the value: set on collection elements, and on
+    /// the results of members that read elements of the collection declaring
+    /// them (`get_at`, `lookup`, `current`, ...).
+    pub(crate) container: Option<ElementContainer>,
 }
 
 impl OutputSite {
@@ -64,6 +117,8 @@ impl OutputSite {
         Self {
             position,
             try_method: false,
+            documented_null: false,
+            container: None,
         }
     }
 
@@ -71,14 +126,29 @@ impl OutputSite {
         Self {
             position,
             try_method: is_try_method(method),
+            documented_null: method.documented_null_result,
+            container: method.element_access.map(ElementContainer::from),
         }
     }
 
-    /// The site of a value nested in this one, such as an async result or a
-    /// collection element. Member facts carry over; the policy decides where
-    /// they apply.
+    /// An element read from a collection of the given kind.
+    pub(crate) fn element_of(container: ElementContainer) -> Self {
+        Self::of(OutputPosition::CollectionElement).element_in(container)
+    }
+
+    /// The site of a value nested in this one, such as an async result.
+    /// Member facts carry over; the policy decides where they apply.
     pub(crate) fn nested(self, position: OutputPosition) -> Self {
         Self { position, ..self }
+    }
+
+    /// The site of an element held by `container`, nested in this value.
+    pub(crate) fn element_in(self, container: ElementContainer) -> Self {
+        Self {
+            position: OutputPosition::CollectionElement,
+            container: Some(container),
+            ..self
+        }
     }
 }
 
@@ -136,7 +206,9 @@ fn stub_output_admits_none(
     site: OutputSite,
     context: &PythonProjectionContext,
 ) -> bool {
-    use OutputPosition::{Activation, AsyncResult, CallbackParam, OutParam, Return};
+    use OutputPosition::{
+        Activation, AsyncResult, CallbackParam, CollectionElement, OutParam, Property, Return,
+    };
 
     // `Object` positions are frequently null, e.g. the arguments of a
     // `TypedEventHandler<T, Object>`.
@@ -147,8 +219,19 @@ fn stub_output_admits_none(
     if context.is_delegate_type(typ) {
         return site.position != CallbackParam;
     }
-    // `Try*` members report "not found" through a null result.
-    site.try_method && matches!(site.position, Return | OutParam | AsyncResult | Activation)
+    // `Try*` members report "not found" through a null result, and the
+    // Windows SDK documentation names the other members that return null.
+    let member_result = matches!(
+        site.position,
+        Return | OutParam | Property | AsyncResult | Activation
+    );
+    if member_result && (site.try_method || site.documented_null) {
+        return true;
+    }
+    // Collection elements, including the results of `get_at`, `lookup` and
+    // `current`, follow the collection holding them.
+    matches!(site.position, CollectionElement | Return | Property)
+        && site.container.is_some_and(element_admits_none)
 }
 
 #[cfg(test)]
@@ -181,6 +264,17 @@ mod tests {
             OutputSite {
                 position: OutputPosition::AsyncResult,
                 try_method: true,
+                documented_null: false,
+                container: None,
+            }
+        );
+        assert_eq!(
+            site.element_in(ElementContainer::Array),
+            OutputSite {
+                position: OutputPosition::CollectionElement,
+                try_method: true,
+                documented_null: false,
+                container: Some(ElementContainer::Array),
             }
         );
     }
@@ -268,24 +362,25 @@ mod tests {
         }
     }
 
+    const MEMBER_RESULTS: [OutputPosition; 5] = [
+        OutputPosition::Return,
+        OutputPosition::OutParam,
+        OutputPosition::Property,
+        OutputPosition::AsyncResult,
+        OutputPosition::Activation,
+    ];
+
     #[test]
     fn try_members_keep_none_on_their_results_only() {
         let try_get = method("TryGetItemAsync");
         for position in POSITIONS {
-            let expected = matches!(
-                position,
-                OutputPosition::Return
-                    | OutputPosition::OutParam
-                    | OutputPosition::AsyncResult
-                    | OutputPosition::Activation
-            );
             assert_eq!(
                 admits(
                     &widget(),
                     OutputSite::for_method(&try_get, position),
                     AnnotationSurface::Stub
                 ),
-                expected,
+                MEMBER_RESULTS.contains(&position),
                 "{position:?}"
             );
         }
@@ -294,5 +389,76 @@ mod tests {
             OutputSite::for_method(&try_get, OutputPosition::Return),
             AnnotationSurface::Stub
         ));
+    }
+
+    #[test]
+    fn documented_null_members_keep_none_on_their_results_only() {
+        let get_default = MethodMeta {
+            documented_null_result: true,
+            ..method("GetDefault")
+        };
+        for position in POSITIONS {
+            assert_eq!(
+                admits(
+                    &widget(),
+                    OutputSite::for_method(&get_default, position),
+                    AnnotationSurface::Stub
+                ),
+                MEMBER_RESULTS.contains(&position),
+                "{position:?}"
+            );
+        }
+        let site = OutputSite::for_method(&get_default, OutputPosition::Return);
+        assert!(!admits(
+            &widget(),
+            site.element_in(ElementContainer::View),
+            AnnotationSurface::Stub
+        ));
+    }
+
+    #[test]
+    fn collection_elements_follow_the_mutability_of_their_collection() {
+        let stub = AnnotationSurface::Stub;
+        assert!(admits(
+            &widget(),
+            OutputSite::element_of(ElementContainer::Mutable),
+            stub
+        ));
+        for container in [ElementContainer::View, ElementContainer::Array] {
+            let site = OutputSite::element_of(container);
+            assert!(!admits(&widget(), site, stub), "{container:?}");
+            assert!(admits(&TypeMeta::Object, site, stub));
+            assert!(admits(&nullable_u32(), site, stub));
+            assert!(!admits(&TypeMeta::String, site, stub));
+        }
+        for (access, expected) in [
+            (ElementAccess::Mutable, true),
+            (ElementAccess::ReadOnly, false),
+        ] {
+            let get_at = MethodMeta {
+                element_access: Some(access),
+                ..method("GetAt")
+            };
+            for position in [OutputPosition::Return, OutputPosition::Property] {
+                assert_eq!(
+                    admits(&widget(), OutputSite::for_method(&get_at, position), stub),
+                    expected,
+                    "{access:?} at {position:?}"
+                );
+            }
+            assert!(!admits(
+                &widget(),
+                OutputSite::for_method(&get_at, OutputPosition::AsyncProgress),
+                stub
+            ));
+        }
+        assert_eq!(
+            ElementContainer::of(CollectionKind::MutableSequence),
+            ElementContainer::Mutable
+        );
+        assert_eq!(
+            ElementContainer::of(CollectionKind::KeyValuePair),
+            ElementContainer::View
+        );
     }
 }

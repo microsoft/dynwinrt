@@ -25,11 +25,11 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
+    CollectionKind, class_interface, interface_kind, observable_vector_identity,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
-use super::nullability::AnnotationSurface;
+use super::nullability::{AnnotationSurface, ElementContainer};
 use super::shared::reorder_getters_before_setters;
 use super::signature::py_dynwinrt_type;
 use super::stub_helpers::{
@@ -452,9 +452,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         }
     }
 
-    let collection_base = collection_kind.and_then(abc_name).and_then(|abc| {
+    let collection_base = collection_kind.and_then(|kind| {
         super::type_helpers::py_collection_base_type(
-            abc,
+            kind,
             &iface.generic_args,
             AnnotationSurface::Stub,
             context,
@@ -856,10 +856,10 @@ pub fn generate_class_stub(
     }
 
     let collection_base = collection_iface
-        .zip(collection_kind.and_then(abc_name))
-        .and_then(|(iface, abc)| {
+        .zip(collection_kind)
+        .and_then(|(iface, kind)| {
             super::type_helpers::py_collection_base_type(
-                abc,
+                kind,
                 &iface.generic_args,
                 AnnotationSurface::Stub,
                 context,
@@ -1045,16 +1045,14 @@ pub fn generate_class_stub(
             continue;
         }
         out.push('\n');
-        let required_base = interface_kind(req_iface)
-            .and_then(abc_name)
-            .and_then(|abc| {
-                super::type_helpers::py_collection_base_type(
-                    abc,
-                    &req_iface.generic_args,
-                    AnnotationSurface::Stub,
-                    context,
-                )
-            });
+        let required_base = interface_kind(req_iface).and_then(|kind| {
+            super::type_helpers::py_collection_base_type(
+                kind,
+                &req_iface.generic_args,
+                AnnotationSurface::Stub,
+                context,
+            )
+        });
         if let Some(base) = required_base {
             out.push_str(&format!("\nclass {symbol}({base}):\n"));
         } else {
@@ -1275,11 +1273,18 @@ fn collection_protocol_stubs(
         return String::new();
     };
     let indent = " ".repeat(indent_spaces);
+    // Item positions inherit the element rule of the collection that owns them.
+    let container = ElementContainer::of(kind);
     let item_type = iface
         .generic_args
         .first()
         .map(|typ| {
-            super::type_helpers::py_collection_item_type(typ, AnnotationSurface::Stub, context)
+            super::type_helpers::py_collection_item_type(
+                typ,
+                container,
+                AnnotationSurface::Stub,
+                context,
+            )
         })
         .unwrap_or_else(|| "object".to_string());
     let item_input = iface
@@ -1326,6 +1331,7 @@ fn collection_protocol_stubs(
                 .map(|typ| {
                     super::type_helpers::py_collection_item_type(
                         typ,
+                        container,
                         AnnotationSurface::Stub,
                         context,
                     )
