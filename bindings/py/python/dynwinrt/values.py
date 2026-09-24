@@ -805,8 +805,8 @@ class MutableObjectValueView(ObjectValueView[_K], MutableMapping[_K, WinRTObject
     def clear(self) -> None:
         self.raw.clear()
 
-    # update() writes through __setitem__, so like item assignment it accepts
-    # any value that to_winrt_object accepts.
+    # update() and setdefault() write through __setitem__, so like item
+    # assignment they accept any value that to_winrt_object accepts.
     @overload
     def update(self, other: SupportsKeysAndGetItem[_K, object], /) -> None: ...
     @overload
@@ -827,6 +827,22 @@ class MutableObjectValueView(ObjectValueView[_K], MutableMapping[_K, WinRTObject
     def update(self, other: Any = (), /, **kwargs: object) -> None:
         mapping_update: Callable[..., None] = MutableMapping.update
         mapping_update(self, other, **kwargs)
+
+    # Typeshed's self-typed overload infers "-> None" for a value type that includes None.
+    def setdefault(  # type: ignore[override]
+        self, key: _K, default: object = None, /
+    ) -> WinRTObjectValue:
+        """Return ``self[key]``, first storing ``default`` if ``key`` is missing.
+
+        The result is the value as a read returns it, so a default stored as
+        a new box comes back converted: ``(1, 2)`` reads as ``[1, 2]`` and a
+        runtime object as its ``DynWinRTValue``.
+        """
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+        return self[key]
 
 
 @overload

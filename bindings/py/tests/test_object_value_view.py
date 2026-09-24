@@ -343,14 +343,15 @@ def test_mutable_mapping_methods():
     view.update([("c", values.Int16(3))])
     assert dict(view) == {"a": 1, "b": "x", "c": 3}
     assert property_type(view.raw["c"]) == PropertyType.Int16
-    view.update(pair=(1, 2), guid=WinGUID.parse("01234567-89ab-cdef-0123-456789abcdef"))
+    guid = UUID("01234567-89ab-cdef-0123-456789abcdef")
+    view.update(pair=(1, 2), guid=WinGUID.parse(str(guid)))
     assert property_type(view.raw["pair"]) == PropertyType.Int32Array
-    assert view.pop("pair") == [1, 2] and view.pop("guid") == UUID("01234567-89ab-cdef-0123-456789abcdef")
+    assert view.pop("pair") == [1, 2] and view.pop("guid") == guid
     view.update()
 
     assert view.setdefault("a", 9) == 1
-    default = values.UInt8(4)
-    assert view.setdefault("d", default) is default
+    stored = view.setdefault("d", values.UInt8(4))
+    assert stored == 4 and type(stored) is int
     assert property_type(view.raw["d"]) == PropertyType.UInt8
 
     assert view.get("a") == 1 and view.get("missing") is None and view.get("missing", 0) == 0
@@ -373,6 +374,33 @@ def test_mutable_mapping_methods():
         del view["e"]
     view.clear()
     assert len(view) == 0 and not view and list(view.raw) == []
+
+
+def test_setdefault_returns_the_value_as_a_read_returns_it():
+    properties = property_set()
+    view = object_value_view(properties)
+    raw = uri()
+
+    class Projected:
+        def __init__(self, obj):
+            self._obj = obj
+
+    # A missing key stores to_winrt_object(default) and reads it back.
+    assert view.setdefault("pair", (1, 2)) == [1, 2]
+    assert property_type(properties["pair"]) == PropertyType.Int32Array
+    stored = view.setdefault("uri", Projected(raw))
+    assert isinstance(stored, DynWinRTValue) and stored.identity_raw() == raw.identity_raw()
+    assert view.setdefault("nothing") is None and "nothing" in view
+    assert properties["nothing"] is None
+    # A present key keeps its value.
+    assert view.setdefault("pair", "ignored") == [1, 2]
+    assert view.setdefault("nothing", 5) is None
+    exact = object_value_view(properties, preserve_type=True)
+    assert type(exact.setdefault("port", values.UInt32(80))) is values.UInt32
+    assert type(exact.setdefault("pair")) is values.Int32Array
+    with pytest.raises(TypeError, match="empty list or tuple"):
+        view.setdefault("empty", [])
+    assert "empty" not in view
 
 
 def test_contains_len_and_iteration_do_not_unbox(monkeypatch):

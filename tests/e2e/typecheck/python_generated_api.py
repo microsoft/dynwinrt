@@ -3,7 +3,7 @@
 
 import asyncio
 from collections.abc import Coroutine, Generator, Sequence
-from typing import Any, Awaitable, Dict, List, Tuple
+from typing import Any, Awaitable, Dict, List, Tuple, assert_type
 
 from dynwinrt import (
     DynWinRTArray,
@@ -179,6 +179,9 @@ def check_object_value_views(
     view["uri"] = Uri("https://example.com")
     view.update({"name": "text"}, empty=None)
     view.update([("sizes", (1, 2))], uri=Uri("https://example.com"))
+    assert_type(view.setdefault("uri", Uri("https://example.com")), WinRTObjectValue)
+    assert_type(view.setdefault("pair", (1, 2)), WinRTObjectValue)
+    assert_type(view.setdefault("missing"), WinRTObjectValue)
     count: WinRTObjectValue = view["count"]
     native: DynWinRTValue | None = view.raw["count"]
     exact: MutableObjectValueView[str] = object_value_view(value_set, preserve_type=True)
