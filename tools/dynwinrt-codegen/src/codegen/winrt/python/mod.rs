@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 pub(crate) mod collections;
+pub(crate) mod delegates;
 mod docs;
 mod generator;
 mod implementation;

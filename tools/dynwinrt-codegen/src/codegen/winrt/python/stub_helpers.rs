@@ -7,12 +7,13 @@ use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
 use crate::types::{FieldMeta, TypeMeta};
 
+use super::delegates::py_delegate_callable_type;
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
-    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_factory_return_type, py_method_return_type, py_output_type,
+    py_param_list, py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 

@@ -2,21 +2,23 @@
 // Licensed under the MIT License.
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
-use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
+use crate::types::TypeMeta;
 
 use crate::codegen::winrt::extensions::winui::{self, WinUiCallBehavior};
 use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
-use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
+use super::delegates::{
+    delegate_abi, py_delegate_input_arg, py_delegate_param_type, py_event_callback,
+};
+use super::naming::{PythonProjectionContext, to_snake_case};
 use super::signature::{
-    py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
-    py_wrap_async, py_wrap_async_with_converters,
+    py_convert_return, py_type_guard, py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
-    method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
-    py_method_outputs, py_method_return_type, py_output_type, py_param_list,
+    method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
+    py_method_return_type, py_output_type, py_param_list,
 };
 
 fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
@@ -38,99 +40,13 @@ fn delegate_value_converter(typ: &TypeMeta, context: &PythonProjectionContext) -
     None
 }
 
-/// Build a Python callback signature + wrapper expression for an event delegate.
-///
-/// Returns `(signature, wrapper)`:
-/// - `signature` is a Python type annotation (e.g., `Callable[['Foo', 'Bar'], object]`).
-/// - `wrapper` is an expression that produces the ABI-facing callable, unwrapping
-///   raw `DynWinRTValue` sender/args back into projected Python objects before
-///   invoking the user's `callback`.
-///
-/// The wrapper falls back to a passthrough (`callback`) for unknown delegate shapes.
-fn build_event_wrapper(
-    typ: Option<&TypeMeta>,
-    context: &PythonProjectionContext,
-) -> (String, String) {
-    match typ {
-        Some(typ @ TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
-        {
-            let sender_conv = py_convert_return("__sender__", Some(&args[0]), false, context);
-            let args_conv = py_convert_return("__args__", Some(&args[1]), false, context);
-            let sig = py_delegate_callable_type(typ, context);
-            let wrapper = format!(
-                "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
-                sender_conv, args_conv
-            );
-            (sig, wrapper)
-        }
-        Some(typ @ TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
-        {
-            let args_conv = py_convert_return("__args__", Some(&args[0]), false, context);
-            let sig = py_delegate_callable_type(typ, context);
-            let wrapper = format!(
-                "(lambda callback=callback: (lambda __sender__, __args__: callback(__sender__, {})))()",
-                args_conv
-            );
-            (sig, wrapper)
-        }
-        Some(typ @ TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
-        {
-            let observable_identity = TypeIdentity::closed_generic(
-                TypeIdentityKind::Interface,
-                crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                "IObservableVector",
-                args.iter().map(TypeMeta::type_identity),
-            );
-            let observable_name = context.projected_name(&observable_identity);
-            let sender = format!(
-                "(lambda value: None if value.is_null() else {}(value))(__sender__)",
-                py_runtime_symbol(context, &observable_identity, &observable_name)
-            );
-            let event_args = format!(
-                "(lambda value: None if value.is_null() else {}(value))(__args__)",
-                py_runtime_named_symbol(
-                    context,
-                    TypeIdentityKind::Interface,
-                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                    "IVectorChangedEventArgs",
-                    "IVectorChangedEventArgs",
-                )
-            );
-            let sig = py_delegate_callable_type(typ, context);
-            let wrapper = format!(
-                "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
-                sender, event_args
-            );
-            (sig, wrapper)
-        }
-        _ => ("Callable[..., object]".to_string(), "callback".to_string()),
-    }
-}
-
-fn delegate_identity(
-    typ: &TypeMeta,
-    context: &PythonProjectionContext,
-) -> Option<PythonTypeIdentity> {
-    context
-        .is_delegate_type(typ)
-        .then(|| context.identity_for_type(typ))
-}
-
 pub(crate) fn py_wrap_method_arg(
     name: &str,
     typ: &TypeMeta,
     context: &PythonProjectionContext,
 ) -> String {
-    if let Some(delegate) = delegate_identity(typ, context) {
-        let projected_name = context.projected_name(&delegate);
-        return format!(
-            "_dynwinrt_delegate({name}, {}, {})",
-            py_runtime_symbol(context, &delegate, &format!("IID_{projected_name}")),
-            py_runtime_symbol(context, &delegate, &format!("{projected_name}_PARAM_TYPES"))
-        );
+    if let Some(delegate) = py_delegate_input_arg(name, typ, context) {
+        return delegate;
     }
     py_wrap_arg(name, typ, context)
 }
@@ -668,7 +584,7 @@ pub(crate) fn generate_method_body(
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let delegate_identity = delegate_typ.and_then(|typ| delegate_identity(typ, context));
+        let delegate = delegate_typ.and_then(|typ| delegate_abi(typ, context));
         // Find matching remove_<Suffix> in the same interface to know its vtable index.
         let remove_target = format!("remove_{}", suffix);
         let remove_idx = sibling_methods.and_then(|methods| {
@@ -678,9 +594,8 @@ pub(crate) fn generate_method_body(
                 .map(|m| m.vtable_index)
         });
 
-        // Compute callback wrapper: for TypedEventHandler<S, A> / EventHandler<A>,
-        // wrap raw ABI args back into projected values before invoking the user callback.
-        let (callback_signature, wrapper) = build_event_wrapper(delegate_typ, context);
+        // Project raw ABI arguments before invoking the user callback.
+        let (callback_signature, wrapper) = py_event_callback(delegate_typ, context);
 
         out.push_str(&format!(
             "    def on_{}(self, callback: {}):\n",
@@ -689,14 +604,10 @@ pub(crate) fn generate_method_body(
         out.push_str(&method_pydoc(method, &in_params));
         // Wrapping expression bound to `_wrapped` before delegate construction.
         out.push_str(&format!("        _wrapped = {}\n", wrapper));
-        if let Some(ref identity) = delegate_identity {
-            let delegate_name = context.projected_name(identity);
-            let iid = py_runtime_symbol(context, identity, &format!("IID_{delegate_name}"));
-            let param_types =
-                py_runtime_symbol(context, identity, &format!("{delegate_name}_PARAM_TYPES"));
+        if let Some(delegate) = delegate {
             out.push_str(&format!(
                 "        _handler = _dynwinrt_create_delegate({}, {}, _wrapped)\n",
-                iid, param_types
+                delegate.iid, delegate.param_types
             ));
         } else {
             out.push_str(
@@ -793,15 +704,7 @@ pub(crate) fn generate_method_body(
             .first()
             .map(|p| {
                 if is_delegate_type(&p.typ, context) {
-                    // Reuse py_delegate_param_type via a temporary param_list call.
-                    let params =
-                        super::type_helpers::py_param_list(std::slice::from_ref(p), context);
-                    // params is "name: Type" — extract the "Type" part.
-                    params
-                        .splitn(2, ": ")
-                        .nth(1)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "Callable[..., object] | 'DynWinRTValue'".to_string())
+                    py_delegate_param_type(&p.typ, context)
                 } else {
                     super::type_helpers::py_param_type_safe(&p.typ, context)
                 }
@@ -858,6 +761,7 @@ pub(crate) fn generate_method_body(
 mod tests {
     use super::*;
     use crate::meta::{ParamDirection, ParamMeta};
+    use crate::types::{TypeIdentity, TypeIdentityKind};
     use std::process::Command;
 
     fn overloaded_method(name: &str, vtable_index: usize, typ: TypeMeta) -> MethodMeta {
