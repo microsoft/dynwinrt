@@ -6,7 +6,12 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
     ROOT / ".runtime" / "Microsoft.WindowsAppRuntime.Bootstrap.dll"
 )
 
-from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
+from dynwinrt import (
+    RO_INIT_SINGLETHREADED,
+    RoApartment,
+    init_winappsdk,
+    projected_lifetime_scope,
+)
 from generated.microsoft.ui.xaml import (
     Application,
     ApplicationTheme,
@@ -61,7 +66,7 @@ def run() -> None:
     state: dict[str, object] = {}
 
     try:
-        with RoApartment(0), projected_lifetime_scope():
+        with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
 
             def initialize(_params: object) -> None:
                 def launched() -> None:

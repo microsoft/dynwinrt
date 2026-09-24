@@ -65,7 +65,7 @@ class Task:
 
 
 def main() -> None:
-    with RoApartment(1), projected_lifetime_scope():
+    with RoApartment(), projected_lifetime_scope():
         handlers = Task()
         with IBackgroundTaskInstance.implement(TaskInstance()) as instance_impl, IBackgroundTask.implement(
             handlers, interfaces=[(IStringable, handlers), (IClosable, handlers)]

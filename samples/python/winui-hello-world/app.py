@@ -9,6 +9,7 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
 )
 
 from dynwinrt import (
+    RO_INIT_SINGLETHREADED,
     RoApartment,
     init_winappsdk,
     project_as,
@@ -48,7 +49,7 @@ def run(smoke: bool, major: int, minor: int) -> None:
     subscriptions: list[Callable[[], None]] = []
 
     try:
-        with RoApartment(0), projected_lifetime_scope():
+        with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
 
             def initialize(_params: object) -> None:
                 def launched() -> None:

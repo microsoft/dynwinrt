@@ -1,0 +1,502 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+"""Actionable errors for common runtime misuse."""
+
+import errno
+import json
+import re
+import subprocess
+import sys
+import textwrap
+import threading
+from uuid import uuid4
+
+import pytest
+
+import dynwinrt
+from dynwinrt import (
+    RO_INIT_MULTITHREADED,
+    RO_INIT_SINGLETHREADED,
+    DynWinRTArray,
+    DynWinRTImplementation,
+    DynWinRTImplementationMethod,
+    DynWinRTInterfacePlan,
+    DynWinRTMethodSig,
+    DynWinRTStruct,
+    DynWinRTType,
+    DynWinRTValue,
+    DynWinRtDelegate,
+    RoApartment,
+    WinGUID,
+    projected_lifetime_scope,
+    release_projected,
+    ro_initialize,
+    ro_uninitialize,
+    unbox_object,
+)
+from dynwinrt.dynwinrt import (
+    _dynwinrt_cache_projected,
+    _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected,
+)
+
+IID_IURI_FACTORY = WinGUID.parse("44A9796F-723E-4FDF-A218-033E75B0C084")
+IID_IURI = WinGUID.parse("9E365E57-48B2-4160-956F-C7385120BBFC")
+IID_ISTRINGABLE = WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
+IID_TEST_DELEGATE = WinGUID.parse("5A0F1C3E-7B24-4D69-8E1F-2C3B4A5D6E7F")
+IID_IPROPERTY_VALUE_STATICS = WinGUID.parse("629BDBC8-D932-4FF4-96B9-8D96C5C1E858")
+PYTHON_EXCEPTION = -1594998779  # 0xA0EE4005
+RPC_E_CHANGED_MODE = -2147417850
+CO_E_NOTINITIALIZED = -2147221008
+NOT_INITIALIZED_HINT = (
+    "WinRT is not initialized on this thread; use `with dynwinrt.RoApartment():` "
+    "(or call `dynwinrt.ro_initialize(dynwinrt.RO_INIT_MULTITHREADED)`) before "
+    "calling WinRT APIs."
+)
+RELEASED_REASON = re.escape(
+    "has been released (its projected_lifetime_scope() exited, or "
+    "release_projected() / DynWinRTValue.release() was called) and can no longer "
+    "be used."
+) + "$"
+RELEASED = rf"^This WinRT object {RELEASED_REASON}"
+
+_URI_FACTORY = DynWinRTType.register_interface(
+    "ErrorGuidanceUriFactory", IID_IURI_FACTORY
+).add_method(
+    "CreateUri",
+    DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.object()),
+)
+_URI = DynWinRTType.register_interface("ErrorGuidanceUri", IID_IURI).add_method(
+    "get_AbsoluteUri", DynWinRTMethodSig().add_out(DynWinRTType.hstring())
+)
+_STRINGABLE = DynWinRTType.register_interface(
+    "ErrorGuidanceStringable", IID_ISTRINGABLE
+).add_method("ToString", DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
+
+
+def released_input(slot, operation):
+    return (
+        rf"^This WinRT object \({slot} of {re.escape(operation)}\) "
+        rf"{RELEASED_REASON}"
+    )
+
+
+def released_argument(position, operation):
+    return released_input(f"argument {position}", operation)
+
+
+class ProjectedUri:
+    """The generated runtime-class wrapper shape, reduced to two members."""
+
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], "_set_native")
+        return super().__new__(cls)
+
+    def _set_native(self, obj):
+        self._obj = obj.cast(IID_IURI)
+        self._dynwinrt_native_ready = True
+        _dynwinrt_track_projected(self, "Windows.Foundation.Uri")
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj):
+        if getattr(self, "_dynwinrt_native_ready", False):
+            return
+        self._set_native(obj)
+
+    @classmethod
+    def create(cls, uri):
+        factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+            IID_IURI_FACTORY
+        )
+        try:
+            return cls(
+                _URI_FACTORY.method(6).invoke(factory, [DynWinRTValue.from_hstring(uri)])
+            )
+        finally:
+            factory.release()
+
+    @property
+    def absolute_uri(self):
+        return _URI.method(6).invoke(self._obj, []).to_string()
+
+    def to_string(self):
+        stringable = self._obj.cast(IID_ISTRINGABLE)
+        return _STRINGABLE.method(6).invoke(stringable, []).to_string()
+
+
+def _assert_released(uri):
+    with pytest.raises(RuntimeError, match=RELEASED):
+        uri.absolute_uri
+    with pytest.raises(RuntimeError, match=RELEASED):
+        uri.to_string()
+    assert uri._obj.is_null()
+
+
+def _released_uri_value():
+    value = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+    value.release()
+    value.release()
+    assert value.is_null()
+    return value
+
+
+def test_projection_used_after_scope_exit_explains_the_release():
+    with RoApartment():
+        with projected_lifetime_scope():
+            uri = ProjectedUri.create("https://example.com/scoped")
+            assert uri.absolute_uri == "https://example.com/scoped"
+
+        _assert_released(uri)
+
+
+def test_projection_used_after_release_projected_explains_the_release():
+    with RoApartment():
+        uri = ProjectedUri.create("https://example.com/released")
+        assert uri.to_string() == "https://example.com/released"
+        release_projected(uri)
+
+        _assert_released(uri)
+
+
+def test_projection_used_after_direct_value_release_explains_the_release():
+    with RoApartment():
+        uri = ProjectedUri.create("https://example.com/direct")
+        uri._obj.release()
+        _assert_released(uri)
+
+        value = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        value.release()
+        with pytest.raises(RuntimeError, match=RELEASED) as caught:
+            value.cast(IID_IURI_FACTORY)
+        assert "DynWinRTValue.release()" in str(caught.value)
+
+
+def test_receivers_report_released_values_null_and_value_kinds():
+    method = _URI.method(6)
+    receivers = (
+        ("invoke()", lambda value: method.invoke(value, [])),
+        ("invoke_all()", lambda value: method.invoke_all(value, [])),
+        ("invoke_detached()", lambda value: method.invoke_detached(value, [])),
+        ("get_string()", lambda value: method.get_string(value)),
+        ("call_0()", lambda value: value.call_0(6, DynWinRTType.hstring())),
+        ("call()", lambda value: value.call(6, DynWinRTType.hstring(), [], [])),
+        ("as_raw()", lambda value: value.as_raw()),
+        ("identity_raw()", lambda value: value.identity_raw()),
+        ("cast()", lambda value: value.cast(IID_IURI)),
+    )
+    for value, kind in (
+        (DynWinRTValue.from_i32(7), "I32"),
+        (DynWinRTValue.from_hstring("text"), "HString"),
+        (DynWinRTValue.null_value(), "null"),
+    ):
+        for operation, call in receivers:
+            expected = rf"^{re.escape(operation)} requires an Object value, got {kind}$"
+            with pytest.raises(RuntimeError, match=expected):
+                call(value)
+
+    with RoApartment():
+        released = _released_uri_value()
+        for _, call in receivers:
+            with pytest.raises(RuntimeError, match=RELEASED):
+                call(released)
+
+        buffer = DynWinRTValue.from_bytes(b"released")
+        buffer.release()
+        with pytest.raises(RuntimeError, match=RELEASED):
+            buffer.to_bytes()
+
+
+def test_released_arguments_are_rejected_by_position():
+    with RoApartment():
+        uri = ProjectedUri.create("https://example.com/argument")
+        other = ProjectedUri.create("https://example.com/argument")
+        released = _released_uri_value()
+        method = _URI.method(6)
+        live = DynWinRTValue.from_i32(1)
+        # IUriRuntimeClass.Equals(Uri) is vtable slot 21.
+        equals = (21, DynWinRTType.bool_type(), [DynWinRTType.object()])
+
+        assert uri._obj.call(*equals, [other._obj]).to_bool()
+        for operation, call in (
+            ("invoke()", lambda: method.invoke(uri._obj, [live, released])),
+            ("invoke_all()", lambda: method.invoke_all(uri._obj, [live, released])),
+            (
+                "invoke_detached()",
+                lambda: method.invoke_detached(uri._obj, [live, released]),
+            ),
+            ("call()", lambda: uri._obj.call(*equals, [live, released])),
+        ):
+            with pytest.raises(RuntimeError, match=released_argument(1, operation)):
+                call()
+        with pytest.raises(RuntimeError, match=released_argument(0, "call_1()")):
+            uri._obj.call_1(21, DynWinRTType.bool_type(), released)
+
+        release_projected(uri)
+        release_projected(other)
+
+
+def test_released_values_nested_in_inputs_are_rejected_by_position():
+    with RoApartment():
+        live = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        released = _released_uri_value()
+        key = DynWinRTValue.from_hstring("key")
+        objects = DynWinRTType.object()
+        try:
+            vector = DynWinRTValue.create_vector([live, DynWinRTValue.null_value()], objects)
+            vector.release()
+            with pytest.raises(
+                RuntimeError,
+                match=released_input("element 1", "DynWinRTValue.create_vector()"),
+            ):
+                DynWinRTValue.create_vector([live, released], objects)
+
+            strings = DynWinRTType.hstring()
+            mapping = DynWinRTValue.create_map([key], [live], strings, objects)
+            mapping.release()
+            with pytest.raises(
+                RuntimeError, match=released_input("key 0", "DynWinRTValue.create_map()")
+            ):
+                DynWinRTValue.create_map([released], [live], objects, objects)
+            with pytest.raises(
+                RuntimeError, match=released_input("value 1", "DynWinRTValue.create_map()")
+            ):
+                DynWinRTValue.create_map(
+                    [key, DynWinRTValue.from_hstring("other")],
+                    [live, released],
+                    strings,
+                    objects,
+                )
+
+            for operation, build in (
+                ("DynWinRTArray.from_values()", DynWinRTArray.from_values),
+                ("DynWinRTArray.from_object_values()", DynWinRTArray.from_object_values),
+            ):
+                assert len(build([live, DynWinRTValue.null_value()], objects)) == 2
+                with pytest.raises(RuntimeError, match=released_input("element 1", operation)):
+                    build([live, released], objects)
+
+            fields = DynWinRTStruct.create(
+                DynWinRTType.struct_type("Tests.ReleasedObjectField", [objects])
+            )
+            fields.set_object(0, live)
+            fields.set_object(0, DynWinRTValue.null_value())
+            assert fields.get_object(0).is_null()
+            with pytest.raises(
+                RuntimeError, match=released_input("field 0", "DynWinRTStruct.set_object()")
+            ):
+                fields.set_object(0, released)
+        finally:
+            live.release()
+
+
+def test_unbox_object_distinguishes_released_values_from_null():
+    assert unbox_object(None) is None
+    assert unbox_object(DynWinRTValue.null_value()) is None
+    with RoApartment():
+        statics = DynWinRTValue.activation_factory("Windows.Foundation.PropertyValue").cast(
+            IID_IPROPERTY_VALUE_STATICS
+        )
+        # IPropertyValueStatics.CreateString is vtable slot 18.
+        boxed = statics.call(
+            18,
+            DynWinRTType.object(),
+            [DynWinRTType.hstring()],
+            [DynWinRTValue.from_hstring("boxed")],
+        )
+        statics.release()
+        assert unbox_object(boxed) == "boxed"
+        boxed.release()
+        with pytest.raises(RuntimeError, match=released_argument(0, "unbox_object()")):
+            unbox_object(boxed)
+
+
+def test_is_released_tells_released_values_from_winrt_null():
+    null = DynWinRTValue.null_value()
+    assert null.is_null() and not null.is_released()
+    value = DynWinRTValue.from_i32(1)
+    assert not value.is_released()
+    value.release()
+    value.release()
+    assert value.is_null() and value.is_released()
+
+
+def test_box_reference_rejects_released_values():
+    with RoApartment():
+        boxed = DynWinRTValue.box_reference(DynWinRTValue.from_i32(7), DynWinRTType.i32_type())
+        assert not boxed.is_null()
+        boxed.release()
+        released = DynWinRTValue.from_i32(7)
+        released.release()
+        with pytest.raises(
+            RuntimeError, match=released_argument(0, "DynWinRTValue.box_reference()")
+        ):
+            DynWinRTValue.box_reference(released, DynWinRTType.i32_type())
+
+
+def test_implementation_callbacks_reject_released_outputs(monkeypatch):
+    objects = DynWinRTType.object()
+    iid = WinGUID.parse(str(uuid4()))
+    # GetPair(out Object first) -> Object: one out parameter, then the result.
+    signature = DynWinRTMethodSig().add_out(objects).add_out(objects)
+    typ = DynWinRTType.register_interface("Tests.ReleasedOutputs", iid).add_method(
+        "GetPair", signature
+    )
+    plan = DynWinRTInterfacePlan.create(
+        "Tests.ReleasedOutputs", typ, [DynWinRTImplementationMethod("GetPair", 6, signature)]
+    )
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    with RoApartment():
+        live = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        outputs = [live, DynWinRTValue.null_value()]
+        owner = DynWinRTImplementation.create([plan], lambda _interface, _slot, _args: outputs)
+        canonical = owner.to_value()
+        view = canonical.cast(iid)
+        canonical.release()
+        try:
+            first, result = typ.method(6).invoke_all(view, [])
+            assert first.identity_raw() == live.identity_raw() and result.is_null()
+            first.release()
+
+            for position in (0, 1):
+                outputs = [live, DynWinRTValue.null_value()]
+                outputs[position] = _released_uri_value()
+                with pytest.raises(OSError) as caught:
+                    typ.method(6).invoke_all(view, [])
+                assert caught.value.winerror == PYTHON_EXCEPTION
+                expected = released_input(f"output {position}", "implementation callback")
+                assert re.match(expected, str(unraisable.pop().exc_value))
+                assert f"(output {position} of implementation callback)" in owner.take_error()
+            assert not unraisable
+
+            outputs = [DynWinRTValue.null_value(), DynWinRTValue.null_value()]
+            assert all(value.is_null() for value in typ.method(6).invoke_all(view, []))
+        finally:
+            view.release()
+            owner.dispose()
+            live.release()
+
+
+def test_delegate_invocation_rejects_released_receivers_and_arguments():
+    signature = DynWinRTMethodSig().add_in(DynWinRTType.object())
+    calls = []
+    delegate = DynWinRtDelegate.create(
+        IID_TEST_DELEGATE,
+        [DynWinRTType.object()],
+        lambda argument: calls.append(argument.is_null()),
+    ).to_value()
+    try:
+        assert delegate.invoke_delegate(
+            IID_TEST_DELEGATE, signature, [DynWinRTValue.null_value()]
+        ) == []
+        assert calls == [True]
+
+        with RoApartment():
+            released = _released_uri_value()
+            with pytest.raises(
+                RuntimeError, match=released_argument(0, "delegate Invoke()")
+            ):
+                delegate.invoke_delegate(IID_TEST_DELEGATE, signature, [released])
+        assert calls == [True]
+    finally:
+        delegate.release()
+
+    with pytest.raises(RuntimeError, match=RELEASED):
+        delegate.invoke_delegate(
+            IID_TEST_DELEGATE, signature, [DynWinRTValue.null_value()]
+        )
+    with pytest.raises(
+        RuntimeError, match=r"^delegate Invoke\(\) requires an Object value, got null$"
+    ):
+        DynWinRTValue.null_value().invoke_delegate(IID_TEST_DELEGATE, signature, [])
+
+
+def test_apartment_constants_name_the_ro_init_models():
+    assert (RO_INIT_SINGLETHREADED, RO_INIT_MULTITHREADED) == (0, 1)
+    assert {"RO_INIT_SINGLETHREADED", "RO_INIT_MULTITHREADED"} <= set(dynwinrt.__all__)
+    assert repr(RoApartment()) == repr(RoApartment(RO_INIT_MULTITHREADED))
+    observed = []
+    errors = []
+
+    def worker():
+        # Keep no traceback cycles: unsendable apartments must drop on this thread.
+        try:
+            ro_initialize(RO_INIT_MULTITHREADED)
+            ro_uninitialize()
+            with RoApartment(RO_INIT_SINGLETHREADED) as apartment:
+                observed.append(repr(apartment))
+                try:
+                    with RoApartment(RO_INIT_MULTITHREADED):
+                        pass
+                except OSError as error:
+                    observed.append(error.winerror)
+        except BaseException as error:
+            errors.append(repr(error))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert not errors
+    assert observed == [
+        "RoApartment(apartment_type=0, active=true)",
+        RPC_E_CHANGED_MODE,
+    ]
+
+
+def test_uninitialized_thread_error_explains_apartment_setup():
+    # Test modules initialize the process MTA at import, which makes every new
+    # thread an implicit MTA member. Observe a genuinely uninitialized thread
+    # in a fresh interpreter instead.
+    script = r'''
+        import json
+        import threading
+        from dynwinrt import DynWinRTValue
+
+        caught = []
+
+        def call_without_apartment():
+            try:
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+            except BaseException as error:
+                caught.append(error)
+
+        thread = threading.Thread(target=call_without_apartment)
+        thread.start()
+        thread.join()
+        error = caught[0]
+        print(json.dumps({
+            "type": type(error).__name__,
+            "winerror": getattr(error, "winerror", None),
+            "errno": getattr(error, "errno", None),
+            "strerror": getattr(error, "strerror", None),
+            "message": str(error),
+        }))
+    '''
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+
+    assert report["type"] == "OSError"
+    assert report["winerror"] == CO_E_NOTINITIALIZED
+    assert report["errno"] == errno.EINVAL
+    strerror = report["strerror"]
+    assert report["message"] == f"[WinError {CO_E_NOTINITIALIZED}] {strerror}"
+    assert strerror.endswith(f" {NOT_INITIALIZED_HINT}"), strerror
+    assert strerror[: -len(NOT_INITIALIZED_HINT)].strip(), "Windows text must remain"
+
+
+def test_other_hresults_do_not_mention_apartment_setup():
+    with RoApartment():
+        with pytest.raises(OSError) as exc_info:
+            DynWinRTValue.activation_factory("Contoso.DynWinRT.MissingClass")
+
+    assert exc_info.value.winerror != CO_E_NOTINITIALIZED
+    assert "RoApartment" not in str(exc_info.value)

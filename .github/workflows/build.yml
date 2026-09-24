@@ -548,7 +548,7 @@ jobs:
         run: |
           $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
-          cargo test -p dynwinrt-codegen --test implementation_naming_test
+          cargo test -p dynwinrt-codegen --test implementation_naming_test --test python_released_implementation_test
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild -Codegen $env:DYNWINRT_CODEGEN
       # This optional-SDK behavioral smoke is separate from generated coverage

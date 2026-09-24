@@ -231,8 +231,9 @@ inspectable, and other types) and native getter failures raise an exception.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
-`DynWinRTValue`. Do not call the internal `_from_native()` method from
-application code.
+`DynWinRTValue`. `as_interface()` accepts generated interface classes only;
+passing a runtime class raises `TypeError` that points to `project_as()`. Do not
+call the internal `_from_native()` method from application code.
 
 ## COM apartments and cleanup
 
@@ -240,15 +241,22 @@ Use `RoApartment` to initialize COM for a thread and balance every successful
 initialization:
 
 ```python
-with RoApartment(0):  # RO_INIT_SINGLETHREADED
+from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment
+
+with RoApartment(RO_INIT_SINGLETHREADED):
     use_winrt()
 ```
 
-Use `RoApartment(1)` for `RO_INIT_MULTITHREADED`. Nested contexts using the same
+`RoApartment()` uses `RO_INIT_MULTITHREADED`, the same as
+`RoApartment(RO_INIT_MULTITHREADED)`. Nested contexts using the same
 model are supported. Requesting a conflicting model raises `OSError` with
 `RPC_E_CHANGED_MODE`. The low-level `ro_initialize()` API remains available, but
 each successful call, including `S_FALSE`, must be paired with one
 `ro_uninitialize()` call on the same thread.
+
+WinRT is never initialized implicitly. A call on a thread without an apartment
+raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
+explains how to open one.
 
 Generated runtime classes that implement `IClosable` support `with` and an
 idempotent `close()` method. Prefer deterministic cleanup instead of relying on
@@ -473,19 +481,26 @@ Use a projection lifetime scope inside the COM apartment so wrappers release
 their native values before `RoUninitialize`:
 
 ```python
-from dynwinrt import RoApartment, projected_lifetime_scope
+from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment, projected_lifetime_scope
 
-with RoApartment(0), projected_lifetime_scope():
+with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
     app = Application.create()
     # Create and use WinUI objects here.
 ```
 
 Scopes nest in LIFO order. Wrappers that survive a closed scope remain Python
-objects, but their native values are released and further WinRT calls fail.
-Each scope is thread-affine: enter, use, and close it inside that thread's
-`RoApartment`. Same-thread asyncio tasks inherit the active scope, while worker
-threads must open their own ordered
-`with RoApartment(...), projected_lifetime_scope():`. Native callbacks invoked
+objects, but their native values are released: using one afterwards, as the
+object of a call, as an argument, or inside a sequence, mapping, array, or
+struct input, raises `RuntimeError` explaining that it was released, as it
+does after `release_projected(wrapper)` or `DynWinRTValue.release()`.
+Returning one from an interface implementation handler fails the native call
+like any other handler error. `DynWinRTValue.is_released()` tells a released
+value apart from a WinRT null reference: both report `is_null()`, but only the
+null can still be passed. Each scope is thread-affine: enter, use, and close it
+inside that thread's `RoApartment`. Same-thread asyncio tasks inherit the
+active scope, while worker threads must open their own ordered
+`with RoApartment(...), projected_lifetime_scope():`.
+Native callbacks invoked
 on a foreign thread preserve other captured context but do not inherit the
 creator thread's lifetime scope. This includes generated delegates, raw progress
 handlers, and element-factory callbacks. Retained callback values remain

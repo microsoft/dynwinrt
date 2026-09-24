@@ -124,7 +124,7 @@ Save this as `example.py`:
 from dynwinrt import RoApartment, projected_lifetime_scope
 from generated_uri.windows.foundation import Uri
 
-with RoApartment(1), projected_lifetime_scope():
+with RoApartment(), projected_lifetime_scope():
     uri = Uri("https://example.com/path?q=1")
     print(uri.host)  # "example.com"
 ```
@@ -133,8 +133,9 @@ with RoApartment(1), projected_lifetime_scope():
 python .\example.py
 ```
 
-`RoApartment(1)` initializes WinRT on the current thread. The lifetime scope
-releases generated wrappers before the apartment closes.
+`RoApartment()` initializes WinRT on the current thread (multithreaded by
+default). The lifetime scope releases generated wrappers before the apartment
+closes.
 
 ## Examples
 

@@ -47,7 +47,7 @@ The generated package can then be imported normally:
 from dynwinrt import RoApartment, projected_lifetime_scope
 from generated_uri.windows.foundation import Uri
 
-with RoApartment(1), projected_lifetime_scope():
+with RoApartment(), projected_lifetime_scope():
     uri = Uri("https://example.com/path")
     print(uri.host)
 ```

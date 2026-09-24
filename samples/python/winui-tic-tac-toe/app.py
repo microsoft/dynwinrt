@@ -8,6 +8,7 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
 )
 
 from dynwinrt import (
+    RO_INIT_SINGLETHREADED,
     RoApartment,
     init_winappsdk,
     project_as,
@@ -66,7 +67,7 @@ def run() -> None:
     state: dict[str, object] = {}
 
     try:
-        with RoApartment(0), projected_lifetime_scope():
+        with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
             registration = StackPanel.register_xaml_runtime_class(
                 "DynWinRT.Example.TicTacToePanel",
                 TicTacToePanel,
