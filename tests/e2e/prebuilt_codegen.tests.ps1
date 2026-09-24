@@ -14,7 +14,13 @@ $prebuilt = Join-Path $scratch "artifact with spaces\codegen.ps1"
 $python = Join-Path $scratch "python.ps1"
 try {
     New-Item -ItemType Directory -Path $scripts, (Split-Path $prebuilt) -Force | Out-Null
-    foreach ($file in @("e2e_test.ps1", "implementation_test.ps1", "codegen.ps1", "e2e_specs.json")) {
+    foreach ($file in @(
+        "e2e_test.ps1",
+        "implementation_test.ps1",
+        "codegen.ps1",
+        "e2e_specs.json",
+        "check_generated_python.py"
+    )) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
     }
     Set-Content -LiteralPath (Join-Path $scratch "metadata.winmd") -Value "external metadata boundary"

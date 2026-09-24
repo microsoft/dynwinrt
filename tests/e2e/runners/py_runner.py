@@ -949,16 +949,133 @@ async def run_check(
             elif token_keys != [key, key, key]:
                 cr['error'] = f'token handler observed {token_keys!r}'
             else:
-                cr['pass'] = True
+                collection_namespace = importlib.import_module(
+                    namespace_module_name(
+                        pkg_name, 'Windows.Foundation.Collections'
+                    )
+                )
+                suffix = check['expected_type'].removeprefix(
+                    'IObservableMap_'
+                )
+                delegate = dw.DynWinRtDelegate.create(
+                    getattr(
+                        collection_namespace,
+                        f'IID_MapChangedEventHandler_{suffix}',
+                    ),
+                    getattr(
+                        collection_namespace,
+                        f'MapChangedEventHandler_{suffix}_PARAM_TYPES',
+                    ),
+                    lambda *args: raw_events.append(args),
+                )
+                raw_events = []
+                raw_value = delegate.to_value()
+                native_token = getattr(obj, f'on_{member}')(delegate)
+                native_unsubscribe = getattr(obj, f'subscribe_{member}')(
+                    raw_value
+                )
+                for native in (delegate, raw_value):
+                    try:
+                        getattr(obj, f'once_{member}')(native)
+                    except TypeError as error:
+                        expected_error = (
+                            f'once_{member} requires a Python callable; '
+                            f'use on_{member} or subscribe_{member} '
+                            'for native delegates'
+                        )
+                        if str(error) != expected_error:
+                            cr['error'] = (
+                                'native once rejection was unclear: '
+                                f'{error}'
+                            )
+                            return cr
+                    else:
+                        cr['error'] = (
+                            f'once_{member} accepted a native delegate'
+                        )
+                        return cr
+                obj[key] = second
+                getattr(obj, f'off_{member}')(native_token)
+                native_unsubscribe()
+                native_unsubscribe()
+                del obj[key]
+                raw_value.release()
+                if len(raw_events) != 2 or any(
+                    len(args) != 2
+                    or not all(
+                        isinstance(arg, dw.DynWinRTValue)
+                        for arg in args
+                    )
+                    for args in raw_events
+                ):
+                    cr['error'] = (
+                        'native MapChanged delegate did not receive raw '
+                        f'values: {raw_events!r}'
+                    )
+                else:
+                    cr['pass'] = True
 
-        elif kind == 'work_item_callback_projection':
+        elif kind == 'work_item_callback_passthrough':
             received = []
             await getattr(cls, member)(received.append)
-            operation_type = type(received[0]).__name__ if received else None
             if len(received) != 1:
                 cr['error'] = f'work item ran {len(received)} times'
-            elif operation_type != '_DynWinRTAsync':
-                cr['error'] = f'work item received {operation_type}, not a projected IAsyncAction'
+                return cr
+            if not isinstance(received[0], dw.DynWinRTValue):
+                cr['error'] = (
+                    'work item callable did not receive the raw IAsyncAction: '
+                    f'{type(received[0]).__name__}'
+                )
+                return cr
+
+            threading_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.System.Threading')
+            )
+            native_received = []
+            delegate = dw.DynWinRtDelegate.create(
+                threading_namespace.IID_WorkItemHandler,
+                threading_namespace.WorkItemHandler_PARAM_TYPES,
+                native_received.append,
+            )
+            await getattr(cls, member)(delegate)
+            raw_value = delegate.to_value()
+            await getattr(cls, member)(raw_value)
+            raw_value.release()
+            if len(native_received) != 2 or not all(
+                isinstance(value, dw.DynWinRTValue)
+                for value in native_received
+            ):
+                cr['error'] = (
+                    'native work-item delegate did not pass through: '
+                    f'{native_received!r}'
+                )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_event_native_delegate_passthrough':
+            gaming_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Gaming.Input')
+            )
+            foundation_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.Foundation')
+            )
+            delegate = dw.DynWinRtDelegate.create(
+                foundation_namespace.IID_EventHandler_Gamepad,
+                foundation_namespace.EventHandler_Gamepad_PARAM_TYPES,
+                lambda *_args: None,
+            )
+            add = getattr(cls, f'add_{member}')
+            remove = getattr(cls, f'remove_{member}')
+            token = add(delegate)
+            remove(token)
+            raw_value = delegate.to_value()
+            token = add(raw_value)
+            remove(token)
+            raw_value.release()
+            # Keep the namespace module import live: it is also the intended
+            # public home of the Gamepad static event.
+            if cls is not gaming_namespace.Gamepad:
+                cr['error'] = 'Gamepad namespace export was inconsistent'
             else:
                 cr['pass'] = True
 

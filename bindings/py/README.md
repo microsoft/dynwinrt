@@ -106,13 +106,22 @@ parameter such as `ThreadPool.run_async(handler)`, or a delegate-typed
 property) receives the delegate's arguments as projected Python values, typed
 from the delegate's `Invoke` signature. WinRT `Object` arguments stay
 `DynWinRTValue | None`, and `IReference<T>` arguments are native values or
-`None`. For example, `map_changed` handlers of `PropertySet`, `StringMap`,
+`None`. Async-operation arguments stay raw `DynWinRTValue` objects so a
+callback projection cannot take over or cancel the operation's completion.
+For example, `map_changed` handlers of `PropertySet`, `StringMap`,
 `ValueSet`, and other `IObservableMap<K, V>` implementations receive the
 `IObservableMap<K, V>` projection, which is a mutable mapping, and an
 `IMapChangedEventArgs<K>` with `collection_change` and `key`. An existing
 native delegate, such as one built with `DynWinRtDelegate.create`, is passed
 through unchanged, and its callback keeps receiving raw `DynWinRTValue`
-arguments.
+arguments. `on_*` and `subscribe_*` accept those native delegates.
+`once_*` requires a Python callable because it must wrap the callback to remove
+the subscription after the first invocation.
+
+Callback parameter annotations are non-null by default, matching generated
+method-output typing. This is an intentionally optimistic typing policy, not a
+guarantee from the `Invoke` metadata: WinMD carries no nullability information,
+and the runtime still passes `None` when WinRT supplies a null reference.
 
 ```python
 def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String) -> None:

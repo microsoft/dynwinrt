@@ -531,7 +531,7 @@ fn real_windows_consumers_accept_file_stream_content_and_composition_instances()
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
-from dynwinrt import DynWinRTValue
+from dynwinrt import DynWinRTValue, DynWinRtDelegate
 from sdk.windows.storage import FileIO, StorageFile
 from sdk.windows.media.playback import MediaPlayer
 from sdk.windows.media.speech_synthesis import SpeechSynthesisStream
@@ -842,13 +842,18 @@ fn map_changed_handlers_receive_typed_observable_maps_and_arguments() {
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
-from dynwinrt import DynWinRTValue
+from dynwinrt import DynWinRTValue, DynWinRtDelegate
 from sdk.windows.foundation.collections import (
     CollectionChange, IMapChangedEventArgs_String, IObservableMap_String_Object,
     IObservableMap_String_String, PropertySet, StringMap,
 )
 
-def typed(properties: PropertySet, strings: StringMap) -> None:
+def typed(
+    properties: PropertySet,
+    strings: StringMap,
+    native: DynWinRtDelegate,
+    raw: DynWinRTValue,
+) -> None:
     def on_properties(
         sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String
     ) -> None:
@@ -864,6 +869,8 @@ def typed(properties: PropertySet, strings: StringMap) -> None:
         lambda sender, args: assert_type(args, IMapChangedEventArgs_String)
     )
     properties.off_map_changed(token)
+    properties.off_map_changed(properties.on_map_changed(native))
+    properties.subscribe_map_changed(raw)()
     strings.subscribe_map_changed(
         lambda sender, args: assert_type(sender, IObservableMap_String_String)
     )
@@ -874,18 +881,30 @@ def typed(properties: PropertySet, strings: StringMap) -> None:
     typecheck(
         &fixture,
         &["sdk"],
-        r#"from sdk.windows.foundation.collections import PropertySet, StringMap
+        r#"from dynwinrt import DynWinRtDelegate
+from sdk.windows.foundation.collections import PropertySet, StringMap
 
 def wrong_sender(sender: int, args: object) -> None: ...
 def wrong_args(sender: object, args: str) -> None: ...
 
-def untyped(properties: PropertySet, strings: StringMap) -> None:
+def untyped(
+    properties: PropertySet,
+    strings: StringMap,
+    native: DynWinRtDelegate,
+) -> None:
     properties.subscribe_map_changed(wrong_sender)
     strings.once_map_changed(wrong_args)
     properties.on_map_changed(lambda sender, args: args.index)
     strings.subscribe_map_changed(lambda sender, args: sender[0])
+    strings.once_map_changed(native)
 "#,
-        &["[arg-type]", "[arg-type]", "[attr-defined]", "[index]"],
+        &[
+            "[arg-type]",
+            "[arg-type]",
+            "[attr-defined]",
+            "[index]",
+            "[arg-type]",
+        ],
     );
     if has_implementation_runtime() {
         fs::write(

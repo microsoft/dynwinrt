@@ -396,6 +396,10 @@ $totalFail = 0
 $allResults = @()
 
 if ("py" -in $Lang) {
+    Write-Host "`n--- Generated Python name check ---" -ForegroundColor Yellow
+    & $pythonExe (Join-Path $PSScriptRoot "check_generated_python.py") $pyBindingsDir
+    if ($LASTEXITCODE -ne 0) { Write-Error "Generated Python name check failed"; exit 1 }
+
     Write-Host "`n--- Python static type check ---" -ForegroundColor Yellow
     $previousMypyPath = $env:MYPYPATH
     try {

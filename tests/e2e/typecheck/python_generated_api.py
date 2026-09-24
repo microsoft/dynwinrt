@@ -8,6 +8,7 @@ from typing import Any, Awaitable, List, Tuple, assert_type
 
 from dynwinrt import (
     DynWinRTArray,
+    DynWinRtDelegate,
     WinRTAsync,
     WinRTAsyncWithProgress,
     WinRTCoroutine,
@@ -17,6 +18,7 @@ from dynwinrt import (
     DynWinRTValue,
     WinGUID,
 )
+from python_bindings.windows.gaming.input import Gamepad
 from python_bindings.windows.application_model.contacts import ContactDate
 from python_bindings.windows.foundation import (
     IReference_UInt32,
@@ -193,10 +195,24 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
 
 def check_delegate_callback_parameters() -> None:
     work: WinRTCoroutine[None] = ThreadPool.run_async(
-        lambda operation: assert_type(operation, WinRTCoroutine[None])
+        lambda operation: assert_type(operation, DynWinRTValue)
     )
     timer: ThreadPoolTimer | None = ThreadPoolTimer.create_timer(
         lambda elapsed: assert_type(elapsed.delay, timedelta),
         timedelta(milliseconds=1),
     )
     _: Tuple[WinRTCoroutine[None], ThreadPoolTimer | None] = (work, timer)
+
+
+def check_native_delegate_inputs(
+    native: DynWinRtDelegate,
+    raw: DynWinRTValue,
+    properties: PropertySet,
+) -> None:
+    token = properties.on_map_changed(native)
+    properties.off_map_changed(token)
+    properties.subscribe_map_changed(raw)()
+    ThreadPool.run_async(native)
+    ThreadPool.run_async(raw)
+    static_token = Gamepad.add_gamepad_added(native)
+    Gamepad.remove_gamepad_added(static_token)

@@ -376,13 +376,13 @@
       ]
     },
     {
-      "id": "thread_pool_work_item_projection",
+      "id": "thread_pool_work_item_passthrough",
       "namespace": "Windows.System.Threading",
       "class": "ThreadPool",
       "langs": ["py"],
       "instantiate": { "kind": "none" },
       "checks": [
-        { "kind": "work_item_callback_projection", "member": "run_async" }
+        { "kind": "work_item_callback_passthrough", "member": "run_async" }
       ]
     },
     {
@@ -393,6 +393,19 @@
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "timer_callback_projection", "member": "create_timer" }
+      ]
+    },
+    {
+      "id": "gamepad_static_event_native_delegate",
+      "namespace": "Windows.Gaming.Input",
+      "class": "Gamepad",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "static_event_native_delegate_passthrough",
+          "member": "gamepad_added"
+        }
       ]
     },
     {

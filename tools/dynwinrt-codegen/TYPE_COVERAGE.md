@@ -108,7 +108,8 @@ delegate's `Invoke` signature, with generic arguments substituted. This applies
 wherever a Python callable becomes a delegate: instance and static events,
 callback parameters, and delegate-typed properties. Callback arguments are
 non-null except WinRT `Object` (`DynWinRTValue | None`) and `IReference<T>`
-(`T | None`).
+(`T | None`). Async-operation arguments stay raw `DynWinRTValue` objects so
+callback projection does not take ownership of their completion.
 
 The shared dynamic WinRT delegate currently supports up to two ABI parameters.
 This covers common handlers such as `TypedEventHandler<TSender,TArgs>`,
