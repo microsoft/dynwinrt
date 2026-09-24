@@ -130,23 +130,20 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         "{py}"
     );
     assert!(py.contains("def as_vector(self) -> 'IVector_Object':"));
-    assert!(
-        py.contains(&format!(
-            "def on_vector_changed(self, callback: {callback}):"
-        )),
-        "{py}"
-    );
+    for signature in common::event_signatures("vector_changed", callback) {
+        assert!(py.contains(&signature), "{signature}\n{py}");
+    }
     assert!(
         py.contains(
-            "(lambda callback=callback: (lambda __sender__, __event__: callback(\
+            "lambda __p0__, __p1__: (\
              (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('i_observable_vector_object', 'IObservableVector_Object')(value))(__sender__), \
+             _dynwinrt_symbol('i_observable_vector_object', 'IObservableVector_Object')(value))(__p0__), \
              (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__event__))))()"
+             _dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__p1__))"
         ),
         "{py}"
     );
-    assert!(py.contains("_dynwinrt_create_delegate("));
+    assert!(py.contains("_dynwinrt_delegate(callback,"));
     assert!(py.contains("_IObservableVector_Object.method(6).invoke(self._observable_obj"));
 
     let pyi = common::generate_interface_stub(&interface, &known_types, &delegate_types);
@@ -165,12 +162,9 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         "{pyi}"
     );
     assert!(pyi.contains("def as_vector(self) -> 'IVector_Object': ..."));
-    assert!(
-        pyi.contains(&format!(
-            "def on_vector_changed(self, callback: {callback}) -> 'DynWinRTValue': ..."
-        )),
-        "{pyi}"
-    );
+    for signature in common::event_stub_signatures("vector_changed", callback) {
+        assert!(pyi.contains(&signature), "{signature}\n{pyi}");
+    }
 }
 
 #[test]

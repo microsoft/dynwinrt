@@ -12,7 +12,7 @@ use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::meta::{ParamDirection, ParamMeta};
 use crate::types::TypeMeta;
 
-use super::naming::{PythonProjectionContext, to_snake_case};
+use super::naming::PythonProjectionContext;
 use super::signature::{py_convert_return, py_runtime_symbol};
 use super::type_helpers::{py_output_type, py_return_type, py_return_type_safe};
 
@@ -45,11 +45,15 @@ pub(crate) fn delegate_abi(
 }
 
 /// The native arguments a Python callable receives for a delegate: its
-/// `Invoke` inputs. `None` when the signature is unknown or has outputs.
+/// `Invoke` inputs. `None` when the type is not a generated delegate, or its
+/// signature is unknown or has outputs.
 fn callback_params<'a>(
     typ: &TypeMeta,
     context: &'a PythonProjectionContext,
 ) -> Option<&'a [ParamMeta]> {
+    if !context.is_delegate_type(typ) {
+        return None;
+    }
     let invoke = context.delegate_invoke(typ)?;
     invoke
         .params
@@ -60,13 +64,19 @@ fn callback_params<'a>(
 
 /// Annotation of one argument passed to a Python callback.
 ///
-/// WinRT passes null delegate arguments only for `Object` and `IReference<T>`.
-/// Every callback-argument annotation goes through this function so a
-/// position-aware output-nullability policy can take it over.
+/// Callback arguments are annotated as non-null, except WinRT `Object` and
+/// `IReference<T>`. WinMD metadata does not record nullability, so this is an
+/// optimistic policy shared with method outputs: the runtime still passes
+/// `None` for a null reference. Every callback-argument annotation goes through
+/// this function so a position-aware output-nullability policy can take it
+/// over.
 pub(crate) fn py_delegate_argument_type(
     typ: &TypeMeta,
     context: &PythonProjectionContext,
 ) -> String {
+    if typ.is_async() {
+        return "DynWinRTValue".to_string();
+    }
     if context.is_delegate_type(typ) {
         return py_output_type(typ, context);
     }
@@ -86,10 +96,15 @@ pub(crate) fn py_delegate_argument_type(
 
 /// Project one native callback argument the way a method return is projected.
 fn py_delegate_argument(expr: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
+    // An awaitable wrapper would take over the operation's completion and
+    // cancel it on release, so async arguments stay raw values.
+    if typ.is_async() {
+        return expr.to_string();
+    }
     if context.is_delegate_type(typ) {
         return format!("(lambda value: None if value.is_null() else value)({expr})");
     }
-    py_convert_return(expr, Some(typ), typ.is_async(), context)
+    py_convert_return(expr, Some(typ), false, context)
 }
 
 /// `Callable[[...], object]` derived from the delegate's `Invoke` signature, or
@@ -109,77 +124,47 @@ pub(crate) fn py_delegate_callable_type(
 }
 
 /// Annotation for a delegate-typed input: a Python callable or an existing
-/// native delegate value.
+/// native delegate object/value.
 pub(crate) fn py_delegate_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     let sig = py_delegate_callable_type(typ, context);
-    format!("{sig} | 'DynWinRTValue'")
+    format!("{sig} | 'DynWinRTValue | DynWinRtDelegate'")
 }
 
-/// `lambda <native args>: callback(<projected args>)`, adapting a Python
-/// callable named `callback` to the delegate's native arguments. `None` when
-/// there is nothing to project.
-fn py_callback_adapter(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {
+/// `lambda <native args>: (<projected args>)`, projecting a delegate's native
+/// arguments for a Python callable. `None` when no argument needs projection.
+fn py_callback_projection(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {
     let params = callback_params(typ, context)?;
-    if params.is_empty() {
-        return None;
-    }
-    let mut names = Vec::<String>::new();
-    for (index, param) in params.iter().enumerate() {
-        let name = format!("__{}__", to_snake_case(&param.name));
-        names.push(if param.name.is_empty() || names.contains(&name) {
-            format!("__arg{index}__")
-        } else {
-            name
-        });
-    }
+    // Positional names stay distinct even when metadata names normalize alike.
+    let names = (0..params.len())
+        .map(|index| format!("__p{index}__"))
+        .collect::<Vec<_>>();
     let arguments = params
         .iter()
         .zip(&names)
         .map(|(param, name)| py_delegate_argument(name, &param.typ, context))
         .collect::<Vec<_>>();
-    Some(format!(
-        "lambda {}: callback({})",
-        names.join(", "),
-        arguments.join(", ")
-    ))
-}
-
-/// Build a Python callback signature + wrapper expression for an event delegate.
-///
-/// Returns `(signature, wrapper)`:
-/// - `signature` is a Python type annotation (e.g., `Callable[['Foo', 'Bar'], object]`).
-/// - `wrapper` is an expression that produces the ABI-facing callable, projecting
-///   raw `DynWinRTValue` arguments into Python values before invoking the user's
-///   `callback`.
-///
-/// The wrapper falls back to a passthrough (`callback`) when the delegate
-/// signature is unknown.
-pub(crate) fn py_event_callback(
-    typ: Option<&TypeMeta>,
-    context: &PythonProjectionContext,
-) -> (String, String) {
-    let Some(typ) = typ else {
-        return ("Callable[..., object]".to_string(), "callback".to_string());
+    if arguments.iter().zip(&names).all(|(argument, name)| argument == name) {
+        return None;
+    }
+    let tuple = if arguments.len() == 1 {
+        format!("({},)", arguments[0])
+    } else {
+        format!("({})", arguments.join(", "))
     };
-    let wrapper = py_callback_adapter(typ, context).map_or_else(
-        || "callback".to_string(),
-        |adapter| format!("(lambda callback=callback: ({adapter}))()"),
-    );
-    (py_delegate_callable_type(typ, context), wrapper)
+    Some(format!("lambda {}: {tuple}", names.join(", ")))
 }
 
-/// Convert a delegate-typed method, static, or setter argument: an existing
-/// native delegate passes through; a Python callable becomes a new delegate
-/// whose arguments are projected like event arguments.
+/// Convert a delegate-typed input: an existing native delegate passes through;
+/// a Python callable becomes a new delegate whose arguments are projected.
 pub(crate) fn py_delegate_input_arg(
     name: &str,
     typ: &TypeMeta,
     context: &PythonProjectionContext,
 ) -> Option<String> {
     let abi = delegate_abi(typ, context)?;
-    Some(match py_callback_adapter(typ, context) {
-        Some(adapter) => format!(
-            "_dynwinrt_delegate({name}, {}, {}, lambda callback: ({adapter}))",
+    Some(match py_callback_projection(typ, context) {
+        Some(projection) => format!(
+            "_dynwinrt_delegate({name}, {}, {}, {projection})",
             abi.iid, abi.param_types
         ),
         None => format!(
@@ -187,6 +172,31 @@ pub(crate) fn py_delegate_input_arg(
             abi.iid, abi.param_types
         ),
     })
+}
+
+/// The delegate value an `on_<event>` method registers for `callback`.
+pub(crate) fn py_event_handler_arg(
+    name: &str,
+    typ: Option<&TypeMeta>,
+    context: &PythonProjectionContext,
+) -> String {
+    typ.and_then(|typ| py_delegate_input_arg(name, typ, context))
+        .unwrap_or_else(|| {
+            format!(
+                "_dynwinrt_delegate({name}, DynWinRTType.object().iid(), \
+                 [DynWinRTType.object(), DynWinRTType.object()])"
+            )
+        })
+}
+
+/// Reject native delegates in `once_<event>`, which must wrap a Python
+/// callable to remove the subscription after its first invocation.
+pub(crate) fn py_once_callback_check(name: &str, event: &str, indent: &str) -> String {
+    format!(
+        "{indent}if not callable({name}) or isinstance(getattr({name}, '_obj', {name}), DynWinRTValue):\n\
+         {indent}    raise TypeError('once_{event} requires a Python callable; \
+         use on_{event} or subscribe_{event} for native delegates')\n"
+    )
 }
 
 #[cfg(test)]
@@ -275,27 +285,100 @@ mod tests {
             py_delegate_callable_type(&handler, &context),
             "Callable[[DynWinRTValue | None, 'ClickedEventArgs'], object]"
         );
-        let (signature, wrapper) = py_event_callback(Some(&handler), &context);
-        assert_eq!(signature, py_delegate_callable_type(&handler, &context));
-        assert_eq!(
-            wrapper,
-            "(lambda callback=callback: (lambda __sender__, __e__: callback(\
-             (lambda value: None if value.is_null() else value)(__sender__), \
+        let handler_arg = "_dynwinrt_delegate(callback, \
+             _dynwinrt_symbol('clicked_handler', 'IID_ClickedHandler'), \
+             _dynwinrt_symbol('clicked_handler', 'ClickedHandler_PARAM_TYPES'), \
+             lambda __p0__, __p1__: (\
+             (lambda value: None if value.is_null() else value)(__p0__), \
              (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('contoso__clicked_event_args', 'ClickedEventArgs')._from_native(value))(__e__))))()"
+             _dynwinrt_symbol('contoso__clicked_event_args', 'ClickedEventArgs')._from_native(value))(__p1__)))";
+        assert_eq!(
+            py_delegate_input_arg("callback", &handler, &context).unwrap(),
+            handler_arg
         );
         assert_eq!(
-            py_delegate_input_arg("handler", &handler, &context).unwrap(),
-            format!(
-                "_dynwinrt_delegate(handler, \
-                 _dynwinrt_symbol('clicked_handler', 'IID_ClickedHandler'), \
-                 _dynwinrt_symbol('clicked_handler', 'ClickedHandler_PARAM_TYPES'), \
-                 lambda callback: ({}))",
-                wrapper
-                    .strip_prefix("(lambda callback=callback: (")
-                    .and_then(|body| body.strip_suffix("))()"))
-                    .unwrap()
-            )
+            py_event_handler_arg("callback", Some(&handler), &context),
+            handler_arg
+        );
+    }
+
+    #[test]
+    fn projection_parameters_are_positional_when_metadata_names_collide() {
+        let handler = delegate("PairHandler");
+        let context = context(
+            &[],
+            vec![(
+                handler.clone(),
+                vec![input("arg1", TypeMeta::I32), input("_arg1", TypeMeta::I32)],
+            )],
+        );
+
+        let delegate = py_delegate_input_arg("handler", &handler, &context).unwrap();
+        assert!(
+            delegate.ends_with(
+                "lambda __p0__, __p1__: (__p0__.to_number(), __p1__.to_number()))"
+            ),
+            "{delegate}"
+        );
+    }
+
+    #[test]
+    fn async_arguments_stay_raw_values() {
+        let completed = delegate("AsyncActionCompletedHandler");
+        let work = delegate("WorkItemHandler");
+        let status = TypeMeta::Enum {
+            namespace: "Contoso".into(),
+            name: "AsyncStatus".into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            is_flags: false,
+            doc: None,
+            deprecated: None,
+        };
+        let context = context(
+            &[named(TypeIdentityKind::Enum, "AsyncStatus")],
+            vec![
+                (
+                    completed.clone(),
+                    vec![
+                        input("asyncInfo", TypeMeta::AsyncAction),
+                        input("asyncStatus", status),
+                    ],
+                ),
+                (
+                    work.clone(),
+                    vec![input(
+                        "operation",
+                        TypeMeta::AsyncOperationWithProgress(
+                            Box::new(TypeMeta::U32),
+                            Box::new(TypeMeta::U32),
+                        ),
+                    )],
+                ),
+            ],
+        );
+
+        assert_eq!(
+            py_delegate_callable_type(&completed, &context),
+            "Callable[[DynWinRTValue, 'AsyncStatus'], object]"
+        );
+        assert!(
+            py_delegate_input_arg("handler", &completed, &context)
+                .unwrap()
+                .ends_with(
+                    "lambda __p0__, __p1__: (__p0__, \
+                     _dynwinrt_enum('contoso__async_status', 'AsyncStatus', __p1__.to_number())))"
+                )
+        );
+        assert_eq!(
+            py_delegate_callable_type(&work, &context),
+            "Callable[[DynWinRTValue], object]"
+        );
+        assert_eq!(
+            py_delegate_input_arg("handler", &work, &context).unwrap(),
+            "_dynwinrt_delegate(handler, \
+             _dynwinrt_symbol('work_item_handler', 'IID_WorkItemHandler'), \
+             _dynwinrt_symbol('work_item_handler', 'WorkItemHandler_PARAM_TYPES'))"
         );
     }
 
@@ -350,7 +433,6 @@ mod tests {
             py_delegate_callable_type(&empty, &context),
             "Callable[[], object]"
         );
-        assert_eq!(py_event_callback(Some(&empty), &context).1, "callback");
         assert_eq!(
             py_delegate_input_arg("handler", &empty, &context).unwrap(),
             "_dynwinrt_delegate(handler, \
@@ -361,7 +443,21 @@ mod tests {
             py_delegate_callable_type(&unknown, &context),
             "Callable[..., object]"
         );
-        assert_eq!(py_event_callback(Some(&unknown), &context).1, "callback");
         assert!(py_delegate_input_arg("handler", &unknown, &context).is_none());
+        assert_eq!(
+            py_event_handler_arg("callback", Some(&unknown), &context),
+            "_dynwinrt_delegate(callback, DynWinRTType.object().iid(), \
+             [DynWinRTType.object(), DynWinRTType.object()])"
+        );
+    }
+
+    #[test]
+    fn once_rejects_native_delegates_before_subscribing() {
+        assert_eq!(
+            py_once_callback_check("callback", "changed", "        "),
+            "        if not callable(callback) or isinstance(getattr(callback, '_obj', callback), DynWinRTValue):\n\
+             \x20           raise TypeError('once_changed requires a Python callable; \
+             use on_changed or subscribe_changed for native delegates')\n"
+        );
     }
 }

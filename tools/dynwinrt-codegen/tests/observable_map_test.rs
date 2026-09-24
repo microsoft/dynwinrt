@@ -206,27 +206,20 @@ fn observable_map_projects_python_mutable_mapping_and_typed_events() {
         py.contains("self._observable_obj = obj.cast(IID_IObservableMap_String_Object)"),
         "{py}"
     );
-    for helper in ["on", "subscribe", "once"] {
-        assert!(
-            py.contains(&format!(
-                "def {helper}_map_changed(self, callback: {MAP_CALLBACK}):"
-            )),
-            "{py}"
-        );
+    for signature in common::event_signatures("map_changed", MAP_CALLBACK) {
+        assert!(py.contains(&signature), "{signature}\n{py}");
     }
     assert!(
         py.contains(
-            "_wrapped = (lambda callback=callback: (lambda __sender__, __event__: callback(\
+            "        return _IObservableMap_String_Object.method(6).invoke(self._observable_obj, [_dynwinrt_delegate(callback, \
+             _dynwinrt_symbol('map_changed_event_handler_string_object', 'IID_MapChangedEventHandler_String_Object'), \
+             _dynwinrt_symbol('map_changed_event_handler_string_object', 'MapChangedEventHandler_String_Object_PARAM_TYPES'), \
+             lambda __p0__, __p1__: (\
              (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('i_observable_map_string_object', 'IObservableMap_String_Object')(value))(__sender__), \
+             _dynwinrt_symbol('i_observable_map_string_object', 'IObservableMap_String_Object')(value))(__p0__), \
              (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__event__))))()"
+             _dynwinrt_symbol('i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__p1__)))])\n"
         ),
-        "{py}"
-    );
-    assert!(!py.contains("_wrapped = callback\n"), "{py}");
-    assert!(
-        py.contains("_IObservableMap_String_Object.method(6).invoke(self._observable_obj"),
         "{py}"
     );
     assert!(
@@ -258,19 +251,8 @@ fn observable_map_projects_python_mutable_mapping_and_typed_events() {
         pyi.contains("    def __delitem__(self, key: str) -> None: ..."),
         "{pyi}"
     );
-    assert!(
-        pyi.contains(&format!(
-            "def on_map_changed(self, callback: {MAP_CALLBACK}) -> 'DynWinRTValue': ..."
-        )),
-        "{pyi}"
-    );
-    for helper in ["subscribe", "once"] {
-        assert!(
-            pyi.contains(&format!(
-                "def {helper}_map_changed(self, callback: {MAP_CALLBACK}) -> Callable[[], None]: ..."
-            )),
-            "{pyi}"
-        );
+    for signature in common::event_stub_signatures("map_changed", MAP_CALLBACK) {
+        assert!(pyi.contains(&signature), "{signature}\n{pyi}");
     }
     assert_eq!(
         pyi.matches("import IMapChangedEventArgs_String  # noqa: F401")
@@ -318,23 +300,18 @@ fn runtime_class_map_changed_events_project_observable_sender_and_arguments() {
         &map_delegates(),
         &HashSet::new(),
     );
-    for helper in ["on", "subscribe", "once"] {
-        assert!(
-            py.contains(&format!(
-                "def {helper}_map_changed(self, callback: {MAP_CALLBACK}):"
-            )),
-            "{py}"
-        );
+    for signature in common::event_signatures("map_changed", MAP_CALLBACK) {
+        assert!(py.contains(&signature), "{signature}\n{py}");
     }
     assert!(
         py.contains(
-            "_dynwinrt_symbol('i_observable_map_string_object', 'IObservableMap_String_Object')(value))(__sender__)"
+            "_dynwinrt_symbol('i_observable_map_string_object', 'IObservableMap_String_Object')(value))(__p0__)"
         ),
         "{py}"
     );
     assert!(
         py.contains(
-            "_dynwinrt_symbol('i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__event__)"
+            "_dynwinrt_symbol('i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__p1__)"
         ),
         "{py}"
     );
@@ -378,20 +355,13 @@ fn runtime_class_map_changed_events_project_observable_sender_and_arguments() {
         !pyi.contains("\nclass IObservableMap_String_Object"),
         "{pyi}"
     );
-    assert!(
-        pyi.contains(&format!(
-            "def on_map_changed(self, callback: {MAP_CALLBACK}) -> 'DynWinRTValue': ..."
-        )),
-        "{pyi}"
-    );
-    assert_eq!(
-        pyi.matches(&format!(
-            "def subscribe_map_changed(self, callback: {MAP_CALLBACK}) -> Callable[[], None]: ..."
-        ))
-        .count(),
-        2,
-        "the Like protocol and the class both expose the typed helper:\n{pyi}"
-    );
+    for signature in common::event_stub_signatures("map_changed", MAP_CALLBACK) {
+        assert_eq!(
+            pyi.matches(&signature).count(),
+            2,
+            "the Like protocol and the class both expose the typed helper {signature}:\n{pyi}"
+        );
+    }
     assert!(!pyi.contains("Callable[..., object]"), "{pyi}");
 }
 
@@ -420,23 +390,18 @@ fn runtime_class_vector_changed_events_import_observable_sender_and_arguments() 
     let callback = "Callable[['IObservableVector_String', 'IVectorChangedEventArgs'], object]";
 
     let py = common::generate_class(&class, &known_types, &delegates, &HashSet::new());
-    for helper in ["on", "subscribe", "once"] {
-        assert!(
-            py.contains(&format!(
-                "def {helper}_vector_changed(self, callback: {callback}):"
-            )),
-            "{py}"
-        );
+    for signature in common::event_signatures("vector_changed", callback) {
+        assert!(py.contains(&signature), "{signature}\n{py}");
     }
     assert!(
         py.contains(
-            "_dynwinrt_symbol('i_observable_vector_string', 'IObservableVector_String')(value))(__sender__)"
+            "_dynwinrt_symbol('i_observable_vector_string', 'IObservableVector_String')(value))(__p0__)"
         ),
         "{py}"
     );
     assert!(
         py.contains(
-            "_dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__event__)"
+            "_dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__p1__)"
         ),
         "{py}"
     );
@@ -455,12 +420,9 @@ fn runtime_class_vector_changed_events_import_observable_sender_and_arguments() 
     ] {
         assert_eq!(pyi.matches(imported).count(), 1, "{pyi}");
     }
-    assert!(
-        pyi.contains(&format!(
-            "def once_vector_changed(self, callback: {callback}) -> Callable[[], None]: ..."
-        )),
-        "{pyi}"
-    );
+    for signature in common::event_stub_signatures("vector_changed", callback) {
+        assert!(pyi.contains(&signature), "{signature}\n{pyi}");
+    }
     assert!(!pyi.contains("\nclass IObservableVector_String"), "{pyi}");
     assert!(!pyi.contains("Callable[..., object]"), "{pyi}");
 }
@@ -531,24 +493,18 @@ fn windows_observable_maps_type_and_project_map_changed_handlers() {
             value.to_lowercase()
         );
         let sender = format!(
-            "(lambda value: None if value.is_null() else _dynwinrt_symbol('{observable_module}', 'IObservableMap_String_{value}')(value))(__sender__)"
+            "(lambda value: None if value.is_null() else _dynwinrt_symbol('{observable_module}', 'IObservableMap_String_{value}')(value))(__p0__)"
         );
-        let args = "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__collections__i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__event__)";
+        let args = "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__collections__i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__p1__)";
+        let projection = format!("lambda __p0__, __p1__: ({sender}, {args})");
 
         let class_py = output.read(&format!("windows__foundation__collections__{class}.py"));
         let interface_py = output.read(&format!("{observable_module}.py"));
         for py in [&class_py, &interface_py] {
-            for helper in ["on", "subscribe", "once"] {
-                assert!(
-                    py.contains(&format!(
-                        "def {helper}_map_changed(self, callback: {callback}):"
-                    )),
-                    "{py}"
-                );
+            for signature in common::event_signatures("map_changed", &callback) {
+                assert!(py.contains(&signature), "{signature}\n{py}");
             }
-            assert!(py.contains(&sender), "{py}");
-            assert!(py.contains(args), "{py}");
-            assert!(!py.contains("_wrapped = callback\n"), "{py}");
+            assert!(py.contains(&projection), "{py}");
         }
         assert!(
             interface_py.contains(&format!(
@@ -567,19 +523,8 @@ fn windows_observable_maps_type_and_project_map_changed_handlers() {
         let class_pyi = output.read(&format!("windows__foundation__collections__{class}.pyi"));
         let interface_pyi = output.read(&format!("{observable_module}.pyi"));
         for pyi in [&class_pyi, &interface_pyi] {
-            assert!(
-                pyi.contains(&format!(
-                    "def on_map_changed(self, callback: {callback}) -> 'DynWinRTValue': ..."
-                )),
-                "{pyi}"
-            );
-            for helper in ["subscribe", "once"] {
-                assert!(
-                    pyi.contains(&format!(
-                        "def {helper}_map_changed(self, callback: {callback}) -> Callable[[], None]: ..."
-                    )),
-                    "{pyi}"
-                );
+            for signature in common::event_stub_signatures("map_changed", &callback) {
+                assert!(pyi.contains(&signature), "{signature}\n{pyi}");
             }
             assert!(!pyi.contains("Callable[..., object]"), "{pyi}");
         }

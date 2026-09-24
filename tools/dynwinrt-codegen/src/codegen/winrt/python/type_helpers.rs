@@ -759,7 +759,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             py_param_list(&[&param], &context),
-            "handler: Callable[..., object] | 'DynWinRTValue'"
+            "handler: Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'"
         );
     }
 

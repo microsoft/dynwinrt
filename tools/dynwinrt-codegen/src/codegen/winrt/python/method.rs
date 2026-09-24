@@ -10,7 +10,8 @@ use crate::codegen::winrt::shared::imports::{
 };
 
 use super::delegates::{
-    delegate_abi, py_delegate_input_arg, py_delegate_param_type, py_event_callback,
+    py_delegate_callable_type, py_delegate_input_arg, py_delegate_param_type,
+    py_event_handler_arg, py_once_callback_check,
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::signature::{
@@ -584,7 +585,6 @@ pub(crate) fn generate_method_body(
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let delegate = delegate_typ.and_then(|typ| delegate_abi(typ, context));
         // Find matching remove_<Suffix> in the same interface to know its vtable index.
         let remove_target = format!("remove_{}", suffix);
         let remove_idx = sibling_methods.and_then(|methods| {
@@ -594,29 +594,30 @@ pub(crate) fn generate_method_body(
                 .map(|m| m.vtable_index)
         });
 
-        // Project raw ABI arguments before invoking the user callback.
-        let (callback_signature, wrapper) = py_event_callback(delegate_typ, context);
+        // on_/subscribe_ accept Python callables, whose arguments are projected,
+        // and native delegates, which are registered unchanged.
+        let (input_signature, callable_signature) = match delegate_typ {
+            Some(typ) => (
+                py_delegate_param_type(typ, context),
+                py_delegate_callable_type(typ, context),
+            ),
+            None => (
+                "Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'".to_string(),
+                "Callable[..., object]".to_string(),
+            ),
+        };
 
         out.push_str(&format!(
             "    def on_{}(self, callback: {}):\n",
-            event_name, callback_signature,
+            event_name, input_signature,
         ));
         out.push_str(&method_pydoc(method, &in_params));
-        // Wrapping expression bound to `_wrapped` before delegate construction.
-        out.push_str(&format!("        _wrapped = {}\n", wrapper));
-        if let Some(delegate) = delegate {
-            out.push_str(&format!(
-                "        _handler = _dynwinrt_create_delegate({}, {}, _wrapped)\n",
-                delegate.iid, delegate.param_types
-            ));
-        } else {
-            out.push_str(
-                "        _handler = _dynwinrt_create_delegate(DynWinRTType.object().iid(), [DynWinRTType.object(), DynWinRTType.object()], _wrapped)\n"
-            );
-        }
         out.push_str(&format!(
-            "        return {}.method({}).invoke({}, [_handler.to_value()])\n",
-            iface_var, method.vtable_index, obj_expr
+            "        return {}.method({}).invoke({}, [{}])\n",
+            iface_var,
+            method.vtable_index,
+            obj_expr,
+            py_event_handler_arg("callback", delegate_typ, context)
         ));
 
         // subscribe_<event>: ergonomic, idempotent cancellation while keeping
@@ -625,7 +626,7 @@ pub(crate) fn generate_method_body(
             out.push('\n');
             out.push_str(&format!(
                 "    def subscribe_{}(self, callback: {}):\n",
-                event_name, callback_signature,
+                event_name, input_signature,
             ));
             out.push_str(&format!(
                 "        _token = self.on_{}(callback)\n",
@@ -651,8 +652,9 @@ pub(crate) fn generate_method_body(
             out.push('\n');
             out.push_str(&format!(
                 "    def once_{}(self, callback: {}):\n",
-                event_name, callback_signature,
+                event_name, callable_signature,
             ));
+            out.push_str(&py_once_callback_check("callback", &event_name, "        "));
             out.push_str("        _state = [True, None]\n");
             out.push_str("        def _once(*args, **kwargs):\n");
             out.push_str("            if not _state[0]:\n");
@@ -1154,13 +1156,16 @@ mod tests {
         );
 
         assert!(code.contains("def on_changed(self, callback:"));
-        assert!(code.contains("_dynwinrt_create_delegate("));
-        assert!(code.contains("return _IWidget.method(6).invoke("));
+        assert!(code.contains("return _IWidget.method(6).invoke(self._obj, [_dynwinrt_delegate(callback, "));
         assert!(code.contains("def subscribe_changed(self, callback:"));
         assert!(code.contains("if not _active[0]:"));
         assert!(code.contains("self.off_changed(_token)"));
         assert!(code.contains("except Exception:\n                _active[0] = True"));
         assert!(code.contains("def once_changed(self, callback:"));
+        assert!(code.contains(
+            "raise TypeError('once_changed requires a Python callable; \
+             use on_changed or subscribe_changed for native delegates')"
+        ));
         assert!(code.contains("if not _state[0]:"));
         assert!(code.contains("_state[0] = False"));
         assert!(code.contains("if not _state[0]:\n            _unsubscribe()"));

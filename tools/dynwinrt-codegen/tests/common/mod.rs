@@ -9,6 +9,33 @@ use dynwinrt_codegen::meta::{
 };
 use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
+/// Generated `on_`, `subscribe_` and `once_` signatures for an event. `on_` and
+/// `subscribe_` also accept native delegates.
+pub fn event_signatures(event: &str, callback: &str) -> [String; 3] {
+    [
+        format!(
+            "def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
+        ),
+        format!(
+            "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
+        ),
+        format!("def once_{event}(self, callback: {callback}):"),
+    ]
+}
+
+/// Stub declarations matching [`event_signatures`].
+pub fn event_stub_signatures(event: &str, callback: &str) -> [String; 3] {
+    [
+        format!(
+            "def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate') -> 'DynWinRTValue'"
+        ),
+        format!(
+            "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate') -> Callable[[], None]: ..."
+        ),
+        format!("def once_{event}(self, callback: {callback}) -> Callable[[], None]: ..."),
+    ]
+}
+
 /// Metadata for a delegate type and its `Invoke(inputs...)` signature, as
 /// recorded on the interfaces that reference it.
 pub fn delegate_invoke(typ: TypeMeta, inputs: &[(&str, TypeMeta)]) -> ImplementationDelegateMeta {

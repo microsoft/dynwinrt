@@ -7,7 +7,7 @@ use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
 use crate::types::{FieldMeta, TypeMeta};
 
-use super::delegates::py_delegate_callable_type;
+use super::delegates::{py_delegate_callable_type, py_delegate_param_type};
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
@@ -230,17 +230,24 @@ pub(super) fn emit_method_stub_named(
     if method.is_event_add {
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
-        // Build a typed callback signature matching the runtime .py side.
+        // on_/subscribe_ also accept native delegates; once_ requires a callable.
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let callback_sig = delegate_typ
-            .map(|typ| py_delegate_callable_type(typ, context))
-            .unwrap_or_else(|| "Callable[..., object]".to_string());
+        let (input_sig, callable_sig) = match delegate_typ {
+            Some(typ) => (
+                py_delegate_param_type(typ, context),
+                py_delegate_callable_type(typ, context),
+            ),
+            None => (
+                "Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'".to_string(),
+                "Callable[..., object]".to_string(),
+            ),
+        };
         emit_documented_stub(
             &mut out,
             &indent,
             &format!(
                 "def on_{}(self, callback: {}) -> 'DynWinRTValue'",
-                event_name, callback_sig
+                event_name, input_sig
             ),
             &doc,
             "",
@@ -248,11 +255,11 @@ pub(super) fn emit_method_stub_named(
         if event_has_remove {
             out.push_str(&format!(
                 "{indent}def subscribe_{}(self, callback: {}) -> Callable[[], None]: ...\n",
-                event_name, callback_sig
+                event_name, input_sig
             ));
             out.push_str(&format!(
                 "{indent}def once_{}(self, callback: {}) -> Callable[[], None]: ...\n",
-                event_name, callback_sig
+                event_name, callable_sig
             ));
         }
         return out;
