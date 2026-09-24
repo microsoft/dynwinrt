@@ -1427,7 +1427,7 @@ fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) 
         if count > 1 {
             out.push_str("    @overload\n");
         }
-        let param_str = super::type_helpers::py_param_list(params, context);
+        let param_str = super::type_helpers::py_constructor_param_list(params, context);
         if param_str.is_empty() {
             out.push_str("    def __init__(self) -> None: ...\n");
         } else {

@@ -124,7 +124,9 @@ fn bespoke_event_delegates_are_typed_and_projected() {
 fn static_events_callback_parameters_and_setters_project_callables() {
     let Some(output) = Output::generate(
         "Windows.Gaming.Input.Gamepad,Windows.System.Threading.ThreadPool,\
-         Windows.System.Threading.ThreadPoolTimer,Windows.UI.Popups.UICommand",
+         Windows.System.Threading.ThreadPoolTimer,\
+         Windows.System.Threading.Core.PreallocatedWorkItem,\
+         Windows.UI.Popups.UICommand",
     ) else {
         return;
     };
@@ -209,6 +211,23 @@ fn static_events_callback_parameters_and_setters_project_callables() {
             "def invoked(self, value: {command_callback}) -> None"
         )),
         "{command_stub}"
+    );
+
+    let work_item_stub = output.read(
+        "windows__system__threading__core__preallocated_work_item",
+        "pyi",
+    );
+    assert!(
+        work_item_stub.contains(
+            "def __init__(self, handler: Callable[[DynWinRTValue], object] | 'DynWinRtDelegate') -> None: ..."
+        ),
+        "{work_item_stub}"
+    );
+    assert!(
+        !work_item_stub.contains(
+            "def __init__(self, handler: Callable[[DynWinRTValue], object] | 'DynWinRTValue"
+        ),
+        "{work_item_stub}"
     );
 }
 

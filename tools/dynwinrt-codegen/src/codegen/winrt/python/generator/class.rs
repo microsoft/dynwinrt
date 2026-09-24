@@ -1830,4 +1830,51 @@ print(json.dumps([exercise(WidgetForward), exercise(WidgetReverse)]))
             r#"[["enum", "i32", "TypeError"], ["enum", "i32", "TypeError"]]"#
         );
     }
+
+    #[test]
+    fn delegate_constructor_accepts_native_delegate_object() {
+        let delegate = TypeMeta::Delegate {
+            namespace: "Contoso".into(),
+            name: "WorkItemHandler".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let code = generate_python_constructor(
+            &PythonProjectionContext::standalone([delegate.type_identity()]).unwrap(),
+            &constructor_class(vec![constructor_method("Create", 6, delegate)]),
+            None,
+            false,
+        );
+        assert!(
+            code.contains("isinstance(_bound[0], DynWinRtDelegate)"),
+            "{code}"
+        );
+        let script = format!(
+            r#"
+class DynWinRTValue:
+    pass
+
+class DynWinRtDelegate:
+    pass
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if kwargs or len(args) != len(parameter_names):
+        return None
+    return args
+
+class _CtorResult:
+    def __init__(self, value):
+        self._obj = value
+
+class Widget:
+    @staticmethod
+    def create(value):
+        return _CtorResult("delegate")
+
+{code}
+
+print(Widget(DynWinRtDelegate())._obj)
+"#
+        );
+        assert_eq!(run_python(&script), "delegate");
+    }
 }

@@ -1114,10 +1114,31 @@ async def run_check(
             token = add(raw_value)
             remove(token)
             raw_value.release()
+            removed_token = cls.add_gamepad_removed(delegate)
+            cls.remove_gamepad_removed(removed_token)
+            gamepads = cls.get_gamepads()
+
+            reading_type = generated_type(pkg_name, 'GamepadReading')
+            reading = reading_type(timestamp=7, left_trigger=0.5)
+            same_reading = reading_type(timestamp=7, left_trigger=0.5)
+            vibration_type = generated_type(pkg_name, 'GamepadVibration')
+            vibration = vibration_type(left_motor=0.25, right_motor=0.75)
+            same_vibration = vibration_type(
+                left_motor=0.25, right_motor=0.75
+            )
             # Keep the namespace module import live: it is also the intended
             # public home of the Gamepad static event.
             if cls is not gaming_namespace.Gamepad:
                 cr['error'] = 'Gamepad namespace export was inconsistent'
+            elif gamepads is None:
+                cr['error'] = 'Gamepad.gamepads returned null'
+            elif reading != same_reading or 'timestamp=7' not in repr(reading):
+                cr['error'] = 'GamepadReading value semantics failed'
+            elif (
+                vibration != same_vibration
+                or 'left_motor=0.25' not in repr(vibration)
+            ):
+                cr['error'] = 'GamepadVibration value semantics failed'
             else:
                 cr['pass'] = True
 

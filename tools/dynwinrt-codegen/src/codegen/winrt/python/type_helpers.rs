@@ -539,6 +539,24 @@ pub(super) fn py_param_list(
         .join(", ")
 }
 
+pub(super) fn py_constructor_param_list(
+    in_params: &[&crate::meta::ParamMeta],
+    context: &PythonProjectionContext,
+) -> String {
+    in_params
+        .iter()
+        .map(|param| {
+            let param_type = if context.is_delegate_type(&param.typ) {
+                super::delegates::py_delegate_constructor_param_type(&param.typ, context)
+            } else {
+                py_param_type_safe(&param.typ, context)
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

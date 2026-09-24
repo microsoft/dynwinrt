@@ -130,6 +130,17 @@ pub(crate) fn py_delegate_param_type(typ: &TypeMeta, context: &PythonProjectionC
     format!("{sig} | 'DynWinRTValue | DynWinRtDelegate'")
 }
 
+/// Constructor overload resolution cannot distinguish a raw delegate value
+/// from the one-argument native-wrapper shortcut in `__new__`, so constructor
+/// stubs advertise callable or delegate-object inputs only.
+pub(crate) fn py_delegate_constructor_param_type(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    let sig = py_delegate_callable_type(typ, context);
+    format!("{sig} | 'DynWinRtDelegate'")
+}
+
 /// `lambda <native args>: (<projected args>)`, projecting a delegate's native
 /// arguments for a Python callable. `None` when no argument needs projection.
 fn py_callback_projection(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {

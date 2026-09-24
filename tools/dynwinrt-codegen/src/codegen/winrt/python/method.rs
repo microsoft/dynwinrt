@@ -70,7 +70,8 @@ pub(crate) fn py_method_type_guard(
 ) -> String {
     if is_delegate_type(typ, context) {
         return format!(
-            "(callable({name}) or isinstance(getattr({name}, '_obj', {name}), DynWinRTValue))"
+            "(callable({name}) or isinstance({name}, DynWinRtDelegate) or \
+             isinstance(getattr({name}, '_obj', {name}), DynWinRTValue))"
         );
     }
     py_type_guard(name, typ, context)
@@ -1045,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_overload_accepts_python_callable() {
+    fn delegate_overload_accepts_callable_value_and_native_delegate() {
         let callback = MethodMeta {
             name: "Run".into(),
             raw_name: "Run".into(),
@@ -1093,9 +1094,36 @@ mod tests {
             PythonProjectionContext::standalone([callback.params[0].typ.type_identity()]).unwrap();
         let code = generate_instance_method_group(&overloads, &context);
         assert!(code.contains("callable(_bound[0])"));
+        assert!(code.contains("isinstance(_bound[0], DynWinRtDelegate)"));
         assert!(code.contains("_dynwinrt_delegate(handler,"));
         assert!(code.contains("'work_item_handler', 'IID_WorkItemHandler'"));
         assert!(code.contains("'work_item_handler', 'WorkItemHandler_PARAM_TYPES'"));
+
+        let public = extract_generated_block(&code, "    def run(self, *args, **kwargs):");
+        let script = format!(
+            r#"
+def _dynwinrt_bind_overload(names, args, kwargs):
+    if kwargs or len(args) != len(names):
+        return None
+    return args
+
+class DynWinRTValue:
+    pass
+
+class DynWinRtDelegate:
+    pass
+
+class Runner:
+    def _run_6(self, handler):
+        return "delegate"
+    def _run_7(self, value):
+        return "text"
+{public}
+
+print(Runner().run(DynWinRtDelegate()))
+"#
+        );
+        assert_eq!(run_python(&script), "delegate");
     }
 
     #[test]
