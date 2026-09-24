@@ -348,10 +348,25 @@ async def run_check(
                 expected = f'dynwinrt.project_as(obj, {cls.__name__})'
                 if expected not in str(error):
                     cr['error'] = f'TypeError did not suggest {expected}: {error}'
-                else:
-                    cr['pass'] = True
+                    return cr
             else:
                 cr['error'] = 'as_interface() accepted a runtime class'
+                return cr
+            # Other misuse keeps the AttributeError of the from_value lookup.
+            for target in (None, 42, object, obj):
+                try:
+                    obj.as_interface(target)
+                except AttributeError:
+                    continue
+                except Exception as error:
+                    cr['error'] = (
+                        f'as_interface({target!r}) raised {type(error).__name__}, '
+                        'expected AttributeError'
+                    )
+                    return cr
+                cr['error'] = f'as_interface({target!r}) succeeded'
+                return cr
+            cr['pass'] = True
 
         elif kind == 'released_projection_error':
             reason = (

@@ -79,24 +79,36 @@ fn every_as_interface_delegates_to_the_runtime_support_helper() {
 }
 
 #[test]
-fn as_interface_helper_rejects_runtime_classes_with_project_as_guidance() {
+fn as_interface_helper_changes_only_runtime_class_misuse() {
     let runtime = generate_runtime_support_module();
     let helper = runtime
         .split_once("def _dynwinrt_as_interface(native, interface_class):\n")
         .map(|(_, helper)| helper.split("\n\n\n").next().unwrap_or(helper))
         .expect("as_interface helper");
+    // Only a generated runtime class without from_value raises TypeError.
+    let (guard, fallback) = helper
+        .split_once("        raise TypeError(")
+        .expect("runtime-class TypeError");
     for expected in [
-        "from_value = getattr(interface_class, 'from_value', None)",
-        "return from_value(native)",
+        "isinstance(interface_class, type)",
         "_dynwinrt_runtime_class_type",
         "_dynwinrt_projectable_class_type",
-        "raise TypeError(",
-        "as_interface() requires a generated interface class, but {name} is a",
-        "Use dynwinrt.project_as(obj, {name}) to cast to a runtime class.",
-        "as_interface() requires a generated interface class, not {name}.",
+        "not hasattr(interface_class, 'from_value')",
     ] {
-        assert!(helper.contains(expected), "missing {expected:?}:\n{helper}");
+        assert!(guard.contains(expected), "missing {expected:?}:\n{helper}");
     }
+    assert!(
+        fallback.contains("Use dynwinrt.project_as(obj, {name}) to cast to a runtime class."),
+        "{helper}"
+    );
+    // Every other target keeps the original from_value lookup and its errors.
+    assert!(
+        fallback
+            .trim_end()
+            .ends_with("return interface_class.from_value(native)"),
+        "{helper}"
+    );
+    assert_eq!(helper.matches("raise ").count(), 1, "{helper}");
 }
 
 /// A metadata struct whose declaration takes the helper's module name.
@@ -369,6 +381,18 @@ with dw.RoApartment(), dw.projected_lifetime_scope():
         assert "dynwinrt.project_as(obj, Widget)" in str(error), error
     else:
         raise AssertionError("as_interface() accepted a runtime class")
+
+    class NoIidInterface:
+        _dynwinrt_interface_type = True
+
+    # Other misuse keeps its original AttributeError from the from_value lookup.
+    for target in (None, 42, object, NoIidInterface, widget):
+        try:
+            widget.as_interface(target)
+        except AttributeError as error:
+            assert "from_value" in str(error), error
+        else:
+            raise AssertionError(f"as_interface() accepted {{target!r}}")
 print("as-interface-collision-ok")
 "#
         ),

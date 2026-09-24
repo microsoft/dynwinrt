@@ -132,18 +132,20 @@ def _dynwinrt_can_cast(value, iid):
 
 
 def _dynwinrt_as_interface(native, interface_class):
-    from_value = getattr(interface_class, 'from_value', None)
-    if from_value is not None:
-        return from_value(native)
-    name = getattr(interface_class, '__name__', type(interface_class).__name__)
-    if getattr(interface_class, '_dynwinrt_runtime_class_type', False) or getattr(
-        interface_class, '_dynwinrt_projectable_class_type', False
+    if (
+        isinstance(interface_class, type)
+        and (
+            getattr(interface_class, '_dynwinrt_runtime_class_type', False)
+            or getattr(interface_class, '_dynwinrt_projectable_class_type', False)
+        )
+        and not hasattr(interface_class, 'from_value')
     ):
+        name = interface_class.__name__
         raise TypeError(
             f'as_interface() requires a generated interface class, but {name} is a '
             f'runtime class. Use dynwinrt.project_as(obj, {name}) to cast to a runtime class.'
         )
-    raise TypeError(f'as_interface() requires a generated interface class, not {name}.')
+    return interface_class.from_value(native)
 \n";
 
 /// `as_interface()`, emitted for every generated class and interface view.
