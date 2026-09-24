@@ -101,6 +101,27 @@ registration thread or an asyncio event-loop thread. Keep each token returned by
 needed. For callback-style cleanup, `subscribe_*` returns an idempotent
 unsubscribe function. `once_*` subscribes for at most one callback invocation.
 
+A Python callable passed as a delegate (an event handler, a callback
+parameter such as `ThreadPool.run_async(handler)`, or a delegate-typed
+property) receives the delegate's arguments as projected Python values, typed
+from the delegate's `Invoke` signature. WinRT `Object` arguments stay
+`DynWinRTValue | None`, and `IReference<T>` arguments are native values or
+`None`. For example, `map_changed` handlers of `PropertySet`, `StringMap`,
+`ValueSet`, and other `IObservableMap<K, V>` implementations receive the
+`IObservableMap<K, V>` projection, which is a mutable mapping, and an
+`IMapChangedEventArgs<K>` with `collection_change` and `key`. An existing
+native delegate, such as one built with `DynWinRtDelegate.create`, is passed
+through unchanged, and its callback keeps receiving raw `DynWinRTValue`
+arguments.
+
+```python
+def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String) -> None:
+    if args.collection_change == CollectionChange.ItemInserted:
+        print(args.key, sender[args.key])
+
+unsubscribe = properties.subscribe_map_changed(changed)
+```
+
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
 Activatable runtime classes use normal constructors, for example

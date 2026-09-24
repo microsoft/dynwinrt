@@ -2,8 +2,9 @@
 # Licensed under the MIT License.
 
 import asyncio
-from collections.abc import Coroutine, Generator, Sequence
-from typing import Any, Awaitable, List, Tuple
+from collections.abc import Callable, Coroutine, Generator, Sequence
+from datetime import timedelta
+from typing import Any, Awaitable, List, Tuple, assert_type
 
 from dynwinrt import (
     DynWinRTArray,
@@ -22,6 +23,15 @@ from python_bindings.windows.foundation import (
     IWwwFormUrlDecoderEntry,
     Uri,
 )
+from python_bindings.windows.foundation.collections import (
+    CollectionChange,
+    IMapChangedEventArgs_String,
+    IObservableMap_String_Object,
+    IObservableMap_String_String,
+    PropertySet,
+    StringMap,
+)
+from python_bindings.windows.system.threading import ThreadPool, ThreadPoolTimer
 from python_bindings.windows.globalization import Calendar
 from python_bindings.windows.storage.streams import (
     Buffer as WinRTBuffer,
@@ -152,3 +162,41 @@ def check_ibuffer_bytes() -> None:
     interface_bytes: bytes = interface_buffer.to_bytes()
     runtime_bytes: bytes = runtime_buffer.to_bytes()
     _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)
+
+
+def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> None:
+    def on_properties(
+        sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String
+    ) -> None:
+        size: int = len(sender)
+        value: DynWinRTValue | None = sender[args.key]
+        change: CollectionChange = args.collection_change
+        _: Tuple[int, DynWinRTValue | None, CollectionChange] = (size, value, change)
+
+    unsubscribe: Callable[[], None] = properties.subscribe_map_changed(on_properties)
+    # Lambda parameters are inferred from the typed callback, not Any.
+    properties.once_map_changed(
+        lambda sender, args: assert_type(sender, IObservableMap_String_Object)
+    )
+    token: DynWinRTValue = properties.on_map_changed(
+        lambda sender, args: assert_type(args, IMapChangedEventArgs_String)
+    )
+    properties.off_map_changed(token)
+    strings.subscribe_map_changed(
+        lambda sender, args: assert_type(
+            (sender, sender[args.key], args.collection_change),
+            Tuple[IObservableMap_String_String, str, CollectionChange],
+        )
+    )
+    unsubscribe()
+
+
+def check_delegate_callback_parameters() -> None:
+    work: WinRTCoroutine[None] = ThreadPool.run_async(
+        lambda operation: assert_type(operation, WinRTCoroutine[None])
+    )
+    timer: ThreadPoolTimer | None = ThreadPoolTimer.create_timer(
+        lambda elapsed: assert_type(elapsed.delay, timedelta),
+        timedelta(milliseconds=1),
+    )
+    _: Tuple[WinRTCoroutine[None], ThreadPoolTimer | None] = (work, timer)

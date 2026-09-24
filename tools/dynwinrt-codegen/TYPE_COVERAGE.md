@@ -75,12 +75,13 @@ Parameterized collections are generated as concrete interfaces:
 
 - `IIterable<T>` and `IIterator<T>`;
 - `IVector<T>` and `IVectorView<T>`;
-- `IObservableVector<T>`;
+- `IObservableVector<T>` and `IObservableMap<K,V>`;
 - `IMap<K,V>`, `IMapView<K,V>`, and `IKeyValuePair<K,V>`.
 
 JavaScript exposes the projected WinRT methods and convenience helpers. Python
 implements the matching `collections.abc` sequence, mutable-sequence, mapping,
-mutable-mapping, iterable, and iterator protocols.
+mutable-mapping, iterable, and iterator protocols. Python observable vectors and
+maps extend their `IVector<T>` and `IMap<K,V>` projections.
 
 ## Async operations
 
@@ -101,6 +102,13 @@ they could deadlock.
 Generated event methods retain the WinRT token model. JavaScript and Python
 bindings marshal callbacks through their host runtimes and report callback
 failures as failing HRESULTs instead of unconditional success.
+
+Python derives each callback's annotation and argument projection from the
+delegate's `Invoke` signature, with generic arguments substituted. This applies
+wherever a Python callable becomes a delegate: instance and static events,
+callback parameters, and delegate-typed properties. Callback arguments are
+non-null except WinRT `Object` (`DynWinRTValue | None`) and `IReference<T>`
+(`T | None`).
 
 The shared dynamic WinRT delegate currently supports up to two ABI parameters.
 This covers common handlers such as `TypedEventHandler<TSender,TArgs>`,

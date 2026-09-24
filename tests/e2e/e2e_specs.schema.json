@@ -100,6 +100,9 @@
              "calendar_comprehensive",
              "storage_query_temp_folder",
              "value_set_event_lifecycle",
+             "map_changed_event_projection",
+             "work_item_callback_projection",
+             "timer_callback_projection",
              "nested_struct_runtime",
              "generated_helper_matrix"
            ]

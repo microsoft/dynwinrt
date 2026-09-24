@@ -859,6 +859,132 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'map_changed_event_projection':
+            key = check['set_key']
+            sender_type = generated_type(pkg_name, check['expected_type'])
+            args_type = generated_type(pkg_name, 'IMapChangedEventArgs_String')
+            change_type = generated_type(pkg_name, 'CollectionChange')
+
+            def box(value):
+                if isinstance(value, str):
+                    return value
+                return generated_type(pkg_name, 'PropertyValue').create_int32(value)
+
+            def same_value(actual, expected):
+                if isinstance(expected, str):
+                    return actual == expected
+                expected = getattr(expected, '_obj', expected)
+                return (
+                    isinstance(actual, dw.DynWinRTValue)
+                    and actual.identity_raw() == expected.identity_raw()
+                )
+
+            first, second = (box(value) for value in check['values'])
+            observed = []
+
+            def handler(sender, args):
+                change = args.collection_change
+                observed.append((
+                    sender,
+                    args,
+                    change,
+                    args.key,
+                    len(sender),
+                    key in sender,
+                    None if change == change_type.ItemRemoved else sender[key],
+                ))
+
+            once_changes = []
+            token_keys = []
+            unsubscribe = getattr(obj, f'subscribe_{member}')(handler)
+            getattr(obj, f'once_{member}')(
+                lambda _sender, args: once_changes.append(args.collection_change)
+            )
+            token = getattr(obj, f'on_{member}')(
+                lambda _sender, args: token_keys.append(args.key)
+            )
+            obj[key] = first
+            obj[key] = second
+            del obj[key]
+            getattr(obj, f'off_{member}')(token)
+            unsubscribe()
+            unsubscribe()
+            obj[key] = first
+            del obj[key]
+
+            expected = [
+                (change_type.ItemInserted, 1, True, first),
+                (change_type.ItemChanged, 1, True, second),
+                (change_type.ItemRemoved, 0, False, None),
+            ]
+            if len(observed) != len(expected):
+                cr['error'] = f'expected {len(expected)} map changes, got {len(observed)}'
+                return cr
+            for (sender, args, change, changed_key, size, present, value), (
+                expected_change, expected_size, expected_present, expected_value
+            ) in zip(observed, expected):
+                if not isinstance(sender, sender_type):
+                    cr['error'] = f'sender was {type(sender).__name__}, not {sender_type.__name__}'
+                    return cr
+                if not isinstance(args, args_type):
+                    cr['error'] = f'args were {type(args).__name__}, not {args_type.__name__}'
+                    return cr
+                if not isinstance(change, change_type) or change != expected_change:
+                    cr['error'] = f'expected {expected_change!r}, got {change!r}'
+                    return cr
+                if changed_key != key:
+                    cr['error'] = f'expected changed key {key!r}, got {changed_key!r}'
+                    return cr
+                if size != expected_size or present != expected_present:
+                    cr['error'] = (
+                        f'{expected_change.name}: sender had size {size} and '
+                        f'membership {present}'
+                    )
+                    return cr
+                if expected_value is not None and not same_value(value, expected_value):
+                    cr['error'] = f'{expected_change.name}: sender[{key!r}] was {value!r}'
+                    return cr
+            if once_changes != [change_type.ItemInserted]:
+                cr['error'] = f'once handler observed {once_changes!r}'
+            elif token_keys != [key, key, key]:
+                cr['error'] = f'token handler observed {token_keys!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'work_item_callback_projection':
+            received = []
+            await getattr(cls, member)(received.append)
+            operation_type = type(received[0]).__name__ if received else None
+            if len(received) != 1:
+                cr['error'] = f'work item ran {len(received)} times'
+            elif operation_type != '_DynWinRTAsync':
+                cr['error'] = f'work item received {operation_type}, not a projected IAsyncAction'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'timer_callback_projection':
+            from datetime import timedelta
+
+            delay = timedelta(milliseconds=10)
+            fired = threading.Event()
+            received = []
+
+            def elapsed(timer):
+                received.append((timer, timer.delay))
+                fired.set()
+
+            timer = getattr(cls, member)(elapsed, delay)
+            if not fired.wait(10):
+                cr['error'] = 'timer handler was not invoked'
+            elif not isinstance(received[0][0], cls):
+                cr['error'] = f'timer handler received {type(received[0][0]).__name__}'
+            elif received[0][0]._obj.identity_raw() != timer._obj.identity_raw():
+                cr['error'] = 'timer handler received a different timer'
+            elif received[0][1] != delay:
+                cr['error'] = f'timer delay was {received[0][1]!r}'
+            else:
+                cr['pass'] = True
+
         elif kind == 'mutable_sequence_protocol':
             sequence = getattr(obj, member)
             values = check['set_value']
@@ -1522,7 +1648,17 @@ async def run_check(
                 except BaseException as error:
                     worker_errors.append(error)
 
-            operation = cls.run_async(work)
+            # A native delegate passes through unchanged, so this work item
+            # receives its raw IAsyncAction and can poll IAsyncInfo.Status.
+            threading_namespace = importlib.import_module(
+                namespace_module_name(pkg_name, 'Windows.System.Threading')
+            )
+            raw_work = dw.DynWinRtDelegate.create(
+                threading_namespace.IID_WorkItemHandler,
+                threading_namespace.WorkItemHandler_PARAM_TYPES,
+                work,
+            ).to_value()
+            operation = cls.run_async(raw_work)
             loop = asyncio.get_running_loop()
 
             if not await loop.run_in_executor(None, started.wait, 2.0):
