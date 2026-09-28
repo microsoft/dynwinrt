@@ -30,7 +30,7 @@ use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
     py_collect_runtime_class_iid_consts, py_dynwinrt_type, py_generate_interface_registration,
-    py_interface_iid_expr, py_runtime_named_symbol, py_runtime_symbol, py_wrap_native_value,
+    py_interface_iid_expr, py_runtime_named_symbol, py_runtime_symbol, py_wrap_collection_item,
 };
 use super::structs::{
     py_struct_field_getter, py_struct_field_read_type, py_struct_field_setter, py_struct_field_type,
@@ -59,6 +59,24 @@ from ._runtime import (
 )
 "
     )
+}
+
+fn collection_item_import<'a>(
+    methods: impl IntoIterator<Item = &'a MethodMeta>,
+    collection_interface: bool,
+) -> &'static str {
+    let method_uses_helper = methods.into_iter().any(|method| {
+        !method.collection_inputs.is_empty()
+            || method.params.iter().any(|parameter| {
+                parameter.direction == ParamDirection::In
+                    && super::collections::type_kind(&parameter.typ).is_some()
+            })
+    });
+    if collection_interface || method_uses_helper {
+        "from ._runtime import _dynwinrt_collection_item\n"
+    } else {
+        ""
+    }
 }
 
 const RUNTIME_SUPPORT_BODY: &str = "\
@@ -94,6 +112,14 @@ def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
     wrap = getattr(wrapper, '_from_native', wrapper)
     return [None if value.is_null() else wrap(value) for value in values]
+
+
+def _dynwinrt_collection_item(value, wrap, allow_none, role):
+    if value is None:
+        if allow_none:
+            return DynWinRTValue.null_value()
+        raise TypeError(f'{role} cannot be None')
+    return wrap(value)
 
 
 def _dynwinrt_enum(module, name, value):

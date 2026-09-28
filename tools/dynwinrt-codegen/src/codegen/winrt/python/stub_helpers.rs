@@ -13,7 +13,7 @@ use super::nullability::{AnnotationSurface, ElementContainer};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
     method_pydoc_with_indent, py_collection_item_type, py_delegate_callable_type,
-    py_factory_return_type, py_method_return_type, py_param_list, py_param_type_safe,
+    py_factory_return_type, py_method_param_list, py_method_return_type, py_param_type_safe,
     py_property_type,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
@@ -318,7 +318,7 @@ pub(super) fn emit_method_stub_named(
             );
         }
     } else {
-        let py_params = py_param_list(&in_params, context);
+        let py_params = py_method_param_list(method, context);
         let py_return = py_method_return_type(method, AnnotationSurface::Stub, context);
         let method_name = name_override
             .map(str::to_string)
@@ -377,7 +377,7 @@ pub(super) fn emit_static_method_stub_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, context);
+    let py_params = py_method_param_list(method, context);
 
     let py_return = if is_factory {
         py_factory_return_type(class_name, method, AnnotationSurface::Stub, context)

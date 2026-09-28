@@ -7,7 +7,7 @@ use crate::codegen::winrt::shared::docs::{DocText, find_param_doc};
 use crate::codegen::winrt::shared::imports::{
     fill_array_uses_retval_count, ireference_inner_type, method_abi_output_count,
 };
-use crate::meta::MethodMeta;
+use crate::meta::{CollectionInputRole, MethodMeta};
 use crate::types::TypeMeta;
 
 use super::collections::{CollectionKind, abc_name, is_mapping_input, type_kind};
@@ -153,6 +153,29 @@ pub(super) fn py_collection_input_type(
     } else {
         input
     }
+}
+
+/// Input annotation for an element/value position of a mutable collection.
+/// `ReplaceAll` is array-shaped, so nullable reference elements belong inside
+/// its `Sequence[...]` rather than on the array parameter itself.
+pub(super) fn py_collection_contract_input_type(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    if let TypeMeta::Array(inner) = typ {
+        let element = py_native_param_element_type(inner, context);
+        let element = if may_project_none(inner) {
+            py_optional_type(element)
+        } else {
+            element
+        };
+        return if matches!(inner.as_ref(), TypeMeta::U8) {
+            format!("DynWinRTArray | bytes | bytearray | Sequence[{element}]")
+        } else {
+            format!("DynWinRTArray | Sequence[{element}]")
+        };
+    }
+    py_collection_input_type(typ, context)
 }
 
 // ======================================================================
@@ -362,7 +385,19 @@ fn spell_collection(
     let element = site.element_in(ElementContainer::of(kind));
     let elements = args
         .iter()
-        .map(|arg| render_output(arg, Spelling::Element, element, surface, context))
+        .enumerate()
+        .map(|(index, arg)| {
+            let argument_site = if index == 0
+                && matches!(
+                    kind,
+                    CollectionKind::Mapping | CollectionKind::MutableMapping
+                ) {
+                site.element_in(ElementContainer::MapKey)
+            } else {
+                element
+            };
+            render_output(arg, Spelling::Element, argument_site, surface, context)
+        })
         .collect::<Vec<_>>();
     Some(format!("{abc}[{}]", elements.join(", ")))
 }
@@ -417,6 +452,21 @@ pub(super) fn py_collection_item_type(
     py_output_annotation(typ, OutputSite::element_of(container), surface, context)
 }
 
+/// Key type of a projected map. WinRT maps reject null keys even when their
+/// key ABI type is a reference.
+pub(super) fn py_collection_key_type(
+    typ: &TypeMeta,
+    surface: AnnotationSurface,
+    context: &PythonProjectionContext,
+) -> String {
+    py_output_annotation(
+        typ,
+        OutputSite::element_of(ElementContainer::MapKey),
+        surface,
+        context,
+    )
+}
+
 /// `Sequence[T]` / `Mapping[K, V]` base of a projected collection of `kind`.
 pub(super) fn py_collection_base_type(
     kind: CollectionKind,
@@ -428,7 +478,11 @@ pub(super) fn py_collection_base_type(
     let item = |typ| py_collection_item_type(typ, ElementContainer::of(kind), surface, context);
     match args {
         [element] => Some(format!("{abc}[{}]", item(element))),
-        [key, value] => Some(format!("{abc}[{}, {}]", item(key), item(value))),
+        [key, value] => Some(format!(
+            "{abc}[{}, {}]",
+            py_collection_key_type(key, surface, context),
+            item(value)
+        )),
         _ => None,
     }
 }
@@ -674,6 +728,44 @@ pub(super) fn py_param_list(
                 _ => py_param_type_safe(&p.typ, context),
             };
             format!("{}: {}", to_snake_case(&p.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Method parameters with collection input roles applied. Only collection
+/// elements and map values gain `None`; map keys and general WinRT inputs keep
+/// their existing annotations.
+pub(super) fn py_method_param_list(
+    method: &MethodMeta,
+    context: &PythonProjectionContext,
+) -> String {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| {
+            matches!(
+                param.direction,
+                crate::meta::ParamDirection::In | crate::meta::ParamDirection::OutFill
+            )
+        })
+        .map(|(index, param)| {
+            let role = method
+                .collection_inputs
+                .iter()
+                .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
+            let param_type = match role {
+                Some(CollectionInputRole::Element | CollectionInputRole::Value) => {
+                    py_collection_contract_input_type(&param.typ, context)
+                }
+                Some(CollectionInputRole::Key) => py_param_type_safe(&param.typ, context),
+                None if context.is_delegate_type(&param.typ) => {
+                    py_delegate_param_type(&param.typ, context)
+                }
+                None => py_param_type_safe(&param.typ, context),
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -1008,7 +1100,7 @@ mod tests {
         );
         assert_eq!(
             returned(&async_of(&widgets), stub, &context),
-            "WinRTCoroutine[Sequence[Widget]]"
+            "WinRTCoroutine[Sequence[Widget | None]]"
         );
         assert_eq!(
             returned(&TypeMeta::Object, stub, &context),
@@ -1026,7 +1118,7 @@ mod tests {
         );
         assert_eq!(
             py_collection_item_type(&widget, ElementContainer::View, stub, &context),
-            "Widget"
+            "Widget | None"
         );
         assert_eq!(
             py_collection_item_type(&widget, ElementContainer::Mutable, stub, &context),
@@ -1039,7 +1131,7 @@ mod tests {
                 stub,
                 &context
             ),
-            Some("Sequence[Widget]".to_string())
+            Some("Sequence[Widget | None]".to_string())
         );
         assert_eq!(
             py_collection_base_type(
@@ -1112,7 +1204,7 @@ mod tests {
             ),
             (
                 &try_get_items,
-                "WinRTCoroutine[Sequence[Widget] | None]",
+                "WinRTCoroutine[Sequence[Widget | None] | None]",
                 "WinRTCoroutine[Sequence[Widget | None] | None]",
             ),
             (

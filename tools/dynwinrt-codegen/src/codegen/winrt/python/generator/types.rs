@@ -10,6 +10,7 @@ use crate::codegen::winrt::python::collections::{
     CollectionKind, interface_kind, map_iterable_identity, observable_vector_identity,
     runtime_mixin,
 };
+use crate::meta::CollectionInputRole;
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
@@ -93,6 +94,10 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(&import_line(context));
+    out.push_str(collection_item_import(
+        iface.methods.iter(),
+        interface_kind(iface).is_some(),
+    ));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
     }
@@ -360,11 +365,17 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     if let Some(ref piid) = iface.generic_piid {
         if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
-            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let elem_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
+            let wrap = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[0],
+                CollectionInputRole::Element,
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             let vector_identity = observable_vector
                 .as_ref()
                 .expect("observable vector companion");
@@ -385,11 +396,17 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             out.push('\n');
         } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
-            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let elem_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
+            let wrap = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[0],
+                CollectionInputRole::Element,
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Iterable[{}]) -> '{}':\n",
@@ -407,12 +424,23 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                 &iface.generic_args[0],
                 context,
             );
-            let val_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
-                &iface.generic_args[1],
+            let val_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[1],
+                    context,
+                );
+            let wrap_key = py_wrap_collection_item(
+                "item",
+                &iface.generic_args[0],
+                CollectionInputRole::Key,
                 context,
             );
-            let wrap_key = py_wrap_native_value("item", &iface.generic_args[0], context);
-            let wrap_value = py_wrap_native_value("item", &iface.generic_args[1], context);
+            let wrap_value = py_wrap_collection_item(
+                "item",
+                &iface.generic_args[1],
+                CollectionInputRole::Value,
+                context,
+            );
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Mapping[{}, {}]) -> '{}':\n",
@@ -721,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_create_inputs_remain_non_nullable() {
+    fn collection_create_reference_inputs_accept_none() {
         let iface = InterfaceMeta {
             name: "IVector_Widget".into(),
             iid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
@@ -740,7 +768,9 @@ mod tests {
         .unwrap();
         let code = generate_interface(&context, &iface);
 
-        assert!(code.contains("def create(items: Iterable['WidgetLike'])"));
-        assert!(!code.contains("def create(items: Iterable[WidgetLike | None])"));
+        assert!(code.contains("def create(items: Iterable[WidgetLike | None])"));
+        assert!(code.contains(
+            "_dynwinrt_collection_item(item, lambda item: getattr(item, '_obj', item), True, 'collection element')"
+        ));
     }
 }

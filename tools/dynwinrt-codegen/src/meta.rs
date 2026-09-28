@@ -64,6 +64,10 @@ pub struct MethodMeta {
     /// Set on the members that read elements of the
     /// `Windows.Foundation.Collections` interface declaring them.
     pub element_access: Option<ElementAccess>,
+    /// Input parameters that represent collection elements, map keys, or map
+    /// values. Python uses this to validate and wrap `None` at the collection
+    /// boundary without changing general WinRT parameter conversion.
+    pub collection_inputs: Vec<(usize, CollectionInputRole)>,
 }
 
 /// How a member reads the elements of the `Windows.Foundation.Collections`
@@ -75,6 +79,16 @@ pub enum ElementAccess {
     ReadOnly,
     /// `IVector` and `IMap`, in which anyone can store null.
     Mutable,
+    /// The key of an `IKeyValuePair`. Null keys are not valid map entries.
+    MapKey,
+}
+
+/// The role of an input parameter on a collection interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionInputRole {
+    Element,
+    Key,
+    Value,
 }
 
 fn collection_element_access(
@@ -85,11 +99,11 @@ fn collection_element_access(
     if namespace != WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE {
         return None;
     }
-    let access = match definition {
-        "IIterator`1" | "IVectorView`1" | "IMapView`2" | "IKeyValuePair`2" => {
-            ElementAccess::ReadOnly
-        }
-        "IVector`1" | "IMap`2" => ElementAccess::Mutable,
+    let access = match (definition, member) {
+        ("IKeyValuePair`2", "get_Key") => return Some(ElementAccess::MapKey),
+        ("IKeyValuePair`2", "get_Value") => return Some(ElementAccess::ReadOnly),
+        ("IIterator`1" | "IVectorView`1" | "IMapView`2", _) => ElementAccess::ReadOnly,
+        ("IVector`1" | "IMap`2", _) => ElementAccess::Mutable,
         _ => return None,
     };
     matches!(
@@ -97,6 +111,25 @@ fn collection_element_access(
         "GetAt" | "GetMany" | "Lookup" | "get_Current" | "get_Key" | "get_Value"
     )
     .then_some(access)
+}
+
+fn collection_input_roles(
+    namespace: &str,
+    definition: &str,
+    member: &str,
+) -> Vec<(usize, CollectionInputRole)> {
+    if namespace != WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE {
+        return Vec::new();
+    }
+    use CollectionInputRole::{Element, Key, Value};
+    match (definition, member) {
+        ("IVector`1" | "IVectorView`1", "IndexOf") => vec![(0, Element)],
+        ("IVector`1", "SetAt" | "InsertAt") => vec![(1, Element)],
+        ("IVector`1", "Append" | "ReplaceAll") => vec![(0, Element)],
+        ("IMap`2" | "IMapView`2", "Lookup" | "HasKey") | ("IMap`2", "Remove") => vec![(0, Key)],
+        ("IMap`2", "Insert") => vec![(0, Key), (1, Value)],
+        _ => Vec::new(),
+    }
 }
 
 /// A WinRT interface with its methods.
@@ -1831,6 +1864,7 @@ fn parse_interface_methods(
         };
 
         let element_access = collection_element_access(namespace, def.name(), &raw_name);
+        let collection_inputs = collection_input_roles(namespace, def.name(), &raw_name);
         let mut method_meta = MethodMeta {
             name: method_name.clone(),
             vtable_index,
@@ -1848,6 +1882,7 @@ fn parse_interface_methods(
             returns_doc: None,
             documented_null_result: false,
             element_access,
+            collection_inputs,
         };
         method_meta.documented_null_result =
             crate::documented_nulls::documents_null_result(&documentation_owner, &method_meta);

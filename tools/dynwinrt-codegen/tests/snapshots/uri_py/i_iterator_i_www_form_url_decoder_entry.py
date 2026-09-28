@@ -14,6 +14,7 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
+from ._runtime import _dynwinrt_collection_item
 from dynwinrt.dynwinrt import _WinRTIteratorMixin
 
 if TYPE_CHECKING:

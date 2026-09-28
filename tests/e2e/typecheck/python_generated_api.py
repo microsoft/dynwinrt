@@ -158,7 +158,9 @@ def check_ibuffer_bytes() -> None:
 
 async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> None:
     created: StorageFile = await folder.create_file_async("notes.txt")
-    names: List[str] = [item.name for item in await folder.get_files_async()]
+    names: List[str] = [
+        item.name for item in await folder.get_files_async() if item is not None
+    ]
     assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
     assert_type(values["key"], DynWinRTValue | None)
     _: Tuple[StorageFile, List[str]] = (created, names)

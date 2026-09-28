@@ -14,11 +14,13 @@ A method (`M:`) or property (`P:`) is listed when
   the result can be null (for an asynchronous method: its completed result), or
 - a sentence of its `## -remarks` section says that the member itself
   ("this method", "this property", "it", or the member's name) returns or is
-  null.
-Sentences that negate null, that describe null arguments, or that describe an
-object holding a null value are ignored, and so are Boolean results, attached
-properties, constructors and members of generic types. Reviewed corrections
-from api-docs/windows-null-results.overrides.txt are applied last.
+  null, or requires the caller to check that this member's return value is not
+  null before using it.
+Other sentences that negate null, that describe null arguments, or that
+describe an object holding a null value are ignored, and so are Boolean
+results, attached properties, constructors and members of generic types.
+Reviewed corrections from api-docs/windows-null-results.overrides.txt are
+applied last.
 
 The documentation is read from git objects, without a working tree:
 
@@ -70,6 +72,12 @@ REMARKS_GAP = r"(?:(?!\b(?:when|if|unless|called|until|whether|and|but)\b)[^.;,]
 REMARKS_VERB = (
     r"\b(?:returns?|is|will\s+be|may\s+be|can\s+be|could\s+be|might\s+be|is\s+set\s+to)"
     r"\s+(?:a\s+|an\s+|the\s+)?null(?:ptr)?\b"
+)
+REQUIRED_NULL_CHECK = re.compile(
+    r"\b(?:must|should|need(?:s)?\s+to)\b"
+    r"[^.]{0,100}\bcheck\b"
+    r"[^.]{0,100}\b(?:the|that|return)\s+value\s+is\s+not\s+null\b",
+    re.I,
 )
 
 
@@ -155,6 +163,21 @@ def result_is_nullable(result: str) -> bool:
     return any(states_null(sentence) for sentence in sentences(result))
 
 
+def requires_return_null_check(sentence: str, member: str) -> bool:
+    """A required check for a member's return value proves it can be null.
+
+    This is intentionally narrower than a generic "not null" mention. It
+    requires both the return-value subject and an instruction to check the
+    returned value before use, so statements such as "always returns a value
+    that is not null" and checks on input parameters remain exclusions.
+    """
+    source = re.compile(
+        rf"\breturn value from (?:this\s+(?:method|function|call|operation)|{re.escape(member)})\b",
+        re.I,
+    )
+    return bool(source.search(sentence) and REQUIRED_NULL_CHECK.search(sentence))
+
+
 def remarks_say_null(remarks: str, member: str) -> bool:
     subject = (
         r"(?:\bthis\s+(?:method|property|function|call|operation)"
@@ -164,7 +187,8 @@ def remarks_say_null(remarks: str, member: str) -> bool:
     claim = re.compile(subject + REMARKS_GAP + REMARKS_VERB, re.I)
     returns = re.compile(rf"\bif\s+(?:this|it|{re.escape(member)})\s+returns\s+null\b", re.I)
     return any(
-        (claim.search(sentence) or returns.search(sentence)) and states_null(sentence)
+        requires_return_null_check(sentence, member)
+        or ((claim.search(sentence) or returns.search(sentence)) and states_null(sentence))
         for sentence in sentences(remarks)
     )
 
@@ -173,28 +197,43 @@ def member_name(api_id: str) -> str:
     return api_id[2:].split("(", 1)[0].rsplit(".", 1)[-1]
 
 
+def classify_document(text: str) -> tuple[str, str | None] | None:
+    """Return `(api_id, source)` for one supported docs page.
+
+    `source` is `returns`, `property-value`, `remarks`, or `None` when the
+    member is documented but its result is not documented as nullable.
+    """
+    fields = front_matter(text)
+    api_id = fields.get("api-id", "")
+    api_type = fields.get("api-type", "")
+    if not api_id.startswith(("M:", "P:")) or api_type in {
+        "winrt attachedproperty",
+        "winrt constructor",
+    }:
+        return None
+    if "#ctor" in api_id or "`" in api_id.split("(", 1)[0]:
+        return None
+
+    result_section = "returns" if api_id.startswith("M:") else "property-value"
+    if result_is_nullable(section(text, result_section)):
+        return api_id, result_section
+    if remarks_say_null(section(text, "remarks"), member_name(api_id)):
+        return api_id, "remarks"
+    return api_id, None
+
+
 def extract(repo: Path, commit: str) -> tuple[set[str], set[str], Counter[str]]:
     documented: set[str] = set()
     nullable: set[str] = set()
     sources: Counter[str] = Counter()
     for text in documents(repo, commit):
-        fields = front_matter(text)
-        api_id = fields.get("api-id", "")
-        api_type = fields.get("api-type", "")
-        if not api_id.startswith(("M:", "P:")) or api_type in {
-            "winrt attachedproperty",
-            "winrt constructor",
-        }:
+        classification = classify_document(text)
+        if classification is None:
             continue
-        if "#ctor" in api_id or "`" in api_id.split("(", 1)[0]:
-            continue
+        api_id, source = classification
         documented.add(api_id)
-        result = section(text, "returns" if api_id.startswith("M:") else "property-value")
-        if result_is_nullable(result):
-            sources["returns" if api_id.startswith("M:") else "property-value"] += 1
-            nullable.add(api_id)
-        elif remarks_say_null(section(text, "remarks"), member_name(api_id)):
-            sources["remarks"] += 1
+        if source is not None:
+            sources[source] += 1
             nullable.add(api_id)
     return documented, nullable, sources
 

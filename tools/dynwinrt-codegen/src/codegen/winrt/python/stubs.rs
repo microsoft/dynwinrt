@@ -513,7 +513,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     // IVector<T> / IMap<K,V> create()
     if let Some(ref piid) = iface.generic_piid {
         if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
-            let element = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
+            let element =
+                super::type_helpers::py_collection_input_type(&iface.generic_args[0], context);
             let vector_name = context.projected_name(
                 observable_vector
                     .as_ref()
@@ -530,7 +531,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                 vector_name
             ));
         } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
-            let element = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
+            let element =
+                super::type_helpers::py_collection_input_type(&iface.generic_args[0], context);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -539,7 +541,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
             ));
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
             let key = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
-            let value = super::type_helpers::py_param_type_safe(&iface.generic_args[1], context);
+            let value =
+                super::type_helpers::py_collection_input_type(&iface.generic_args[1], context);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -1279,12 +1282,20 @@ fn collection_protocol_stubs(
         .generic_args
         .first()
         .map(|typ| {
-            super::type_helpers::py_collection_item_type(
-                typ,
-                container,
-                AnnotationSurface::Stub,
-                context,
-            )
+            if matches!(
+                kind,
+                super::collections::CollectionKind::Mapping
+                    | super::collections::CollectionKind::MutableMapping
+            ) {
+                super::type_helpers::py_collection_key_type(typ, AnnotationSurface::Stub, context)
+            } else {
+                super::type_helpers::py_collection_item_type(
+                    typ,
+                    container,
+                    AnnotationSurface::Stub,
+                    context,
+                )
+            }
         })
         .unwrap_or_else(|| "object".to_string());
     let item_input = iface

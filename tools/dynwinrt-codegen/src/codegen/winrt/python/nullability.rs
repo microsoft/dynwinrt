@@ -59,6 +59,8 @@ pub(crate) enum ElementContainer {
     View,
     /// `IVector`, `IMap` or their observable forms.
     Mutable,
+    /// A map key or `IKeyValuePair.Key`. Null keys are invalid.
+    MapKey,
     /// An array returned by a member that does not read collection elements.
     Array,
 }
@@ -81,19 +83,20 @@ impl From<ElementAccess> for ElementContainer {
         match access {
             ElementAccess::ReadOnly => Self::View,
             ElementAccess::Mutable => Self::Mutable,
+            ElementAccess::MapKey => Self::MapKey,
         }
     }
 }
 
-/// The collection element rule: anyone can store null in a mutable collection,
-/// so its reference-type elements admit `None`. Views, iterators and arrays
-/// are typed like other outputs. Positions that read elements inherit the
-/// rule of their owning collection; a view obtained from a mutable collection
-/// follows the view rule.
+/// The collection element rule: a WinRT collection interface does not carry
+/// the provenance needed to prove that a reference-type element is non-null.
+/// In particular, a view or iterator obtained from a mutable collection can
+/// expose a null slot. All WinRT collection element reads therefore admit
+/// `None`; returned arrays remain snapshots and use the ordinary output rule.
 pub(crate) fn element_admits_none(container: ElementContainer) -> bool {
     match container {
-        ElementContainer::Mutable => true,
-        ElementContainer::View | ElementContainer::Array => false,
+        ElementContainer::View | ElementContainer::Mutable => true,
+        ElementContainer::MapKey | ElementContainer::Array => false,
     }
 }
 
@@ -210,6 +213,9 @@ fn stub_output_admits_none(
         Activation, AsyncResult, CallbackParam, CollectionElement, OutParam, Property, Return,
     };
 
+    if site.container == Some(ElementContainer::MapKey) {
+        return false;
+    }
     // `Object` positions are frequently null, e.g. the arguments of a
     // `TypedEventHandler<T, Object>`.
     if matches!(typ, TypeMeta::Object) {
@@ -409,7 +415,7 @@ mod tests {
             );
         }
         let site = OutputSite::for_method(&get_default, OutputPosition::Return);
-        assert!(!admits(
+        assert!(admits(
             &widget(),
             site.element_in(ElementContainer::View),
             AnnotationSurface::Stub
@@ -417,32 +423,31 @@ mod tests {
     }
 
     #[test]
-    fn collection_elements_follow_the_mutability_of_their_collection() {
+    fn reference_collection_elements_are_nullable_regardless_of_provenance() {
         let stub = AnnotationSurface::Stub;
-        assert!(admits(
-            &widget(),
-            OutputSite::element_of(ElementContainer::Mutable),
-            stub
-        ));
-        for container in [ElementContainer::View, ElementContainer::Array] {
+        for container in [ElementContainer::View, ElementContainer::Mutable] {
             let site = OutputSite::element_of(container);
-            assert!(!admits(&widget(), site, stub), "{container:?}");
+            assert!(admits(&widget(), site, stub), "{container:?}");
             assert!(admits(&TypeMeta::Object, site, stub));
             assert!(admits(&nullable_u32(), site, stub));
             assert!(!admits(&TypeMeta::String, site, stub));
         }
-        for (access, expected) in [
-            (ElementAccess::Mutable, true),
-            (ElementAccess::ReadOnly, false),
-        ] {
+        let array = OutputSite::element_of(ElementContainer::Array);
+        assert!(!admits(&widget(), array, stub));
+        assert!(admits(&TypeMeta::Object, array, stub));
+        assert!(admits(&nullable_u32(), array, stub));
+        let key = OutputSite::element_of(ElementContainer::MapKey);
+        assert!(!admits(&widget(), key, stub));
+        assert!(!admits(&TypeMeta::Object, key, stub));
+
+        for access in [ElementAccess::Mutable, ElementAccess::ReadOnly] {
             let get_at = MethodMeta {
                 element_access: Some(access),
                 ..method("GetAt")
             };
             for position in [OutputPosition::Return, OutputPosition::Property] {
-                assert_eq!(
+                assert!(
                     admits(&widget(), OutputSite::for_method(&get_at, position), stub),
-                    expected,
                     "{access:?} at {position:?}"
                 );
             }
@@ -460,5 +465,14 @@ mod tests {
             ElementContainer::of(CollectionKind::KeyValuePair),
             ElementContainer::View
         );
+        let key = MethodMeta {
+            element_access: Some(ElementAccess::MapKey),
+            ..method("get_Key")
+        };
+        assert!(!admits(
+            &widget(),
+            OutputSite::for_method(&key, OutputPosition::Property),
+            stub
+        ));
     }
 }

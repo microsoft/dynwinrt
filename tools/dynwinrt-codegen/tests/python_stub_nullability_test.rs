@@ -97,7 +97,7 @@ fn stub_outputs_follow_the_nullability_policy() {
     );
     assert_contains(
         &folder,
-        "def get_files_async(self) -> WinRTCoroutine[Sequence[StorageFile]]: ...",
+        "def get_files_async(self) -> WinRTCoroutine[Sequence[StorageFile | None]]: ...",
     );
     assert_contains(
         &folder,
@@ -200,7 +200,96 @@ fn stub_outputs_follow_the_nullability_policy() {
 }
 
 #[test]
-fn collection_elements_follow_the_mutability_of_their_collection() {
+fn sensor_current_reading_docs_control_nullability_without_family_false_positives() {
+    let Some(generated) = Generated::new(
+        "sensorreadings",
+        "Windows.Devices.Sensors.Accelerometer,Windows.Devices.Sensors.Compass,\
+         Windows.Devices.Sensors.Gyrometer,Windows.Devices.Sensors.Inclinometer,\
+         Windows.Devices.Sensors.LightSensor,Windows.Devices.Sensors.OrientationSensor,\
+         Windows.Devices.Sensors.Custom.CustomSensor,Windows.Devices.Sensors.Altimeter,\
+         Windows.Devices.Sensors.Barometer,Windows.Devices.Sensors.HumanPresenceSensor,\
+         Windows.Devices.Sensors.Magnetometer,Windows.Devices.Sensors.ProximitySensor,\
+         Windows.Devices.Sensors.ActivitySensor,Windows.Devices.Sensors.HingeAngleSensor,\
+         Windows.Devices.Sensors.Pedometer",
+    ) else {
+        return;
+    };
+
+    for (module, signature) in [
+        (
+            "windows__devices__sensors__accelerometer.pyi",
+            "def get_current_reading(self) -> AccelerometerReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__compass.pyi",
+            "def get_current_reading(self) -> CompassReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__custom__custom_sensor.pyi",
+            "def get_current_reading(self) -> CustomSensorReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__gyrometer.pyi",
+            "def get_current_reading(self) -> GyrometerReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__inclinometer.pyi",
+            "def get_current_reading(self) -> InclinometerReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__light_sensor.pyi",
+            "def get_current_reading(self) -> LightSensorReading | None: ...",
+        ),
+        (
+            "windows__devices__sensors__orientation_sensor.pyi",
+            "def get_current_reading(self) -> OrientationSensorReading | None: ...",
+        ),
+    ] {
+        assert_contains(&generated.module(module), signature);
+    }
+
+    // The other GetCurrentReading variants at the pinned docs revision do
+    // not contain the required-null-check wording and remain non-null.
+    for (module, signature) in [
+        (
+            "windows__devices__sensors__activity_sensor.pyi",
+            "def get_current_reading_async(self) -> WinRTCoroutine[ActivitySensorReading]: ...",
+        ),
+        (
+            "windows__devices__sensors__altimeter.pyi",
+            "def get_current_reading(self) -> AltimeterReading: ...",
+        ),
+        (
+            "windows__devices__sensors__barometer.pyi",
+            "def get_current_reading(self) -> BarometerReading: ...",
+        ),
+        (
+            "windows__devices__sensors__hinge_angle_sensor.pyi",
+            "def get_current_reading_async(self) -> WinRTCoroutine[HingeAngleReading]: ...",
+        ),
+        (
+            "windows__devices__sensors__human_presence_sensor.pyi",
+            "def get_current_reading(self) -> HumanPresenceSensorReading: ...",
+        ),
+        (
+            "windows__devices__sensors__magnetometer.pyi",
+            "def get_current_reading(self) -> MagnetometerReading: ...",
+        ),
+        (
+            "windows__devices__sensors__proximity_sensor.pyi",
+            "def get_current_reading(self) -> ProximitySensorReading: ...",
+        ),
+    ] {
+        assert_contains(&generated.module(module), signature);
+    }
+    assert_contains(
+        &generated.module("windows__devices__sensors__pedometer.pyi"),
+        "def get_current_readings(self) -> Mapping['PedometerStepKind', PedometerReading | None]: ...",
+    );
+}
+
+#[test]
+fn reference_collection_elements_are_nullable_regardless_of_provenance() {
     let Some(generated) = Generated::new(
         "elements",
         "Windows.Storage.StorageFolder,Windows.Data.Json.JsonObject,\
@@ -218,23 +307,28 @@ fn collection_elements_follow_the_mutability_of_their_collection() {
     let observable = generated
         .module("windows__foundation__collections__i_observable_vector_media_playback_item.pyi");
 
-    // Views keep non-null elements, including their item positions.
-    assert_contains(&files, "def get_at(self, index: int) -> StorageFile: ...");
+    // Collection interfaces carry no provenance. A view or iterator obtained
+    // from a mutable collection can expose a null slot, so view item
+    // positions conservatively keep None too.
     assert_contains(
         &files,
-        "def __getitem__(self, index: int) -> StorageFile: ...",
+        "def get_at(self, index: int) -> StorageFile | None: ...",
+    );
+    assert_contains(
+        &files,
+        "def __getitem__(self, index: int) -> StorageFile | None: ...",
     );
     assert_contains(
         &resources,
-        "class ResourceMap(_ResourceMapIdentity, Mapping[str, NamedResource], _DynWinRTRuntimeClass):",
+        "class ResourceMap(_ResourceMapIdentity, Mapping[str, NamedResource | None], _DynWinRTRuntimeClass):",
     );
     assert_contains(
         &resources,
-        "def lookup(self, key: str) -> NamedResource: ...",
+        "def lookup(self, key: str) -> NamedResource | None: ...",
     );
 
-    // Anyone can store null in a mutable collection, so its elements, item
-    // positions and element-reading members keep None.
+    // Mutable collection elements, item positions and element-reading
+    // members keep None for the same reason.
     assert_contains(
         &array,
         "class JsonArray(_JsonArrayIdentity, MutableSequence[IJsonValue | None], _DynWinRTRuntimeClass):",

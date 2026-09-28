@@ -65,6 +65,12 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(&import_line(context));
+    out.push_str(collection_item_import(
+        class
+            .all_interfaces()
+            .flat_map(|interface| interface.methods.iter()),
+        collection_iface.is_some(),
+    ));
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",

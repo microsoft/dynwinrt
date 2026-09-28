@@ -864,7 +864,11 @@ from sdk.windows.storage.streams import DataReader, DataWriter, InMemoryRandomAc
             r#"{imports}
 def uri_demo() -> str:
     uri = Uri("https://example.com/a/b?x=1&y=two")
-    query = {{entry.name: entry.value for entry in uri.query_parsed}}
+    query = {{
+        entry.name: entry.value
+        for entry in uri.query_parsed
+        if entry is not None
+    }}
     return uri.combine_uri("c/d").absolute_uri + str(query)
 
 def json_demo() -> list[str]:
@@ -878,7 +882,8 @@ def sensor_demo() -> float | None:
     accelerometer = Accelerometer.get_default()
     if accelerometer is None:
         return None
-    return accelerometer.get_current_reading().acceleration_x
+    reading = accelerometer.get_current_reading()
+    return None if reading is None else reading.acceleration_x
 
 def calendar_demo(calendar: Calendar) -> str:
     languages: Sequence[str] = calendar.languages
@@ -908,7 +913,7 @@ async def storage_demo(path: str) -> list[str]:
     assert_type(folder.create_file_async("a.txt"), WinRTCoroutine[StorageFile])
     assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
     assert_type(folder.get_parent_async(), WinRTCoroutine[StorageFolder | None])
-    return [item.name for item in await folder.get_files_async()]
+    return [item.name for item in await folder.get_files_async() if item is not None]
 "#
         ),
         &[],
@@ -930,7 +935,8 @@ fn mutable_collection_mutators_accept_none() {
         .arg(winmd)
         .args([
             "--class-name",
-            "Windows.Storage.StorageLibrary,Windows.Data.Json.JsonObject",
+            "Windows.Storage.StorageLibrary,Windows.Data.Json.JsonObject,\
+             Windows.Foundation.Collections.StringMap",
             "--lang",
             "py",
             "--output",
@@ -951,6 +957,7 @@ from sdk.windows.foundation.collections import IObservableVector_StorageFolder
 from sdk.windows.storage import StorageFolder
 
 def vector(folders: IObservableVector_StorageFolder) -> None:
+    IObservableVector_StorageFolder.create([None])
     folders.append(None)
     folders.extend([None])
     folders.insert(0, None)
@@ -965,6 +972,84 @@ def mapping(values: JsonObject) -> None:
 "#,
         &[],
     );
+
+    if has_implementation_runtime() {
+        let script = r#"from dynwinrt import DynWinRTType, DynWinRTValue, RoApartment, projected_lifetime_scope
+from sdk.windows.foundation.collections import (
+    IIterable_StorageFolder,
+    IMap_String_String,
+    IObservableVector_StorageFolder,
+    IVector_String,
+    IVector_StorageFolder,
+)
+from sdk.windows__data__json__json_object import IID_IJsonValue, IMap_String_IJsonValue
+
+with RoApartment(1), projected_lifetime_scope():
+    for vector_type in (IVector_StorageFolder, IObservableVector_StorageFolder):
+        vector = vector_type.create([None])
+        assert vector[0] is None
+        vector.append(None)
+        vector.insert(0, None)
+        vector[1] = None
+        vector[1:2] = [None, None]
+        vector.extend([None])
+        assert list(vector) == [None] * len(vector)
+
+        base = vector.as_vector() if hasattr(vector, "as_vector") else vector
+        view = base.get_view()
+        assert view is not None
+        assert view[0] is None
+        assert list(view) == [None] * len(view)
+        iterator = base.as_interface(IIterable_StorageFolder).first()
+        assert iterator is not None
+        assert next(iterator) is None
+
+    native = DynWinRTValue.create_map(
+        [], [], DynWinRTType.hstring(), DynWinRTType.interface(IID_IJsonValue)
+    )
+    mapping = IMap_String_IJsonValue.from_value(native)
+    mapping.update({"update": None})
+    assert mapping.setdefault("default", None) is None
+    mapping["index"] = None
+    assert mapping["update"] is None
+    assert mapping["default"] is None
+    assert mapping["index"] is None
+    assert list(mapping.values()) == [None, None, None]
+
+    strings = IMap_String_String.create({})
+    invalid = (
+        ("map key cannot be None", lambda: mapping.__setitem__(None, None)),
+        ("map value cannot be None", lambda: strings.__setitem__("key", None)),
+        ("map key cannot be None", lambda: IMap_String_String.create({None: "value"})),
+        ("map value cannot be None", lambda: IMap_String_String.create({"key": None})),
+        ("collection element cannot be None", lambda: IVector_String.create([None])),
+        (
+            "collection element cannot be None",
+            lambda: IVector_String.create([]).append(None),
+        ),
+    )
+    for expected, operation in invalid:
+        try:
+            operation()
+        except TypeError as error:
+            assert str(error) == expected
+        else:
+            raise AssertionError(f"{expected!r} was not raised")
+print("nullable-collection-native-ok", flush=True)
+"#;
+        fs::write(fixture.0.join("nullable_collections.py"), script).unwrap();
+        let output = Command::new(python())
+            .args(["-B", "nullable_collections.py"])
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("nullable-collection-native-ok"),
+            "{}",
+            diagnostics(&output)
+        );
+    }
 }
 
 #[test]
