@@ -293,7 +293,8 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
     let Some(generated) = Generated::new(
         "elements",
         "Windows.Storage.StorageFolder,Windows.Data.Json.JsonObject,\
-         Windows.ApplicationModel.Resources.Core.ResourceMap,Windows.Media.Playback.MediaPlaybackList",
+         Windows.ApplicationModel.Resources.Core.ResourceMap,Windows.Media.Playback.MediaPlaybackList,\
+         Windows.Foundation.Collections.StringMap",
     ) else {
         return;
     };
@@ -306,6 +307,10 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
     let playlist = generated.module("windows__media__playback__media_playback_list.pyi");
     let observable = generated
         .module("windows__foundation__collections__i_observable_vector_media_playback_item.pyi");
+    let string_map_view =
+        generated.module("windows__foundation__collections__i_map_view_string_string.pyi");
+    let string_map_view_py =
+        generated.module("windows__foundation__collections__i_map_view_string_string.py");
 
     // Collection interfaces carry no provenance. A view or iterator obtained
     // from a mutable collection can expose a null slot, so view item
@@ -366,4 +371,10 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
         &observable,
         "def __getitem__(self, index: int) -> MediaPlaybackItem | None: ...",
     );
+    // Split succeeds with two optional view pointers; no other IMapView
+    // result is widened by this native contract.
+    let split = "def split(self) -> tuple[Mapping[str, str] | None, Mapping[str, str] | None]: ...";
+    assert_contains(&string_map_view, split);
+    assert_contains(&string_map_view, "def lookup(self, key: str) -> str: ...");
+    assert_contains(&string_map_view_py, split.trim_end_matches(" ..."));
 }

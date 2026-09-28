@@ -420,10 +420,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
             let key_type = py_dynwinrt_type(&iface.generic_args[0]);
             let val_type = py_dynwinrt_type(&iface.generic_args[1]);
-            let key_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
-                &iface.generic_args[0],
-                context,
-            );
+            let key_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
             let val_annotation =
                 crate::codegen::winrt::python::type_helpers::py_collection_input_type(
                     &iface.generic_args[1],
@@ -772,5 +773,41 @@ mod tests {
         assert!(code.contains(
             "_dynwinrt_collection_item(item, lambda item: getattr(item, '_obj', item), True, 'collection element')"
         ));
+    }
+
+    #[test]
+    fn map_factory_key_nullability_follows_the_declared_key_type() {
+        let reference_key = TypeMeta::Interface {
+            namespace: "Windows.Foundation".into(),
+            name: "IStringable".into(),
+            iid: "96369f54-8eb6-48f0-abce-c1b211e627c3".into(),
+        };
+        let iface = |key| InterfaceMeta {
+            name: "IMap_Key_Object".into(),
+            iid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            generic_piid: Some("3c2925fe-8519-45c1-aa79-197b6718c1c1".into()),
+            generic_args: vec![key, TypeMeta::Object],
+            ..Default::default()
+        };
+        let context = PythonProjectionContext::default();
+
+        let reference = generate_interface(&context, &iface(reference_key));
+        let create = reference
+            .lines()
+            .find(|line| line.contains("def create(items: Mapping["))
+            .expect("map factory");
+        assert!(
+            create.contains("None"),
+            "reference-key map factory must accept None: {create}"
+        );
+        assert!(reference.contains("True, 'map key'"));
+        assert!(reference.contains("True, 'map value'"));
+
+        for key in [TypeMeta::String, TypeMeta::Guid] {
+            let generated = generate_interface(&context, &iface(key));
+            assert!(generated.contains("False, 'map key'"));
+            assert!(!generated.contains("Mapping[str | None"));
+            assert!(!generated.contains("Mapping[UUID | None"));
+        }
     }
 }

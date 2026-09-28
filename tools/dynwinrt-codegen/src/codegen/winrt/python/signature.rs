@@ -488,7 +488,10 @@ pub(crate) fn py_wrap_collection_item(
     role: CollectionInputRole,
     context: &PythonProjectionContext,
 ) -> String {
-    let allow_none = role != CollectionInputRole::Key && super::nullability::may_project_none(typ);
+    // The native collection plan accepts null for the Python projection's
+    // supported COM-pointer shapes in every role, including map keys. String,
+    // Guid, scalar, enum and struct keys still fail closed here.
+    let allow_none = super::nullability::may_project_none(typ);
     let label = match role {
         CollectionInputRole::Element => "collection element",
         CollectionInputRole::Key => "map key",
@@ -1010,7 +1013,13 @@ mod tests {
         assert!(nullable.contains("True, 'collection element'"));
 
         let key = py_wrap_collection_item("key", &geometry, CollectionInputRole::Key, &context);
-        assert!(key.contains("False, 'map key'"));
+        assert!(key.contains("True, 'map key'"));
+        let string_key =
+            py_wrap_collection_item("key", &TypeMeta::String, CollectionInputRole::Key, &context);
+        assert!(string_key.contains("False, 'map key'"));
+        let guid_key =
+            py_wrap_collection_item("key", &TypeMeta::Guid, CollectionInputRole::Key, &context);
+        assert!(guid_key.contains("False, 'map key'"));
         let scalar = py_wrap_collection_item(
             "value",
             &TypeMeta::I32,

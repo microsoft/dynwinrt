@@ -59,7 +59,8 @@ pub(crate) enum ElementContainer {
     View,
     /// `IVector`, `IMap` or their observable forms.
     Mutable,
-    /// A map key or `IKeyValuePair.Key`. Null keys are invalid.
+    /// A map key or `IKeyValuePair.Key`. Reference keys can be null; string
+    /// and value-type keys cannot.
     MapKey,
     /// An array returned by a member that does not read collection elements.
     Array,
@@ -109,6 +110,9 @@ pub(crate) struct OutputSite {
     pub(crate) try_method: bool,
     /// The Windows SDK documentation says the member's result can be null.
     pub(crate) documented_null: bool,
+    /// The native member contract marks this exact logical output as an
+    /// optional interface pointer (`IMapView.Split`'s two halves).
+    pub(crate) contract_nullable: bool,
     /// The collection holding the value: set on collection elements, and on
     /// the results of members that read elements of the collection declaring
     /// them (`get_at`, `lookup`, `current`, ...).
@@ -121,6 +125,7 @@ impl OutputSite {
             position,
             try_method: false,
             documented_null: false,
+            contract_nullable: false,
             container: None,
         }
     }
@@ -130,7 +135,21 @@ impl OutputSite {
             position,
             try_method: is_try_method(method),
             documented_null: method.documented_null_result,
+            contract_nullable: false,
             container: method.element_access.map(ElementContainer::from),
+        }
+    }
+
+    /// A specific logical method output, carrying per-output native contract
+    /// facts rather than widening every result of the member.
+    pub(crate) fn for_method_output(
+        method: &MethodMeta,
+        position: OutputPosition,
+        index: usize,
+    ) -> Self {
+        Self {
+            contract_nullable: method.contract_nullable_outputs.contains(&index),
+            ..Self::for_method(method, position)
         }
     }
 
@@ -214,7 +233,10 @@ fn stub_output_admits_none(
     };
 
     if site.container == Some(ElementContainer::MapKey) {
-        return false;
+        // output_admits_none only reaches this branch after
+        // may_project_none(typ), which deliberately covers the Python
+        // projection's supported COM-pointer shapes (not async wrappers).
+        return true;
     }
     // `Object` positions are frequently null, e.g. the arguments of a
     // `TypedEventHandler<T, Object>`.
@@ -231,7 +253,7 @@ fn stub_output_admits_none(
         site.position,
         Return | OutParam | Property | AsyncResult | Activation
     );
-    if member_result && (site.try_method || site.documented_null) {
+    if member_result && (site.try_method || site.documented_null || site.contract_nullable) {
         return true;
     }
     // Collection elements, including the results of `get_at`, `lookup` and
@@ -271,6 +293,7 @@ mod tests {
                 position: OutputPosition::AsyncResult,
                 try_method: true,
                 documented_null: false,
+                contract_nullable: false,
                 container: None,
             }
         );
@@ -280,6 +303,7 @@ mod tests {
                 position: OutputPosition::CollectionElement,
                 try_method: true,
                 documented_null: false,
+                contract_nullable: false,
                 container: Some(ElementContainer::Array),
             }
         );
@@ -437,8 +461,14 @@ mod tests {
         assert!(admits(&TypeMeta::Object, array, stub));
         assert!(admits(&nullable_u32(), array, stub));
         let key = OutputSite::element_of(ElementContainer::MapKey);
-        assert!(!admits(&widget(), key, stub));
-        assert!(!admits(&TypeMeta::Object, key, stub));
+        assert!(admits(&widget(), key, stub));
+        assert!(admits(&TypeMeta::Object, key, stub));
+        assert!(admits(&nullable_u32(), key, stub));
+        assert!(!admits(&TypeMeta::String, key, stub));
+        assert!(!admits(&TypeMeta::Guid, key, stub));
+        // Async projection shapes are not ordinary collection values in the
+        // current Python codegen, so this scope stays fail closed.
+        assert!(!admits(&TypeMeta::AsyncAction, key, stub));
 
         for access in [ElementAccess::Mutable, ElementAccess::ReadOnly] {
             let get_at = MethodMeta {
@@ -469,10 +499,34 @@ mod tests {
             element_access: Some(ElementAccess::MapKey),
             ..method("get_Key")
         };
-        assert!(!admits(
+        assert!(admits(
             &widget(),
             OutputSite::for_method(&key, OutputPosition::Property),
             stub
+        ));
+    }
+
+    #[test]
+    fn native_contract_nullability_is_per_logical_output() {
+        let split = MethodMeta {
+            contract_nullable_outputs: vec![0, 1],
+            ..method("Split")
+        };
+        for (index, expected) in [(0, true), (1, true), (2, false)] {
+            assert_eq!(
+                admits(
+                    &widget(),
+                    OutputSite::for_method_output(&split, OutputPosition::OutParam, index),
+                    AnnotationSurface::Stub
+                ),
+                expected,
+                "logical output {index}"
+            );
+        }
+        assert!(!admits(
+            &widget(),
+            OutputSite::for_method(&split, OutputPosition::Return),
+            AnnotationSurface::Stub
         ));
     }
 }

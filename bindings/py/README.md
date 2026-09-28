@@ -42,19 +42,23 @@ These values keep `| None`:
   values, which are often null.
 
 Reference-type elements read from WinRT collection interfaces are always typed
-`T | None`, including vectors, views, iterables, iterators, map values and
-key-value-pair values. Map keys remain non-null. A view or iterator obtained
-from a mutable collection can expose a null slot, and WinRT collection
-interfaces do not retain enough provenance for the stubs to distinguish that
-case. For example, a `JsonArray` holds `IJsonValue | None`, and
-`get_files_async()` returns `WinRTCoroutine[Sequence[StorageFile | None]]`.
-Value-type elements remain non-null.
+`T | None`, including vectors, views, iterables, iterators, map keys and values,
+and key-value-pair keys and values. Here reference means the projection's
+supported COM-pointer shapes: `Object`, interfaces, runtime classes, delegates,
+and parameterized interfaces. Async wrappers are not collection element
+shapes. String, GUID, scalar, enum, and struct keys remain non-null. A view or
+iterator obtained from a mutable collection can expose a null slot, and WinRT
+collection interfaces do not retain enough provenance for the stubs to
+distinguish that case. For example, a `JsonArray` holds
+`IJsonValue | None`, and `get_files_async()` returns
+`WinRTCoroutine[Sequence[StorageFile | None]]`. Value-type elements remain
+non-null.
 
-Mutable collections accept `None` when their element or map-value type is a
-WinRT reference type and store a real null WinRT value. This includes
+Mutable collections accept `None` when their element, map-key, or map-value
+type is a WinRT reference type and store a real null WinRT value. This includes
 `append()`, `insert()`, index and slice assignment, `extend()`, `update()` and
-`setdefault()`. Map keys and value-type elements reject `None` with
-`TypeError`.
+`setdefault()`. String, GUID, scalar, enum, and struct keys and value-type
+elements reject `None` with `TypeError`.
 
 Other arguments keep accepting `None` where they did before. The stubs are
 optimistic, like the generated TypeScript declarations: the runtime still

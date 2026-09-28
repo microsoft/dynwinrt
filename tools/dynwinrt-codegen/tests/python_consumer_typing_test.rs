@@ -138,6 +138,31 @@ fn typecheck(fixture: &Fixture, packages: &[&str], consumer: &str, errors: &[&st
     }
 }
 
+fn pyright_typecheck(fixture: &Fixture, consumer: &str, expected_errors: usize) {
+    let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") else {
+        return;
+    };
+    fs::write(
+        fixture.0.join("pyright_consumer.py"),
+        format!("# pyright: strict\n{consumer}"),
+    )
+    .unwrap();
+    let output = Command::new(pyright)
+        .args(["--pythonpath"])
+        .arg(python())
+        .arg("pyright_consumer.py")
+        .current_dir(&fixture.0)
+        .output()
+        .unwrap();
+    let text = diagnostics(&output);
+    let actual = text
+        .lines()
+        .filter(|line| line.contains(" - error: "))
+        .count();
+    assert_eq!(actual, expected_errors, "{text}");
+    assert_eq!(output.status.success(), expected_errors == 0, "{text}");
+}
+
 fn parameter(typ: TypeMeta) -> ParamMeta {
     ParamMeta {
         name: "value".into(),
@@ -252,13 +277,31 @@ fn generate_fixture(fixture: &Fixture, package: &str) {
             "IVector_Resource",
             "IVector`1",
             "913337e9-11a1-4345-a3a2-4e7f956e222d",
-            vec![resource_type],
+            vec![resource_type.clone()],
         ),
         (
             "IMap_Object_Object",
             "IMap`2",
             "3c2925fe-8519-45c1-aa79-197b6718c1c1",
             vec![TypeMeta::Object, TypeMeta::Object],
+        ),
+        (
+            "IMap_String_Object",
+            "IMap`2",
+            "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+            vec![TypeMeta::String, TypeMeta::Object],
+        ),
+        (
+            "IMap_Resource_Resource",
+            "IMap`2",
+            "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+            vec![resource_type.clone(), resource_type],
+        ),
+        (
+            "IMap_Guid_Object",
+            "IMap`2",
+            "3c2925fe-8519-45c1-aa79-197b6718c1c1",
+            vec![TypeMeta::Guid, TypeMeta::Object],
         ),
     ] {
         let methods = if definition == "IVector`1" {
@@ -281,6 +324,30 @@ fn generate_fixture(fixture: &Fixture, package: &str) {
                     ..Default::default()
                 },
             ]
+        } else if definition == "IMap`2" {
+            vec![MethodMeta {
+                name: "Insert".into(),
+                raw_name: "Insert".into(),
+                vtable_index: 10,
+                params: vec![
+                    ParamMeta {
+                        name: "key".into(),
+                        typ: args[0].clone(),
+                        direction: ParamDirection::In,
+                    },
+                    ParamMeta {
+                        name: "value".into(),
+                        typ: args[1].clone(),
+                        direction: ParamDirection::In,
+                    },
+                ],
+                return_type: Some(TypeMeta::Bool),
+                collection_inputs: vec![
+                    (0, dynwinrt_codegen::meta::CollectionInputRole::Key),
+                    (1, dynwinrt_codegen::meta::CollectionInputRole::Value),
+                ],
+                ..Default::default()
+            }]
         } else {
             Vec::new()
         };
@@ -497,6 +564,92 @@ def invalid_collections(resource: Resource, unrelated: Unrelated,
             "[index]",
             "[assignment]",
         ],
+    );
+    typecheck(
+        &fixture,
+        &["first"],
+        r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from first.contoso__resource import Resource
+from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
+from first.windows__foundation__collections__i_map_resource_resource import IMap_Resource_Resource
+
+def nullable_reference_keys(
+    objects: IMap_Object_Object, resources: IMap_Resource_Resource
+) -> None:
+    objects[None] = None
+    assert_type(objects[None], DynWinRTValue | None)
+    resources[None] = None
+    resources.update({None: None})
+    assert_type(resources.setdefault(None, None), Resource | None)
+    assert_type(resources[None], Resource | None)
+"#,
+        &[],
+    );
+    pyright_typecheck(
+        &fixture,
+        r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from first.contoso__resource import Resource
+from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
+from first.windows__foundation__collections__i_map_resource_resource import IMap_Resource_Resource
+
+def nullable_reference_keys(
+    objects: IMap_Object_Object, resources: IMap_Resource_Resource
+) -> None:
+    objects[None] = None
+    assert_type(objects[None], DynWinRTValue | None)
+    resources[None] = None
+    resources.update({None: None})
+    assert_type(resources.setdefault(None, None), Resource | None)
+    assert_type(resources[None], Resource | None)
+"#,
+        0,
+    );
+    typecheck(
+        &fixture,
+        &["first"],
+        r#"from first.windows__foundation__collections__i_map_guid_object import IMap_Guid_Object
+from first.windows__foundation__collections__i_map_string_object import IMap_String_Object
+from uuid import UUID
+
+def invalid_key(guid: IMap_Guid_Object, string: IMap_String_Object) -> None:
+    guid[None] = None
+    guid.get(None)
+    guid.update({None: None})
+    guid.setdefault(None, None)
+    string[None] = None
+    string.get(None)
+    string.update({None: None})
+    string.setdefault(None, None)
+"#,
+        &[
+            "[index]",
+            "[call-overload]",
+            "[dict-item]",
+            "[call-overload]",
+            "[index]",
+            "[call-overload]",
+            "[dict-item]",
+            "[call-overload]",
+        ],
+    );
+    pyright_typecheck(
+        &fixture,
+        r#"from first.windows__foundation__collections__i_map_guid_object import IMap_Guid_Object
+from first.windows__foundation__collections__i_map_string_object import IMap_String_Object
+
+def invalid_key(guid: IMap_Guid_Object, string: IMap_String_Object) -> None:
+    guid[None] = None
+    guid.get(None)
+    guid.update({None: None})
+    guid.setdefault(None, None)
+    string[None] = None
+    string.get(None)
+    string.update({None: None})
+    string.setdefault(None, None)
+"#,
+        12,
     );
 }
 
@@ -936,7 +1089,8 @@ fn mutable_collection_mutators_accept_none() {
         .args([
             "--class-name",
             "Windows.Storage.StorageLibrary,Windows.Data.Json.JsonObject,\
-             Windows.Foundation.Collections.StringMap",
+             Windows.Foundation.Collections.StringMap,Windows.Foundation.Uri,\
+             Windows.Foundation.Collections.PropertySet,Windows.UI.Xaml.ResourceDictionary",
             "--lang",
             "py",
             "--output",
@@ -945,6 +1099,141 @@ fn mutable_collection_mutators_accept_none() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", diagnostics(&output));
+
+    let stringable = TypeMeta::Interface {
+        namespace: "Windows.Foundation".into(),
+        name: "IStringable".into(),
+        iid: "96369f54-8eb6-48f0-abce-c1b211e627c3".into(),
+    };
+    let stringable_map_type = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IMap`2".into(),
+        piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+        args: vec![stringable.clone(), stringable.clone()],
+    };
+    let stringable_map = InterfaceMeta {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IMap_IStringable_IStringable".into(),
+        generic_name: Some("IMap`2".into()),
+        generic_piid: Some("3c2925fe-8519-45c1-aa79-197b6718c1c1".into()),
+        generic_args: vec![stringable.clone(), stringable.clone()],
+        methods: vec![
+            MethodMeta {
+                name: "Lookup".into(),
+                raw_name: "Lookup".into(),
+                vtable_index: 6,
+                params: vec![parameter(stringable.clone())],
+                return_type: Some(stringable.clone()),
+                element_access: Some(dynwinrt_codegen::meta::ElementAccess::Mutable),
+                collection_inputs: vec![(0, dynwinrt_codegen::meta::CollectionInputRole::Key)],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "get_Size".into(),
+                raw_name: "get_Size".into(),
+                vtable_index: 7,
+                is_property_getter: true,
+                return_type: Some(TypeMeta::U32),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "HasKey".into(),
+                raw_name: "HasKey".into(),
+                vtable_index: 8,
+                params: vec![parameter(stringable.clone())],
+                return_type: Some(TypeMeta::Bool),
+                collection_inputs: vec![(0, dynwinrt_codegen::meta::CollectionInputRole::Key)],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "GetView".into(),
+                raw_name: "GetView".into(),
+                vtable_index: 9,
+                return_type: Some(TypeMeta::Object),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "Insert".into(),
+                raw_name: "Insert".into(),
+                vtable_index: 10,
+                params: vec![
+                    ParamMeta {
+                        name: "key".into(),
+                        typ: stringable.clone(),
+                        direction: ParamDirection::In,
+                    },
+                    ParamMeta {
+                        name: "value".into(),
+                        typ: stringable.clone(),
+                        direction: ParamDirection::In,
+                    },
+                ],
+                return_type: Some(TypeMeta::Bool),
+                collection_inputs: vec![
+                    (0, dynwinrt_codegen::meta::CollectionInputRole::Key),
+                    (1, dynwinrt_codegen::meta::CollectionInputRole::Value),
+                ],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "Remove".into(),
+                raw_name: "Remove".into(),
+                vtable_index: 11,
+                params: vec![parameter(stringable.clone())],
+                collection_inputs: vec![(0, dynwinrt_codegen::meta::CollectionInputRole::Key)],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "Clear".into(),
+                raw_name: "Clear".into(),
+                vtable_index: 12,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let stringable_context = python::PythonProjectionContext::new(
+        [
+            stringable.type_identity(),
+            stringable_map_type.type_identity(),
+        ],
+        true,
+    )
+    .unwrap();
+    let stringable_module = stringable_context.implementation_module_for_interface(&stringable_map);
+    fs::write(
+        fixture
+            .0
+            .join("sdk")
+            .join(format!("{stringable_module}.py")),
+        python::generate_interface(&stringable_context, &stringable_map),
+    )
+    .unwrap();
+    fs::write(
+        fixture
+            .0
+            .join("sdk")
+            .join(format!("{stringable_module}.pyi")),
+        python_stub::generate_interface_stub(&stringable_context, &stringable_map),
+    )
+    .unwrap();
+    let object_map_stub = fs::read_to_string(
+        fixture
+            .0
+            .join("sdk")
+            .join("windows__foundation__collections__i_map_object_object.pyi"),
+    )
+    .unwrap();
+    assert!(object_map_stub.contains("MutableMapping[DynWinRTValue | None, DynWinRTValue | None]"));
+    let pair_stub = fs::read_to_string(
+        fixture
+            .0
+            .join("sdk")
+            .join("windows__foundation__collections__i_key_value_pair_object_object.pyi"),
+    )
+    .unwrap();
+    assert!(pair_stub.contains("def key(self) -> DynWinRTValue | None: ..."));
+    assert!(pair_stub.contains("def value(self) -> DynWinRTValue | None: ..."));
     // Inherited MutableSequence and MutableMapping mutators take the element
     // type of the collection base, which keeps `| None` for mutable
     // collections, like the generated item setters.
@@ -952,9 +1241,19 @@ fn mutable_collection_mutators_accept_none() {
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
 from sdk.windows.data.json import IJsonValue, JsonObject
-from sdk.windows.foundation.collections import IObservableVector_StorageFolder
+from sdk.windows.foundation import IStringable, Uri
+from sdk.windows.foundation.collections import (
+    IMap_Object_Object,
+    IMap_String_String,
+    IObservableVector_StorageFolder,
+)
 from sdk.windows.storage import StorageFolder
+from sdk.windows__foundation__collections__property_set import IMap_String_Object
+from sdk.windows__foundation__collections__i_map_i_stringable_i_stringable import (
+    IMap_IStringable_IStringable,
+)
 
 def vector(folders: IObservableVector_StorageFolder) -> None:
     IObservableVector_StorageFolder.create([None])
@@ -969,6 +1268,23 @@ def mapping(values: JsonObject) -> None:
     values.setdefault("k", None)
     values["k"] = None
     assert_type(values["k"], IJsonValue | None)
+
+def object_values(values: IMap_String_Object, uri: Uri) -> None:
+    values["none"] = None
+    values["uri"] = uri
+    assert_type(values["none"], DynWinRTValue | None)
+
+def reference_keys(
+    objects: IMap_Object_Object, stringable: IMap_IStringable_IStringable
+) -> None:
+    objects[None] = None
+    stringable[None] = None
+    assert_type(objects[None], DynWinRTValue | None)
+    assert_type(stringable[None], IStringable | None)
+
+def string_keys(values: IMap_String_String) -> None:
+    values["key"] = "value"
+    values.get("key")
 "#,
         &[],
     );
@@ -1056,13 +1372,20 @@ def mapping(values: JsonObject) -> None:
         assert!(!scalar_source.contains("def _dynwinrt_box_reference(value, value_type, wrap):"));
         assert!(!scalar_source.contains("_dynwinrt_box_reference("));
 
-        let script = r#"from dynwinrt import DynWinRTType, DynWinRTValue, RoApartment, projected_lifetime_scope
+        let script = r#"from dynwinrt import (
+    DynWinRTMethodSig, DynWinRTType, DynWinRTValue, RoApartment, WinGUID,
+    projected_lifetime_scope,
+)
 from sdk.windows.foundation.collections import (
     IIterable_StorageFolder,
+    IMap_Object_Object,
     IMap_String_String,
     IObservableVector_StorageFolder,
     IVector_String,
     IVector_StorageFolder,
+)
+from sdk.windows__foundation__collections__i_map_i_stringable_i_stringable import (
+    IMap_IStringable_IStringable,
 )
 from sdk.windows__data__json__json_object import IID_IJsonValue, IMap_String_IJsonValue
 from sdk.__NESTED_MODULE__ import _dynwinrt_box_reference
@@ -1109,6 +1432,70 @@ with RoApartment(1), projected_lifetime_scope():
     assert mapping["default"] is None
     assert mapping["index"] is None
     assert list(mapping.values()) == [None, None, None]
+
+    objects = IMap_Object_Object.create({None: None})
+    assert None in objects
+    assert objects[None] is None
+    objects[None] = None
+    assert objects.setdefault(None, None) is None
+    assert next(iter(objects.items())) == (None, None)
+    assert dict(objects) == {None: None}
+    assert objects == {None: None}
+    try:
+        hash(objects)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("mutable maps must remain unhashable")
+    object_view = objects.get_view()
+    assert object_view is not None
+    assert object_view[None] is None
+    assert dict(object_view) == {None: None}
+    del objects[None]
+    assert None not in objects
+
+    stringable = DynWinRTType.interface(
+        WinGUID.parse("96369F54-8EB6-48F0-ABCE-C1B211E627C3")
+    )
+    stringables = IMap_IStringable_IStringable.create({None: None})
+    assert None in stringables
+    assert stringables[None] is None
+    stringables[None] = None
+    stringable_pair = DynWinRTType.parameterized(
+        WinGUID.parse("02B51929-C1C4-4A7E-8940-0312B5C18500"),
+        [stringable, stringable],
+    )
+    stringable_iterator = DynWinRTType.parameterized(
+        WinGUID.parse("6A79E863-4300-459A-9966-CBB660963EE1"),
+        [stringable_pair],
+    )
+    iterable = DynWinRTType.register_interface(
+        "IIterable_IStringablePair",
+        DynWinRTType.parameterized(
+            WinGUID.parse("FAA585EA-6214-4217-AFDA-7F46DE5869B3"),
+            [stringable_pair],
+        ).iid(),
+    ).add_method("First", DynWinRTMethodSig().add_out(stringable_iterator))
+    iterator = DynWinRTType.register_interface(
+        "IIterator_IStringablePair", stringable_iterator.iid()
+    ).add_method("get_Current", DynWinRTMethodSig().add_out(stringable_pair))
+    pair = DynWinRTType.register_interface(
+        "IKeyValuePair_IStringable_IStringable", stringable_pair.iid()
+    ).add_method("get_Key", DynWinRTMethodSig().add_out(stringable)).add_method(
+        "get_Value", DynWinRTMethodSig().add_out(stringable)
+    )
+    iterable_value = stringables._obj.cast(iterable.iid())
+    iterator_value = iterable.method(6).invoke(iterable_value, [])
+    pair_value = iterator.method(6).invoke(iterator_value, [])
+    assert pair.method(6).invoke(pair_value, []).is_null()
+    assert pair.method(7).invoke(pair_value, []).is_null()
+    del stringables[None]
+    assert None not in stringables
+
+    empty_string_map = IMap_String_String.create({})
+    string_view = empty_string_map.get_view()
+    assert string_view is not None
+    assert string_view.split() == (None, None)
 
     strings = IMap_String_String.create({})
     invalid = (

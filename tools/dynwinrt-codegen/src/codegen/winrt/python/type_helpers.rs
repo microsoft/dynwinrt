@@ -592,10 +592,11 @@ pub(super) fn py_method_return_type(
 ) -> String {
     let outputs = py_method_output_positions(method)
         .into_iter()
-        .map(|(typ, position)| {
+        .enumerate()
+        .map(|(index, (typ, position))| {
             py_output_annotation(
                 typ,
-                OutputSite::for_method(method, position),
+                OutputSite::for_method_output(method, position, index),
                 surface,
                 context,
             )
@@ -692,8 +693,8 @@ fn py_collection_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -
         };
         return Some(format!(
             "Mapping[{}, {}]",
-            py_native_param_element_type(key, context),
-            py_native_param_element_type(value, context)
+            py_collection_input_type(key, context),
+            py_collection_input_type(value, context)
         ));
     }
     let element = args.first()?;
@@ -710,7 +711,7 @@ fn py_collection_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -
             } else {
                 "Sequence"
             },
-            py_native_param_element_type(element, context)
+            py_collection_input_type(element, context)
         )),
         _ => None,
     }
@@ -759,7 +760,7 @@ pub(super) fn py_method_param_list(
                 Some(CollectionInputRole::Element | CollectionInputRole::Value) => {
                     py_collection_contract_input_type(&param.typ, context)
                 }
-                Some(CollectionInputRole::Key) => py_param_type_safe(&param.typ, context),
+                Some(CollectionInputRole::Key) => py_collection_input_type(&param.typ, context),
                 None if context.is_delegate_type(&param.typ) => {
                     py_delegate_param_type(&param.typ, context)
                 }
@@ -945,13 +946,13 @@ mod tests {
                 "IIterable`1",
                 "faa585ea-6214-4217-afda-7f46de5869b3",
                 vec![TypeMeta::Object],
-                "Iterable['DynWinRTValue | _DynWinRTObject']",
+                "Iterable[DynWinRTValue | _DynWinRTObject | None]",
             ),
             (
                 "IMap`2",
                 "3c2925fe-8519-45c1-aa79-197b6718c1c1",
                 vec![TypeMeta::String, TypeMeta::Object],
-                "Mapping[str, 'DynWinRTValue | _DynWinRTObject']",
+                "Mapping[str, DynWinRTValue | _DynWinRTObject | None]",
             ),
         ] {
             let typ = TypeMeta::Parameterized {
@@ -990,7 +991,7 @@ mod tests {
         };
         assert_eq!(
             py_param_type_safe(&mapping, &context),
-            "Mapping[str, 'DynWinRTValue | _DynWinRTObject_2']"
+            "Mapping[str, DynWinRTValue | _DynWinRTObject_2 | None]"
         );
         assert_eq!(
             py_collection_input_type(&TypeMeta::Object, &context),
@@ -1141,6 +1142,24 @@ mod tests {
                 &context
             ),
             Some("MutableMapping[str, Widget | None]".to_string())
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::MutableMapping,
+                &[widget.clone(), TypeMeta::Object],
+                stub,
+                &context
+            ),
+            Some("MutableMapping[Widget | None, DynWinRTValue | None]".to_string())
+        );
+        assert_eq!(
+            py_collection_base_type(
+                CollectionKind::MutableMapping,
+                &[TypeMeta::Guid, TypeMeta::Object],
+                stub,
+                &context
+            ),
+            Some("MutableMapping[UUID, DynWinRTValue | None]".to_string())
         );
         let vector = |piid: &str| TypeMeta::Parameterized {
             namespace: "Windows.Foundation.Collections".into(),

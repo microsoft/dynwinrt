@@ -540,7 +540,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                 element, iface.name
             ));
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
-            let key = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
+            let key =
+                super::type_helpers::py_collection_input_type(&iface.generic_args[0], context);
             let value =
                 super::type_helpers::py_collection_input_type(&iface.generic_args[1], context);
             out.push('\n');
