@@ -13,7 +13,7 @@ async def run() -> None:
     expected = "Hello from dynwinrt.\nAsync WinRT file I/O works."
 
     with tempfile.TemporaryDirectory(prefix="dynwinrt-python-") as directory:
-        with RoApartment(1), projected_lifetime_scope():
+        with RoApartment(), projected_lifetime_scope():
             folder = await StorageFolder.get_folder_from_path_async(directory)
             file = await folder.create_file_async("sample.txt")
             await FileIO.write_text_async(file, "Hello from dynwinrt.")

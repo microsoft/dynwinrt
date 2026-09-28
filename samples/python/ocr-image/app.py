@@ -15,7 +15,7 @@ def normalized_words(value: str) -> set[str]:
 
 
 async def recognize(path: Path) -> str:
-    with RoApartment(1), projected_lifetime_scope():
+    with RoApartment(), projected_lifetime_scope():
         file = await StorageFile.get_file_from_path_async(str(path.resolve()))
         stream = await file.open_read_async()
 

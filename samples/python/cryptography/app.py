@@ -7,7 +7,7 @@ from generated.windows.storage.streams import IBuffer
 
 
 def sha256(text: str) -> str:
-    with RoApartment(1), projected_lifetime_scope():
+    with RoApartment(), projected_lifetime_scope():
         provider = HashAlgorithmProvider.open_algorithm("SHA256")
         data = IBuffer.from_bytes(text.encode("utf-8"))
         digest = provider.hash_data(data)

@@ -581,6 +581,11 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
             None,
         )?;
 
+        // Constants
+        for (name, apartment_type) in super::runtime::APARTMENT_TYPE_CONSTANTS {
+            m.add(name, apartment_type.0)?;
+        }
+
         // Functions
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;

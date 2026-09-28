@@ -17,12 +17,14 @@ pub type PythonTypeIdentity = TypeIdentity;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
+    AsInterface,
 }
 
 impl PythonSupportSymbol {
     fn name(self) -> &'static str {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
+            Self::AsInterface => "_dynwinrt_as_interface",
         }
     }
 }
@@ -912,7 +914,10 @@ impl PythonProjectionContext {
             }
         }
         // Support imports yield to metadata declarations and their allocated roles.
-        for helper in [PythonSupportSymbol::ObjectInput] {
+        for helper in [
+            PythonSupportSymbol::ObjectInput,
+            PythonSupportSymbol::AsInterface,
+        ] {
             let preferred = helper.name();
             let mut name = preferred.to_string();
             let mut index = 2;
@@ -1433,27 +1438,32 @@ pub fn to_snake_case_filename(name: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn object_input_helper_yields_to_visible_roles_without_renaming_metadata() {
-        let helper = PythonSupportSymbol::ObjectInput;
+    fn assert_support_helper_yields_to_visible_roles(helper: PythonSupportSymbol) {
+        let name = helper.name();
+        let [second, third] = [format!("{name}_2"), format!("{name}_3")];
+        let others = [
+            PythonSupportSymbol::ObjectInput,
+            PythonSupportSymbol::AsInterface,
+        ]
+        .into_iter()
+        .filter(|other| *other != helper)
+        .collect::<Vec<_>>();
         for kind in [
             TypeIdentityKind::Class,
             TypeIdentityKind::Interface,
             TypeIdentityKind::Struct,
         ] {
             for packaged in [false, true] {
-                let owner = TypeIdentity::named(kind, "Audit", "_DynWinRTObject");
-                let peer =
-                    TypeIdentity::named(TypeIdentityKind::Enum, "Audit", "_DynWinRTObject_2");
-                let unused =
-                    TypeIdentity::named(TypeIdentityKind::Enum, "Unused", "_DynWinRTObject_3");
+                let owner = TypeIdentity::named(kind, "Audit", name);
+                let peer = TypeIdentity::named(TypeIdentityKind::Enum, "Audit", &second);
+                let unused = TypeIdentity::named(TypeIdentityKind::Enum, "Unused", &third);
                 let context =
                     PythonProjectionContext::new([owner.clone(), peer.clone(), unused], packaged)
                         .unwrap();
                 let structs = if kind == TypeIdentityKind::Struct {
                     vec![TypeMeta::Struct {
                         namespace: "Audit".into(),
-                        name: "_DynWinRTObject".into(),
+                        name: name.into(),
                         fields: vec![],
                     }]
                 } else {
@@ -1465,23 +1475,33 @@ mod tests {
                     [(peer.clone(), PythonSymbol::Type)],
                     [],
                 );
-                assert_eq!(module.reference_name(&owner), "_DynWinRTObject");
-                assert_eq!(module.reference_name(&peer), "_DynWinRTObject_2");
-                assert_eq!(module.support_symbol_reference(helper), "_DynWinRTObject_3");
+                assert_eq!(module.reference_name(&owner), name);
+                assert_eq!(module.reference_name(&peer), second);
+                assert_eq!(module.support_symbol_reference(helper), third);
                 assert_eq!(
                     module.support_symbol_import(helper),
-                    "_DynWinRTObject as _DynWinRTObject_3"
+                    format!("{name} as {third}")
                 );
+                for other in &others {
+                    assert_eq!(module.support_symbol_import(*other), other.name());
+                }
                 let isolated = context.with_local_types(Some(owner), &structs, [], []);
-                assert_eq!(
-                    isolated.support_symbol_reference(helper),
-                    "_DynWinRTObject_2"
-                );
+                assert_eq!(isolated.support_symbol_reference(helper), second);
                 let control = context.with_local_types(Some(peer), &[], [], []);
-                assert_eq!(control.support_symbol_import(helper), "_DynWinRTObject");
-                assert_eq!(context.support_symbol_import(helper), "_DynWinRTObject");
+                assert_eq!(control.support_symbol_import(helper), name);
+                assert_eq!(context.support_symbol_import(helper), name);
             }
         }
+    }
+
+    #[test]
+    fn object_input_helper_yields_to_visible_roles_without_renaming_metadata() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::ObjectInput);
+    }
+
+    #[test]
+    fn as_interface_helper_yields_to_visible_roles_without_renaming_metadata() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::AsInterface);
     }
 
     #[test]

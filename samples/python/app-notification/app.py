@@ -42,7 +42,7 @@ async def run(
 ) -> None:
     runtime = init_winappsdk(major, minor)
     try:
-        with RoApartment(1), projected_lifetime_scope():
+        with RoApartment(), projected_lifetime_scope():
             supported = AppNotificationManager.is_supported()
             notification = build_notification()
             if smoke:

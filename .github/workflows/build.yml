@@ -548,7 +548,7 @@ jobs:
         run: |
           $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
-          cargo test -p dynwinrt-codegen --test implementation_naming_test
+          cargo test -p dynwinrt-codegen --test implementation_naming_test --test python_released_implementation_test
       - name: Test generated nullable collection values
         shell: pwsh
         run: |
