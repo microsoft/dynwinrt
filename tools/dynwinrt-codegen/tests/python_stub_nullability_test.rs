@@ -5,12 +5,16 @@
 //! from the projection are non-null in `.pyi` stubs by default, while
 //! `IReference<T>`, `Try*` results, members documented to return null,
 //! `Object` and delegate values keep `| None`. Collection elements follow the
-//! mutability of the collection holding them. Inputs, implementation
-//! protocols and the runtime `.py` annotations are unchanged.
+//! native nullable-reference contract. Inputs, implementation protocols and
+//! the runtime `.py` annotations are unchanged.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use dynwinrt_codegen::codegen::{python, python_stub};
+use dynwinrt_codegen::meta::{InterfaceMeta, MethodMeta};
+use dynwinrt_codegen::types::TypeMeta;
 
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -65,6 +69,113 @@ impl Generated {
 
 fn assert_contains(text: &str, expected: &str) {
     assert!(text.contains(expected), "missing `{expected}`");
+}
+
+#[test]
+fn ordinary_reference_array_stub_elements_are_nullable() {
+    let widget = TypeMeta::RuntimeClass {
+        namespace: "Contoso".into(),
+        name: "Widget".into(),
+        default_interface: None,
+    };
+    let widget_interface = TypeMeta::Interface {
+        namespace: "Contoso".into(),
+        name: "IWidget".into(),
+        iid: "11111111-1111-1111-1111-111111111111".into(),
+    };
+    let handler = TypeMeta::Delegate {
+        namespace: "Contoso".into(),
+        name: "WidgetHandler".into(),
+        iid: "22222222-2222-2222-2222-222222222222".into(),
+    };
+    let reference = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation".into(),
+        name: "IReference`1".into(),
+        piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+        args: vec![TypeMeta::U32],
+    };
+    let view = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IVectorView`1".into(),
+        piid: "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56".into(),
+        args: vec![widget.clone()],
+    };
+    let method = |name: &str, typ: TypeMeta, slot: usize| MethodMeta {
+        name: name.into(),
+        raw_name: name.into(),
+        vtable_index: slot,
+        return_type: Some(typ),
+        ..Default::default()
+    };
+    let source = InterfaceMeta {
+        namespace: "Contoso".into(),
+        name: "IArraySource".into(),
+        iid: "33333333-3333-3333-3333-333333333333".into(),
+        methods: vec![
+            method("GetWidgets", TypeMeta::Array(Box::new(widget.clone())), 6),
+            method(
+                "GetInterfaces",
+                TypeMeta::Array(Box::new(widget_interface.clone())),
+                7,
+            ),
+            method("GetObjects", TypeMeta::Array(Box::new(TypeMeta::Object)), 8),
+            method(
+                "GetDelegates",
+                TypeMeta::Array(Box::new(handler.clone())),
+                9,
+            ),
+            method(
+                "GetReferences",
+                TypeMeta::Array(Box::new(reference.clone())),
+                10,
+            ),
+            method("GetViews", TypeMeta::Array(Box::new(view.clone())), 11),
+            method(
+                "GetWidgetsAsync",
+                TypeMeta::AsyncOperation(Box::new(TypeMeta::Array(Box::new(widget.clone())))),
+                12,
+            ),
+            method(
+                "GetStrings",
+                TypeMeta::Array(Box::new(TypeMeta::String)),
+                13,
+            ),
+            method("GetGuids", TypeMeta::Array(Box::new(TypeMeta::Guid)), 14),
+            method("GetNumbers", TypeMeta::Array(Box::new(TypeMeta::I32)), 15),
+            method("GetBytes", TypeMeta::Array(Box::new(TypeMeta::U8)), 16),
+        ],
+        ..Default::default()
+    };
+    let context = python::PythonProjectionContext::standalone([
+        source.type_identity(),
+        widget.type_identity(),
+        widget_interface.type_identity(),
+        handler.type_identity(),
+        reference.type_identity(),
+        view.type_identity(),
+    ])
+    .unwrap();
+    let stub = python_stub::generate_interface_stub(&context, &source);
+
+    for expected in [
+        "def get_widgets(self) -> list[Widget | None]: ...",
+        "def get_interfaces(self) -> list[IWidget | None]: ...",
+        "def get_objects(self) -> list[DynWinRTValue | None]: ...",
+        "def get_delegates(self) -> list[DynWinRTValue | None]: ...",
+        "def get_references(self) -> list[IReference_UInt32 | None]: ...",
+        "def get_views(self) -> list[IVectorView_Widget | None]: ...",
+        "def get_widgets_async(self) -> WinRTCoroutine[list[Widget | None]]: ...",
+        "def get_strings(self) -> list[str]: ...",
+        "def get_guids(self) -> list[UUID]: ...",
+        "def get_numbers(self) -> list[int]: ...",
+        "def get_bytes(self) -> bytes: ...",
+    ] {
+        assert_contains(&stub, expected);
+    }
+    assert!(
+        !stub.contains("list[Widget | None] | None"),
+        "array values must remain non-null"
+    );
 }
 
 #[test]

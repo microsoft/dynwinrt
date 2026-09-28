@@ -93,11 +93,13 @@ impl From<ElementAccess> for ElementContainer {
 /// the provenance needed to prove that a reference-type element is non-null.
 /// In particular, a view or iterator obtained from a mutable collection can
 /// expose a null slot. All WinRT collection element reads therefore admit
-/// `None`; returned arrays remain snapshots and use the ordinary output rule.
+/// `None`. Returned arrays also preserve null reference slots at runtime, so
+/// their reference elements follow the same rule while the array itself
+/// remains non-null.
 pub(crate) fn element_admits_none(container: ElementContainer) -> bool {
     match container {
-        ElementContainer::View | ElementContainer::Mutable => true,
-        ElementContainer::MapKey | ElementContainer::Array => false,
+        ElementContainer::View | ElementContainer::Mutable | ElementContainer::Array => true,
+        ElementContainer::MapKey => false,
     }
 }
 
@@ -457,9 +459,11 @@ mod tests {
             assert!(!admits(&TypeMeta::String, site, stub));
         }
         let array = OutputSite::element_of(ElementContainer::Array);
-        assert!(!admits(&widget(), array, stub));
+        assert!(admits(&widget(), array, stub));
         assert!(admits(&TypeMeta::Object, array, stub));
         assert!(admits(&nullable_u32(), array, stub));
+        assert!(!admits(&TypeMeta::String, array, stub));
+        assert!(!admits(&TypeMeta::Guid, array, stub));
         let key = OutputSite::element_of(ElementContainer::MapKey);
         assert!(admits(&widget(), key, stub));
         assert!(admits(&TypeMeta::Object, key, stub));

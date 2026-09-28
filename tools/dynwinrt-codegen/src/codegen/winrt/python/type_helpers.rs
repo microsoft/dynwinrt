@@ -403,7 +403,8 @@ fn spell_collection(
 }
 
 /// The elements of an array filled by a member that reads collection
-/// elements (`get_many`) follow that collection; other arrays are snapshots.
+/// elements (`get_many`) follow that collection; other arrays preserve their
+/// own nullable reference slots.
 fn array_element(site: OutputSite) -> OutputSite {
     site.element_in(site.container.unwrap_or(ElementContainer::Array))
 }
@@ -931,6 +932,81 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_reference_array_elements_are_nullable_but_the_array_is_not() {
+        let runtime_class = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: None,
+        };
+        let interface = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "IWidget".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let delegate = TypeMeta::Delegate {
+            namespace: "Contoso".into(),
+            name: "WidgetHandler".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let reference = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference`1".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![TypeMeta::U32],
+        };
+        let view = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVectorView`1".into(),
+            piid: crate::codegen::winrt::python::collections::IVECTOR_VIEW_PIID.into(),
+            args: vec![runtime_class.clone()],
+        };
+        let context = PythonProjectionContext::standalone([
+            runtime_class.type_identity(),
+            interface.type_identity(),
+            delegate.type_identity(),
+            reference.type_identity(),
+            view.type_identity(),
+        ])
+        .unwrap();
+        let stub = AnnotationSurface::Stub;
+
+        for (inner, expected) in [
+            (runtime_class.clone(), "list[Widget | None]"),
+            (interface, "list[IWidget | None]"),
+            (TypeMeta::Object, "list[DynWinRTValue | None]"),
+            (delegate, "list[DynWinRTValue | None]"),
+            (reference, "list[IReference_UInt32 | None]"),
+            (view, "list[IVectorView_Widget | None]"),
+        ] {
+            let annotation = returned(&TypeMeta::Array(Box::new(inner)), stub, &context);
+            assert_eq!(annotation, expected);
+            assert!(
+                !annotation.ends_with("] | None"),
+                "the array value itself must stay non-null: {annotation}"
+            );
+        }
+        assert_eq!(
+            returned(
+                &TypeMeta::AsyncOperation(Box::new(TypeMeta::Array(Box::new(runtime_class)))),
+                stub,
+                &context
+            ),
+            "WinRTCoroutine[list[Widget | None]]"
+        );
+        for (inner, expected) in [
+            (TypeMeta::String, "list[str]"),
+            (TypeMeta::Guid, "list[UUID]"),
+            (TypeMeta::I32, "list[int]"),
+            (TypeMeta::U8, "bytes"),
+        ] {
+            assert_eq!(
+                returned(&TypeMeta::Array(Box::new(inner)), stub, &context),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn object_inputs_accept_native_wrappers_without_widening_outputs() {
         let context = PythonProjectionContext::default();
         assert_eq!(
@@ -1093,7 +1169,7 @@ mod tests {
         assert_eq!(returned(&unknown, stub, &context), "DynWinRTValue");
         assert_eq!(
             returned(&TypeMeta::Array(Box::new(widget.clone())), stub, &context),
-            "list[Widget]"
+            "list[Widget | None]"
         );
         assert_eq!(
             returned(&async_of(&widget), stub, &context),

@@ -367,6 +367,7 @@ async def run_check(
 
         elif kind == 'nullable_object_array_roundtrip':
             uri_cls = generated_type(pkg_name, 'Uri')
+            property_value_cls = generated_type(pkg_name, 'IPropertyValue')
             uri = uri_cls.create_uri('https://example.com/null-array')
             boxed = getattr(cls, member)(
                 [dw.DynWinRTValue.null_value(), uri._obj]
@@ -374,18 +375,23 @@ async def run_check(
             if boxed is None:
                 cr['error'] = 'CreateInspectableArray returned None'
                 return cr
-            values = boxed.call_0(
-                38,
-                dw.DynWinRTType.array_type(dw.DynWinRTType.object()),
-            ).as_array().to_values()
+            # Cross the generated interface method and its array converter,
+            # not a raw call_0/manual as_array path.
+            property_value = property_value_cls.from_value(boxed)
+            values = property_value.get_inspectable_array()
             if len(values) != 2:
                 cr['error'] = f'expected 2 inspectable values, got {len(values)}'
-            elif not values[0].is_null():
+            elif values[0] is not None:
                 cr['error'] = 'null inspectable array element was not preserved'
+            elif values[1] is None:
+                cr['error'] = 'non-null inspectable array element became None'
             elif values[1].identity_raw() != uri._obj.identity_raw():
                 cr['error'] = 'inspectable array element lost COM identity'
             else:
                 cr['pass'] = True
+            if values[1] is not None:
+                values[1].release()
+            dw.release_projected(property_value)
 
         elif kind == 'projection_identity':
             import weakref

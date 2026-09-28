@@ -46,10 +46,12 @@ Reference-type elements read from WinRT collection interfaces are always typed
 and key-value-pair keys and values. Here reference means the projection's
 supported COM-pointer shapes: `Object`, interfaces, runtime classes, delegates,
 and parameterized interfaces. Async wrappers are not collection element
-shapes. String, GUID, scalar, enum, and struct keys remain non-null. A view or
-iterator obtained from a mutable collection can expose a null slot, and WinRT
-collection interfaces do not retain enough provenance for the stubs to
-distinguish that case. For example, a `JsonArray` holds
+shapes. Reference-type elements of returned WinRT arrays are also `T | None`;
+the array value itself remains non-null. String, GUID, scalar, enum, and struct
+array elements and keys remain non-null. A view or iterator obtained from a
+mutable collection can expose a null slot, and WinRT collection interfaces do
+not retain enough provenance for the stubs to distinguish that case. For
+example, a `JsonArray` holds
 `IJsonValue | None`, and `get_files_async()` returns
 `WinRTCoroutine[Sequence[StorageFile | None]]`. Value-type elements remain
 non-null.

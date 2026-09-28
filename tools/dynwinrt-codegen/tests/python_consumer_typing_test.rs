@@ -252,6 +252,39 @@ fn generate_fixture(fixture: &Fixture, package: &str) {
                 params: vec![parameter(TypeMeta::Array(Box::new(TypeMeta::Object)))],
                 ..Default::default()
             },
+            MethodMeta {
+                name: "GetResources".into(),
+                raw_name: "GetResources".into(),
+                vtable_index: 10,
+                return_type: Some(TypeMeta::Array(Box::new(TypeMeta::RuntimeClass {
+                    namespace: "Contoso".into(),
+                    name: "Resource".into(),
+                    default_interface: Some(Box::new(TypeMeta::Interface {
+                        namespace: "Contoso".into(),
+                        name: "IItem".into(),
+                        iid: "00000001-1111-1111-1111-111111111111".into(),
+                    })),
+                }))),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "GetCounts".into(),
+                raw_name: "GetCounts".into(),
+                vtable_index: 11,
+                return_type: Some(TypeMeta::Array(Box::new(TypeMeta::I32))),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "GetItems".into(),
+                raw_name: "GetItems".into(),
+                vtable_index: 12,
+                return_type: Some(TypeMeta::Array(Box::new(TypeMeta::Interface {
+                    namespace: "Contoso".into(),
+                    name: "IItem".into(),
+                    iid: "00000001-1111-1111-1111-111111111111".into(),
+                }))),
+                ..Default::default()
+            },
         ],
     );
     let classes = [
@@ -651,6 +684,98 @@ def invalid_key(guid: IMap_Guid_Object, string: IMap_String_Object) -> None:
 "#,
         12,
     );
+}
+
+#[test]
+fn reference_array_results_preserve_null_elements() {
+    if !has_mypy() {
+        return;
+    }
+    let fixture = Fixture::new();
+    generate_fixture(&fixture, "views");
+    let source = fs::read_to_string(fixture.0.join("views").join("contoso__content.py")).unwrap();
+    assert!(source.contains("def get_resources(self) -> list[Resource | None]:"));
+    assert!(source.contains("_dynwinrt_wrap_values('contoso__resource', 'Resource'"));
+    assert!(source.contains("def get_items(self) -> list[IItem | None]:"));
+    assert!(source.contains("_dynwinrt_wrap_values('contoso__i_item', 'IItem'"));
+    assert!(source.contains("def get_counts(self) -> list[int]:"));
+    let valid = r#"from typing import assert_type
+from views.contoso__content import Content
+from views.contoso__i_item import IItem
+from views.contoso__resource import Resource
+
+def consume(content: Content) -> list[str]:
+    resources = content.get_resources()
+    assert_type(resources, list[Resource | None])
+    assert_type(content.get_items(), list[IItem | None])
+    assert_type(content.get_counts(), list[int])
+    return [resource.name for resource in resources if resource is not None]
+"#;
+    typecheck(&fixture, &["views"], valid, &[]);
+    pyright_typecheck(&fixture, valid, 0);
+
+    let invalid = r#"from views.contoso__content import Content
+
+def consume(content: Content) -> str:
+    return content.get_resources()[0].name
+"#;
+    typecheck(&fixture, &["views"], invalid, &["[union-attr]"]);
+    pyright_typecheck(&fixture, invalid, 1);
+
+    if has_implementation_runtime() {
+        let script = r#"from dynwinrt import RoApartment, project_as, projected_lifetime_scope
+from views.contoso__content import Content
+from views.contoso__i_content import IContent
+
+class ContentHandlers:
+    def get_content(self):
+        return None
+
+    def set_content(self, _value):
+        pass
+
+    def set_object(self, _value):
+        pass
+
+    def set_objects(self, _value):
+        pass
+
+    def get_resources(self):
+        return [None]
+
+    def get_counts(self):
+        return [1, 2]
+
+    def get_items(self):
+        return [None]
+
+with RoApartment(1), projected_lifetime_scope():
+    with IContent.implement(ContentHandlers()) as owner:
+        content = project_as(owner.value, Content)
+        resources = content.get_resources()
+        assert isinstance(resources, list)
+        assert resources == [None]
+        items = content.get_items()
+        assert isinstance(items, list)
+        assert items == [None]
+        counts = content.get_counts()
+        assert isinstance(counts, list)
+        assert counts == [1, 2]
+print("nullable-reference-array-native-ok", flush=True)
+"#;
+        fs::write(fixture.0.join("reference_array_runtime.py"), script).unwrap();
+        let output = Command::new(python())
+            .args(["-B", "reference_array_runtime.py"])
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("nullable-reference-array-native-ok"),
+            "{}",
+            diagnostics(&output)
+        );
+    }
 }
 
 #[test]
@@ -1576,6 +1701,15 @@ class ContentHandlers:
 
     def set_objects(self, value: list[DynWinRTValue | None]) -> None:
         self.items = value
+
+    def get_resources(self):
+        return []
+
+    def get_counts(self):
+        return []
+
+    def get_items(self):
+        return []
 
 class WrongObject:
     _obj = 42
