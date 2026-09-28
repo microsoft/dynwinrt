@@ -82,14 +82,14 @@ pub(crate) enum LegacyPreservationPredicate {
     /// The candidate accepts builtin ints over a wider range. Exact ints must
     /// fit the old converter; subclasses stay on the old path without probing
     /// potentially visible conversion methods.
-    ExactIntRangeOrSubclass {
+    IntBaseRange {
         index: usize,
         minimum: i128,
         maximum: i128,
     },
     /// The candidate accepts builtin ints and floats. Only exact builtin
     /// values are preflighted; subclasses conservatively stay on the old path.
-    ExactRealIntRangeOrSubclass {
+    RealToIntRange {
         index: usize,
         minimum: i128,
         maximum: i128,
@@ -102,10 +102,9 @@ pub(crate) enum LegacyPreservationPredicate {
         minimum: i128,
         maximum: i128,
     },
-    NumericRange {
+    BuiltinSubclass {
         index: usize,
-        minimum: i128,
-        maximum: i128,
+        exact_types: &'static str,
     },
     Char16OrStringSubclass {
         index: usize,
@@ -115,6 +114,9 @@ pub(crate) enum LegacyPreservationPredicate {
         iid: String,
     },
     DynWinRTValue {
+        index: usize,
+    },
+    CallableOrDynWinRTValue {
         index: usize,
     },
 }
@@ -309,14 +311,14 @@ fn overlap_parameter(
             },
         ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
         (Legacy::Integer { minimum, maximum }, Guard::Integer { .. }) => {
-            Preserve(vec![Predicate::ExactIntRangeOrSubclass {
+            Preserve(vec![Predicate::IntBaseRange {
                 index,
                 minimum: *minimum,
                 maximum: *maximum,
             }])
         }
         (Legacy::Integer { minimum, maximum }, Guard::Real) => {
-            Preserve(vec![Predicate::ExactRealIntRangeOrSubclass {
+            Preserve(vec![Predicate::RealToIntRange {
                 index,
                 minimum: *minimum,
                 maximum: *maximum,
@@ -330,39 +332,59 @@ fn overlap_parameter(
             },
         ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
         (Legacy::Integer { minimum, maximum }, Guard::KnownEnum { .. }) => {
-            Preserve(vec![Predicate::NumericRange {
+            Preserve(vec![Predicate::IntBaseRange {
                 index,
                 minimum: *minimum,
                 maximum: *maximum,
             }])
         }
-        (
-            Legacy::Integer { .. },
-            Guard::Char16
-            | Guard::String
-            | Guard::Guid
-            | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
-        ) => Disjoint,
+        (Legacy::Integer { .. }, Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Integer { .. }, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::Struct(_)) => Unknown,
         (Legacy::Real, Guard::Bool | Guard::Integer { .. } | Guard::KnownEnum { .. }) => {
             Preserve(Vec::new())
         }
         (Legacy::Real, Guard::Real) => Unknown,
-        (
-            Legacy::Real,
-            Guard::Char16
-            | Guard::String
-            | Guard::Guid
-            | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
-        ) => Disjoint,
+        (Legacy::Real, Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Real, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Real, Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Real, Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Real, Guard::Struct(_)) => Unknown,
         (Legacy::EnumInteger { minimum, maximum }, Guard::Bool) => {
             if *minimum <= 0 && *maximum >= 1 {
                 Preserve(Vec::new())
             } else {
-                Preserve(vec![Predicate::NumericRange {
+                Preserve(vec![Predicate::IntBaseRange {
                     index,
                     minimum: *minimum,
                     maximum: *maximum,
@@ -377,7 +399,7 @@ fn overlap_parameter(
             },
         ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
         (Legacy::EnumInteger { minimum, maximum }, Guard::Integer { .. }) => {
-            Preserve(vec![Predicate::ExactIntRangeOrSubclass {
+            Preserve(vec![Predicate::IntBaseRange {
                 index,
                 minimum: *minimum,
                 maximum: *maximum,
@@ -407,16 +429,29 @@ fn overlap_parameter(
             },
         ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
         (Legacy::EnumInteger { minimum, maximum }, Guard::KnownEnum { .. }) => {
-            Preserve(vec![Predicate::NumericRange {
+            Preserve(vec![Predicate::IntBaseRange {
                 index,
                 minimum: *minimum,
                 maximum: *maximum,
             }])
         }
-        (
-            Legacy::EnumInteger { .. },
-            Guard::Guid | Guard::DateTime | Guard::TimeSpan | Guard::Struct(_),
-        ) => Disjoint,
+        (Legacy::EnumInteger { .. }, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::EnumInteger { .. }, Guard::DateTime) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(datetime,)",
+            }])
+        }
+        (Legacy::EnumInteger { .. }, Guard::TimeSpan) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(timedelta,)",
+            }])
+        }
+        (Legacy::EnumInteger { .. }, Guard::Struct(_)) => Unknown,
         (Legacy::Char16, Guard::Char16) => Preserve(Vec::new()),
         (Legacy::Char16, Guard::String) => {
             Preserve(vec![Predicate::Char16OrStringSubclass { index }])
@@ -429,9 +464,9 @@ fn overlap_parameter(
             | Guard::KnownEnum { .. }
             | Guard::Guid
             | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
+            | Guard::TimeSpan,
         ) => Disjoint,
+        (Legacy::Char16, Guard::Struct(_)) => Unknown,
         (Legacy::String, Guard::String | Guard::Char16) => Preserve(Vec::new()),
         (
             Legacy::String,
@@ -441,15 +476,43 @@ fn overlap_parameter(
             | Guard::KnownEnum { .. }
             | Guard::Guid
             | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
+            | Guard::TimeSpan,
         ) => Disjoint,
+        (Legacy::String, Guard::Struct(_)) => Unknown,
         (Legacy::Guid, Guard::Guid) => Preserve(Vec::new()),
         (Legacy::DateTime, Guard::DateTime) => Preserve(Vec::new()),
         (Legacy::TimeSpan, Guard::TimeSpan) => Preserve(Vec::new()),
         (Legacy::Struct(left), Guard::Struct(right)) if left == right => Preserve(Vec::new()),
+        (Legacy::Struct(_), Guard::Bool) => Disjoint,
+        (Legacy::Struct(_), Guard::Integer { .. }) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(int,)",
+        }]),
+        (Legacy::Struct(_), Guard::Real) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(int, float)",
+        }]),
+        (Legacy::Struct(_), Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Struct(_), Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Struct(_), Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Struct(_), Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Struct(_), _) | (_, Guard::Struct(_)) => Unknown,
         (
-            Legacy::Guid | Legacy::DateTime | Legacy::TimeSpan | Legacy::Struct(_),
+            Legacy::Guid | Legacy::DateTime | Legacy::TimeSpan,
             Guard::Bool
             | Guard::Integer { .. }
             | Guard::Real
@@ -458,29 +521,31 @@ fn overlap_parameter(
             | Guard::String
             | Guard::Guid
             | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
+            | Guard::TimeSpan,
         ) => Disjoint,
         (Legacy::QueryInterface(left), Guard::QueryInterface(right)) if left == right => {
             Preserve(Vec::new())
         }
-        (Legacy::QueryInterface(iid), Guard::QueryInterface(_) | Guard::DynWinRTValue) => {
-            Preserve(vec![Predicate::CanCast {
-                index,
-                iid: iid.clone(),
-            }])
-        }
+        (
+            Legacy::QueryInterface(iid),
+            Guard::QueryInterface(_) | Guard::DynWinRTValue | Guard::KnownEnum { .. },
+        ) => Preserve(vec![Predicate::CanCast {
+            index,
+            iid: iid.clone(),
+        }]),
+        (Legacy::QueryInterface(_), Guard::Bool) => Disjoint,
+        (Legacy::QueryInterface(_), _) => Unknown,
         (Legacy::DynWinRTValue, Guard::DynWinRTValue | Guard::QueryInterface(_)) => {
             Preserve(vec![Predicate::DynWinRTValue { index }])
         }
-        (Legacy::Delegate, Guard::Delegate) => Unknown,
-        (
-            Legacy::QueryInterface(_)
-            | Legacy::DynWinRTValue
-            | Legacy::Delegate
-            | Legacy::Collection,
-            Guard::Bool | Guard::KnownEnum { .. },
-        ) => Disjoint,
+        (Legacy::DynWinRTValue, Guard::Bool) => Disjoint,
+        (Legacy::DynWinRTValue, _) => Unknown,
+        (Legacy::Delegate, Guard::Delegate) => Preserve(Vec::new()),
+        (Legacy::Delegate, Guard::DynWinRTValue | Guard::QueryInterface(_)) => {
+            Preserve(vec![Predicate::CallableOrDynWinRTValue { index }])
+        }
+        (Legacy::Delegate | Legacy::Collection, Guard::Bool) => Disjoint,
+        (Legacy::Delegate, _) => Unknown,
         (
             Legacy::Bool
             | Legacy::Integer { .. }
@@ -490,23 +555,19 @@ fn overlap_parameter(
             | Legacy::String
             | Legacy::Guid
             | Legacy::DateTime
-            | Legacy::TimeSpan
-            | Legacy::Struct(_),
+            | Legacy::TimeSpan,
             Guard::QueryInterface(_) | Guard::DynWinRTValue | Guard::Delegate | Guard::Collection,
         ) => Unknown,
         (
-            Legacy::QueryInterface(_)
-            | Legacy::DynWinRTValue
-            | Legacy::Delegate
-            | Legacy::Collection,
+            Legacy::Collection,
             Guard::Integer { .. }
             | Guard::Real
+            | Guard::KnownEnum { .. }
             | Guard::Char16
             | Guard::String
             | Guard::Guid
             | Guard::DateTime
-            | Guard::TimeSpan
-            | Guard::Struct(_),
+            | Guard::TimeSpan,
         ) => Unknown,
         _ => Unknown,
     }

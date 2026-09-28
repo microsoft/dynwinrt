@@ -402,6 +402,48 @@ fn metadata(path: &Path) {
         &[("target", Type::named(NAMESPACE, "IAliasLegacyString"))],
     );
     runtime_class(&mut file, "QiDispatchProbe", &["IQiLegacy", "IQiCanonical"]);
+    interface(
+        &mut file,
+        "IIndexLegacy",
+        0x51931912,
+        "Sift",
+        "Sift",
+        &[("value", Type::I32)],
+    );
+    interface(
+        &mut file,
+        "IIndexStringCanonical",
+        0x51931913,
+        "Sift",
+        "SiftText",
+        &[("value", Type::String)],
+    );
+    runtime_class(
+        &mut file,
+        "IndexStringProbe",
+        &["IIndexLegacy", "IIndexStringCanonical"],
+    );
+    interface(
+        &mut file,
+        "IByteLegacy",
+        0x51931914,
+        "Rank",
+        "Rank",
+        &[("value", Type::I8)],
+    );
+    interface(
+        &mut file,
+        "IModeCanonical",
+        0x51931915,
+        "Rank",
+        "RankMode",
+        &[("value", Type::named(NAMESPACE, "Mode"))],
+    );
+    runtime_class(
+        &mut file,
+        "EnumComparisonProbe",
+        &["IByteLegacy", "IModeCanonical"],
+    );
 
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, file.into_stream()).unwrap();
@@ -476,7 +518,7 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             .unwrap();
     assert!(
         numeric_domain_source.contains(
-            "type(_legacy_bound[1]) is not int or -2147483648 <= _legacy_bound[1] <= 2147483647"
+            "-2147483648 <= int.__index__(_legacy_bound[1]) <= 2147483647"
         ) && numeric_domain_source.contains(
             "return _dynwinrt_legacy_call(self._pick_6_1, ('first', 'second',), args, kwargs, 'pick')"
         ),
@@ -491,6 +533,25 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             .count(),
         2,
         "{qi_source}"
+    );
+    let index_string_source =
+        fs::read_to_string(package.join("tests__overload_compatibility__index_string_probe.py"))
+            .unwrap();
+    assert!(
+        index_string_source
+            .contains("type(_legacy_bound[0]) not in (str,)) and isinstance(_bound[0], str)")
+            && index_string_source.contains(
+                "return _dynwinrt_legacy_call(self._sift_6_1, ('value',), args, kwargs, 'sift')"
+            ),
+        "{index_string_source}"
+    );
+    let enum_comparison_source =
+        fs::read_to_string(package.join("tests__overload_compatibility__enum_comparison_probe.py"))
+            .unwrap();
+    assert!(
+        enum_comparison_source.contains("-128 <= int.__index__(_legacy_bound[0]) <= 127")
+            && !enum_comparison_source.contains("-128 <= _legacy_bound[0] <= 127"),
+        "{enum_comparison_source}"
     );
 
     let available = Command::new(python())
@@ -519,6 +580,8 @@ from pyviews.tests__overload_compatibility__bool_arity_probe import BoolArityPro
 from pyviews.tests__overload_compatibility__bool_pair_probe import BoolPairProbe
 from pyviews.tests__overload_compatibility__bool_probe import BoolProbe
 from pyviews.tests__overload_compatibility__enum_probe import EnumProbe
+from pyviews.tests__overload_compatibility__enum_comparison_probe import EnumComparisonProbe
+from pyviews.tests__overload_compatibility__index_string_probe import IndexStringProbe
 from pyviews.tests__overload_compatibility__numeric_domain_probe import NumericDomainProbe
 from pyviews.tests__overload_compatibility__pair_probe import PairProbe
 from pyviews.tests__overload_compatibility__qi_dispatch_probe import QiDispatchProbe
@@ -530,18 +593,24 @@ from pyviews.tests__overload_compatibility__i_bool_canonical import IBoolCanonic
 from pyviews.tests__overload_compatibility__i_bool_pair_canonical import IBoolPairCanonical
 from pyviews.tests__overload_compatibility__i_enum_legacy import IEnumLegacy
 from pyviews.tests__overload_compatibility__i_enum_pair_legacy import IEnumPairLegacy
+from pyviews.tests__overload_compatibility__i_byte_legacy import IByteLegacy
 from pyviews.tests__overload_compatibility__i_int_bool_arity_legacy import IIntBoolArityLegacy
 from pyviews.tests__overload_compatibility__i_int_bool_legacy import IIntBoolLegacy
 from pyviews.tests__overload_compatibility__i_int_bool_pair_legacy import IIntBoolPairLegacy
 from pyviews.tests__overload_compatibility__i_int_pair_legacy import IIntPairLegacy
+from pyviews.tests__overload_compatibility__i_index_legacy import IIndexLegacy
+from pyviews.tests__overload_compatibility__i_index_string_canonical import IIndexStringCanonical
 from pyviews.tests__overload_compatibility__i_qi_canonical import IQiCanonical
 from pyviews.tests__overload_compatibility__i_qi_legacy import IQiLegacy
+from pyviews.tests__overload_compatibility__i_mode_canonical import IModeCanonical
 from pyviews.tests__overload_compatibility__i_string_canonical import IStringCanonical
 from pyviews.tests__overload_compatibility__i_string_pair_canonical import IStringPairCanonical
 from pyviews.tests__overload_compatibility__i_bool_wide_canonical import IBoolWideCanonical
+from pyviews.tests__overload_compatibility__mode import Mode
 
 calls = []
 conversion_events = []
+index_events = []
 runtime = importlib.import_module("pyviews._runtime")
 
 class AliasCanonical:
@@ -573,6 +642,11 @@ class NumericString(str):
     def __int__(self):
         conversion_events.append(("numeric-string-int", str(self)))
         return int(str(self))
+
+class IndexString(str):
+    def __index__(self):
+        index_events.append(("index-string-index", str(self)))
+        return 7
 
 class EnumPairLegacy:
     def bar(self, mode, label):
@@ -633,6 +707,26 @@ class QiCanonical:
     def apply(self, target):
         calls.append(("qi-canonical", target.__class__.__name__))
         return 1102
+
+class IndexLegacy:
+    def sift(self, value):
+        calls.append(("index-legacy", value))
+        return 1201
+
+class IndexStringCanonical:
+    def sift_text(self, value):
+        calls.append(("index-string-canonical", value))
+        return 1202
+
+class ByteLegacy:
+    def rank(self, value):
+        calls.append(("byte-legacy", value))
+        return 1301
+
+class ModeCanonical:
+    def rank_mode(self, value):
+        calls.append(("mode-canonical", int(value)))
+        return 1302
 
 results = {}
 class UnexpectedIntError:
@@ -751,6 +845,40 @@ with dw.RoApartment(1):
         finally:
             dw.release_projected(target)
 
+    with IIndexLegacy.implement(
+        IndexLegacy(),
+        interfaces=[(IIndexStringCanonical, IndexStringCanonical())],
+    ) as implementation:
+        value = IndexStringProbe._from_native(implementation.value._obj)
+        try:
+            results["index_string_positional"] = value.sift(IndexString("child"))
+            results["index_string_keyword"] = value.sift(value=IndexString("child"))
+            results["index_string_builtin"] = value.sift("child")
+            results["index_string_conversion_count"] = len(index_events)
+        finally:
+            dw.release_projected(value)
+
+    comparison_events = []
+    original_le = Mode.__le__
+    Mode.__le__ = lambda self, other: (
+        comparison_events.append(("unexpected-le", int(self))),
+        (_ for _ in ()).throw(RuntimeError("unexpected comparison")),
+    )[1]
+    try:
+        with IByteLegacy.implement(
+            ByteLegacy(),
+            interfaces=[(IModeCanonical, ModeCanonical())],
+        ) as implementation:
+            value = EnumComparisonProbe._from_native(implementation.value._obj)
+            try:
+                results["enum_comparison_positional"] = value.rank(Mode.One)
+                results["enum_comparison_keyword"] = value.rank(value=Mode.One)
+                results["enum_comparison_side_effects"] = len(comparison_events)
+            finally:
+                dw.release_projected(value)
+    finally:
+        Mode.__le__ = original_le
+
 print(json.dumps({"results": results, "calls": calls}))
 "#;
     fs::write(fixture.0.join("probe.py"), probe).unwrap();
@@ -763,13 +891,13 @@ print(json.dumps({"results": results, "calls": calls}))
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(
-            r#""results": {"unexpected_int_error": "unexpected-int-error", "alias_positional": 201, "alias_keyword": 201, "enum_positional": 301, "enum_keyword": 301, "text_positional": 401, "enum_string_subclass": 301, "enum_string_conversion_count": 1, "nonoverlap_positional": 601, "nonoverlap_keyword": 601, "bool_positional": 701, "bool_keyword": 701, "bool_pair_positional": 802, "bool_pair_keyword": 802, "bool_arity_positional": 902, "bool_arity_keyword": 902, "numeric_pair_positional": 1001, "numeric_pair_keyword": 1001, "numeric_pair_i32_max": 1001, "numeric_pair_i32_min": 1001, "numeric_pair_wide_high": 1002, "numeric_pair_wide_low": 1002, "qi_positional": 1101, "qi_keyword": 1101}"#
+            r#""results": {"unexpected_int_error": "unexpected-int-error", "alias_positional": 201, "alias_keyword": 201, "enum_positional": 301, "enum_keyword": 301, "text_positional": 401, "enum_string_subclass": 301, "enum_string_conversion_count": 1, "nonoverlap_positional": 601, "nonoverlap_keyword": 601, "bool_positional": 701, "bool_keyword": 701, "bool_pair_positional": 802, "bool_pair_keyword": 802, "bool_arity_positional": 902, "bool_arity_keyword": 902, "numeric_pair_positional": 1001, "numeric_pair_keyword": 1001, "numeric_pair_i32_max": 1001, "numeric_pair_i32_min": 1001, "numeric_pair_wide_high": 1002, "numeric_pair_wide_low": 1002, "qi_positional": 1101, "qi_keyword": 1101, "index_string_positional": 1201, "index_string_keyword": 1201, "index_string_builtin": 1202, "index_string_conversion_count": 2, "enum_comparison_positional": 1301, "enum_comparison_keyword": 1301, "enum_comparison_side_effects": 0}"#
         ),
         "{stdout}"
     );
     assert!(
         stdout.contains(
-            r#""calls": [["alias-legacy-string", "7"], ["alias-legacy-string", "8"], ["enum-legacy", 1], ["enum-legacy", 1], ["string-canonical", "not numeric"], ["enum-legacy", 9], ["string-pair-canonical", "1", true], ["string-pair-canonical", "1", false], ["int-bool-legacy", 1], ["int-bool-legacy", 0], ["bool-pair-canonical", true, false], ["bool-pair-canonical", false, true], ["bool-arity-canonical", true, false], ["bool-arity-canonical", false, true], ["int-pair-legacy", 1, 5], ["int-pair-legacy", 0, 5], ["int-pair-legacy", 1, 2147483647], ["int-pair-legacy", 0, -2147483648], ["bool-wide-canonical", true, 2147483648], ["bool-wide-canonical", false, -2147483649], ["qi-legacy", "IAliasCanonical"], ["qi-legacy", "IAliasCanonical"]]"#
+            r#""calls": [["alias-legacy-string", "7"], ["alias-legacy-string", "8"], ["enum-legacy", 1], ["enum-legacy", 1], ["string-canonical", "not numeric"], ["enum-legacy", 9], ["string-pair-canonical", "1", true], ["string-pair-canonical", "1", false], ["int-bool-legacy", 1], ["int-bool-legacy", 0], ["bool-pair-canonical", true, false], ["bool-pair-canonical", false, true], ["bool-arity-canonical", true, false], ["bool-arity-canonical", false, true], ["int-pair-legacy", 1, 5], ["int-pair-legacy", 0, 5], ["int-pair-legacy", 1, 2147483647], ["int-pair-legacy", 0, -2147483648], ["bool-wide-canonical", true, 2147483648], ["bool-wide-canonical", false, -2147483649], ["qi-legacy", "IAliasCanonical"], ["qi-legacy", "IAliasCanonical"], ["index-legacy", 7], ["index-legacy", 7], ["index-string-canonical", "child"], ["byte-legacy", 1], ["byte-legacy", 1]]"#
         ),
         "{stdout}"
     );

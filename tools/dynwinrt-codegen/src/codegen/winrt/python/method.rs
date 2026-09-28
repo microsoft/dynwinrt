@@ -248,19 +248,19 @@ pub(crate) fn emit_dispatch(
     let preservation_expression = |predicates: &[LegacyPreservationPredicate]| {
         std::iter::once("_legacy_bound is not None".to_string())
             .chain(predicates.iter().map(|predicate| match predicate {
-                LegacyPreservationPredicate::ExactIntRangeOrSubclass {
+                LegacyPreservationPredicate::IntBaseRange {
                     index,
                     minimum,
                     maximum,
                 } => format!(
-                    "(type(_legacy_bound[{index}]) is not int or {minimum} <= _legacy_bound[{index}] <= {maximum})"
+                    "{minimum} <= int.__index__(_legacy_bound[{index}]) <= {maximum}"
                 ),
-                LegacyPreservationPredicate::ExactRealIntRangeOrSubclass {
+                LegacyPreservationPredicate::RealToIntRange {
                     index,
                     minimum,
                     maximum,
                 } => format!(
-                    "(type(_legacy_bound[{index}]) not in (int, float) or (type(_legacy_bound[{index}]) is int and {minimum} <= _legacy_bound[{index}] <= {maximum}))"
+                    "({minimum} <= int.__index__(_legacy_bound[{index}]) <= {maximum} if isinstance(_legacy_bound[{index}], int) else type(_legacy_bound[{index}]) is not float)"
                 ),
                 LegacyPreservationPredicate::ExactIntConversionRangeOrSubclass {
                     index,
@@ -270,11 +270,9 @@ pub(crate) fn emit_dispatch(
                 } => format!(
                     "(type(_legacy_bound[{index}]) not in {exact_types} or _dynwinrt_legacy_int_guard(_legacy_bound[{index}], {minimum}, {maximum}))"
                 ),
-                LegacyPreservationPredicate::NumericRange {
-                    index,
-                    minimum,
-                    maximum,
-                } => format!("{minimum} <= _legacy_bound[{index}] <= {maximum}"),
+                LegacyPreservationPredicate::BuiltinSubclass { index, exact_types } => {
+                    format!("type(_legacy_bound[{index}]) not in {exact_types}")
+                }
                 LegacyPreservationPredicate::Char16OrStringSubclass { index } => format!(
                     "(type(_legacy_bound[{index}]) is not str or (len(_legacy_bound[{index}]) == 1 and ord(_legacy_bound[{index}]) <= 65535))"
                 ),
@@ -284,6 +282,11 @@ pub(crate) fn emit_dispatch(
                 LegacyPreservationPredicate::DynWinRTValue { index } => {
                     format!(
                         "isinstance(getattr(_legacy_bound[{index}], '_obj', _legacy_bound[{index}]), DynWinRTValue)"
+                    )
+                }
+                LegacyPreservationPredicate::CallableOrDynWinRTValue { index } => {
+                    format!(
+                        "(callable(_legacy_bound[{index}]) or isinstance(getattr(_legacy_bound[{index}], '_obj', _legacy_bound[{index}]), DynWinRTValue))"
                     )
                 }
             }))

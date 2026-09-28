@@ -1726,16 +1726,11 @@ mod tests {
             ],
             &[],
         );
-        assert_eq!(planned.group("ShowKind", 9), "show");
-        assert_eq!(planned.group("ShowText", 8), "show");
-        assert_eq!(
-            planned.aliases,
-            aliases(&[("show_kind", "_show_9"), ("show_text", "_show_8")])
-        );
-        assert_eq!(
-            planned.legacy_fallbacks["show"],
-            ("Show".to_string(), 6, "_show_6".to_string())
-        );
+        assert_eq!(planned.group("ShowKind", 9), "show_kind");
+        assert_eq!(planned.group("ShowText", 8), "show_text");
+        assert!(planned.aliases.is_empty());
+        assert_eq!(planned.fallbacks, ["show"]);
+        assert!(planned.legacy_fallbacks.is_empty());
 
         let planned = plan_scope(
             vec![
@@ -1959,13 +1954,11 @@ mod tests {
         );
         assert_eq!(
             legacy_guard_overlap(&old_integer_pair, &bool_wide, false, &context),
-            LegacyGuardOverlap::Preserve(vec![
-                LegacyPreservationPredicate::ExactIntRangeOrSubclass {
-                    index: 1,
-                    minimum: i32::MIN as i128,
-                    maximum: i32::MAX as i128,
-                }
-            ])
+            LegacyGuardOverlap::Preserve(vec![LegacyPreservationPredicate::IntBaseRange {
+                index: 1,
+                minimum: i32::MIN as i128,
+                maximum: i32::MAX as i128,
+            }])
         );
     }
 
@@ -1984,6 +1977,7 @@ mod tests {
         let context = PythonProjectionContext::standalone([
             old_type.type_identity(),
             new_type.type_identity(),
+            enumeration("Mode").type_identity(),
         ])
         .unwrap();
         let old = overload("Use", "Use", 6, &[("value", old_type)]);
@@ -1999,6 +1993,11 @@ mod tests {
         );
         assert_eq!(
             legacy_guard_overlap(&old, &candidate, true, &context),
+            expected
+        );
+        let enum_candidate = overload("UseKind", "Use", 8, &[("value", enumeration("Mode"))]);
+        assert_eq!(
+            legacy_guard_overlap(&old, &enum_candidate, false, &context),
             expected
         );
     }
@@ -2111,6 +2110,8 @@ mod tests {
         let mut runtime_count = 0;
         let mut all_plan_sites = 0;
         let mut bool_shadows = 0;
+        let mut compatibility_fallbacks = BTreeSet::new();
+        let mut interface_fallbacks = BTreeSet::new();
         for namespace in namespaces {
             for class in meta::parse_namespace(WINMD, &namespace) {
                 let statics = class
@@ -2120,6 +2121,13 @@ mod tests {
                     .collect::<Vec<_>>();
                 let instance = class_instance_interfaces(&class).collect::<Vec<_>>();
                 let plan = ClassMemberPlan::new(&class, &context);
+                compatibility_fallbacks.extend(
+                    plan.statics
+                        .fallbacks()
+                        .iter()
+                        .chain(plan.instance.fallbacks())
+                        .map(|name| format!("{}.{}.{name}", class.namespace, class.name)),
+                );
 
                 let static_count = assert_scope(&statics, &plan.statics);
                 let instance_count = assert_scope(&instance, &plan.instance);
@@ -2128,16 +2136,27 @@ mod tests {
                 all_plan_sites += count;
                 bool_shadows += static_count.1 + instance_count.1;
                 for interface in &class.required_interfaces {
-                    let count =
-                        assert_scope(&[interface], &interface_member_plan(interface, &context));
+                    let interface_plan = interface_member_plan(interface, &context);
+                    interface_fallbacks.extend(interface_plan.fallbacks().iter().map(|name| {
+                        format!(
+                            "{}.{}[{}].{name}",
+                            class.namespace, class.name, interface.name
+                        )
+                    }));
+                    let count = assert_scope(&[interface], &interface_plan);
                     all_plan_sites += count.0;
                     bool_shadows += count.1;
                 }
             }
             for interface in meta::parse_interfaces(WINMD, &namespace) {
                 if !interface.is_delegate() {
-                    let count =
-                        assert_scope(&[&interface], &interface_member_plan(&interface, &context));
+                    let interface_plan = interface_member_plan(&interface, &context);
+                    interface_fallbacks.extend(
+                        interface_plan.fallbacks().iter().map(|name| {
+                            format!("{}.{}.{name}", interface.namespace, interface.name)
+                        }),
+                    );
+                    let count = assert_scope(&[&interface], &interface_plan);
                     all_plan_sites += count.0;
                     bool_shadows += count.1;
                 }
@@ -2147,5 +2166,19 @@ mod tests {
         assert_eq!(runtime_count, 766);
         assert_eq!(all_plan_sites, 897);
         assert_eq!(bool_shadows, 0);
+        assert!(interface_fallbacks.is_empty());
+        assert_eq!(
+            compatibility_fallbacks,
+            [
+                "Windows.Networking.Sockets.MessageWebSocket.close",
+                "Windows.Networking.Sockets.ServerMessageWebSocket.close",
+                "Windows.Networking.Sockets.ServerStreamWebSocket.close",
+                "Windows.Networking.Sockets.StreamWebSocket.close",
+                "Windows.UI.Notifications.TileUpdateManagerForUser.create_tile_updater_for_application",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        );
     }
 }
