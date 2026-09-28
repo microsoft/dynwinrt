@@ -310,7 +310,9 @@ box = view.raw["count"]              # the native DynWinRTValue box
 - The view is live: every operation goes to the map, and the view holds no
   WinRT reference of its own. An `IMap` gets a `MutableObjectValueView`, a
   `collections.abc.MutableMapping`; an `IMapView` gets a read-only
-  `ObjectValueView`, a `Mapping`.
+  `ObjectValueView`, a `Mapping`. Releasing the underlying generated wrapper
+  makes native reads and writes through the view raise the usual released-object
+  error; a live WinRT null entry still reads as `None`.
 - Reads return `None` for WinRT null, a runtime object that is not a box as
   its `DynWinRTValue`, and `unbox_object(value, preserve_type=preserve_type)`
   for a box. Where `unbox_object` raises for a box without a Python form, the

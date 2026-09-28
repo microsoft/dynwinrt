@@ -23,6 +23,11 @@ import threading
 
 
 _WINRT_UINT_SUFFIXES = {'int8', 'int16', 'int32', 'int64'}
+_RELEASED_REASON = (
+    'has been released (its projected_lifetime_scope() exited, or '
+    'release_projected() / DynWinRTValue.release() was called) and '
+    'can no longer be used.'
+)
 
 
 def collapse_winrt_uint_tokens(name: str) -> str:
@@ -369,11 +374,7 @@ async def run_check(
             cr['pass'] = True
 
         elif kind == 'released_projection_error':
-            reason = (
-                'has been released (its projected_lifetime_scope() exited, or '
-                'release_projected() / DynWinRTValue.release() was called) and '
-                'can no longer be used.'
-            )
+            reason = _RELEASED_REASON
             receiver = f'This WinRT object {reason}'
             args = [literal_arg(a) for a in check.get('args', [])]
             with dw.projected_lifetime_scope():
@@ -585,11 +586,7 @@ async def run_check(
             # A released wrapper is neither passed nor unboxed as a null
             # reference. Generated struct IReference field setters share the
             # module's unbox helper.
-            reason = (
-                'has been released (its projected_lifetime_scope() exited, or '
-                'release_projected() / DynWinRTValue.release() was called) and '
-                'can no longer be used.'
-            )
+            reason = _RELEASED_REASON
             released_box = factory(check['compatibility_value'])
             released = reference_cls.from_value(getattr(released_box, '_obj', released_box))
             dw.release_projected(released)
@@ -1995,8 +1992,71 @@ async def run_check(
             through['through'] = 7
             if view['through'] != 7:
                 cr['error'] = 'the IPropertySet workaround did not reach the map'
-            else:
-                cr['pass'] = True
+                return cr
+
+            expected_release = f'This WinRT object {_RELEASED_REASON}'
+            for map_class in (cls, generated_type(pkg_name, 'ValueSet')):
+                label = map_class.__name__
+                released_map = map_class()
+                released_view = v.object_value_view(released_map)
+                released_view['count'] = 5
+                released_view['empty'] = None
+                native_read_only = released_map.get_view()
+                read_only_view = v.object_value_view(native_read_only)
+                if (
+                    released_view['empty'] is not None
+                    or released_map['empty'] is not None
+                    or read_only_view['empty'] is not None
+                ):
+                    cr['error'] = f'{label}: a live WinRT null was not preserved'
+                    return cr
+
+                dw.release_projected(released_map)
+                if read_only_view['count'] != 5:
+                    cr['error'] = f'{label}: releasing the map invalidated its separate IMapView'
+                    return cr
+                operations = (
+                    ('view creation', lambda: v.object_value_view(released_map)),
+                    ('raw read', lambda: released_view.raw['empty']),
+                    (
+                        'raw write',
+                        lambda: released_view.raw.__setitem__('raw', dw.to_winrt_object(6)),
+                    ),
+                    ('read', lambda: released_view['empty']),
+                    ('write', lambda: released_view.__setitem__('new', 7)),
+                    ('get', lambda: released_view.get('missing', 9)),
+                    ('items', lambda: list(released_view.items())),
+                    ('update', lambda: released_view.update(new=7)),
+                    ('setdefault', lambda: released_view.setdefault('new', 7)),
+                    ('pop', lambda: released_view.pop('missing', 9)),
+                )
+                for operation, action in operations:
+                    try:
+                        action()
+                    except RuntimeError as error:
+                        if str(error) == expected_release:
+                            continue
+                        cr['error'] = f'{label} {operation}: unexpected error {error!s}'
+                        return cr
+                    cr['error'] = f'{label} {operation}: a released map was accepted'
+                    return cr
+
+                dw.release_projected(native_read_only)
+                for operation, action in (
+                    ('IMapView creation', lambda: v.object_value_view(native_read_only)),
+                    ('IMapView read', lambda: read_only_view['empty']),
+                    ('IMapView values', lambda: list(read_only_view.values())),
+                ):
+                    try:
+                        action()
+                    except RuntimeError as error:
+                        if str(error) == expected_release:
+                            continue
+                        cr['error'] = f'{label} {operation}: unexpected error {error!s}'
+                        return cr
+                    cr['error'] = f'{label} {operation}: a released map was accepted'
+                    return cr
+            cr['pass'] = True
 
         elif kind == 'object_value_view_storage_properties':
             from datetime import datetime

@@ -54,6 +54,11 @@ IPROPERTY_VALUE_STATICS = WinGUID.parse("629bdbc8-d932-4ff4-96b9-8d96c5c1e858")
 IURI_FACTORY = WinGUID.parse("44a9796f-723e-4fdf-a218-033e75b0c084")
 E_NOTIMPL = -2147467263
 UTC = timezone.utc
+RELEASED_REASON = (
+    "has been released (its projected_lifetime_scope() exited, or "
+    "release_projected() / DynWinRTValue.release() was called) and can no longer "
+    "be used."
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -929,20 +934,87 @@ def test_values_that_are_not_generated_map_wrappers_are_rejected():
         object_value_view(properties, preserve_type=1)
 
 
-def test_released_maps_raise_on_reads_and_writes():
-    properties = property_set()
-    properties["count"] = to_winrt_object(5)
+@pytest.mark.parametrize("class_name", ["PropertySet", "ValueSet"])
+def test_released_maps_fail_through_native_and_mapping_operations(class_name):
+    properties = GeneratedStyleMap(activate(f"Windows.Foundation.Collections.{class_name}"))
     view = object_value_view(properties)
+    view["count"] = 5
+    view["empty"] = None
+    read_only = object_value_view(properties.get_view())
+    assert view.raw is properties
+    assert view["empty"] is None and properties["empty"] is None
+    assert read_only["empty"] is None and dict(read_only) == {"count": 5, "empty": None}
+    assert view.setdefault("empty", 6) is None
+    assert view.pop("absent", 7) == 7
+
     release_projected(properties)
+    assert view.raw is properties and read_only["count"] == 5
     operations = [
-        lambda: view["count"],
-        lambda: view.__setitem__("count", 6),
-        lambda: view.__delitem__("count"),
-        lambda: len(view),
-        lambda: list(view),
-        lambda: "count" in view,
-        lambda: object_value_view(properties),
+        ("view creation", lambda: object_value_view(properties)),
+        ("raw read", lambda: view.raw["count"]),
+        ("raw null read", lambda: view.raw["empty"]),
+        ("raw write", lambda: view.raw.__setitem__("added", to_winrt_object(6))),
+        ("read", lambda: view["count"]),
+        ("null read", lambda: view["empty"]),
+        ("write", lambda: view.__setitem__("added", 6)),
+        ("delete", lambda: view.__delitem__("count")),
+        ("contains", lambda: "count" in view),
+        ("length", lambda: len(view)),
+        ("iteration", lambda: next(iter(view))),
+        ("get", lambda: view.get("absent", 7)),
+        ("keys", lambda: list(view.keys())),
+        ("items", lambda: list(view.items())),
+        ("values", lambda: list(view.values())),
+        ("dict", lambda: dict(view)),
+        ("equality", lambda: view == {"count": 5, "empty": None}),
+        ("update", lambda: view.update(added=7)),
+        ("setdefault", lambda: view.setdefault("added", 7)),
+        ("pop", lambda: view.pop("absent", 7)),
+        ("popitem", lambda: view.popitem()),
+        ("clear", lambda: view.clear()),
     ]
-    for operation in operations:
-        with pytest.raises(RuntimeError):
+    for label, operation in operations:
+        with pytest.raises(RuntimeError) as caught:
             operation()
+        assert str(caught.value) == f"This WinRT object {RELEASED_REASON}", label
+
+    native_read_only = read_only.raw
+    release_projected(native_read_only)
+    assert read_only.raw is native_read_only
+    for label, operation in [
+        ("read-only creation", lambda: object_value_view(native_read_only)),
+        ("read-only raw", lambda: read_only.raw["count"]),
+        ("read-only null", lambda: read_only["empty"]),
+        ("read-only get", lambda: read_only.get("absent", 7)),
+        ("read-only items", lambda: list(read_only.items())),
+    ]:
+        with pytest.raises(RuntimeError) as caught:
+            operation()
+        assert str(caught.value) == f"This WinRT object {RELEASED_REASON}", label
+
+
+def test_view_writes_reject_released_values_but_keep_live_null():
+    view = object_value_view(property_set())
+    view["empty"] = None
+    released = to_winrt_object(5)
+    released.release()
+    assert view.setdefault("empty", released) is None
+
+    operations = [
+        ("item assignment", lambda: view.__setitem__("bad", released), "argument 0"),
+        ("update", lambda: view.update(bad=released), "argument 0"),
+        ("setdefault", lambda: view.setdefault("bad", released), "argument 0"),
+        (
+            "typed InspectableArray",
+            lambda: view.__setitem__("bad", values.InspectableArray([None, released])),
+            "element 1",
+        ),
+    ]
+    for label, operation, slot in operations:
+        with pytest.raises(RuntimeError) as caught:
+            operation()
+        assert (
+            str(caught.value)
+            == f"This WinRT object ({slot} of to_winrt_object()) {RELEASED_REASON}"
+        ), label
+        assert dict(view) == {"empty": None} and view.raw["empty"] is None
