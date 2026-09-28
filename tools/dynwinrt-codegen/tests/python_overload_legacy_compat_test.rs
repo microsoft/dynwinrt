@@ -236,7 +236,7 @@ fn metadata(path: &Path) {
         0x51931901,
         "Foo",
         "Foo",
-        &[("value", Type::String)],
+        &[("text", Type::String)],
     );
     interface(
         &mut file,
@@ -329,7 +329,7 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         .unwrap();
     assert!(
         alias_class.contains("    def foo_version(self, *args, **kwargs):")
-            && alias_class.contains("return self._foo_6_1(*_bound)")
+            && alias_class.contains("_IAliasLegacyString.method(6).invoke(")
             && !alias_class.contains("    foo_version = foo\n"),
         "{alias_source}"
     );
@@ -359,6 +359,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         .output()
         .is_ok_and(|output| output.status.success());
     if !available {
+        assert_ne!(
+            std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref(),
+            Ok("1"),
+            "native Python implementation runtime is required"
+        );
         eprintln!("Skipping live compatibility probe; prepared Python binding is unavailable");
         return;
     }
