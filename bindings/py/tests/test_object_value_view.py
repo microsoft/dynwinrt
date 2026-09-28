@@ -103,6 +103,7 @@ def register(generic, keys, value_type, methods):
 
 
 class GeneratedStyle:
+    _dynwinrt_interface_type = True
     GENERIC = IMAP_VIEW
 
     def __init__(self, native, keys=STRING_KEYS, value_type=OBJECT):
@@ -122,19 +123,27 @@ class GeneratedStyle:
         ]
 
     @property
+    def _map_obj(self):
+        return self._obj
+
+    @property
     def size(self):
-        return self._interface.method(7).invoke(self._obj, []).to_u32()
+        return self._interface.method(7).invoke(self._map_obj, []).to_u32()
 
     def lookup(self, key):
-        value = self._interface.method(6).invoke(self._obj, [self._keys.to_native(key)])
+        value = self._interface.method(6).invoke(
+            self._map_obj, [self._keys.to_native(key)]
+        )
         return None if value.is_null() else value
 
     def has_key(self, key):
-        return self._interface.method(8).invoke(self._obj, [self._keys.to_native(key)]).to_bool()
+        return self._interface.method(8).invoke(
+            self._map_obj, [self._keys.to_native(key)]
+        ).to_bool()
 
     def _iter_pairs(self):
         pair = T.parameterized(IKEY_VALUE_PAIR, [self._keys.type, self._value_type])
-        iterable = self._obj.cast(T.parameterized(IITERABLE, [pair]).iid())
+        iterable = self._map_obj.cast(T.parameterized(IITERABLE, [pair]).iid())
         iterator = iterable.call_0(6, OBJECT)  # First
         while iterator.call_0(7, T.bool_type()).to_bool():  # get_HasCurrent
             current = iterator.call_0(6, OBJECT)  # get_Current
@@ -162,20 +171,39 @@ class GeneratedStyleMap(GeneratedStyle, _WinRTMutableMappingMixin):
         ]
 
     def get_view(self):
-        native = self._interface.method(9).invoke(self._obj, [])
+        native = self._interface.method(9).invoke(self._map_obj, [])
         return GeneratedStyleMapView(native, self._keys, self._value_type)
 
     def insert(self, key, value):
         native = getattr(value, "_obj", value)
         return self._interface.method(10).invoke(
-            self._obj, [self._keys.to_native(key), native]
+            self._map_obj, [self._keys.to_native(key), native]
         ).to_bool()
 
     def remove(self, key):
-        self._interface.method(11).invoke(self._obj, [self._keys.to_native(key)])
+        self._interface.method(11).invoke(self._map_obj, [self._keys.to_native(key)])
 
     def clear(self):
-        self._interface.method(12).invoke(self._obj, [])
+        self._interface.method(12).invoke(self._map_obj, [])
+
+
+class GeneratedStyleRuntimeMap(GeneratedStyleMap):
+    """A runtime-class wrapper whose collection interface is non-default."""
+
+    _dynwinrt_interface_type = False
+    _dynwinrt_runtime_class_type = True
+
+    def __init__(self, native, keys=STRING_KEYS, value_type=OBJECT):
+        super().__init__(native, keys, value_type)
+        self._collection_obj = self._obj
+        # Stand in for a different default interface on the same identity.
+        self._obj = native.cast(
+            T.parameterized(IMAP, [keys.type, T.hstring()]).iid()
+        )
+
+    @property
+    def _map_obj(self):
+        return self._collection_obj
 
 
 class GeneratedStyleInterface:
@@ -244,6 +272,75 @@ def payloadless_box(type_value=PropertyType.OtherType):
         owner.release()
 
 
+def map_implementation_plan(name, value_type):
+    """A complete ``IMap<String, value_type>`` implementation plan."""
+    methods = GeneratedStyleMap.methods(T.hstring(), value_type)
+    iid = T.parameterized(IMAP, [T.hstring(), value_type]).iid()
+    interface = T.register_interface(name, iid)
+    definitions = []
+    for slot, (method_name, inputs, output) in enumerate(methods, 6):
+        signature = DynWinRTMethodSig()
+        for typ in inputs:
+            signature = signature.add_in(typ)
+        if output is not None:
+            signature = signature.add_out(output)
+        interface = interface.add_method(method_name, signature)
+        definitions.append(
+            DynWinRTImplementationMethod(method_name, slot, signature)
+        )
+    return DynWinRTInterfacePlan.create(name, interface, definitions)
+
+
+@contextmanager
+def object_and_string_maps():
+    """One COM identity with distinct ``IMap<String, Object/String>`` stores."""
+    plans = [
+        map_implementation_plan("Tests.IMap_String_Object", OBJECT),
+        map_implementation_plan("Tests.IMap_String_String", T.hstring()),
+    ]
+    stores = [
+        {"shared": to_winrt_object(7)},
+        {"shared": "wrong map"},
+    ]
+    calls = []
+
+    def dispatch(interface, slot, args):
+        calls.append((interface, slot))
+        store = stores[interface]
+        key = args[0].to_string() if args else None
+        if slot == 6:  # Lookup
+            value = store[key]
+            return [
+                value
+                if interface == 0
+                else DynWinRTValue.from_hstring(value)
+            ]
+        if slot == 7:  # get_Size
+            return [DynWinRTValue.from_u32(len(store))]
+        if slot == 8:  # HasKey
+            return [DynWinRTValue.from_bool(key in store)]
+        if slot == 9:  # GetView (unused by this regression)
+            return [DynWinRTValue.null_value()]
+        if slot == 10:  # Insert
+            replaced = key in store
+            store[key] = args[1] if interface == 0 else args[1].to_string()
+            return [DynWinRTValue.from_bool(replaced)]
+        if slot == 11:  # Remove
+            del store[key]
+            return []
+        assert slot == 12  # Clear
+        store.clear()
+        return []
+
+    owner = DynWinRTImplementation.create(plans, dispatch)
+    raw = owner.to_value()
+    try:
+        yield raw, stores, calls
+    finally:
+        raw.release()
+        owner.release()
+
+
 # ----------------------------------------------------------------------
 # Views and their protocol
 # ----------------------------------------------------------------------
@@ -272,6 +369,48 @@ def test_object_value_view_picks_the_view_for_the_map_protocol():
         MutableObjectValueView(properties.get_view())
     with pytest.raises(AttributeError):
         view.raw = properties
+
+
+def test_multi_map_identity_uses_only_the_wrappers_projected_map():
+    with object_and_string_maps() as (raw, stores, calls):
+        object_map = GeneratedStyleMap(raw)
+        string_map = GeneratedStyleMap(raw, value_type=T.hstring())
+
+        view = object_value_view(object_map)
+        assert view.raw is object_map
+        assert view["shared"] == 7
+        view["added"] = values.UInt32(9)
+        assert unbox_object(stores[0]["added"]) == 9
+        assert stores[1] == {"shared": "wrong map"}
+        assert calls == [(0, 8), (0, 6), (0, 10)]
+
+        before = list(calls)
+        with pytest.raises(
+            TypeError,
+            match=r"projects a different WinRT map interface; pass "
+            r"value\.as_interface\(IMap_String_Object\)",
+        ):
+            object_value_view(string_map)
+        # QI does not enter either map implementation, and rejection happens
+        # before any mapping operation can dispatch through the wrong vtable.
+        assert calls == before
+
+        runtime_map = GeneratedStyleRuntimeMap(raw)
+        runtime_view = object_value_view(runtime_map)
+        assert runtime_view.raw is runtime_map
+        assert runtime_view["shared"] == 7
+        runtime_view["runtime"] = "collection pointer"
+        assert unbox_object(stores[0]["runtime"]) == "collection pointer"
+        assert stores[1] == {"shared": "wrong map"}
+        assert calls[-3:] == [(0, 8), (0, 6), (0, 10)]
+
+        assert (
+            raw.identity_raw()
+            == object_map._obj.identity_raw()
+            == string_map._obj.identity_raw()
+            == runtime_map._obj.identity_raw()
+            == runtime_map._collection_obj.identity_raw()
+        )
 
 
 def test_the_view_types_are_public_and_generic():
@@ -478,7 +617,12 @@ def test_boxes_without_a_python_form_come_back_raw():
         # Explicit unboxing still raises for the same values.
         with pytest.raises(OSError) as caught:
             unbox_object(properties["other"])
+        assert type(caught.value) is OSError
         assert caught.value.winerror == E_NOTIMPL
+        assert (
+            caught.value._dynwinrt_unsupported_property_type
+            == PropertyType.OtherType
+        )
         with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
             unbox_object(properties["nested"])
         with pytest.raises(OverflowError, match="outside the range of datetime.datetime"):
@@ -486,6 +630,29 @@ def test_boxes_without_a_python_form_come_back_raw():
         # One odd entry does not break iteration.
         converted = dict(object_value_view(properties, preserve_type=True))
         assert converted["count"] == 5 and set(converted) == {"count", "other", "nested", "far"}
+
+
+def test_supported_getter_e_notimpl_propagates_the_same_error(monkeypatch):
+    properties = property_set()
+    properties["count"] = to_winrt_object(5)
+    failure = OSError(
+        0,
+        "supported IPropertyValue getter failed",
+        None,
+        E_NOTIMPL,
+    )
+    assert failure.winerror == E_NOTIMPL
+    assert not hasattr(failure, "_dynwinrt_unsupported_property_type")
+
+    def failing_getter(_raw, *, preserve_type=False):
+        assert preserve_type is False
+        raise failure
+
+    monkeypatch.setattr(values, "unbox_object", failing_getter)
+    with pytest.raises(OSError) as caught:
+        object_value_view(properties)["count"]
+    # The view must not classify by HRESULT, exception text or public type.
+    assert caught.value is failure
 
 
 def test_other_read_errors_propagate():

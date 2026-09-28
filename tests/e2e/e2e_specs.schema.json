@@ -106,6 +106,7 @@
              "object_value_storage_properties",
              "object_value_device_properties",
              "object_value_view_maps",
+             "object_value_view_guid_map",
              "object_value_view_storage_properties",
              "object_value_view_device_properties"
            ]

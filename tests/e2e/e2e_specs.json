@@ -482,6 +482,16 @@
       ]
     },
     {
+      "id": "object_value_view_guid_map",
+      "namespace": "Windows.Media.MediaProperties",
+      "class": "MediaPropertySet",
+      "langs": ["py"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "object_value_view_guid_map", "member": "insert" }
+      ]
+    },
+    {
       "id": "issue_69_device_information_async_collection",
       "namespace": "Windows.Devices.Enumeration",
       "class": "DeviceInformation",

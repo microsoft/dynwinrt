@@ -475,17 +475,24 @@ fn native_input<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, Dy
     Ok(None)
 }
 
-fn unsupported_property_type(property_type: PropertyType) -> PyErr {
+fn unsupported_property_type(py: Python<'_>, property_type: PropertyType) -> PyErr {
     let name = payloadless_name(property_type)
         .map(|name| format!(" ({name})"))
         .unwrap_or_default();
-    map_windows_error(windows::core::Error::new(
+    let error = map_windows_error(windows::core::Error::new(
         E_NOTIMPL,
         format!(
             "Unsupported WinRT IPropertyValue type: {}{name}",
             property_type.0
         ),
-    ))
+    ));
+    if let Err(marker_error) = error
+        .value(py)
+        .setattr("_dynwinrt_unsupported_property_type", property_type.0)
+    {
+        return marker_error;
+    }
+    error
 }
 
 // ======================================================================
@@ -543,7 +550,7 @@ impl Reader<'_> {
             PropertyValueUnboxResult::Null => Ok(py.None()),
             PropertyValueUnboxResult::NotPropertyValue => Ok(raw.clone().into_any().unbind()),
             PropertyValueUnboxResult::Unsupported(property_type) => {
-                Err(unsupported_property_type(property_type))
+                Err(unsupported_property_type(py, property_type))
             }
             PropertyValueUnboxResult::Value(data) => self.read(py, data, depth),
         }

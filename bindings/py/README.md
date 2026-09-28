@@ -316,8 +316,9 @@ box = view.raw["count"]              # the native DynWinRTValue box
   view returns the box's `DynWinRTValue`, so `dict(view)` does not fail on one
   odd entry: an unsupported `PropertyType` such as `OtherType` anywhere inside
   the box, or a `DateTime` outside the range of `datetime`. Other errors
-  propagate. Each read returns a new `DynWinRTValue` for a runtime object, so
-  compare those with `identity_raw()`.
+  propagate, including the same HRESULT from a failing getter for an otherwise
+  supported `PropertyType`. Each read returns a new `DynWinRTValue` for a
+  runtime object, so compare those with `identity_raw()`.
 - Writes store `to_winrt_object(value)` and raise its errors unchanged: a
   plain `int` boxes as `Int32` only, and an empty or mixed list needs a typed
   array or an explicit `property_type`.
@@ -325,9 +326,11 @@ box = view.raw["count"]              # the native DynWinRTValue box
   `DynWinRTValue` objects. Use it to keep a box's COM identity: with
   `preserve_type=True`, a value that is read and written back keeps its
   `PropertyType`, but it is a new box.
-- `QueryInterface` confirms the map's value type, so other maps, such as
-  `StringMap` or `JsonObject`, raise `TypeError`; the type stubs reject them
-  too.
+- `QueryInterface` confirms both the map's value type and that the wrapper
+  actually dispatches through that `IMap`/`IMapView` interface. A wrapper for
+  another map on the same COM identity is rejected rather than dispatching
+  through the wrong vtable. Other maps, such as `StringMap` or `JsonObject`,
+  raise `TypeError`; the type stubs reject them too.
 - Generated `IPropertySet` wrappers, such as `ApplicationDataContainer.values`,
   are not Python mappings. Pass
   `container.values.as_interface(IMap_String_Object)` instead.

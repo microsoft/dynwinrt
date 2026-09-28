@@ -2,8 +2,9 @@
 # Licensed under the MIT License.
 
 import asyncio
-from collections.abc import Coroutine, Generator, Sequence
+from collections.abc import Coroutine, Generator, MutableMapping, Sequence
 from typing import Any, Awaitable, Dict, List, Tuple, assert_type
+from uuid import UUID
 
 from dynwinrt import (
     DynWinRTArray,
@@ -36,6 +37,7 @@ from python_bindings.windows.foundation.collections import (
     ValueSet,
 )
 from python_bindings.windows.globalization import Calendar
+from python_bindings.windows.media.media_properties import MediaPropertySet
 from python_bindings.windows.storage.streams import (
     Buffer as WinRTBuffer,
     DataWriter,
@@ -172,6 +174,8 @@ def check_object_value_views(
     value_set: ValueSet,
     device: DeviceInformation,
     strings: StringMap,
+    media: MediaPropertySet,
+    integers: MutableMapping[int, DynWinRTValue | None],
 ) -> None:
     view: MutableObjectValueView[str] = object_value_view(properties)
     view["count"] = 5
@@ -188,12 +192,17 @@ def check_object_value_views(
     device_properties = device.properties
     assert device_properties is not None
     read_only: ObjectValueView[str] = object_value_view(device_properties)
+    guid_view: MutableObjectValueView[UUID] = object_value_view(media)
+    guid_view[UUID(int=1)] = 5
     snapshot: Dict[str, WinRTObjectValue] = dict(read_only)
     read_only["count"] = 5  # type: ignore[index]
     object_value_view(strings)  # type: ignore[arg-type]
+    object_value_view(integers)  # type: ignore[type-var]
+    invalid_int_view: ObjectValueView[int]  # type: ignore[type-var]
     _: Tuple[
         WinRTObjectValue,
         DynWinRTValue | None,
         MutableObjectValueView[str],
+        MutableObjectValueView[UUID],
         Dict[str, WinRTObjectValue],
-    ] = (count, native, exact, snapshot)
+    ] = (count, native, exact, guid_view, snapshot)

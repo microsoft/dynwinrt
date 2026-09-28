@@ -370,8 +370,10 @@ def test_payloadless_property_types_still_raise(type_value, message):
             for preserve_type in (False, True):
                 with pytest.raises(OSError) as caught:
                     unbox_object(raw, preserve_type=preserve_type)
+                assert type(caught.value) is OSError
                 assert caught.value.winerror == E_NOTIMPL
                 assert str(caught.value.strerror) == message
+                assert caught.value._dynwinrt_unsupported_property_type == int(type_value)
             # The same rules apply to InspectableArray elements.
             with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
                 unbox_object(to_winrt_object(values.InspectableArray([1, raw])))

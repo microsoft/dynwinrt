@@ -603,10 +603,9 @@ WinRTObjectValue: TypeAlias = Union[
     DynWinRTValue,
 ]
 
-_K = TypeVar("_K")
+_K = TypeVar("_K", str, UUID)
 
 # Signed HRESULTs, as OSError.winerror reports them.
-_E_NOTIMPL = 0x80004001 - 2**32
 _E_NOINTERFACE = 0x80004002 - 2**32
 
 _GENERIC_MAPS = {
@@ -639,8 +638,8 @@ def _object_maps(generic: str) -> tuple[tuple[str, WinGUID], ...]:
     return maps
 
 
-def _implemented_object_map(native: DynWinRTValue, generic: str) -> str | None:
-    """The generated name of the ``generic<K, Object>`` that ``native`` implements."""
+def _queried_object_map(native: DynWinRTValue, generic: str) -> str | None:
+    """The generated name of a ``generic<K, Object>`` supported by ``native``."""
     for name, iid in _object_maps(generic):
         try:
             interface = native.cast(iid)
@@ -650,6 +649,49 @@ def _implemented_object_map(native: DynWinRTValue, generic: str) -> str | None:
             raise
         interface.release()
         return name
+    return None
+
+
+def _generated_map_dispatch(mapping: object, native: DynWinRTValue) -> DynWinRTValue:
+    """The interface pointer codegen uses for this wrapper's map operations."""
+    wrapper_type = type(mapping)
+    if getattr(wrapper_type, "_dynwinrt_runtime_class_type", False):
+        dispatch = getattr(mapping, "_collection_obj", native)
+    elif getattr(wrapper_type, "_dynwinrt_interface_type", False):
+        dispatch = native
+    else:
+        raise TypeError(
+            "object_value_view() requires a generated WinRT map wrapper, "
+            f"not {wrapper_type.__qualname__}"
+        )
+    if not isinstance(dispatch, DynWinRTValue):
+        raise TypeError(
+            f"{wrapper_type.__qualname__} has an invalid generated map projection"
+        )
+    return dispatch
+
+
+def _projected_object_map(dispatch: DynWinRTValue, generic: str) -> str | None:
+    """The Object map IID already projected by ``dispatch``, if any.
+
+    QueryInterface is reflexive: asking an interface pointer for its own IID
+    returns the same physical pointer. Comparing ``as_raw`` therefore proves
+    that the generated wrapper dispatches through the Object-valued map, not
+    merely that the same COM identity implements one.
+    """
+    dispatch_raw = dispatch.as_raw()
+    for name, iid in _object_maps(generic):
+        try:
+            interface = dispatch.cast(iid)
+        except OSError as error:
+            if error.winerror == _E_NOINTERFACE:
+                continue
+            raise
+        try:
+            if interface.as_raw() == dispatch_raw:
+                return name
+        finally:
+            interface.release()
     return None
 
 
@@ -672,7 +714,7 @@ def _check_object_map(mapping: object, *, mutable: bool) -> None:
             f"not {name}{hint}"
         )
     if not isinstance(mapping, Mapping):
-        implemented = _implemented_object_map(native, "IMap") or _implemented_object_map(
+        implemented = _queried_object_map(native, "IMap") or _queried_object_map(
             native, "IMapView"
         )
         if implemented is not None:
@@ -690,11 +732,20 @@ def _check_object_map(mapping: object, *, mutable: bool) -> None:
             f"MutableObjectValueView requires a mutable map; {name} is read-only, so use "
             "ObjectValueView"
         )
-    if _implemented_object_map(native, "IMap" if writable else "IMapView") is None:
+    generic = "IMap" if writable else "IMapView"
+    dispatch = _generated_map_dispatch(mapping, native)
+    if _projected_object_map(dispatch, generic) is not None:
+        return
+    implemented = _queried_object_map(native, generic)
+    if implemented is not None:
         raise TypeError(
-            f"{name} is not a WinRT map with Object values; object_value_view() accepts "
-            f"{_OBJECT_MAPS}"
+            f"{name} projects a different WinRT map interface; pass "
+            f"value.as_interface({implemented}) to object_value_view()"
         )
+    raise TypeError(
+        f"{name} is not a WinRT map with Object values; object_value_view() accepts "
+        f"{_OBJECT_MAPS}"
+    )
 
 
 def _read(raw: DynWinRTValue | None, preserve_type: bool) -> WinRTObjectValue:
@@ -703,8 +754,9 @@ def _read(raw: DynWinRTValue | None, preserve_type: bool) -> WinRTObjectValue:
     try:
         return cast(WinRTObjectValue, unbox_object(raw, preserve_type=preserve_type))
     except OSError as error:
-        # An unsupported PropertyType, anywhere inside the box.
-        if error.winerror != _E_NOTIMPL:
+        # Only PropertyValueUnboxResult::Unsupported carries this marker.
+        # A supported getter may fail with the same HRESULT and must propagate.
+        if getattr(error, "_dynwinrt_unsupported_property_type", None) is None:
             raise
     except OverflowError:
         # A DateTime outside the range of datetime.datetime.

@@ -1917,6 +1917,22 @@ async def run_check(
                     else:
                         cr['pass'] = True
 
+        elif kind == 'object_value_view_guid_map':
+            from uuid import UUID
+
+            view = dw.values.object_value_view(obj)
+            key = UUID(int=7)
+            view[key] = dw.values.UInt32(9)
+            converted = dict(view)
+            if (
+                type(view) is not dw.values.MutableObjectValueView
+                or view.raw is not obj
+                or converted != {key: 9}
+            ):
+                cr['error'] = f'the Guid-keyed Object map view read {converted!r}'
+            else:
+                cr['pass'] = True
+
         elif kind == 'object_value_view_device_properties':
             devices = await getattr(cls, member)()
             checked = 0
