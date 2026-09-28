@@ -554,11 +554,15 @@ jobs:
         run: |
           $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
+          $env:DYNWINRT_REQUIRE_MYPY = '1'
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             mutable_collection_mutators_accept_none -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             reference_array_results_preserve_null_elements -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt-codegen --test python_collection_helper_collision_test `
+            collection_helper_aliases_execute_for_packaged_and_standalone_outputs -- --exact
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild -Codegen $env:DYNWINRT_CODEGEN
       # This optional-SDK behavioral smoke is separate from generated coverage

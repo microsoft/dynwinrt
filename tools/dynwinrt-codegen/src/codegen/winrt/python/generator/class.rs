@@ -65,7 +65,8 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(&import_line(context));
-    out.push_str(collection_item_import(
+    out.push_str(&collection_item_import(
+        context,
         class
             .all_interfaces()
             .flat_map(|interface| interface.methods.iter()),

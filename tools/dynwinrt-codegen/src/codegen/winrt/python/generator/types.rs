@@ -94,7 +94,8 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(&import_line(context));
-    out.push_str(collection_item_import(
+    out.push_str(&collection_item_import(
+        context,
         iface.methods.iter(),
         interface_kind(iface).is_some(),
     ));
@@ -772,6 +773,88 @@ mod tests {
         assert!(code.contains(
             "_dynwinrt_collection_item(item, lambda item: getattr(item, '_obj', item), True, 'collection element')"
         ));
+    }
+
+    #[test]
+    fn collection_factories_alias_a_colliding_item_helper() {
+        let colliding = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "_dynwinrt_collection_item".into(),
+            default_interface: None,
+        };
+        let vector = InterfaceMeta {
+            name: "IVector_Collision".into(),
+            iid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
+            generic_piid: Some("913337e9-11a1-4345-a3a2-4e7f956e222d".into()),
+            generic_args: vec![colliding.clone()],
+            methods: vec![MethodMeta {
+                name: "Append".into(),
+                raw_name: "Append".into(),
+                vtable_index: 13,
+                params: vec![crate::meta::ParamMeta {
+                    name: "value".into(),
+                    typ: colliding.clone(),
+                    direction: ParamDirection::In,
+                }],
+                collection_inputs: vec![(0, crate::meta::CollectionInputRole::Element)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let map = InterfaceMeta {
+            name: "IMap_Collision_Collision".into(),
+            iid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            generic_piid: Some("3c2925fe-8519-45c1-aa79-197b6718c1c1".into()),
+            generic_args: vec![colliding.clone(), colliding.clone()],
+            methods: vec![MethodMeta {
+                name: "Insert".into(),
+                raw_name: "Insert".into(),
+                vtable_index: 10,
+                params: vec![
+                    crate::meta::ParamMeta {
+                        name: "key".into(),
+                        typ: colliding.clone(),
+                        direction: ParamDirection::In,
+                    },
+                    crate::meta::ParamMeta {
+                        name: "value".into(),
+                        typ: colliding.clone(),
+                        direction: ParamDirection::In,
+                    },
+                ],
+                return_type: Some(TypeMeta::Bool),
+                collection_inputs: vec![
+                    (0, crate::meta::CollectionInputRole::Key),
+                    (1, crate::meta::CollectionInputRole::Value),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let interfaces = [vector, map];
+        let context = PythonProjectionContext::packaged(
+            interfaces
+                .iter()
+                .map(InterfaceMeta::type_identity)
+                .chain([colliding.type_identity()]),
+        )
+        .unwrap();
+
+        for interface in &interfaces {
+            let code = generate_interface(&context, interface);
+            assert!(
+                code.contains(
+                    "from ._runtime import _dynwinrt_collection_item as _dynwinrt_collection_item_2"
+                ),
+                "{code}"
+            );
+            assert!(code.contains("def create("), "{code}");
+            assert!(code.contains("_dynwinrt_collection_item_2(item,"), "{code}");
+            assert!(
+                !code.contains("lambda item: _dynwinrt_collection_item(item,"),
+                "{code}"
+            );
+        }
     }
 
     #[test]

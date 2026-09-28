@@ -6,7 +6,7 @@
 use crate::meta::{CollectionInputRole, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
-use super::naming::{PythonProjectionContext, PythonSymbol};
+use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
@@ -498,7 +498,8 @@ pub(crate) fn py_wrap_collection_item(
         CollectionInputRole::Value => "map value",
     };
     format!(
-        "_dynwinrt_collection_item({name}, lambda item: {}, {}, '{label}')",
+        "{}({name}, lambda item: {}, {}, '{label}')",
+        context.support_symbol_reference(PythonSupportSymbol::CollectionItem),
         py_wrap_arg("item", typ, context),
         if allow_none { "True" } else { "False" }
     )

@@ -18,6 +18,7 @@ pub type PythonTypeIdentity = TypeIdentity;
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
     AsInterface,
+    CollectionItem,
 }
 
 impl PythonSupportSymbol {
@@ -25,6 +26,7 @@ impl PythonSupportSymbol {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
             Self::AsInterface => "_dynwinrt_as_interface",
+            Self::CollectionItem => "_dynwinrt_collection_item",
         }
     }
 }
@@ -917,6 +919,7 @@ impl PythonProjectionContext {
         for helper in [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CollectionItem,
         ] {
             let preferred = helper.name();
             let mut name = preferred.to_string();
@@ -1444,6 +1447,7 @@ mod tests {
         let others = [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CollectionItem,
         ]
         .into_iter()
         .filter(|other| *other != helper)
@@ -1502,6 +1506,11 @@ mod tests {
     #[test]
     fn as_interface_helper_yields_to_visible_roles_without_renaming_metadata() {
         assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::AsInterface);
+    }
+
+    #[test]
+    fn collection_item_helper_yields_to_visible_roles_without_renaming_metadata() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::CollectionItem);
     }
 
     #[test]

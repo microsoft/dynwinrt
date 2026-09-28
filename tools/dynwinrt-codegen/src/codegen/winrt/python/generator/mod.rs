@@ -63,9 +63,10 @@ from ._runtime import (
 }
 
 fn collection_item_import<'a>(
+    context: &PythonProjectionContext,
     methods: impl IntoIterator<Item = &'a MethodMeta>,
     collection_interface: bool,
-) -> &'static str {
+) -> String {
     let method_uses_helper = methods.into_iter().any(|method| {
         !method.collection_inputs.is_empty()
             || method.params.iter().any(|parameter| {
@@ -74,9 +75,12 @@ fn collection_item_import<'a>(
             })
     });
     if collection_interface || method_uses_helper {
-        "from ._runtime import _dynwinrt_collection_item\n"
+        format!(
+            "from ._runtime import {}\n",
+            context.support_symbol_import(PythonSupportSymbol::CollectionItem)
+        )
     } else {
-        ""
+        String::new()
     }
 }
 
