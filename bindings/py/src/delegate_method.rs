@@ -5,8 +5,8 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use windows::core::{GUID, IInspectable, IUnknown, Interface};
 
-use crate::errors::{map_dynwinrt_error, map_windows_error};
-use crate::runtime::{DynWinRTMethodSig, DynWinRTValue, WinGUID};
+use crate::errors::map_windows_error;
+use crate::runtime::{DynWinRTMethodSig, DynWinRTValue, WinGUID, native_arguments};
 
 type DelegateCall =
     dyn Fn(&IUnknown, &[dynwinrt::WinRTValue]) -> windows::core::Result<Vec<dynwinrt::WinRTValue>>;
@@ -52,16 +52,16 @@ impl DynWinRTDelegateMethod {
         args: Vec<DynWinRTValue>,
     ) -> PyResult<Vec<DynWinRTValue>> {
         // Keep native pins, not a Python value borrow, across reentrant Invoke.
-        let value = value.try_borrow()?.0.clone();
-        let delegate = value.cast(&self.iid).map_err(map_dynwinrt_error)?;
+        let value = value.try_borrow()?.clone();
+        let delegate = value.query(&self.iid, "delegate Invoke()")?;
         let dynwinrt::WinRTValue::Object(object) = &delegate else {
             return Err(PyTypeError::new_err(
                 "delegate invocation requires a managed WinRT delegate value",
             ));
         };
-        let args = args.into_iter().map(|arg| arg.0).collect::<Vec<_>>();
+        let args = native_arguments("delegate Invoke()", args)?;
         (self.call.0)(object, &args)
-            .map(|outputs| outputs.into_iter().map(DynWinRTValue).collect())
+            .map(|outputs| outputs.into_iter().map(DynWinRTValue::new).collect())
             .map_err(map_windows_error)
     }
 }

@@ -10,7 +10,7 @@ from ._runtime import (
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
-    _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_as_interface, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
@@ -214,7 +214,7 @@ class Uri:
         return f'{type(self).__name__}({self.__str__()!r})'
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
@@ -245,7 +245,7 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
         return cls._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
     @_property
     def absolute_canonical_uri(self) -> str:
@@ -284,7 +284,7 @@ class IStringable:
         return cls._from_native(obj.cast(IID_IStringable))
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
     def to_string(self) -> str:
         return _IStringable.method(6).invoke(self._obj, []).to_string()

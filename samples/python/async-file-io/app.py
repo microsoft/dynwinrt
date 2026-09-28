@@ -13,7 +13,7 @@ async def run() -> None:
     expected = "Hello from dynwinrt.\nAsync WinRT file I/O works."
 
     with tempfile.TemporaryDirectory(prefix="dynwinrt-python-") as directory:
-        with RoApartment(1), projected_lifetime_scope():
+        with RoApartment(), projected_lifetime_scope():
             folder = await StorageFolder.get_folder_from_path_async(directory)
             if folder is None:
                 raise RuntimeError("StorageFolder returned no temporary folder")

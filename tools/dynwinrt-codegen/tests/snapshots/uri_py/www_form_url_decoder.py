@@ -10,7 +10,7 @@ from ._runtime import (
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
-    _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_as_interface, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
@@ -110,7 +110,7 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry), []))
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
 
 class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
@@ -141,7 +141,7 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
         return cls._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
     @_property
     def size(self) -> int:
@@ -187,7 +187,7 @@ class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
         return cls._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
 
     def as_interface(self, interface_class):
-        return interface_class.from_value(self._obj)
+        return _dynwinrt_as_interface(self._obj, interface_class)
 
     def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))
