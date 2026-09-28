@@ -68,13 +68,13 @@ pub fn generate_class<'a>(
         || class
             .required_interfaces
             .iter()
-            .any(|interface| interface_member_plan(interface).has_legacy_fallback());
+            .any(|interface| interface_member_plan(interface, context).has_legacy_fallback());
     let needs_legacy_int_guard = plan.statics.has_legacy_int_guard()
         || plan.instance.has_legacy_int_guard()
         || class
             .required_interfaces
             .iter()
-            .any(|interface| interface_member_plan(interface).has_legacy_int_guard());
+            .any(|interface| interface_member_plan(interface, context).has_legacy_int_guard());
     let mut out = String::new();
 
     // Header
@@ -879,7 +879,7 @@ pub fn generate_class<'a>(
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
         out.push_str("        return interface_class.from_value(self._obj)\n");
-        let iface_plan = interface_member_plan(req_iface);
+        let iface_plan = interface_member_plan(req_iface, context);
         let overload = |method: &'a MethodMeta| InstanceOverload {
             iface_var: reg_var.clone(),
             obj_expr: "self._obj".into(),
@@ -1301,7 +1301,7 @@ fn generate_python_constructor(
         let dispatch = candidates
             .iter()
             .map(|candidate| DispatchCandidate {
-                method: None,
+                legacy_preservation: None,
                 params: candidate.public_params.clone(),
                 body: vec![format!(
                     "return {}",
@@ -1512,7 +1512,7 @@ fn generate_python_constructor(
             body.push(format!("self._set_native({}._obj)", candidate.call_expr));
             body.push("return".to_string());
             DispatchCandidate {
-                method: None,
+                legacy_preservation: None,
                 params: candidate.public_params.clone(),
                 body,
             }

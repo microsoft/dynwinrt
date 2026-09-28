@@ -582,7 +582,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         ));
     }
 
-    let plan = interface_member_plan(iface);
+    let plan = interface_member_plan(iface, context);
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()
         .map(|method| (iface, method));
@@ -1111,7 +1111,7 @@ pub fn generate_class_stub<'a>(
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
-        let iface_plan = interface_member_plan(req_iface);
+        let iface_plan = interface_member_plan(req_iface, context);
         let members = reorder_getters_before_setters(&req_iface.methods)
             .into_iter()
             .map(|method| (req_iface, method));

@@ -1463,6 +1463,9 @@ async def run_check(
             int_guards = [
                 runtime._dynwinrt_legacy_int_guard('42'),
                 runtime._dynwinrt_legacy_int_guard('not numeric'),
+                runtime._dynwinrt_legacy_int_guard('42', 0, 100),
+                runtime._dynwinrt_legacy_int_guard('42', 43, 100),
+                runtime._dynwinrt_legacy_int_guard(float('inf')),
             ]
             int_error = None
             class UnexpectedIntError:
@@ -1476,7 +1479,7 @@ async def run_check(
                 results != [False, False, False, False]
                 or legacy != (1, 2)
                 or legacy_error != 'No matching overload for example'
-                or int_guards != [True, False]
+                or int_guards != [True, False, True, False, False]
                 or int_error != 'unexpected-int-error'
             ):
                 cr['error'] = (

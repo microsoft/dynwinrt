@@ -364,6 +364,44 @@ fn metadata(path: &Path) {
         "BoolArityProbe",
         &["IIntBoolArityLegacy", "IBoolArityCanonical"],
     );
+    interface(
+        &mut file,
+        "IIntPairLegacy",
+        0x5193190e,
+        "Pick",
+        "Pick",
+        &[("first", Type::I32), ("second", Type::I32)],
+    );
+    interface(
+        &mut file,
+        "IBoolWideCanonical",
+        0x5193190f,
+        "Pick",
+        "PickBool",
+        &[("first", Type::Bool), ("second", Type::I64)],
+    );
+    runtime_class(
+        &mut file,
+        "NumericDomainProbe",
+        &["IIntPairLegacy", "IBoolWideCanonical"],
+    );
+    interface(
+        &mut file,
+        "IQiLegacy",
+        0x51931910,
+        "Use",
+        "Use",
+        &[("target", Type::named(NAMESPACE, "IAliasCanonical"))],
+    );
+    interface(
+        &mut file,
+        "IQiCanonical",
+        0x51931911,
+        "Use",
+        "Apply",
+        &[("target", Type::named(NAMESPACE, "IAliasLegacyString"))],
+    );
+    runtime_class(&mut file, "QiDispatchProbe", &["IQiLegacy", "IQiCanonical"]);
 
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, file.into_stream()).unwrap();
@@ -400,7 +438,7 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         fs::read_to_string(package.join("tests__overload_compatibility__enum_probe.py")).unwrap();
     assert!(
         enum_source.contains(
-            "not (_legacy_bound is not None and _dynwinrt_legacy_int_guard(_legacy_bound[0]))"
+            "not (_legacy_bound is not None and (type(_legacy_bound[0]) not in (str,) or _dynwinrt_legacy_int_guard(_legacy_bound[0], -2147483648, 2147483647)))"
         ) && enum_source.contains(
             "return _dynwinrt_legacy_call(self._foo_6_1, ('value',), args, kwargs, 'foo')"
         ),
@@ -416,11 +454,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
     let bool_source =
         fs::read_to_string(package.join("tests__overload_compatibility__bool_probe.py")).unwrap();
     assert!(
-        bool_source.contains(
-            "isinstance(_bound[0], bool) and not (_legacy_bound is not None and isinstance(_legacy_bound[0], bool))"
-        ) && bool_source.contains(
-            "return _dynwinrt_legacy_call(self._qux_6_1, ('value',), args, kwargs, 'qux')"
-        ) && !bool_source.contains("_dynwinrt_legacy_int_guard"),
+        bool_source.contains("not (_legacy_bound is not None) and isinstance(_bound[0], bool)")
+            && bool_source.contains(
+                "return _dynwinrt_legacy_call(self._qux_6_1, ('value',), args, kwargs, 'qux')"
+            )
+            && !bool_source.contains("_dynwinrt_legacy_int_guard"),
         "{bool_source}"
     );
     for name in ["bool_pair_probe", "bool_arity_probe"] {
@@ -433,6 +471,27 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             "{source}"
         );
     }
+    let numeric_domain_source =
+        fs::read_to_string(package.join("tests__overload_compatibility__numeric_domain_probe.py"))
+            .unwrap();
+    assert!(
+        numeric_domain_source.contains(
+            "type(_legacy_bound[1]) is not int or -2147483648 <= _legacy_bound[1] <= 2147483647"
+        ) && numeric_domain_source.contains(
+            "return _dynwinrt_legacy_call(self._pick_6_1, ('first', 'second',), args, kwargs, 'pick')"
+        ),
+        "{numeric_domain_source}"
+    );
+    let qi_source =
+        fs::read_to_string(package.join("tests__overload_compatibility__qi_dispatch_probe.py"))
+            .unwrap();
+    assert_eq!(
+        qi_source
+            .matches("_dynwinrt_can_cast(_legacy_bound[0], IID_ARG_Tests_OverloadCompatibility_IAliasCanonical)")
+            .count(),
+        2,
+        "{qi_source}"
+    );
 
     let available = Command::new(python())
         .args([
@@ -460,7 +519,9 @@ from pyviews.tests__overload_compatibility__bool_arity_probe import BoolArityPro
 from pyviews.tests__overload_compatibility__bool_pair_probe import BoolPairProbe
 from pyviews.tests__overload_compatibility__bool_probe import BoolProbe
 from pyviews.tests__overload_compatibility__enum_probe import EnumProbe
+from pyviews.tests__overload_compatibility__numeric_domain_probe import NumericDomainProbe
 from pyviews.tests__overload_compatibility__pair_probe import PairProbe
+from pyviews.tests__overload_compatibility__qi_dispatch_probe import QiDispatchProbe
 from pyviews.tests__overload_compatibility__i_alias_canonical import IAliasCanonical
 from pyviews.tests__overload_compatibility__i_alias_legacy_int import IAliasLegacyInt
 from pyviews.tests__overload_compatibility__i_alias_legacy_string import IAliasLegacyString
@@ -472,10 +533,15 @@ from pyviews.tests__overload_compatibility__i_enum_pair_legacy import IEnumPairL
 from pyviews.tests__overload_compatibility__i_int_bool_arity_legacy import IIntBoolArityLegacy
 from pyviews.tests__overload_compatibility__i_int_bool_legacy import IIntBoolLegacy
 from pyviews.tests__overload_compatibility__i_int_bool_pair_legacy import IIntBoolPairLegacy
+from pyviews.tests__overload_compatibility__i_int_pair_legacy import IIntPairLegacy
+from pyviews.tests__overload_compatibility__i_qi_canonical import IQiCanonical
+from pyviews.tests__overload_compatibility__i_qi_legacy import IQiLegacy
 from pyviews.tests__overload_compatibility__i_string_canonical import IStringCanonical
 from pyviews.tests__overload_compatibility__i_string_pair_canonical import IStringPairCanonical
+from pyviews.tests__overload_compatibility__i_bool_wide_canonical import IBoolWideCanonical
 
 calls = []
+conversion_events = []
 runtime = importlib.import_module("pyviews._runtime")
 
 class AliasCanonical:
@@ -502,6 +568,11 @@ class StringCanonical:
     def foo_text(self, value):
         calls.append(("string-canonical", value))
         return 401
+
+class NumericString(str):
+    def __int__(self):
+        conversion_events.append(("numeric-string-int", str(self)))
+        return int(str(self))
 
 class EnumPairLegacy:
     def bar(self, mode, label):
@@ -543,6 +614,26 @@ class BoolArityCanonical:
         calls.append(("bool-arity-canonical", value, enabled))
         return 902
 
+class IntPairLegacy:
+    def pick(self, first, second):
+        calls.append(("int-pair-legacy", first, second))
+        return 1001
+
+class BoolWideCanonical:
+    def pick_bool(self, first, second):
+        calls.append(("bool-wide-canonical", first, second))
+        return 1002
+
+class QiLegacy:
+    def use(self, target):
+        calls.append(("qi-legacy", target.__class__.__name__))
+        return 1101
+
+class QiCanonical:
+    def apply(self, target):
+        calls.append(("qi-canonical", target.__class__.__name__))
+        return 1102
+
 results = {}
 class UnexpectedIntError:
     def __int__(self):
@@ -577,6 +668,8 @@ with dw.RoApartment(1):
             results["enum_positional"] = value.foo("1")
             results["enum_keyword"] = value.foo(value="1")
             results["text_positional"] = value.foo("not numeric")
+            results["enum_string_subclass"] = value.foo(NumericString("9"))
+            results["enum_string_conversion_count"] = len(conversion_events)
         finally:
             dw.release_projected(value)
 
@@ -624,6 +717,40 @@ with dw.RoApartment(1):
         finally:
             dw.release_projected(value)
 
+    with IIntPairLegacy.implement(
+        IntPairLegacy(),
+        interfaces=[(IBoolWideCanonical, BoolWideCanonical())],
+    ) as implementation:
+        value = NumericDomainProbe._from_native(implementation.value._obj)
+        try:
+            results["numeric_pair_positional"] = value.pick(True, 5)
+            results["numeric_pair_keyword"] = value.pick(first=False, second=5)
+            results["numeric_pair_i32_max"] = value.pick(True, 2**31 - 1)
+            results["numeric_pair_i32_min"] = value.pick(False, -(2**31))
+            results["numeric_pair_wide_high"] = value.pick(True, 2**31)
+            results["numeric_pair_wide_low"] = value.pick(False, -(2**31) - 1)
+        finally:
+            dw.release_projected(value)
+
+    with IAliasCanonical.implement(
+        AliasCanonical(),
+        interfaces=[(IAliasLegacyString, AliasLegacyString())],
+    ) as target_implementation:
+        target = AliasProbe._from_native(target_implementation.value._obj)
+        try:
+            with IQiLegacy.implement(
+                QiLegacy(),
+                interfaces=[(IQiCanonical, QiCanonical())],
+            ) as implementation:
+                value = QiDispatchProbe._from_native(implementation.value._obj)
+                try:
+                    results["qi_positional"] = value.use(target)
+                    results["qi_keyword"] = value.use(target=target)
+                finally:
+                    dw.release_projected(value)
+        finally:
+            dw.release_projected(target)
+
 print(json.dumps({"results": results, "calls": calls}))
 "#;
     fs::write(fixture.0.join("probe.py"), probe).unwrap();
@@ -636,13 +763,13 @@ print(json.dumps({"results": results, "calls": calls}))
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(
-            r#""results": {"unexpected_int_error": "unexpected-int-error", "alias_positional": 201, "alias_keyword": 201, "enum_positional": 301, "enum_keyword": 301, "text_positional": 401, "nonoverlap_positional": 601, "nonoverlap_keyword": 601, "bool_positional": 701, "bool_keyword": 701, "bool_pair_positional": 802, "bool_pair_keyword": 802, "bool_arity_positional": 902, "bool_arity_keyword": 902}"#
+            r#""results": {"unexpected_int_error": "unexpected-int-error", "alias_positional": 201, "alias_keyword": 201, "enum_positional": 301, "enum_keyword": 301, "text_positional": 401, "enum_string_subclass": 301, "enum_string_conversion_count": 1, "nonoverlap_positional": 601, "nonoverlap_keyword": 601, "bool_positional": 701, "bool_keyword": 701, "bool_pair_positional": 802, "bool_pair_keyword": 802, "bool_arity_positional": 902, "bool_arity_keyword": 902, "numeric_pair_positional": 1001, "numeric_pair_keyword": 1001, "numeric_pair_i32_max": 1001, "numeric_pair_i32_min": 1001, "numeric_pair_wide_high": 1002, "numeric_pair_wide_low": 1002, "qi_positional": 1101, "qi_keyword": 1101}"#
         ),
         "{stdout}"
     );
     assert!(
         stdout.contains(
-            r#""calls": [["alias-legacy-string", "7"], ["alias-legacy-string", "8"], ["enum-legacy", 1], ["enum-legacy", 1], ["string-canonical", "not numeric"], ["string-pair-canonical", "1", true], ["string-pair-canonical", "1", false], ["int-bool-legacy", 1], ["int-bool-legacy", 0], ["bool-pair-canonical", true, false], ["bool-pair-canonical", false, true], ["bool-arity-canonical", true, false], ["bool-arity-canonical", false, true]]"#
+            r#""calls": [["alias-legacy-string", "7"], ["alias-legacy-string", "8"], ["enum-legacy", 1], ["enum-legacy", 1], ["string-canonical", "not numeric"], ["enum-legacy", 9], ["string-pair-canonical", "1", true], ["string-pair-canonical", "1", false], ["int-bool-legacy", 1], ["int-bool-legacy", 0], ["bool-pair-canonical", true, false], ["bool-pair-canonical", false, true], ["bool-arity-canonical", true, false], ["bool-arity-canonical", false, true], ["int-pair-legacy", 1, 5], ["int-pair-legacy", 0, 5], ["int-pair-legacy", 1, 2147483647], ["int-pair-legacy", 0, -2147483648], ["bool-wide-canonical", true, 2147483648], ["bool-wide-canonical", false, -2147483649], ["qi-legacy", "IAliasCanonical"], ["qi-legacy", "IAliasCanonical"]]"#
         ),
         "{stdout}"
     );

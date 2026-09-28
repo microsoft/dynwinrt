@@ -158,12 +158,15 @@ def _dynwinrt_legacy_call(impl, parameter_names, args, kwargs, public_name):
     return impl(*bound)
 
 
-def _dynwinrt_legacy_int_guard(value):
+def _dynwinrt_legacy_int_guard(value, minimum=None, maximum=None):
     try:
-        int(value)
-    except (TypeError, ValueError):
+        converted = int(value)
+    except (TypeError, ValueError, OverflowError):
         return False
-    return True
+    return (
+        (minimum is None or minimum <= converted)
+        and (maximum is None or converted <= maximum)
+    )
 \n";
 
 pub fn generate_runtime_support_module() -> String {
@@ -296,8 +299,13 @@ mod tests {
             "def _dynwinrt_legacy_call(impl, parameter_names, args, kwargs, public_name):"
         ));
         assert!(runtime.contains("raise TypeError(f'No matching overload for {public_name}')"));
-        assert!(runtime.contains("def _dynwinrt_legacy_int_guard(value):"));
-        assert!(runtime.contains("except (TypeError, ValueError):\n        return False"));
-        assert!(!runtime.contains("except (TypeError, ValueError, RuntimeError)"));
+        assert!(
+            runtime.contains("def _dynwinrt_legacy_int_guard(value, minimum=None, maximum=None):")
+        );
+        assert!(
+            runtime
+                .contains("except (TypeError, ValueError, OverflowError):\n        return False")
+        );
+        assert!(!runtime.contains("except (TypeError, ValueError, OverflowError, RuntimeError)"));
     }
 }

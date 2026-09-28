@@ -9,11 +9,12 @@ use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
-use super::member_plan::{Candidate, LegacyConversionGuard, MethodGroup, legacy_conversion_shadow};
+use super::member_plan::{Candidate, LegacyPreservation, MethodGroup};
 use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
 use super::signature::{
-    py_convert_return, py_interface_cast_guard, py_runtime_named_symbol, py_runtime_symbol,
-    py_type_guard, py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
+    LegacyPreservationPredicate, py_convert_return, py_has_permissive_guard,
+    py_interface_cast_guard, py_runtime_named_symbol, py_runtime_symbol, py_type_guard,
+    py_wrap_arg, py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
@@ -184,7 +185,7 @@ pub(crate) fn param_guard(
 ) -> ParamGuard {
     ParamGuard {
         strict: py_method_type_guard(name, typ, context),
-        permissive: (!is_delegate_type(typ, context))
+        permissive: py_has_permissive_guard(typ, context)
             .then(|| py_interface_cast_guard(name, typ, context))
             .flatten(),
     }
@@ -192,7 +193,7 @@ pub(crate) fn param_guard(
 
 /// One candidate of a generated `*args, **kwargs` overload dispatcher.
 pub(crate) struct DispatchCandidate<'a> {
-    pub(crate) method: Option<&'a MethodMeta>,
+    pub(crate) legacy_preservation: Option<&'a LegacyPreservation>,
     /// Python-visible input parameters, in call order.
     pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
     /// Statements run when the candidate matches, relative to its `if` block.
@@ -200,7 +201,6 @@ pub(crate) struct DispatchCandidate<'a> {
 }
 
 pub(crate) struct LegacyDispatch<'a> {
-    pub(crate) method: &'a MethodMeta,
     pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
     pub(crate) target: String,
     pub(crate) public_name: String,
@@ -232,56 +232,88 @@ pub(crate) fn emit_dispatch(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let legacy_shadows = legacy
-        .map(|legacy| {
-            candidates
-                .iter()
-                .map(|candidate| {
-                    candidate
-                        .method
-                        .and_then(|method| legacy_conversion_shadow(legacy.method, method))
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| vec![None; candidates.len()]);
-    if legacy_shadows.iter().any(Option::is_some) {
+    let needs_legacy_bound = candidates.iter().any(|candidate| {
+        candidate
+            .legacy_preservation
+            .as_ref()
+            .is_some_and(|plan| plan.strict.is_some() || plan.permissive.is_some())
+    });
+    if needs_legacy_bound {
         let legacy = legacy.expect("legacy conversion shadows require a legacy candidate");
         out.push_str(&format!(
             "{indent}_legacy_bound = _dynwinrt_bind_overload({}, args, kwargs)\n",
             dispatch_parameter_names(&legacy.params),
         ));
     }
-    let shadow_expression = |shadow: &[(usize, LegacyConversionGuard)]| {
+    let preservation_expression = |predicates: &[LegacyPreservationPredicate]| {
         std::iter::once("_legacy_bound is not None".to_string())
-            .chain(shadow.iter().map(|(index, guard)| match guard {
-                LegacyConversionGuard::Int => {
-                    format!("_dynwinrt_legacy_int_guard(_legacy_bound[{index}])")
+            .chain(predicates.iter().map(|predicate| match predicate {
+                LegacyPreservationPredicate::ExactIntRangeOrSubclass {
+                    index,
+                    minimum,
+                    maximum,
+                } => format!(
+                    "(type(_legacy_bound[{index}]) is not int or {minimum} <= _legacy_bound[{index}] <= {maximum})"
+                ),
+                LegacyPreservationPredicate::ExactRealIntRangeOrSubclass {
+                    index,
+                    minimum,
+                    maximum,
+                } => format!(
+                    "(type(_legacy_bound[{index}]) not in (int, float) or (type(_legacy_bound[{index}]) is int and {minimum} <= _legacy_bound[{index}] <= {maximum}))"
+                ),
+                LegacyPreservationPredicate::ExactIntConversionRangeOrSubclass {
+                    index,
+                    exact_types,
+                    minimum,
+                    maximum,
+                } => format!(
+                    "(type(_legacy_bound[{index}]) not in {exact_types} or _dynwinrt_legacy_int_guard(_legacy_bound[{index}], {minimum}, {maximum}))"
+                ),
+                LegacyPreservationPredicate::NumericRange {
+                    index,
+                    minimum,
+                    maximum,
+                } => format!("{minimum} <= _legacy_bound[{index}] <= {maximum}"),
+                LegacyPreservationPredicate::Char16OrStringSubclass { index } => format!(
+                    "(type(_legacy_bound[{index}]) is not str or (len(_legacy_bound[{index}]) == 1 and ord(_legacy_bound[{index}]) <= 65535))"
+                ),
+                LegacyPreservationPredicate::CanCast { index, iid } => {
+                    format!("_dynwinrt_can_cast(_legacy_bound[{index}], {iid})")
                 }
-                LegacyConversionGuard::Bool => {
-                    format!("isinstance(_legacy_bound[{index}], bool)")
+                LegacyPreservationPredicate::DynWinRTValue { index } => {
+                    format!(
+                        "isinstance(getattr(_legacy_bound[{index}], '_obj', _legacy_bound[{index}]), DynWinRTValue)"
+                    )
                 }
             }))
             .collect::<Vec<_>>()
             .join(" and ")
     };
-    for ((candidate, guards), shadow) in candidates.iter().zip(&guards).zip(&legacy_shadows) {
+    for (candidate, guards) in candidates.iter().zip(&guards) {
         let mut strict = guards
             .iter()
             .map(|guard| guard.strict.clone())
             .collect::<Vec<_>>();
-        if let Some(shadow) = shadow {
-            strict.push(format!("not ({})", shadow_expression(shadow)));
+        if let Some(predicates) = candidate
+            .legacy_preservation
+            .and_then(|plan| plan.strict.as_deref())
+        {
+            strict.insert(0, format!("not ({})", preservation_expression(predicates)));
         }
         emit_dispatch_candidate(out, indent, candidate, &strict);
     }
-    for ((candidate, guards), shadow) in candidates.iter().zip(&guards).zip(&legacy_shadows) {
+    for (candidate, guards) in candidates.iter().zip(&guards) {
         if guards.iter().any(|guard| guard.permissive.is_some()) {
             let mut permissive = guards
                 .iter()
                 .map(|guard| guard.permissive.as_ref().unwrap_or(&guard.strict).clone())
                 .collect::<Vec<_>>();
-            if let Some(shadow) = shadow {
-                permissive.push(format!("not ({})", shadow_expression(shadow)));
+            if let Some(predicates) = candidate
+                .legacy_preservation
+                .and_then(|plan| plan.permissive.as_deref())
+            {
+                permissive.insert(0, format!("not ({})", preservation_expression(predicates)));
             }
             emit_dispatch_candidate(out, indent, candidate, &permissive);
         }
@@ -649,8 +681,9 @@ pub(crate) fn generate_instance_method_group<'a>(
     out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
     let candidates = overloads
         .iter()
-        .map(|(overload, attribute, _)| DispatchCandidate {
-            method: Some(overload.method),
+        .zip(&group.candidates)
+        .map(|((overload, attribute, _), candidate)| DispatchCandidate {
+            legacy_preservation: candidate.legacy_preservation.as_ref(),
             params: get_in_params(overload.method),
             body: vec![format!("return self.{attribute}(*_bound)")],
         })
@@ -659,7 +692,6 @@ pub(crate) fn generate_instance_method_group<'a>(
         .legacy_fallback
         .as_ref()
         .map(|fallback| LegacyDispatch {
-            method: fallback.method,
             params: get_in_params(fallback.method),
             target: format!("self.{}", fallback.attribute),
             public_name: public_name.clone(),
@@ -761,8 +793,9 @@ pub(crate) fn generate_static_method_group<'a>(
     out.push_str(&method_pydoc(group.candidates[0].method, &public_params));
     let candidates = overloads
         .iter()
-        .map(|(overload, attribute, _)| DispatchCandidate {
-            method: Some(overload.method),
+        .zip(&group.candidates)
+        .map(|((overload, attribute, _), candidate)| DispatchCandidate {
+            legacy_preservation: candidate.legacy_preservation.as_ref(),
             params: get_in_params(overload.method),
             body: vec![format!(
                 "return {}.{attribute}(*_bound)",
@@ -774,7 +807,6 @@ pub(crate) fn generate_static_method_group<'a>(
         .legacy_fallback
         .as_ref()
         .map(|fallback| LegacyDispatch {
-            method: fallback.method,
             params: get_in_params(fallback.method),
             target: format!(
                 "{}.{}",
@@ -1126,6 +1158,7 @@ mod tests {
                 method: &method,
                 attribute: "_choose_6".into(),
                 define: true,
+                legacy_preservation: None,
             }],
             legacy_fallback: None,
         };

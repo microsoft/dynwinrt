@@ -48,7 +48,10 @@ use super::collections::{
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
-use super::signature::py_dispatch_type_sort_key;
+use super::signature::{
+    LegacyGuardOverlap, LegacyPreservationPredicate, legacy_guard_overlap,
+    py_dispatch_type_sort_key, py_has_permissive_guard,
+};
 
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 
@@ -83,6 +86,15 @@ pub(crate) struct Candidate<'a> {
     /// dispatchers may also call an implementation defined by its canonical
     /// CLR-name group.
     pub(crate) define: bool,
+    /// Predicates that identify values accepted by the former guard-free
+    /// method and therefore reserve this call for the exact legacy tier.
+    pub(crate) legacy_preservation: Option<LegacyPreservation>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LegacyPreservation {
+    pub(crate) strict: Option<Vec<LegacyPreservationPredicate>>,
+    pub(crate) permissive: Option<Vec<LegacyPreservationPredicate>>,
 }
 
 /// Methods projected as one Python method, in dispatch order.
@@ -97,59 +109,6 @@ pub(crate) struct MethodGroup<'a> {
 pub(crate) struct LegacyFallback<'a> {
     pub(crate) method: &'a MethodMeta,
     pub(crate) attribute: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LegacyConversionGuard {
-    Int,
-    Bool,
-}
-
-fn legacy_conversion_accepts_bool(typ: &TypeMeta) -> bool {
-    matches!(
-        typ,
-        TypeMeta::I8
-            | TypeMeta::U8
-            | TypeMeta::I16
-            | TypeMeta::U16
-            | TypeMeta::I32
-            | TypeMeta::U32
-            | TypeMeta::I64
-            | TypeMeta::U64
-            | TypeMeta::F32
-            | TypeMeta::F64
-            | TypeMeta::Enum { .. }
-    ) || matches!(typ, TypeMeta::Struct { name, .. } if name == "HResult")
-}
-
-/// Guard-free conversions accepted by an old standalone method that also fit
-/// a newly added candidate's strict Python type domain.
-pub(crate) fn legacy_conversion_shadow(
-    legacy: &MethodMeta,
-    candidate: &MethodMeta,
-) -> Option<Vec<(usize, LegacyConversionGuard)>> {
-    let legacy_params = get_in_params(legacy);
-    let candidate_params = get_in_params(candidate);
-    if legacy_params.len() != candidate_params.len() {
-        return None;
-    }
-    let mut guards = Vec::new();
-    for (index, (legacy, candidate)) in legacy_params.iter().zip(candidate_params).enumerate() {
-        if legacy.typ == candidate.typ {
-            continue;
-        }
-        if matches!(legacy.typ, TypeMeta::Enum { .. }) && matches!(candidate.typ, TypeMeta::String)
-        {
-            guards.push((index, LegacyConversionGuard::Int));
-            continue;
-        }
-        if legacy_conversion_accepts_bool(&legacy.typ) && matches!(candidate.typ, TypeMeta::Bool) {
-            guards.push((index, LegacyConversionGuard::Bool));
-            continue;
-        }
-        return None;
-    }
-    (!guards.is_empty()).then_some(guards)
 }
 
 /// A previously emitted method name kept as a class attribute alias.
@@ -249,15 +208,20 @@ impl<'a> ScopePlan<'a> {
                     .filter_map(|alias| alias.dispatcher.as_ref()),
             )
             .any(|group| {
-                group.legacy_fallback.as_ref().is_some_and(|legacy| {
-                    group.candidates.iter().any(|candidate| {
-                        legacy_conversion_shadow(legacy.method, candidate.method).is_some_and(
-                            |guards| {
-                                guards
-                                    .iter()
-                                    .any(|(_, guard)| *guard == LegacyConversionGuard::Int)
-                            },
-                        )
+                group.candidates.iter().any(|candidate| {
+                    candidate.legacy_preservation.as_ref().is_some_and(|plan| {
+                        plan.strict
+                            .iter()
+                            .chain(plan.permissive.iter())
+                            .flatten()
+                            .any(|predicate| {
+                                matches!(
+                                    predicate,
+                                    LegacyPreservationPredicate::ExactIntConversionRangeOrSubclass {
+                                        ..
+                                    }
+                                )
+                            })
                     })
                 })
             })
@@ -286,7 +250,8 @@ impl<'a> ClassMemberPlan<'a> {
             .collect();
         let instance = class_instance_interfaces(class).collect();
         let reserved = class_reserved_names(class, context);
-        let mut scopes = plan_scopes(&[statics, instance], &reserved).into_iter();
+        let mut scopes =
+            plan_scopes_with_context(&[statics, instance], &reserved, context).into_iter();
         Self {
             statics: scopes.next().expect("static scope"),
             instance: scopes.next().expect("instance scope"),
@@ -295,10 +260,17 @@ impl<'a> ClassMemberPlan<'a> {
 }
 
 /// Member plan for an interface wrapper class.
-pub(crate) fn interface_member_plan(interface: &InterfaceMeta) -> ScopePlan<'_> {
-    plan_scopes(&[vec![interface]], &interface_reserved_names(interface))
-        .pop()
-        .expect("interface scope")
+pub(crate) fn interface_member_plan<'a>(
+    interface: &'a InterfaceMeta,
+    context: &PythonProjectionContext,
+) -> ScopePlan<'a> {
+    plan_scopes_with_context(
+        &[vec![interface]],
+        &interface_reserved_names(interface),
+        context,
+    )
+    .pop()
+    .expect("interface scope")
 }
 
 /// Interfaces whose methods are projected as instance members of a runtime class.
@@ -528,11 +500,20 @@ struct Entry<'a> {
 
 type Groups = Vec<BTreeMap<String, Vec<usize>>>;
 
-/// Plan the scopes of one Python class namespace; `reserved` holds its
-/// non-method member names.
+#[cfg(test)]
 fn plan_scopes<'a>(
     scopes: &[Vec<&'a InterfaceMeta>],
     reserved: &HashSet<String>,
+) -> Vec<ScopePlan<'a>> {
+    plan_scopes_with_context(scopes, reserved, &PythonProjectionContext::default())
+}
+
+/// Plan the scopes of one Python class namespace; `reserved` holds its
+/// non-method member names.
+fn plan_scopes_with_context<'a>(
+    scopes: &[Vec<&'a InterfaceMeta>],
+    reserved: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> Vec<ScopePlan<'a>> {
     let mut entries = Vec::new();
     for (scope, interfaces) in scopes.iter().enumerate() {
@@ -587,6 +568,46 @@ fn plan_scopes<'a>(
         }
         kept
     };
+    let preservation =
+        |legacy: usize, candidate: usize| -> Result<Option<LegacyPreservation>, ()> {
+            if legacy == candidate {
+                return Ok(None);
+            }
+            let strict = legacy_guard_overlap(
+                entries[legacy].method,
+                entries[candidate].method,
+                false,
+                context,
+            );
+            let has_permissive = get_in_params(entries[candidate].method)
+                .iter()
+                .any(|param| py_has_permissive_guard(&param.typ, context));
+            let permissive = has_permissive.then(|| {
+                legacy_guard_overlap(
+                    entries[legacy].method,
+                    entries[candidate].method,
+                    true,
+                    context,
+                )
+            });
+            if strict == LegacyGuardOverlap::Unknown
+                || permissive.as_ref() == Some(&LegacyGuardOverlap::Unknown)
+            {
+                return Err(());
+            }
+            let strict = match strict {
+                LegacyGuardOverlap::Preserve(predicates) => Some(predicates),
+                LegacyGuardOverlap::Disjoint => None,
+                LegacyGuardOverlap::Unknown => unreachable!("handled above"),
+            };
+            let permissive = match permissive {
+                Some(LegacyGuardOverlap::Preserve(predicates)) => Some(predicates),
+                Some(LegacyGuardOverlap::Disjoint) | None => None,
+                Some(LegacyGuardOverlap::Unknown) => unreachable!("handled above"),
+            };
+            Ok((strict.is_some() || permissive.is_some())
+                .then_some(LegacyPreservation { strict, permissive }))
+        };
 
     // Names emitted before CLR-name grouping, mapped to the group each reached.
     let mut previous_groups: Groups = vec![BTreeMap::new(); scopes.len()];
@@ -648,7 +669,11 @@ fn plan_scopes<'a>(
             members.iter().any(|&member| {
                 !covers_shape(expected, member)
                     && expected.iter().any(|&index| {
-                        overloads_may_overlap(entries[member].method, entries[index].method)
+                        if expected.len() == 1 {
+                            preservation(index, member).is_err()
+                        } else {
+                            overloads_may_overlap(entries[member].method, entries[index].method)
+                        }
                     })
             })
         };
@@ -787,6 +812,10 @@ fn plan_scopes<'a>(
                 } else {
                     dispatch_order(members)
                 };
+                let legacy_index = existing[scope].get(name).and_then(|previous_key| {
+                    let previous = &previous_groups[scope][previous_key];
+                    (previous.len() == 1 && ordered.len() > 1).then_some(previous[0])
+                });
                 let candidates = ordered
                     .into_iter()
                     .map(|index| {
@@ -800,18 +829,16 @@ fn plan_scopes<'a>(
                             method: entry.method,
                             attribute: attribute_of[&index].clone(),
                             define,
+                            legacy_preservation: legacy_index.and_then(|legacy| {
+                                preservation(legacy, index)
+                                    .expect("unknown legacy overlap must retain ABI grouping")
+                            }),
                         }
                     })
                     .collect::<Vec<_>>();
-                let legacy_fallback = existing[scope].get(name).and_then(|previous_key| {
-                    let previous = &previous_groups[scope][previous_key];
-                    (previous.len() == 1 && candidates.len() > 1).then(|| {
-                        let index = previous[0];
-                        LegacyFallback {
-                            method: entries[index].method,
-                            attribute: attribute_of[&index].clone(),
-                        }
-                    })
+                let legacy_fallback = legacy_index.map(|index| LegacyFallback {
+                    method: entries[index].method,
+                    attribute: attribute_of[&index].clone(),
                 });
                 plan_groups.push(MethodGroup {
                     name: name.clone(),
@@ -871,6 +898,7 @@ fn plan_scopes<'a>(
                                         method: entries[index].method,
                                         attribute: attribute_of[&index].clone(),
                                         define: false,
+                                        legacy_preservation: None,
                                     })
                                     .collect(),
                                 legacy_fallback: None,
@@ -1665,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn clr_name_falls_back_when_a_new_overload_could_take_existing_calls() {
+    fn clr_name_preserves_safe_overlaps_and_falls_back_for_unknown_ones() {
         let by_interface = overload("Show", "Show", 6, &[("target", interface_type("ITarget"))]);
         let by_text = overload(
             "ShowText",
@@ -1682,9 +1710,13 @@ mod tests {
             &[],
         );
         assert_eq!(planned.group("Show", 6), "show");
-        assert_eq!(planned.group("ShowObject", 7), "show_object");
-        assert_eq!(planned.group("ShowText", 8), "show_text");
-        assert_eq!(planned.fallbacks, ["show"]);
+        assert_eq!(planned.group("ShowObject", 7), "show");
+        assert_eq!(planned.group("ShowText", 8), "show");
+        assert_eq!(
+            planned.aliases,
+            aliases(&[("show_object", "_show_7"), ("show_text", "_show_8")])
+        );
+        assert!(planned.fallbacks.is_empty());
 
         let planned = plan_scope(
             vec![
@@ -1704,6 +1736,22 @@ mod tests {
             planned.legacy_fallbacks["show"],
             ("Show".to_string(), 6, "_show_6".to_string())
         );
+
+        let planned = plan_scope(
+            vec![
+                overload(
+                    "Load",
+                    "Load",
+                    6,
+                    &[("values", TypeMeta::Array(Box::new(TypeMeta::I32)))],
+                ),
+                overload("LoadObject", "Load", 7, &[("values", TypeMeta::Object)]),
+            ],
+            &[],
+        );
+        assert_eq!(planned.group("Load", 6), "load");
+        assert_eq!(planned.group("LoadObject", 7), "load_object");
+        assert_eq!(planned.fallbacks, ["load"]);
     }
 
     #[test]
@@ -1798,6 +1846,7 @@ mod tests {
 
     #[test]
     fn legacy_conversion_shadows_require_the_complete_parameter_shape() {
+        let context = PythonProjectionContext::default();
         let old_enum = overload(
             "Open",
             "Open",
@@ -1818,10 +1867,20 @@ mod tests {
         );
 
         assert_eq!(
-            legacy_conversion_shadow(&old_enum, &overlapping),
-            Some(vec![(0, LegacyConversionGuard::Int)])
+            legacy_guard_overlap(&old_enum, &overlapping, false, &context),
+            LegacyGuardOverlap::Preserve(vec![
+                LegacyPreservationPredicate::ExactIntConversionRangeOrSubclass {
+                    index: 0,
+                    exact_types: "(str,)",
+                    minimum: i32::MIN as i128,
+                    maximum: i32::MAX as i128,
+                }
+            ])
         );
-        assert_eq!(legacy_conversion_shadow(&old_enum, &nonoverlapping), None);
+        assert_eq!(
+            legacy_guard_overlap(&old_enum, &nonoverlapping, false, &context),
+            LegacyGuardOverlap::Disjoint
+        );
 
         for typ in [
             TypeMeta::I8,
@@ -1844,13 +1903,16 @@ mod tests {
             let old_numeric = overload("Pick", "Pick", 6, &[("value", typ)]);
             let by_bool = overload("PickBool", "Pick", 7, &[("value", TypeMeta::Bool)]);
             assert_eq!(
-                legacy_conversion_shadow(&old_numeric, &by_bool),
-                Some(vec![(0, LegacyConversionGuard::Bool)])
+                legacy_guard_overlap(&old_numeric, &by_bool, false, &context),
+                LegacyGuardOverlap::Preserve(Vec::new())
             );
         }
         let old_char = overload("Pick", "Pick", 6, &[("value", TypeMeta::Char16)]);
         let by_bool = overload("PickBool", "Pick", 7, &[("value", TypeMeta::Bool)]);
-        assert_eq!(legacy_conversion_shadow(&old_char, &by_bool), None);
+        assert_eq!(
+            legacy_guard_overlap(&old_char, &by_bool, false, &context),
+            LegacyGuardOverlap::Disjoint
+        );
 
         let old_numeric_pair = overload(
             "Pick",
@@ -1875,12 +1937,69 @@ mod tests {
             ],
         );
         assert_eq!(
-            legacy_conversion_shadow(&old_numeric_pair, &bool_other_parameter),
-            None
+            legacy_guard_overlap(&old_numeric_pair, &bool_other_parameter, false, &context),
+            LegacyGuardOverlap::Disjoint
         );
         assert_eq!(
-            legacy_conversion_shadow(&old_numeric_pair, &bool_other_arity),
-            None
+            legacy_guard_overlap(&old_numeric_pair, &bool_other_arity, false, &context),
+            LegacyGuardOverlap::Disjoint
+        );
+
+        let old_integer_pair = overload(
+            "Pick",
+            "Pick",
+            6,
+            &[("first", TypeMeta::I32), ("second", TypeMeta::I32)],
+        );
+        let bool_wide = overload(
+            "PickBool",
+            "Pick",
+            7,
+            &[("first", TypeMeta::Bool), ("second", TypeMeta::I64)],
+        );
+        assert_eq!(
+            legacy_guard_overlap(&old_integer_pair, &bool_wide, false, &context),
+            LegacyGuardOverlap::Preserve(vec![
+                LegacyPreservationPredicate::ExactIntRangeOrSubclass {
+                    index: 1,
+                    minimum: i32::MIN as i128,
+                    maximum: i32::MAX as i128,
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn interface_conversion_overlap_is_planned_for_strict_and_permissive_tiers() {
+        let old_type = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "IOld".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let new_type = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "INew".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let context = PythonProjectionContext::standalone([
+            old_type.type_identity(),
+            new_type.type_identity(),
+        ])
+        .unwrap();
+        let old = overload("Use", "Use", 6, &[("value", old_type)]);
+        let candidate = overload("UseNew", "Use", 7, &[("value", new_type)]);
+        let expected = LegacyGuardOverlap::Preserve(vec![LegacyPreservationPredicate::CanCast {
+            index: 0,
+            iid: "IID_ARG_Contoso_IOld".into(),
+        }]);
+
+        assert_eq!(
+            legacy_guard_overlap(&old, &candidate, false, &context),
+            expected
+        );
+        assert_eq!(
+            legacy_guard_overlap(&old, &candidate, true, &context),
+            expected
         );
     }
 
@@ -1952,13 +2071,10 @@ mod tests {
                     .candidates
                     .iter()
                     .filter(|candidate| {
-                        legacy_conversion_shadow(fallback.method, candidate.method).is_some_and(
-                            |guards| {
-                                guards
-                                    .iter()
-                                    .any(|(_, guard)| *guard == LegacyConversionGuard::Bool)
-                            },
-                        )
+                        candidate.legacy_preservation.is_some()
+                            && get_in_params(candidate.method)
+                                .iter()
+                                .any(|param| param.typ == TypeMeta::Bool)
                     })
                     .count();
                 count += 1;
@@ -1966,11 +2082,36 @@ mod tests {
             (count, bool_shadows)
         }
 
-        let context = PythonProjectionContext::default();
+        let namespaces = meta::list_namespaces(WINMD);
+        let mut identities = BTreeSet::new();
+        for namespace in &namespaces {
+            identities.extend(
+                meta::parse_enums(WINMD, namespace)
+                    .into_iter()
+                    .map(|typ| typ.type_identity()),
+            );
+            identities.extend(
+                meta::parse_interfaces(WINMD, namespace)
+                    .into_iter()
+                    .map(|interface| interface.type_identity()),
+            );
+            identities.extend(
+                meta::parse_namespace(WINMD, namespace)
+                    .into_iter()
+                    .map(|class| {
+                        crate::types::TypeIdentity::named(
+                            crate::types::TypeIdentityKind::Class,
+                            class.namespace,
+                            class.name,
+                        )
+                    }),
+            );
+        }
+        let context = PythonProjectionContext::standalone(identities).unwrap();
         let mut runtime_count = 0;
         let mut all_plan_sites = 0;
         let mut bool_shadows = 0;
-        for namespace in meta::list_namespaces(WINMD) {
+        for namespace in namespaces {
             for class in meta::parse_namespace(WINMD, &namespace) {
                 let statics = class
                     .factory_interfaces
@@ -1979,6 +2120,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 let instance = class_instance_interfaces(&class).collect::<Vec<_>>();
                 let plan = ClassMemberPlan::new(&class, &context);
+
                 let static_count = assert_scope(&statics, &plan.statics);
                 let instance_count = assert_scope(&instance, &plan.instance);
                 let count = static_count.0 + instance_count.0;
@@ -1986,14 +2128,16 @@ mod tests {
                 all_plan_sites += count;
                 bool_shadows += static_count.1 + instance_count.1;
                 for interface in &class.required_interfaces {
-                    let count = assert_scope(&[interface], &interface_member_plan(interface));
+                    let count =
+                        assert_scope(&[interface], &interface_member_plan(interface, &context));
                     all_plan_sites += count.0;
                     bool_shadows += count.1;
                 }
             }
             for interface in meta::parse_interfaces(WINMD, &namespace) {
                 if !interface.is_delegate() {
-                    let count = assert_scope(&[&interface], &interface_member_plan(&interface));
+                    let count =
+                        assert_scope(&[&interface], &interface_member_plan(&interface, &context));
                     all_plan_sites += count.0;
                     bool_shadows += count.1;
                 }

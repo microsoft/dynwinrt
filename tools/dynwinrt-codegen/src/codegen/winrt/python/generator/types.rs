@@ -89,7 +89,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         return generate_delegate(iface);
     }
     let implementation = super::super::implementation::project(context, iface);
-    let plan = interface_member_plan(iface);
+    let plan = interface_member_plan(iface, context);
 
     let mut out = String::new();
     out.push_str(HEADER);
