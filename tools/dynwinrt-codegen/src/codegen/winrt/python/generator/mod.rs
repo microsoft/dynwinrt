@@ -136,12 +136,18 @@ def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
         return False
+    is_released = getattr(raw, 'is_released', None)
+    if is_released is not None and is_released():
+        raw.as_raw()
     if raw.is_null():
         return False
     try:
         raw.as_raw()
     except RuntimeError as error:
-        if str(error) == 'Cannot get raw pointer from non-object':
+        if (
+            is_released is not None
+            or str(error) == 'Cannot get raw pointer from non-object'
+        ):
             return False
         raise
     try:
@@ -321,6 +327,9 @@ mod tests {
         let runtime = generate_runtime_support_module();
 
         assert!(runtime.contains("if raw.is_null():\n        return False"));
+        assert!(
+            runtime.contains("if is_released is not None and is_released():\n        raw.as_raw()")
+        );
         assert!(runtime.contains("raw.as_raw()"));
         assert!(runtime.contains(
             "if str(error) == 'Cannot get raw pointer from non-object':\n            return False"

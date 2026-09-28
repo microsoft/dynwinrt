@@ -1590,17 +1590,27 @@ async def run_check(
                 runtime._dynwinrt_legacy_int_guard(UnexpectedIntError())
             except RuntimeError as error:
                 int_error = str(error)
+            released = dw.DynWinRTValue.from_i32(1)
+            released.release()
+            released_error = None
+            try:
+                runtime._dynwinrt_can_cast(released, iid)
+            except RuntimeError as error:
+                released_error = str(error)
             if (
                 results != [False, False, False, False]
                 or legacy != (1, 2)
                 or legacy_error != 'No matching overload for example'
                 or int_guards != [True, False, True, False, False]
                 or int_error != 'unexpected-int-error'
+                or released_error is None
+                or 'released' not in released_error
             ):
                 cr['error'] = (
                     'runtime dispatch helpers failed: '
                     f'casts={results!r}, legacy={legacy!r}, error={legacy_error!r}, '
-                    f'int_guards={int_guards!r}, int_error={int_error!r}'
+                    f'int_guards={int_guards!r}, int_error={int_error!r}, '
+                    f'released_error={released_error!r}'
                 )
             else:
                 cr['pass'] = True
