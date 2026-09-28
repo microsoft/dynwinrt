@@ -31,7 +31,7 @@ use pyo3::{ffi, intern};
 use windows::Foundation::{DateTime, Point, PropertyType, Rect, Size, TimeSpan};
 use windows::core::{GUID, HRESULT, IUnknown};
 
-use crate::errors::{map_dynwinrt_error, map_windows_error};
+use crate::errors::{InputSlot, map_dynwinrt_error, map_windows_error};
 use crate::runtime::{DynWinRTValue, WinGUID};
 
 const E_NOTIMPL: HRESULT = HRESULT(0x80004001_u32 as i32);
@@ -420,14 +420,20 @@ fn with_context(py: Python<'_>, error: PyErr, context: &str) -> PyErr {
 
 /// The one place that creates the Python values these conversions return.
 fn native(value: WinRTValue) -> DynWinRTValue {
-    DynWinRTValue(value)
+    DynWinRTValue::new(value)
 }
 
 /// Borrow the native value of a `DynWinRTValue`.
 ///
 /// Every native input, including nested elements, is read through here.
-fn live<'py>(value: &Bound<'py, DynWinRTValue>) -> PyResult<PyRef<'py, DynWinRTValue>> {
-    Ok(value.try_borrow()?)
+fn live<'py>(
+    value: &Bound<'py, DynWinRTValue>,
+    operation: &str,
+    slot: InputSlot,
+) -> PyResult<PyRef<'py, DynWinRTValue>> {
+    let value = value.try_borrow()?;
+    value.check_input(operation, slot)?;
+    Ok(value)
 }
 
 fn is_object(value: &WinRTValue) -> bool {
@@ -524,7 +530,7 @@ pub fn unbox_object(
         model: model(module)?,
         preserve_type,
     }
-    .unbox(raw, 0)
+    .unbox(raw, 0, InputSlot::Argument(0))
 }
 
 struct Reader<'a> {
@@ -533,10 +539,15 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    fn unbox(&self, raw: &Bound<'_, DynWinRTValue>, depth: usize) -> PyResult<Py<PyAny>> {
+    fn unbox(
+        &self,
+        raw: &Bound<'_, DynWinRTValue>,
+        depth: usize,
+        slot: InputSlot,
+    ) -> PyResult<Py<PyAny>> {
         let py = raw.py();
         let result = {
-            let native = live(raw)?;
+            let native = live(raw, "unbox_object()", slot)?;
             dynwinrt::unbox_property_value(&native.0).map_err(map_dynwinrt_error)?
         };
         match result {
@@ -665,13 +676,16 @@ impl Reader<'_> {
                 self.array(
                     py,
                     Element::Inspectable,
-                    values.into_iter().map(|element| match element {
-                        None => Ok(py.None()),
-                        Some(object) => {
-                            let element = Bound::new(py, native(WinRTValue::Object(object)))?;
-                            self.unbox(&element, depth + 1)
-                        }
-                    }),
+                    values
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, element)| match element {
+                            None => Ok(py.None()),
+                            Some(object) => {
+                                let element = Bound::new(py, native(WinRTValue::Object(object)))?;
+                                self.unbox(&element, depth + 1, InputSlot::Element(index))
+                            }
+                        }),
                 )
             }
             Data::DateTimeArray(values) => self.array(
@@ -778,7 +792,7 @@ pub fn to_winrt_object(
         model: model(module)?,
     };
     let boxed = match property_type {
-        None => boxer.box_value(value, 0)?,
+        None => boxer.box_value(value, 0, InputSlot::Argument(0))?,
         Some(property_type) => boxer.box_as(value, parse_property_type(property_type)?)?,
     };
     match boxed {
@@ -860,7 +874,12 @@ impl Boxer<'_> {
     /// and wrappers, bool, tags, enums (rejected), int (Int32 only), float,
     /// str, datetime, timedelta, UUID/WinGUID, bytes-like values, dynwinrt
     /// geometry, typed arrays, then homogeneous lists and tuples.
-    fn box_value<'py>(&self, value: &Bound<'py, PyAny>, depth: usize) -> PyResult<Boxed<'py>> {
+    fn box_value<'py>(
+        &self,
+        value: &Bound<'py, PyAny>,
+        depth: usize,
+        slot: InputSlot,
+    ) -> PyResult<Boxed<'py>> {
         // Exact built-in scalars cannot match an earlier rule.
         if value.is_exact_instance_of::<PyInt>() {
             return self.new_box(&plain_int(value)?);
@@ -879,7 +898,7 @@ impl Boxer<'_> {
         }
         if let Some(raw) = native_input(value)? {
             let kind = {
-                let native = live(&raw)?;
+                let native = live(&raw, "to_winrt_object()", slot)?;
                 (!is_object(&native.0)).then(|| value_kind(&native.0))
             };
             return match kind {
@@ -974,7 +993,7 @@ impl Boxer<'_> {
     }
 
     /// The array element type a list item implies, if it is unambiguous.
-    fn element_kind(&self, item: &Bound<'_, PyAny>) -> PyResult<Option<Element>> {
+    fn element_kind(&self, item: &Bound<'_, PyAny>, index: usize) -> PyResult<Option<Element>> {
         if item.is_exact_instance_of::<PyInt>() {
             return Ok(Some(Element::Int32));
         }
@@ -987,7 +1006,11 @@ impl Boxer<'_> {
         if item.cast::<PyBool>().is_ok() {
             return Ok(Some(Element::Boolean));
         }
-        if item.is_none() || native_input(item)?.is_some() {
+        if item.is_none() {
+            return Ok(None);
+        }
+        if let Some(raw) = native_input(item)? {
+            live(&raw, "to_winrt_object()", InputSlot::Element(index))?;
             return Ok(None);
         }
         Ok(match self.classify(item)? {
@@ -1004,7 +1027,7 @@ impl Boxer<'_> {
         };
         let mut inferred: Option<Element> = None;
         for (index, item) in items.iter().enumerate() {
-            let Some(element) = self.element_kind(item)? else {
+            let Some(element) = self.element_kind(item, index)? else {
                 return Err(PyTypeError::new_err(format!(
                     "cannot infer a WinRT array type for a list containing {} (element {index}); \
                      a list boxes only when all of its elements have the same unambiguous type. \
@@ -1060,7 +1083,8 @@ impl Boxer<'_> {
                  WinRT null",
             ));
         }
-        if native_input(value)?.is_some() {
+        if let Some(raw) = native_input(value)? {
+            live(&raw, "to_winrt_object()", InputSlot::Argument(0))?;
             return Err(PyTypeError::new_err(format!(
                 "property_type= converts a Python value; {} is already a WinRT object, so pass \
                  it without property_type",
@@ -1334,6 +1358,9 @@ impl Boxer<'_> {
                         .iter()
                         .enumerate()
                         .map(|(index, item)| {
+                            if let Some(raw) = native_input(item)? {
+                                live(&raw, "to_winrt_object()", InputSlot::Element(index))?;
+                            }
                             match self.scalar(item, element, Some(&label(index)))? {
                                 Data::$scalar(value) => Ok(value),
                                 _ => unreachable!("scalar returns the requested element"),
@@ -1373,7 +1400,7 @@ impl Boxer<'_> {
                         .iter()
                         .enumerate()
                         .map(|(index, item)| {
-                            self.inspectable_element(item, depth + 1)
+                            self.inspectable_element(item, depth + 1, index)
                                 .map_err(|error| with_context(item.py(), error, &label(index)))
                         })
                         .collect::<PyResult<_>>()?,
@@ -1387,11 +1414,18 @@ impl Boxer<'_> {
         &self,
         item: &Bound<'_, PyAny>,
         depth: usize,
+        index: usize,
     ) -> PyResult<Option<IUnknown>> {
-        Ok(match self.box_value(item, depth)? {
-            Boxed::Existing(object) => live(&object)?.0.as_object(),
-            Boxed::New(value) => value.as_object(),
-        })
+        Ok(
+            match self.box_value(item, depth, InputSlot::Element(index))? {
+                Boxed::Existing(object) => {
+                    live(&object, "to_winrt_object()", InputSlot::Element(index))?
+                        .0
+                        .as_object()
+                }
+                Boxed::New(value) => value.as_object(),
+            },
+        )
     }
 }
 

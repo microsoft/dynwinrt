@@ -763,8 +763,7 @@ pub fn generate_class(
         || !class.required_interfaces.is_empty()
     {
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class):\n");
-        out.push_str("        return interface_class.from_value(self._obj)\n");
+        out.push_str(&as_interface_method(context));
     }
 
     if winui::is_dispatcher_queue(class) {
@@ -890,8 +889,7 @@ pub fn generate_class(
             "        return cls._from_native(obj.cast(IID_{symbol}))\n"
         ));
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class):\n");
-        out.push_str("        return interface_class.from_value(self._obj)\n");
+        out.push_str(&as_interface_method(context));
         for methods in crate::codegen::winrt::python::overloads::grouped_methods(
             reorder_getters_before_setters(&req_iface.methods),
         ) {

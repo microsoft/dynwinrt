@@ -62,7 +62,9 @@ def _implementation_reference(value, iid, label):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
         raise TypeError(f'{label}: expected a managed WinRT value or None')
-    return DynWinRTValue.null_value() if raw.is_null() else raw.cast(iid)
+    # Return a null or released value itself: native marshaling rejects only
+    # the released one, which a fresh null_value() would have hidden.
+    return raw if raw.is_null() else raw.cast(iid)
 
 
 def _implementation_sync(value, label):

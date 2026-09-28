@@ -341,6 +341,86 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'as_interface_rejects_runtime_class':
+            try:
+                obj.as_interface(cls)
+            except TypeError as error:
+                expected = f'dynwinrt.project_as(obj, {cls.__name__})'
+                if expected not in str(error):
+                    cr['error'] = f'TypeError did not suggest {expected}: {error}'
+                    return cr
+            else:
+                cr['error'] = 'as_interface() accepted a runtime class'
+                return cr
+            # Other misuse keeps the AttributeError of the from_value lookup.
+            for target in (None, 42, object, obj):
+                try:
+                    obj.as_interface(target)
+                except AttributeError:
+                    continue
+                except Exception as error:
+                    cr['error'] = (
+                        f'as_interface({target!r}) raised {type(error).__name__}, '
+                        'expected AttributeError'
+                    )
+                    return cr
+                cr['error'] = f'as_interface({target!r}) succeeded'
+                return cr
+            cr['pass'] = True
+
+        elif kind == 'released_projection_error':
+            reason = (
+                'has been released (its projected_lifetime_scope() exited, or '
+                'release_projected() / DynWinRTValue.release() was called) and '
+                'can no longer be used.'
+            )
+            receiver = f'This WinRT object {reason}'
+            args = [literal_arg(a) for a in check.get('args', [])]
+            with dw.projected_lifetime_scope():
+                scoped = cls(*args)
+            released = cls(*args)
+            dw.release_projected(released)
+            value_released = cls(*args)
+            value_released._obj.release()
+            live = cls(*args)
+            property_value = generated_type(pkg_name, 'PropertyValue')
+            uses = (
+                ('scope exit', lambda: getattr(scoped, member), receiver),
+                ('release_projected', lambda: getattr(released, member), receiver),
+                (
+                    'DynWinRTValue.release()',
+                    lambda: getattr(value_released, member),
+                    receiver,
+                ),
+                ('interface cast', released.to_string, receiver),
+                # A runtime-class parameter is cast first, which receives it.
+                ('runtime-class argument', lambda: live.equals(released), receiver),
+                # An Object parameter reaches the native invocation unchanged.
+                (
+                    'object argument',
+                    lambda: property_value.create_inspectable(released),
+                    f'This WinRT object (argument 0 of invoke()) {reason}',
+                ),
+                (
+                    'array element',
+                    lambda: property_value.create_inspectable_array([live, released]),
+                    'This WinRT object (element 1 of '
+                    f'DynWinRTArray.from_values()) {reason}',
+                ),
+            )
+            for label, use, expected in uses:
+                try:
+                    use()
+                except RuntimeError as error:
+                    if str(error) != expected:
+                        cr['error'] = f'{label}: expected {expected!r}, got {str(error)!r}'
+                        return cr
+                else:
+                    cr['error'] = f'{label}: released projection allowed a WinRT call'
+                    return cr
+            dw.release_projected(live)
+            cr['pass'] = True
+
         elif kind == 'narrow_integer_overflow':
             cases = (
                 ('create_uint8', (256,)),
@@ -500,8 +580,43 @@ async def run_check(
                     f'wrapper IReference roundtrip returned {actual!r}, '
                     f'expected {check["compatibility_value"]!r}'
                 )
-            else:
-                cr['pass'] = True
+                return cr
+
+            # A released wrapper is neither passed nor unboxed as a null
+            # reference. Generated struct IReference field setters share the
+            # module's unbox helper.
+            reason = (
+                'has been released (its projected_lifetime_scope() exited, or '
+                'release_projected() / DynWinRTValue.release() was called) and '
+                'can no longer be used.'
+            )
+            released_box = factory(check['compatibility_value'])
+            released = reference_cls.from_value(getattr(released_box, '_obj', released_box))
+            dw.release_projected(released)
+            unbox = importlib.import_module(
+                implementation_module_name(pkg_name, namespace, cls.__name__)
+            )._dynwinrt_unbox_reference
+            if unbox(None) is not None or unbox(reference) != check['compatibility_value']:
+                cr['error'] = 'IReference unbox helper changed a null or live value'
+                return cr
+            for label, use, expected in (
+                (
+                    'argument',
+                    lambda: setattr(obj, member, released),
+                    f'This WinRT object (argument 0 of invoke()) {reason}',
+                ),
+                ('unbox', lambda: unbox(released), f'This WinRT object {reason}'),
+            ):
+                try:
+                    use()
+                except RuntimeError as error:
+                    if str(error) != expected:
+                        cr['error'] = f'{label}: expected {expected!r}, got {str(error)!r}'
+                        return cr
+                else:
+                    cr['error'] = f'{label}: a released IReference was accepted'
+                    return cr
+            cr['pass'] = True
 
         elif kind == 'struct_roundtrip':
             struct_module = check.get(
