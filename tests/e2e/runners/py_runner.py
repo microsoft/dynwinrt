@@ -1460,14 +1460,29 @@ async def run_check(
                 )
             except TypeError as error:
                 legacy_error = str(error)
+            int_guards = [
+                runtime._dynwinrt_legacy_int_guard('42'),
+                runtime._dynwinrt_legacy_int_guard('not numeric'),
+            ]
+            int_error = None
+            class UnexpectedIntError:
+                def __int__(self):
+                    raise RuntimeError('unexpected-int-error')
+            try:
+                runtime._dynwinrt_legacy_int_guard(UnexpectedIntError())
+            except RuntimeError as error:
+                int_error = str(error)
             if (
                 results != [False, False, False, False]
                 or legacy != (1, 2)
                 or legacy_error != 'No matching overload for example'
+                or int_guards != [True, False]
+                or int_error != 'unexpected-int-error'
             ):
                 cr['error'] = (
                     'runtime dispatch helpers failed: '
-                    f'casts={results!r}, legacy={legacy!r}, error={legacy_error!r}'
+                    f'casts={results!r}, legacy={legacy!r}, error={legacy_error!r}, '
+                    f'int_guards={int_guards!r}, int_error={int_error!r}'
                 )
             else:
                 cr['pass'] = True

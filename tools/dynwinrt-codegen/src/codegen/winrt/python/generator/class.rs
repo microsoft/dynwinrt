@@ -69,12 +69,22 @@ pub fn generate_class<'a>(
             .required_interfaces
             .iter()
             .any(|interface| interface_member_plan(interface).has_legacy_fallback());
+    let needs_legacy_int_guard = plan.statics.has_legacy_conversion_guard()
+        || plan.instance.has_legacy_conversion_guard()
+        || class
+            .required_interfaces
+            .iter()
+            .any(|interface| interface_member_plan(interface).has_legacy_conversion_guard());
     let mut out = String::new();
 
     // Header
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context, needs_legacy_helper));
+    out.push_str(&import_line(
+        context,
+        needs_legacy_helper,
+        needs_legacy_int_guard,
+    ));
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -447,7 +457,11 @@ pub fn generate_class<'a>(
             ),
         });
     }
-    let static_aliases = generate_compatibility_aliases(&plan.statics);
+    let static_aliases = generate_static_compatibility_aliases(
+        &plan.statics,
+        |candidate| static_overload(candidate.interface, candidate.method),
+        context,
+    );
     if !static_aliases.is_empty() {
         out.push('\n');
         out.push_str(&static_aliases);
@@ -656,7 +670,11 @@ pub fn generate_class<'a>(
             ),
         });
     }
-    let instance_aliases = generate_compatibility_aliases(&plan.instance);
+    let instance_aliases = generate_instance_compatibility_aliases(
+        &plan.instance,
+        |candidate| instance_overload(candidate.interface, candidate.method),
+        context,
+    );
     if !instance_aliases.is_empty() {
         out.push('\n');
         out.push_str(&instance_aliases);
@@ -891,7 +909,11 @@ pub fn generate_class<'a>(
                 ),
             });
         }
-        let aliases = generate_compatibility_aliases(&iface_plan);
+        let aliases = generate_instance_compatibility_aliases(
+            &iface_plan,
+            |candidate| overload(candidate.method),
+            context,
+        );
         if !aliases.is_empty() {
             out.push('\n');
             out.push_str(&aliases);
@@ -1279,6 +1301,7 @@ fn generate_python_constructor(
         let dispatch = candidates
             .iter()
             .map(|candidate| DispatchCandidate {
+                method: None,
                 params: candidate.public_params.clone(),
                 body: vec![format!(
                     "return {}",
@@ -1489,6 +1512,7 @@ fn generate_python_constructor(
             body.push(format!("self._set_native({}._obj)", candidate.call_expr));
             body.push("return".to_string());
             DispatchCandidate {
+                method: None,
                 params: candidate.public_params.clone(),
                 body,
             }

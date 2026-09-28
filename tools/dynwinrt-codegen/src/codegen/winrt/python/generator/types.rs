@@ -94,7 +94,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context, plan.has_legacy_fallback()));
+    out.push_str(&import_line(
+        context,
+        plan.has_legacy_fallback(),
+        plan.has_legacy_conversion_guard(),
+    ));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
     }
@@ -607,7 +611,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             ),
         });
     }
-    let aliases = generate_compatibility_aliases(&plan);
+    let aliases = generate_instance_compatibility_aliases(
+        &plan,
+        |candidate| overload(candidate.method),
+        context,
+    );
     if !aliases.is_empty() {
         out.push('\n');
         out.push_str(&aliases);

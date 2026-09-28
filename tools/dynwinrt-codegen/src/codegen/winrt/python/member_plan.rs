@@ -99,11 +99,45 @@ pub(crate) struct LegacyFallback<'a> {
     pub(crate) attribute: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyConversionGuard {
+    Int,
+}
+
+/// Guard-free conversions accepted by an old standalone method that also fit
+/// a newly added candidate's strict Python type domain.
+pub(crate) fn legacy_conversion_shadow(
+    legacy: &MethodMeta,
+    candidate: &MethodMeta,
+) -> Option<Vec<(usize, LegacyConversionGuard)>> {
+    let legacy_params = get_in_params(legacy);
+    let candidate_params = get_in_params(candidate);
+    if legacy_params.len() != candidate_params.len() {
+        return None;
+    }
+    let mut guards = Vec::new();
+    for (index, (legacy, candidate)) in legacy_params.iter().zip(candidate_params).enumerate() {
+        if legacy.typ == candidate.typ {
+            continue;
+        }
+        if matches!(legacy.typ, TypeMeta::Enum { .. }) && matches!(candidate.typ, TypeMeta::String)
+        {
+            guards.push((index, LegacyConversionGuard::Int));
+            continue;
+        }
+        return None;
+    }
+    (!guards.is_empty()).then_some(guards)
+}
+
 /// A previously emitted method name kept as a class attribute alias.
 pub(crate) struct Alias<'a> {
     pub(crate) name: String,
     /// Attribute the alias is bound to.
     pub(crate) target: String,
+    /// Exact former dispatcher retained when the broader target could select a
+    /// different native method for a previously successful call.
+    pub(crate) dispatcher: Option<MethodGroup<'a>>,
     /// Methods whose signatures the stub declares for this name.
     pub(crate) signatures: Vec<&'a MethodMeta>,
 }
@@ -182,6 +216,23 @@ impl<'a> ScopePlan<'a> {
         self.groups
             .iter()
             .any(|group| group.legacy_fallback.is_some())
+    }
+
+    pub(crate) fn has_legacy_conversion_guard(&self) -> bool {
+        self.groups
+            .iter()
+            .chain(
+                self.aliases
+                    .iter()
+                    .filter_map(|alias| alias.dispatcher.as_ref()),
+            )
+            .any(|group| {
+                group.legacy_fallback.as_ref().is_some_and(|legacy| {
+                    group.candidates.iter().any(|candidate| {
+                        legacy_conversion_shadow(legacy.method, candidate.method).is_some()
+                    })
+                })
+            })
     }
 
     /// CLR names that kept their previous Python names because of a collision.
@@ -761,6 +812,43 @@ fn plan_scopes<'a>(
                             .name
                             .clone()
                     };
+                    let dispatcher = (previous_members.len() > 1)
+                        .then(|| {
+                            let target_group =
+                                plan_groups.iter().find(|group| group.name == target)?;
+                            let old_methods = previous_members
+                                .iter()
+                                .map(|&index| entries[index].method as *const MethodMeta)
+                                .collect::<HashSet<_>>();
+                            let needs_exact_dispatcher = previous_members.iter().any(|&index| {
+                                let method = entries[index].method;
+                                let Some(position) = target_group
+                                    .candidates
+                                    .iter()
+                                    .position(|candidate| std::ptr::eq(candidate.method, method))
+                                else {
+                                    return false;
+                                };
+                                target_group.candidates[..position].iter().any(|candidate| {
+                                    !old_methods.contains(&(candidate.method as *const MethodMeta))
+                                        && equivalent_overloads(candidate.method, method)
+                                })
+                            });
+                            needs_exact_dispatcher.then(|| MethodGroup {
+                                name: name.clone(),
+                                candidates: dispatch_order(previous_members)
+                                    .into_iter()
+                                    .map(|index| Candidate {
+                                        interface: entries[index].interface,
+                                        method: entries[index].method,
+                                        attribute: attribute_of[&index].clone(),
+                                        define: false,
+                                    })
+                                    .collect(),
+                                legacy_fallback: None,
+                            })
+                        })
+                        .flatten();
                     // Stubs keep the signatures each name declared before.
                     let signatures = if name == previous_key {
                         dispatch_order(previous_members)
@@ -774,6 +862,7 @@ fn plan_scopes<'a>(
                     Alias {
                         name: name.clone(),
                         target,
+                        dispatcher,
                         signatures: signatures
                             .into_iter()
                             .map(|index| entries[index].method)
@@ -1630,6 +1719,81 @@ mod tests {
             planned.aliases,
             aliases(&[("try_update_position_with_option", "try_update_position")])
         );
+    }
+
+    #[test]
+    fn former_dispatcher_keeps_exact_candidates_when_canonical_target_has_a_foreign_equivalent() {
+        let canonical = interface(
+            "ICanonical",
+            vec![overload("Foo", "Foo", 6, &[("value", TypeMeta::String)])],
+        );
+        let legacy_text = interface(
+            "ILegacyText",
+            vec![overload(
+                "FooVersion",
+                "Foo",
+                6,
+                &[("value", TypeMeta::String)],
+            )],
+        );
+        let legacy_int = interface(
+            "ILegacyInt",
+            vec![overload(
+                "FooVersion",
+                "Foo",
+                6,
+                &[("value", TypeMeta::I32)],
+            )],
+        );
+        let plans = plan_scopes(
+            &[vec![&canonical, &legacy_text, &legacy_int]],
+            &HashSet::new(),
+        );
+        let alias = plans[0]
+            .aliases()
+            .iter()
+            .find(|alias| alias.name == "foo_version")
+            .unwrap();
+        assert_eq!(alias.target, "foo");
+        assert_eq!(
+            alias
+                .dispatcher
+                .as_ref()
+                .unwrap()
+                .candidates
+                .iter()
+                .map(|candidate| candidate.interface.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ILegacyText", "ILegacyInt"]
+        );
+    }
+
+    #[test]
+    fn enum_string_legacy_shadow_requires_the_complete_parameter_shape() {
+        let old = overload(
+            "Open",
+            "Open",
+            6,
+            &[("mode", enumeration("Mode")), ("label", TypeMeta::String)],
+        );
+        let overlapping = overload(
+            "OpenText",
+            "Open",
+            7,
+            &[("mode", TypeMeta::String), ("label", TypeMeta::String)],
+        );
+        let nonoverlapping = overload(
+            "OpenFlag",
+            "Open",
+            8,
+            &[("mode", TypeMeta::String), ("enabled", TypeMeta::Bool)],
+        );
+
+        assert_eq!(
+            legacy_conversion_shadow(&old, &overlapping),
+            Some(vec![(0, LegacyConversionGuard::Int)])
+        );
+        assert_eq!(legacy_conversion_shadow(&old, &nonoverlapping), None);
     }
 
     #[test]
