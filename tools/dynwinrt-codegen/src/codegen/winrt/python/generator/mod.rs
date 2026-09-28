@@ -189,9 +189,30 @@ def _dynwinrt_unbox_reference(value):
 ";
 
 fn has_ireference_input<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> bool {
+    fn contains(typ: &TypeMeta) -> bool {
+        if ireference_inner_type(typ).is_some() {
+            return true;
+        }
+        match typ {
+            TypeMeta::Array(inner)
+            | TypeMeta::AsyncOperation(inner)
+            | TypeMeta::AsyncActionWithProgress(inner) => contains(inner),
+            TypeMeta::AsyncOperationWithProgress(result, progress) => {
+                contains(result) || contains(progress)
+            }
+            TypeMeta::Parameterized { args, .. } => args.iter().any(contains),
+            // Struct inputs use their generated pack helpers; those modules
+            // emit IREFERENCE_HELPER through has_ireference_struct_field.
+            _ => false,
+        }
+    }
+
     methods.into_iter().any(|method| {
         method.params.iter().any(|param| {
-            param.direction == ParamDirection::In && ireference_inner_type(&param.typ).is_some()
+            matches!(
+                param.direction,
+                ParamDirection::In | ParamDirection::OutFill
+            ) && contains(&param.typ)
         })
     })
 }
@@ -233,7 +254,47 @@ pub use types::{generate_enum, generate_interface};
 
 #[cfg(test)]
 mod tests {
-    use super::generate_runtime_support_module;
+    use super::*;
+    use crate::meta::{InterfaceMeta, ParamDirection, ParamMeta};
+
+    fn reference() -> TypeMeta {
+        TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference`1".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![TypeMeta::I32],
+        }
+    }
+
+    fn parameterized(name: &str, piid: &str, args: Vec<TypeMeta>) -> TypeMeta {
+        TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: name.into(),
+            piid: piid.into(),
+            args,
+        }
+    }
+
+    fn method(typ: TypeMeta) -> MethodMeta {
+        MethodMeta {
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn consumer(methods: Vec<MethodMeta>) -> InterfaceMeta {
+        InterfaceMeta {
+            namespace: "Contoso".into(),
+            name: "IConsumer".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            methods,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn generated_delegates_use_thread_affine_callback_contexts() {
@@ -242,5 +303,78 @@ mod tests {
         assert!(runtime.contains("_dynwinrt_wrap_delegate_callback,"));
         assert!(runtime.contains("_dynwinrt_wrap_delegate_callback(callback),"));
         assert!(!runtime.contains("copy_context"));
+    }
+
+    #[test]
+    fn ireference_helper_detection_follows_nested_input_wrappers() {
+        let iterable = parameterized(
+            "IIterable`1",
+            super::super::collections::IITERABLE_PIID,
+            vec![reference()],
+        );
+        let mapping = parameterized(
+            "IMap`2",
+            super::super::collections::IMAP_PIID,
+            vec![TypeMeta::String, reference()],
+        );
+        assert!(has_ireference_input([&method(iterable)]));
+        assert!(has_ireference_input([&method(mapping)]));
+        assert!(has_ireference_input([&method(TypeMeta::Array(Box::new(
+            reference()
+        )))]));
+    }
+
+    #[test]
+    fn ireference_helper_detection_ignores_non_reference_nested_inputs() {
+        let iterable = parameterized(
+            "IIterable`1",
+            super::super::collections::IITERABLE_PIID,
+            vec![TypeMeta::I32],
+        );
+        let mapping = parameterized(
+            "IMap`2",
+            super::super::collections::IMAP_PIID,
+            vec![TypeMeta::String, TypeMeta::I32],
+        );
+        assert!(!has_ireference_input([&method(iterable)]));
+        assert!(!has_ireference_input([&method(mapping)]));
+    }
+
+    #[test]
+    fn generated_nested_ireference_inputs_emit_the_boxing_helper() {
+        let reference = reference();
+        let iterable = parameterized(
+            "IIterable`1",
+            super::super::collections::IITERABLE_PIID,
+            vec![reference.clone()],
+        );
+        let mapping = parameterized(
+            "IMap`2",
+            super::super::collections::IMAP_PIID,
+            vec![TypeMeta::String, reference],
+        );
+        let interface = consumer(vec![method(iterable), method(mapping)]);
+        let context = PythonProjectionContext::standalone([interface.type_identity()]).unwrap();
+        let generated = generate_interface(&context, &interface);
+
+        assert!(generated.contains("def _dynwinrt_box_reference(value, value_type, wrap):"));
+        assert!(generated.contains(
+            "_dynwinrt_vector(value, lambda item: _dynwinrt_collection_item(item, lambda item: _dynwinrt_box_reference("
+        ));
+        assert!(generated.contains(
+            "_dynwinrt_map(value, lambda item: _dynwinrt_collection_item(item, lambda item: DynWinRTValue.from_hstring(item)"
+        ));
+        assert!(generated.contains(
+            "lambda item: _dynwinrt_collection_item(item, lambda item: _dynwinrt_box_reference("
+        ));
+
+        let scalar = consumer(vec![method(parameterized(
+            "IIterable`1",
+            super::super::collections::IITERABLE_PIID,
+            vec![TypeMeta::I32],
+        ))]);
+        let generated = generate_interface(&context, &scalar);
+        assert!(!generated.contains("def _dynwinrt_box_reference(value, value_type, wrap):"));
+        assert!(!generated.contains("_dynwinrt_box_reference("));
     }
 }

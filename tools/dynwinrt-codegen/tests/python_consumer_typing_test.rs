@@ -974,6 +974,88 @@ def mapping(values: JsonObject) -> None:
     );
 
     if has_implementation_runtime() {
+        // Nested IReference<T> collection wrappers call the local boxing
+        // helper. Generate an otherwise synthetic module to prove recursive
+        // helper detection emits it; the runtime script below imports and
+        // invokes the emitted helper. A scalar collection is the negative
+        // control and must not emit it.
+        let reference = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference`1".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![TypeMeta::I32],
+        };
+        let iterable = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IIterable`1".into(),
+            piid: "faa585ea-6214-4217-afda-7f46de5869b3".into(),
+            args: vec![reference.clone()],
+        };
+        let mapping = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IMap`2".into(),
+            piid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            args: vec![TypeMeta::String, reference.clone()],
+        };
+        let nested = interface(
+            "INestedReferences",
+            99,
+            vec![
+                MethodMeta {
+                    name: "SetValues".into(),
+                    raw_name: "SetValues".into(),
+                    params: vec![parameter(iterable.clone())],
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "SetMapping".into(),
+                    raw_name: "SetMapping".into(),
+                    params: vec![parameter(mapping.clone())],
+                    ..Default::default()
+                },
+            ],
+        );
+        let nested_context = python::PythonProjectionContext::new(
+            [
+                nested.type_identity(),
+                iterable.type_identity(),
+                mapping.type_identity(),
+                reference.type_identity(),
+            ],
+            true,
+        )
+        .unwrap();
+        let nested_module = nested_context.implementation_module_for_interface(&nested);
+        let nested_source = python::generate_interface(&nested_context, &nested);
+        assert!(nested_source.contains("def _dynwinrt_box_reference(value, value_type, wrap):"));
+        assert!(nested_source.contains("_dynwinrt_vector(value, lambda item:"));
+        assert!(nested_source.contains("_dynwinrt_map(value, lambda item:"));
+        assert!(nested_source.contains("_dynwinrt_box_reference("));
+        fs::write(
+            fixture.0.join("sdk").join(format!("{nested_module}.py")),
+            nested_source,
+        )
+        .unwrap();
+
+        let scalar = interface(
+            "IScalarCollection",
+            100,
+            vec![MethodMeta {
+                name: "SetValues".into(),
+                raw_name: "SetValues".into(),
+                params: vec![parameter(TypeMeta::Parameterized {
+                    namespace: "Windows.Foundation.Collections".into(),
+                    name: "IIterable`1".into(),
+                    piid: "faa585ea-6214-4217-afda-7f46de5869b3".into(),
+                    args: vec![TypeMeta::I32],
+                })],
+                ..Default::default()
+            }],
+        );
+        let scalar_source = python::generate_interface(&nested_context, &scalar);
+        assert!(!scalar_source.contains("def _dynwinrt_box_reference(value, value_type, wrap):"));
+        assert!(!scalar_source.contains("_dynwinrt_box_reference("));
+
         let script = r#"from dynwinrt import DynWinRTType, DynWinRTValue, RoApartment, projected_lifetime_scope
 from sdk.windows.foundation.collections import (
     IIterable_StorageFolder,
@@ -983,8 +1065,20 @@ from sdk.windows.foundation.collections import (
     IVector_StorageFolder,
 )
 from sdk.windows__data__json__json_object import IID_IJsonValue, IMap_String_IJsonValue
+from sdk.__NESTED_MODULE__ import _dynwinrt_box_reference
 
 with RoApartment(1), projected_lifetime_scope():
+    boxed = _dynwinrt_box_reference(
+        17, DynWinRTType.i32_type(), DynWinRTValue.from_i32
+    )
+    assert not boxed.is_null()
+    boxed.release()
+    null = _dynwinrt_box_reference(
+        None, DynWinRTType.i32_type(), DynWinRTValue.from_i32
+    )
+    assert null.is_null()
+    null.release()
+
     for vector_type in (IVector_StorageFolder, IObservableVector_StorageFolder):
         vector = vector_type.create([None])
         assert vector[0] is None
@@ -1036,7 +1130,8 @@ with RoApartment(1), projected_lifetime_scope():
         else:
             raise AssertionError(f"{expected!r} was not raised")
 print("nullable-collection-native-ok", flush=True)
-"#;
+"#
+        .replace("__NESTED_MODULE__", &nested_module);
         fs::write(fixture.0.join("nullable_collections.py"), script).unwrap();
         let output = Command::new(python())
             .args(["-B", "nullable_collections.py"])
