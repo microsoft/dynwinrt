@@ -10,7 +10,9 @@ use crate::codegen::winrt::shared::imports::{
 };
 
 use super::member_plan::{Candidate, LegacyPreservation, MethodGroup};
-use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
+use super::naming::{
+    PythonProjectionContext, PythonSupportSymbol, PythonTypeIdentity, to_snake_case,
+};
 use super::signature::{
     LegacyPreservationPredicate, py_convert_return, py_has_permissive_guard,
     py_interface_cast_guard, py_runtime_named_symbol, py_runtime_symbol, py_type_guard,
@@ -268,7 +270,8 @@ pub(crate) fn emit_dispatch(
                     minimum,
                     maximum,
                 } => format!(
-                    "(type(_legacy_bound[{index}]) not in {exact_types} or _dynwinrt_legacy_int_guard(_legacy_bound[{index}], {minimum}, {maximum}))"
+                    "(type(_legacy_bound[{index}]) not in {exact_types} or {}(_legacy_bound[{index}], {minimum}, {maximum}))",
+                    context.support_symbol_reference(PythonSupportSymbol::LegacyIntGuard)
                 ),
                 LegacyPreservationPredicate::BuiltinSubclass { index, exact_types } => {
                     format!("type(_legacy_bound[{index}]) not in {exact_types}")
@@ -277,7 +280,11 @@ pub(crate) fn emit_dispatch(
                     "(type(_legacy_bound[{index}]) is not str or (len(_legacy_bound[{index}]) == 1 and ord(_legacy_bound[{index}]) <= 65535))"
                 ),
                 LegacyPreservationPredicate::CanCast { index, iid } => {
-                    format!("_dynwinrt_can_cast(_legacy_bound[{index}], {iid})")
+                    format!(
+                        "{}(_legacy_bound[{index}], {})",
+                        context.support_symbol_reference(PythonSupportSymbol::CanCast),
+                        context.argument_iid_reference(iid)
+                    )
                 }
                 LegacyPreservationPredicate::DynWinRTValue { index } => {
                     format!(
@@ -323,7 +330,8 @@ pub(crate) fn emit_dispatch(
     }
     if let Some(legacy) = legacy {
         out.push_str(&format!(
-            "{indent}return _dynwinrt_legacy_call({}, {}, args, kwargs, '{}')\n",
+            "{indent}return {}({}, {}, args, kwargs, '{}')\n",
+            context.support_symbol_reference(PythonSupportSymbol::LegacyCall),
             legacy.target,
             dispatch_parameter_names(&legacy.params),
             legacy.public_name,

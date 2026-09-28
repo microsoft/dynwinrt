@@ -15,6 +15,9 @@ dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
 Generated package manifests pin `dynwinrt` to the exact version of
 `dynwinrt-codegen` that produced them. The runtime wheel includes
 `__init__.pyi` and `py.typed` for static type checking.
+Do not mix generated bindings with an older runtime wheel. Upgrade to the
+matching runtime version and regenerate all Python bindings together; generated
+interface overloads fail explicitly when a required native guard is missing.
 
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
@@ -110,7 +113,9 @@ remain available as compatibility aliases that keep calling the same overload.
 A method keeps its earlier name when the documented name would clash with
 another member, such as a property or the generated `close()`. Interface
 parameters of overloads accept any object that implements the interface, such
-as a runtime class instance or a `DynWinRTValue`.
+as a runtime class instance or a `DynWinRTValue`, including a raw async
+operation that implements `IAsyncInfo`. Native QueryInterface failures other
+than `E_NOINTERFACE` propagate instead of silently choosing another overload.
 Activatable runtime classes use normal constructors, for example
 `Uri("https://example.com")`. Constructor overloads come only from WinMD
 `ActivatableAttribute` and public `ComposableAttribute` declarations. Classes

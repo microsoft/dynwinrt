@@ -1621,25 +1621,26 @@ async def run_check(
             )
 
             class FailingValue:
-                def is_released(self):
-                    return False
-
-                def is_null(self):
-                    return False
-
-                def as_raw(self):
-                    return 1
-
-                def cast(self, _iid):
+                def _try_query_interface(self, _iid):
                     raise controlled_error
 
             original_value_type = runtime.DynWinRTValue
             qi_error = None
-            runtime.DynWinRTValue = FailingValue
+            mismatch_error = None
             try:
+                runtime.DynWinRTValue = FailingValue
                 runtime._dynwinrt_can_cast(FailingValue(), iid)
             except OSError as error:
                 qi_error = error
+            finally:
+                runtime.DynWinRTValue = original_value_type
+            class MissingValue:
+                pass
+            runtime.DynWinRTValue = MissingValue
+            try:
+                runtime._dynwinrt_can_cast(MissingValue(), iid)
+            except RuntimeError as error:
+                mismatch_error = str(error)
             finally:
                 runtime.DynWinRTValue = original_value_type
             if (
@@ -1653,6 +1654,8 @@ async def run_check(
                 or unsupported_error != -2147467262
                 or unsupported
                 or qi_error is not controlled_error
+                or mismatch_error is None
+                or 'regenerate all Python bindings' not in mismatch_error
             ):
                 cr['error'] = (
                     'runtime dispatch helpers failed: '
@@ -1661,7 +1664,8 @@ async def run_check(
                     f'released_error={released_error!r}, '
                     f'unsupported_error={unsupported_error!r}, '
                     f'unsupported={unsupported!r}, qi_error='
-                    f'{getattr(qi_error, "winerror", None)!r}'
+                    f'{getattr(qi_error, "winerror", None)!r}, '
+                    f'mismatch_error={mismatch_error!r}'
                 )
             else:
                 cr['pass'] = True

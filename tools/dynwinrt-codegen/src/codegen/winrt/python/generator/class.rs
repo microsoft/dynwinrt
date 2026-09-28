@@ -288,8 +288,9 @@ pub fn generate_class<'a>(
     argument_iids.sort();
     argument_iids.dedup();
     for (name, iid) in argument_iids {
-        if declared_iids.insert(name.clone()) {
-            out.push_str(&format!("{} = WinGUID.parse('{}')\n", name, iid));
+        let symbol = context.argument_iid_reference(&name);
+        if declared_iids.insert(symbol.to_string()) {
+            out.push_str(&format!("{symbol} = WinGUID.parse('{iid}')\n"));
         }
     }
     out.push('\n');

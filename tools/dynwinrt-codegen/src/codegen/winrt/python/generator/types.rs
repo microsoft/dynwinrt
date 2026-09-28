@@ -240,7 +240,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     argument_iids.sort();
     argument_iids.dedup();
     for (name, iid) in argument_iids {
-        out.push_str(&format!("{} = WinGUID.parse('{}')\n", name, iid));
+        out.push_str(&format!(
+            "{} = WinGUID.parse('{}')\n",
+            context.argument_iid_reference(&name),
+            iid
+        ));
     }
     out.push('\n');
 

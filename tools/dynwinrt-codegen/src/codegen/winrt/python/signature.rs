@@ -6,7 +6,7 @@
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
-use super::naming::{PythonProjectionContext, PythonSymbol};
+use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::shared::imports::{get_in_params, ireference_inner_type};
@@ -734,10 +734,10 @@ pub(crate) fn py_collect_runtime_class_iid_consts(
     }
 }
 
-fn py_runtime_class_wrap(name: &str, typ: &TypeMeta) -> String {
+fn py_runtime_class_wrap(name: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     let raw = format!("getattr({}, '_obj', {})", name, name);
     py_runtime_class_iid_const(typ)
-        .map(|(iid, _)| format!("{}.cast({})", raw, iid))
+        .map(|(iid, _)| format!("{}.cast({})", raw, context.argument_iid_reference(&iid)))
         .unwrap_or(raw)
 }
 
@@ -944,7 +944,7 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta, context: &PythonProjection
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
-        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ, context),
         TypeMeta::Object | TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
@@ -1011,7 +1011,7 @@ pub(crate) fn py_wrap_native_value(
             context.struct_symbol(typ, PythonSymbol::PrivatePack),
             name
         ),
-        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ, context),
         TypeMeta::Object
         | TypeMeta::Interface { .. }
         | TypeMeta::Parameterized { .. }
@@ -1149,7 +1149,11 @@ pub(crate) fn py_type_guard(
         ),
         typ @ TypeMeta::RuntimeClass { .. } if py_runtime_class_iid_const(typ).is_some() => {
             let (iid, _) = py_runtime_class_iid_const(typ).expect("checked above");
-            format!("_dynwinrt_can_cast({name}, {iid})")
+            format!(
+                "{}({name}, {})",
+                context.support_symbol_reference(PythonSupportSymbol::CanCast),
+                context.argument_iid_reference(&iid)
+            )
         }
         TypeMeta::RuntimeClass {
             namespace,
@@ -1209,8 +1213,10 @@ pub(crate) fn py_interface_cast_guard(
 
     let (iid, _) = py_interface_iid_const(typ)?;
     Some(format!(
-        "({} or _dynwinrt_can_cast({name}, {iid}))",
-        py_type_guard(name, typ, context)
+        "({} or {}({name}, {}))",
+        py_type_guard(name, typ, context),
+        context.support_symbol_reference(PythonSupportSymbol::CanCast),
+        context.argument_iid_reference(&iid)
     ))
 }
 

@@ -47,12 +47,19 @@ fn import_line(
     needs_legacy_int_guard: bool,
 ) -> String {
     let object_input = context.support_symbol_import(PythonSupportSymbol::ObjectInput);
+    let can_cast = context.support_symbol_import(PythonSupportSymbol::CanCast);
     let mut legacy_helpers = String::new();
     if needs_legacy_helper {
-        legacy_helpers.push_str("    _dynwinrt_legacy_call,\n");
+        legacy_helpers.push_str(&format!(
+            "    {},\n",
+            context.support_symbol_import(PythonSupportSymbol::LegacyCall)
+        ));
     }
     if needs_legacy_int_guard {
-        legacy_helpers.push_str("    _dynwinrt_legacy_int_guard,\n");
+        legacy_helpers.push_str(&format!(
+            "    {},\n",
+            context.support_symbol_import(PythonSupportSymbol::LegacyIntGuard)
+        ));
     }
     let as_interface = context.support_symbol_import(PythonSupportSymbol::AsInterface);
     format!(
@@ -63,7 +70,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     {object_input}, _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, {can_cast}, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
 {legacy_helpers}    _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -134,35 +141,17 @@ def _dynwinrt_delegate(value, iid, parameter_types):
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
 
 
-_E_NOINTERFACE = -2147467262  # 0x80004002 as a signed winerror
-
-
 def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
         return False
-    is_released = getattr(raw, 'is_released', None)
-    if is_released is not None and is_released():
-        raw.as_raw()
-    if raw.is_null():
-        return False
-    try:
-        raw.as_raw()
-    except RuntimeError as error:
-        if (
-            is_released is not None
-            or str(error) == 'Cannot get raw pointer from non-object'
-        ):
-            return False
-        raise
-    try:
-        projected = raw.cast(iid)
-    except OSError as error:
-        if error.winerror == _E_NOINTERFACE:
-            return False
-        raise
-    projected.release()
-    return True
+    try_query = getattr(raw, '_try_query_interface', None)
+    if not callable(try_query):
+        raise RuntimeError(
+            'Generated Python bindings require a matching dynwinrt runtime; '
+            'install the matching runtime and regenerate all Python bindings.'
+        )
+    return try_query(iid)
 
 
 def _dynwinrt_legacy_call(impl, parameter_names, args, kwargs, public_name):
@@ -333,22 +322,15 @@ mod tests {
     fn generated_cast_guard_rejects_null_and_non_object_values() {
         let runtime = generate_runtime_support_module();
 
-        assert!(runtime.contains("if raw.is_null():\n        return False"));
+        assert!(runtime.contains("try_query = getattr(raw, '_try_query_interface', None)"));
+        assert!(runtime.contains("if not callable(try_query):\n        raise RuntimeError("));
         assert!(
-            runtime.contains("if is_released is not None and is_released():\n        raw.as_raw()")
+            runtime.contains("install the matching runtime and regenerate all Python bindings.")
         );
-        assert!(runtime.contains("raw.as_raw()"));
-        assert!(runtime.contains(
-            "or str(error) == 'Cannot get raw pointer from non-object'\n        ):\n            return False"
-        ));
-        assert!(
-            runtime
-                .contains("_E_NOINTERFACE = -2147467262  # 0x80004002 as a signed winerror\n\n\ndef _dynwinrt_can_cast(value, iid):")
-        );
-        assert!(runtime.contains(
-            "except OSError as error:\n        if error.winerror == _E_NOINTERFACE:\n            return False\n        raise"
-        ));
-        assert!(!runtime.contains("except RuntimeError:\n        return False"));
+        assert!(runtime.contains("return try_query(iid)"));
+        assert!(!runtime.contains("raw.as_raw()"));
+        assert!(!runtime.contains("except OSError:"));
+        assert!(!runtime.contains("except RuntimeError:"));
         assert!(runtime.contains(
             "def _dynwinrt_legacy_call(impl, parameter_names, args, kwargs, public_name):"
         ));

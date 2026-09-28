@@ -1721,6 +1721,29 @@ impl DynWinRTValue {
         self.0.is_null_object()
     }
 
+    /// Guard-only QueryInterface probe; never treats a native failure as a non-match.
+    fn _try_query_interface(&self, iid: &WinGUID) -> PyResult<bool> {
+        self.ensure_live()?;
+        if !matches!(
+            &self.0,
+            dynwinrt::WinRTValue::Object(_) | dynwinrt::WinRTValue::Async(_)
+        ) {
+            return Ok(false);
+        }
+        match self.0.cast(&iid.0) {
+            Ok(interface) => {
+                drop(interface);
+                Ok(true)
+            }
+            Err(dynwinrt::Error::WindowsError(error))
+                if error.code() == windows::Win32::Foundation::E_NOINTERFACE =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(map_dynwinrt_error(error)),
+        }
+    }
+
     /// Whether `release()` has run on this value, directly or through
     /// `release_projected()` or a closing `projected_lifetime_scope()`.
     ///
@@ -2675,6 +2698,84 @@ pub fn get_computer_name() -> PyResult<String> {
 mod tests {
     use super::*;
     use pyo3::types::PyDict;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[derive(Default)]
+    struct QueryCounts {
+        queries: AtomicU32,
+        addrefs: AtomicU32,
+        releases: AtomicU32,
+    }
+
+    #[repr(C)]
+    struct QueryProbe {
+        vtable: *const windows::core::IUnknown_Vtbl,
+        references: AtomicU32,
+        counts: Arc<QueryCounts>,
+    }
+
+    impl QueryProbe {
+        const SUPPORTED: GUID = IUnknown::IID;
+        const FAILURE: GUID = GUID::from_u128(0x12113896_999b_42d5_87c1_7c68e83592eb);
+        const UNKNOWN: GUID = GUID::from_u128(0x6192657c_dbc2_4262_98c8_8ead575ac434);
+        const VTABLE: windows::core::IUnknown_Vtbl = windows::core::IUnknown_Vtbl {
+            QueryInterface: Self::query,
+            AddRef: Self::add_ref,
+            Release: Self::release,
+        };
+
+        fn new() -> (IUnknown, Arc<QueryCounts>) {
+            let counts = Arc::new(QueryCounts::default());
+            let object = Box::new(Self {
+                vtable: &Self::VTABLE,
+                references: AtomicU32::new(1),
+                counts: counts.clone(),
+            });
+            (
+                unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) },
+                counts,
+            )
+        }
+
+        unsafe extern "system" fn query(
+            this: *mut c_void,
+            iid: *const GUID,
+            result: *mut *mut c_void,
+        ) -> windows::core::HRESULT {
+            if iid.is_null() || result.is_null() {
+                return windows::core::HRESULT(0x80004003u32 as i32);
+            }
+            let object = unsafe { &*this.cast::<Self>() };
+            object.counts.queries.fetch_add(1, Ordering::SeqCst);
+            unsafe { *result = std::ptr::null_mut() };
+            match unsafe { *iid } {
+                Self::SUPPORTED => {
+                    unsafe { *result = this };
+                    unsafe { Self::add_ref(this) };
+                    windows::core::HRESULT(0)
+                }
+                Self::FAILURE => windows::core::HRESULT(0x80004005u32 as i32),
+                _ => windows::Win32::Foundation::E_NOINTERFACE,
+            }
+        }
+
+        unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+            let object = unsafe { &*this.cast::<Self>() };
+            object.counts.addrefs.fetch_add(1, Ordering::SeqCst);
+            object.references.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+            let object = unsafe { &*this.cast::<Self>() };
+            object.counts.releases.fetch_add(1, Ordering::SeqCst);
+            let remaining = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+            if remaining == 0 {
+                unsafe { drop(Box::from_raw(this.cast::<Self>())) };
+            }
+            remaining
+        }
+    }
 
     #[repr(C)]
     struct TestDelegateVtbl {
@@ -2704,6 +2805,65 @@ mod tests {
         let array = DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.hresult(), &values));
 
         assert_eq!(array.to_i32_list().unwrap(), vec![0, 0x80004005u32 as i32]);
+    }
+
+    #[test]
+    fn private_query_guard_releases_successful_qi_and_preserves_other_failures() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (object, counts) = QueryProbe::new();
+            let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Object(object));
+            assert!(
+                value
+                    ._try_query_interface(&WinGUID(QueryProbe::SUPPORTED))
+                    .unwrap()
+            );
+            assert_eq!(counts.addrefs.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+            assert!(
+                !value
+                    ._try_query_interface(&WinGUID(QueryProbe::UNKNOWN))
+                    .unwrap()
+            );
+            let error = value
+                ._try_query_interface(&WinGUID(QueryProbe::FAILURE))
+                .unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("winerror")
+                    .unwrap()
+                    .extract::<i32>()
+                    .unwrap(),
+                0x80004005u32 as i32
+            );
+            assert_eq!(counts.queries.load(Ordering::SeqCst), 3);
+            assert_eq!(counts.addrefs.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+
+            for payload in [
+                dynwinrt::WinRTValue::I32(5),
+                dynwinrt::WinRTValue::HString("scalar".into()),
+                dynwinrt::WinRTValue::Null,
+                dynwinrt::WinRTValue::RawPtr(std::ptr::null_mut()),
+            ] {
+                assert!(
+                    !DynWinRTValue::new(payload)
+                        ._try_query_interface(&WinGUID(QueryProbe::SUPPORTED))
+                        .unwrap()
+                );
+            }
+            assert_eq!(counts.queries.load(Ordering::SeqCst), 3);
+
+            value.release();
+            assert_eq!(counts.releases.load(Ordering::SeqCst), 2);
+            let released = value
+                ._try_query_interface(&WinGUID(QueryProbe::SUPPORTED))
+                .unwrap_err();
+            assert!(released.is_instance_of::<PyRuntimeError>(py));
+            assert!(released.to_string().contains("released"));
+        });
     }
 
     #[test]
