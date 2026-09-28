@@ -69,12 +69,12 @@ pub fn generate_class<'a>(
             .required_interfaces
             .iter()
             .any(|interface| interface_member_plan(interface).has_legacy_fallback());
-    let needs_legacy_int_guard = plan.statics.has_legacy_conversion_guard()
-        || plan.instance.has_legacy_conversion_guard()
+    let needs_legacy_int_guard = plan.statics.has_legacy_int_guard()
+        || plan.instance.has_legacy_int_guard()
         || class
             .required_interfaces
             .iter()
-            .any(|interface| interface_member_plan(interface).has_legacy_conversion_guard());
+            .any(|interface| interface_member_plan(interface).has_legacy_int_guard());
     let mut out = String::new();
 
     // Header

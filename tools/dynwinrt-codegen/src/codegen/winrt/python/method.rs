@@ -257,6 +257,9 @@ pub(crate) fn emit_dispatch(
                 LegacyConversionGuard::Int => {
                     format!("_dynwinrt_legacy_int_guard(_legacy_bound[{index}])")
                 }
+                LegacyConversionGuard::Bool => {
+                    format!("isinstance(_legacy_bound[{index}], bool)")
+                }
             }))
             .collect::<Vec<_>>()
             .join(" and ")

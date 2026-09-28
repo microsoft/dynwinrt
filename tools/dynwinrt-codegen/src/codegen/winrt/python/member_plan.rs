@@ -102,6 +102,24 @@ pub(crate) struct LegacyFallback<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LegacyConversionGuard {
     Int,
+    Bool,
+}
+
+fn legacy_conversion_accepts_bool(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::I8
+            | TypeMeta::U8
+            | TypeMeta::I16
+            | TypeMeta::U16
+            | TypeMeta::I32
+            | TypeMeta::U32
+            | TypeMeta::I64
+            | TypeMeta::U64
+            | TypeMeta::F32
+            | TypeMeta::F64
+            | TypeMeta::Enum { .. }
+    ) || matches!(typ, TypeMeta::Struct { name, .. } if name == "HResult")
 }
 
 /// Guard-free conversions accepted by an old standalone method that also fit
@@ -123,6 +141,10 @@ pub(crate) fn legacy_conversion_shadow(
         if matches!(legacy.typ, TypeMeta::Enum { .. }) && matches!(candidate.typ, TypeMeta::String)
         {
             guards.push((index, LegacyConversionGuard::Int));
+            continue;
+        }
+        if legacy_conversion_accepts_bool(&legacy.typ) && matches!(candidate.typ, TypeMeta::Bool) {
+            guards.push((index, LegacyConversionGuard::Bool));
             continue;
         }
         return None;
@@ -218,7 +240,7 @@ impl<'a> ScopePlan<'a> {
             .any(|group| group.legacy_fallback.is_some())
     }
 
-    pub(crate) fn has_legacy_conversion_guard(&self) -> bool {
+    pub(crate) fn has_legacy_int_guard(&self) -> bool {
         self.groups
             .iter()
             .chain(
@@ -229,7 +251,13 @@ impl<'a> ScopePlan<'a> {
             .any(|group| {
                 group.legacy_fallback.as_ref().is_some_and(|legacy| {
                     group.candidates.iter().any(|candidate| {
-                        legacy_conversion_shadow(legacy.method, candidate.method).is_some()
+                        legacy_conversion_shadow(legacy.method, candidate.method).is_some_and(
+                            |guards| {
+                                guards
+                                    .iter()
+                                    .any(|(_, guard)| *guard == LegacyConversionGuard::Int)
+                            },
+                        )
                     })
                 })
             })
@@ -1769,8 +1797,8 @@ mod tests {
     }
 
     #[test]
-    fn enum_string_legacy_shadow_requires_the_complete_parameter_shape() {
-        let old = overload(
+    fn legacy_conversion_shadows_require_the_complete_parameter_shape() {
+        let old_enum = overload(
             "Open",
             "Open",
             6,
@@ -1790,10 +1818,70 @@ mod tests {
         );
 
         assert_eq!(
-            legacy_conversion_shadow(&old, &overlapping),
+            legacy_conversion_shadow(&old_enum, &overlapping),
             Some(vec![(0, LegacyConversionGuard::Int)])
         );
-        assert_eq!(legacy_conversion_shadow(&old, &nonoverlapping), None);
+        assert_eq!(legacy_conversion_shadow(&old_enum, &nonoverlapping), None);
+
+        for typ in [
+            TypeMeta::I8,
+            TypeMeta::U8,
+            TypeMeta::I16,
+            TypeMeta::U16,
+            TypeMeta::I32,
+            TypeMeta::U32,
+            TypeMeta::I64,
+            TypeMeta::U64,
+            TypeMeta::F32,
+            TypeMeta::F64,
+            enumeration("Mode"),
+            TypeMeta::Struct {
+                namespace: "Windows.Foundation".into(),
+                name: "HResult".into(),
+                fields: Vec::new(),
+            },
+        ] {
+            let old_numeric = overload("Pick", "Pick", 6, &[("value", typ)]);
+            let by_bool = overload("PickBool", "Pick", 7, &[("value", TypeMeta::Bool)]);
+            assert_eq!(
+                legacy_conversion_shadow(&old_numeric, &by_bool),
+                Some(vec![(0, LegacyConversionGuard::Bool)])
+            );
+        }
+        let old_char = overload("Pick", "Pick", 6, &[("value", TypeMeta::Char16)]);
+        let by_bool = overload("PickBool", "Pick", 7, &[("value", TypeMeta::Bool)]);
+        assert_eq!(legacy_conversion_shadow(&old_char, &by_bool), None);
+
+        let old_numeric_pair = overload(
+            "Pick",
+            "Pick",
+            6,
+            &[("value", TypeMeta::I32), ("label", TypeMeta::String)],
+        );
+        let bool_other_parameter = overload(
+            "PickBool",
+            "Pick",
+            7,
+            &[("value", TypeMeta::Bool), ("enabled", TypeMeta::Bool)],
+        );
+        let bool_other_arity = overload(
+            "PickBool2",
+            "Pick",
+            8,
+            &[
+                ("value", TypeMeta::Bool),
+                ("label", TypeMeta::String),
+                ("enabled", TypeMeta::Bool),
+            ],
+        );
+        assert_eq!(
+            legacy_conversion_shadow(&old_numeric_pair, &bool_other_parameter),
+            None
+        );
+        assert_eq!(
+            legacy_conversion_shadow(&old_numeric_pair, &bool_other_arity),
+            None
+        );
     }
 
     #[test]
@@ -1828,7 +1916,7 @@ mod tests {
             return;
         }
 
-        fn assert_scope(interfaces: &[&InterfaceMeta], plan: &ScopePlan<'_>) -> usize {
+        fn assert_scope(interfaces: &[&InterfaceMeta], plan: &ScopePlan<'_>) -> (usize, usize) {
             let methods = interfaces
                 .iter()
                 .flat_map(|interface| interface.methods.iter())
@@ -1844,6 +1932,7 @@ mod tests {
             }
 
             let mut count = 0;
+            let mut bool_shadows = 0;
             for group in &plan.groups {
                 let Some(methods) = previous.get(&group.name) else {
                     continue;
@@ -1859,14 +1948,28 @@ mod tests {
                     "{} legacy tier changed its native method",
                     group.name
                 );
+                bool_shadows += group
+                    .candidates
+                    .iter()
+                    .filter(|candidate| {
+                        legacy_conversion_shadow(fallback.method, candidate.method).is_some_and(
+                            |guards| {
+                                guards
+                                    .iter()
+                                    .any(|(_, guard)| *guard == LegacyConversionGuard::Bool)
+                            },
+                        )
+                    })
+                    .count();
                 count += 1;
             }
-            count
+            (count, bool_shadows)
         }
 
         let context = PythonProjectionContext::default();
         let mut runtime_count = 0;
         let mut all_plan_sites = 0;
+        let mut bool_shadows = 0;
         for namespace in meta::list_namespaces(WINMD) {
             for class in meta::parse_namespace(WINMD, &namespace) {
                 let statics = class
@@ -1876,23 +1979,29 @@ mod tests {
                     .collect::<Vec<_>>();
                 let instance = class_instance_interfaces(&class).collect::<Vec<_>>();
                 let plan = ClassMemberPlan::new(&class, &context);
-                let count =
-                    assert_scope(&statics, &plan.statics) + assert_scope(&instance, &plan.instance);
+                let static_count = assert_scope(&statics, &plan.statics);
+                let instance_count = assert_scope(&instance, &plan.instance);
+                let count = static_count.0 + instance_count.0;
                 runtime_count += count;
                 all_plan_sites += count;
+                bool_shadows += static_count.1 + instance_count.1;
                 for interface in &class.required_interfaces {
-                    all_plan_sites += assert_scope(&[interface], &interface_member_plan(interface));
+                    let count = assert_scope(&[interface], &interface_member_plan(interface));
+                    all_plan_sites += count.0;
+                    bool_shadows += count.1;
                 }
             }
             for interface in meta::parse_interfaces(WINMD, &namespace) {
                 if !interface.is_delegate() {
-                    all_plan_sites +=
-                        assert_scope(&[&interface], &interface_member_plan(&interface));
+                    let count = assert_scope(&[&interface], &interface_member_plan(&interface));
+                    all_plan_sites += count.0;
+                    bool_shadows += count.1;
                 }
             }
         }
 
         assert_eq!(runtime_count, 766);
         assert_eq!(all_plan_sites, 897);
+        assert_eq!(bool_shadows, 0);
     }
 }

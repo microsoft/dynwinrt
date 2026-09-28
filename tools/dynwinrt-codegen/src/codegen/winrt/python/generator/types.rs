@@ -97,7 +97,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str(&import_line(
         context,
         plan.has_legacy_fallback(),
-        plan.has_legacy_conversion_guard(),
+        plan.has_legacy_int_guard(),
     ));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
