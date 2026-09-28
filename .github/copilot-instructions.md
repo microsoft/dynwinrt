@@ -126,6 +126,7 @@ output, runtime behavior, and the `@microsoft/dynwinrt` root API.
 - Method call: `method_handle.invoke(obj, [args])` → returns single `DynWinRTValue`
 - `IReference<T>` values project as native values plus `None`; generated `IReference_*` wrappers remain accepted for input compatibility
 - Generated `Object` positions stay raw `DynWinRTValue`s; `unbox_object(raw, preserve_type=False)` and `to_winrt_object(value, property_type=None)` convert boxed values explicitly, with tags, typed arrays, `Point`/`Size`/`Rect` and `PropertyType` in `dynwinrt.values` (never guess a WinRT type)
+- `dynwinrt.values.object_value_view(map, preserve_type=False)` is the opt-in, live converting view of a generated map that QueryInterface confirms as `IMap`/`IMapView<String or Guid, Object>`; reads unbox, writes use `to_winrt_object`, and `view.raw` stays native
 
 ### Common Issues
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var

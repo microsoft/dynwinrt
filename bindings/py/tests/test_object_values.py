@@ -370,8 +370,10 @@ def test_payloadless_property_types_still_raise(type_value, message):
             for preserve_type in (False, True):
                 with pytest.raises(OSError) as caught:
                     unbox_object(raw, preserve_type=preserve_type)
+                assert type(caught.value) is OSError
                 assert caught.value.winerror == E_NOTIMPL
                 assert str(caught.value.strerror) == message
+                assert caught.value._dynwinrt_unsupported_property_type == int(type_value)
             # The same rules apply to InspectableArray elements.
             with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
                 unbox_object(to_winrt_object(values.InspectableArray([1, raw])))
@@ -635,7 +637,8 @@ def test_the_data_model_lives_in_its_own_namespace():
     assert dynwinrt.values is values
     for name in values.__all__:
         assert name not in dynwinrt.__all__
-        assert getattr(values, name).__module__ == "dynwinrt.values"
+        if name != "WinRTObjectValue":  # a typing.Union alias
+            assert getattr(values, name).__module__ == "dynwinrt.values"
     assert "to_winrt_object" in dynwinrt.__all__ and "unbox_object" in dynwinrt.__all__
     namespace = {}
     exec("from dynwinrt import *", namespace)

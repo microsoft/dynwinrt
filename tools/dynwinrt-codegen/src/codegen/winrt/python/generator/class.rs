@@ -331,6 +331,21 @@ pub fn generate_class(
     } else if native_projectable {
         out.push_str("    _dynwinrt_projectable_class_type = True\n");
     }
+    if matches!(
+        collection_kind,
+        Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
+    ) && let Some(collection_iface) = collection_iface
+    {
+        let symbol = interface_symbol(context, collection_iface);
+        let dispatch = if collection_uses_default {
+            "_obj"
+        } else {
+            "_collection_obj"
+        };
+        out.push_str(&format!(
+            "    _dynwinrt_map_dispatch = (IID_{symbol}, '{dispatch}')\n"
+        ));
+    }
 
     out.push_str(&generate_python_constructor(
         context,
@@ -1711,6 +1726,72 @@ mod tests {
         assert!(code.contains("type(self)._create_6_0(_bound[0])"), "{code}");
         assert!(code.contains("type(self)._create_6_1(_bound[0])"), "{code}");
         assert!(!code.contains("type(self)._create_6(_bound[0])"), "{code}");
+    }
+
+    fn map_interface(name: &str, value: TypeMeta) -> InterfaceMeta {
+        InterfaceMeta {
+            name: name.into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            generic_piid: Some(crate::codegen::winrt::python::collections::IMAP_PIID.into()),
+            generic_name: Some("IMap`2".into()),
+            generic_args: vec![TypeMeta::String, value],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn map_runtime_class_declares_the_codegen_dispatch_interface() {
+        let object_map = map_interface("IMap_String_Object", TypeMeta::Object);
+        let default_map = ClassMeta {
+            name: "DefaultMap".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.DefaultMap".into(),
+            default_interface: Some(object_map.clone()),
+            is_referenced_as_value: true,
+            ..Default::default()
+        };
+        let code = generate_class(
+            &PythonProjectionContext::default(),
+            &default_map,
+            &HashSet::new(),
+        );
+        assert!(
+            code.contains("_dynwinrt_map_dispatch = (IID_IMap_String_Object, '_obj')"),
+            "{code}"
+        );
+        assert!(
+            !code.contains("self._collection_obj ="),
+            "default collection interface must dispatch through _obj:\n{code}"
+        );
+
+        let required_map = ClassMeta {
+            name: "RequiredMap".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.RequiredMap".into(),
+            default_interface: Some(InterfaceMeta {
+                name: "IRequiredMap".into(),
+                namespace: "Contoso".into(),
+                iid: "22222222-2222-2222-2222-222222222222".into(),
+                ..Default::default()
+            }),
+            required_interfaces: vec![object_map],
+            is_referenced_as_value: true,
+            ..Default::default()
+        };
+        let code = generate_class(
+            &PythonProjectionContext::default(),
+            &required_map,
+            &HashSet::new(),
+        );
+        assert!(
+            code.contains("_dynwinrt_map_dispatch = (IID_IMap_String_Object, '_collection_obj')"),
+            "{code}"
+        );
+        assert!(
+            code.contains("self._collection_obj = obj.cast(IID_IMap_String_Object)"),
+            "{code}"
+        );
     }
 
     fn run_python(script: &str) -> String {
