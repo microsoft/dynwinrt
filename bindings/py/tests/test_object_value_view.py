@@ -86,6 +86,15 @@ GUID_KEYS = Keys(
     lambda value: UUID(value.to_guid().to_string()),
 )
 INT32_KEYS = Keys(T.i32_type(), DynWinRTValue.from_i32, lambda value: value.to_number())
+IMAP_STRING_OBJECT = T.parameterized(IMAP, [STRING_KEYS.type, OBJECT]).iid()
+IMAP_VIEW_STRING_OBJECT = T.parameterized(IMAP_VIEW, [STRING_KEYS.type, OBJECT]).iid()
+IMAP_GUID_OBJECT = T.parameterized(IMAP, [GUID_KEYS.type, OBJECT]).iid()
+IMAP_VIEW_GUID_OBJECT = T.parameterized(IMAP_VIEW, [GUID_KEYS.type, OBJECT]).iid()
+IMAP_STRING_STRING = T.parameterized(IMAP, [STRING_KEYS.type, T.hstring()]).iid()
+IMAP_VIEW_STRING_STRING = T.parameterized(IMAP_VIEW, [STRING_KEYS.type, T.hstring()]).iid()
+IMAP_INT32_OBJECT = T.parameterized(IMAP, [INT32_KEYS.type, OBJECT]).iid()
+JSON_VALUE = T.interface(WinGUID.parse("a3219ecb-f0b3-4dcd-beee-19d48cd3ed1e"))
+IMAP_STRING_JSON = T.parameterized(IMAP, [STRING_KEYS.type, JSON_VALUE]).iid()
 
 
 def register(generic, keys, value_type, methods):
@@ -103,7 +112,6 @@ def register(generic, keys, value_type, methods):
 
 
 class GeneratedStyle:
-    _dynwinrt_interface_type = True
     GENERIC = IMAP_VIEW
 
     def __init__(self, native, keys=STRING_KEYS, value_type=OBJECT):
@@ -155,11 +163,17 @@ class GeneratedStyle:
 class GeneratedStyleMapView(GeneratedStyle, _WinRTMappingMixin):
     """Built like a generated ``IMapView<K, V>`` wrapper."""
 
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_VIEW_STRING_OBJECT
+
 
 class GeneratedStyleMap(GeneratedStyle, _WinRTMutableMappingMixin):
     """Built like a generated ``IMap<K, V>`` wrapper."""
 
     GENERIC = IMAP
+    VIEW_TYPE = GeneratedStyleMapView
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_STRING_OBJECT
 
     @staticmethod
     def methods(key, value):
@@ -172,7 +186,7 @@ class GeneratedStyleMap(GeneratedStyle, _WinRTMutableMappingMixin):
 
     def get_view(self):
         native = self._interface.method(9).invoke(self._map_obj, [])
-        return GeneratedStyleMapView(native, self._keys, self._value_type)
+        return self.VIEW_TYPE(native)
 
     def insert(self, key, value):
         native = getattr(value, "_obj", value)
@@ -192,6 +206,7 @@ class GeneratedStyleRuntimeMap(GeneratedStyleMap):
 
     _dynwinrt_interface_type = False
     _dynwinrt_runtime_class_type = True
+    _dynwinrt_map_dispatch = (IMAP_STRING_OBJECT, "_collection_obj")
 
     def __init__(self, native, keys=STRING_KEYS, value_type=OBJECT):
         super().__init__(native, keys, value_type)
@@ -204,6 +219,64 @@ class GeneratedStyleRuntimeMap(GeneratedStyleMap):
     @property
     def _map_obj(self):
         return self._collection_obj
+
+
+class GeneratedStyleDefaultRuntimeMap(GeneratedStyleMap):
+    """A runtime-class wrapper whose collection interface is its default."""
+
+    _dynwinrt_interface_type = False
+    _dynwinrt_runtime_class_type = True
+    _dynwinrt_map_dispatch = (IMAP_STRING_OBJECT, "_obj")
+
+
+class GeneratedStyleStringMapView(GeneratedStyleMapView):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_VIEW_STRING_STRING
+
+    def __init__(self, native):
+        super().__init__(native, value_type=T.hstring())
+
+
+class GeneratedStyleStringMap(GeneratedStyleMap):
+    VIEW_TYPE = GeneratedStyleStringMapView
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_STRING_STRING
+
+    def __init__(self, native):
+        super().__init__(native, value_type=T.hstring())
+
+
+class GeneratedStyleGuidObjectMapView(GeneratedStyleMapView):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_VIEW_GUID_OBJECT
+
+    def __init__(self, native):
+        super().__init__(native, keys=GUID_KEYS)
+
+
+class GeneratedStyleGuidObjectMap(GeneratedStyleMap):
+    VIEW_TYPE = GeneratedStyleGuidObjectMapView
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_GUID_OBJECT
+
+    def __init__(self, native):
+        super().__init__(native, keys=GUID_KEYS)
+
+
+class GeneratedStyleInt32ObjectMap(GeneratedStyleMap):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_INT32_OBJECT
+
+    def __init__(self, native):
+        super().__init__(native, keys=INT32_KEYS)
+
+
+class GeneratedStyleJsonMap(GeneratedStyleMap):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IMAP_STRING_JSON
+
+    def __init__(self, native):
+        super().__init__(native, value_type=JSON_VALUE)
 
 
 class GeneratedStyleInterface:
@@ -374,7 +447,7 @@ def test_object_value_view_picks_the_view_for_the_map_protocol():
 def test_multi_map_identity_uses_only_the_wrappers_projected_map():
     with object_and_string_maps() as (raw, stores, calls):
         object_map = GeneratedStyleMap(raw)
-        string_map = GeneratedStyleMap(raw, value_type=T.hstring())
+        string_map = GeneratedStyleStringMap(raw)
 
         view = object_value_view(object_map)
         assert view.raw is object_map
@@ -404,6 +477,15 @@ def test_multi_map_identity_uses_only_the_wrappers_projected_map():
         assert stores[1] == {"shared": "wrong map"}
         assert calls[-3:] == [(0, 8), (0, 6), (0, 10)]
 
+        default_runtime_map = GeneratedStyleDefaultRuntimeMap(raw)
+        default_runtime_view = object_value_view(default_runtime_map)
+        assert default_runtime_view.raw is default_runtime_map
+        assert default_runtime_view["shared"] == 7
+        default_runtime_view["default"] = "default pointer"
+        assert unbox_object(stores[0]["default"]) == "default pointer"
+        assert stores[1] == {"shared": "wrong map"}
+        assert calls[-3:] == [(0, 8), (0, 6), (0, 10)]
+
         assert (
             raw.identity_raw()
             == object_map._obj.identity_raw()
@@ -411,6 +493,35 @@ def test_multi_map_identity_uses_only_the_wrappers_projected_map():
             == runtime_map._obj.identity_raw()
             == runtime_map._collection_obj.identity_raw()
         )
+
+
+def test_same_iid_query_does_not_require_physical_pointer_identity():
+    class TearOff:
+        released = False
+
+        def as_raw(self):
+            return 2
+
+        def release(self):
+            self.released = True
+
+    class Dispatch:
+        def __init__(self):
+            self.queried = TearOff()
+
+        def as_raw(self):
+            return 1
+
+        def cast(self, iid):
+            assert iid.to_string().lower() == IMAP_STRING_OBJECT.to_string().lower()
+            return self.queried
+
+    dispatch = Dispatch()
+    assert (
+        values._projected_object_map(dispatch, IMAP_STRING_OBJECT, "IMap")
+        == "IMap_String_Object"
+    )
+    assert dispatch.queried.released
 
 
 def test_the_view_types_are_public_and_generic():
@@ -742,8 +853,8 @@ def test_read_only_views_of_map_views():
 
 
 def test_guid_keyed_maps():
-    media = GeneratedStyleMap(
-        activate("Windows.Media.MediaProperties.MediaPropertySet"), GUID_KEYS
+    media = GeneratedStyleGuidObjectMap(
+        activate("Windows.Media.MediaProperties.MediaPropertySet")
     )
     view = object_value_view(media)
     key = UUID(int=7)
@@ -768,29 +879,37 @@ def test_create_map_maps():
 
 def test_maps_without_object_values_are_rejected():
     message = "is not a WinRT map with Object values"
-    string_map = GeneratedStyleMap(
-        activate("Windows.Foundation.Collections.StringMap"), value_type=T.hstring()
+    string_map = GeneratedStyleStringMap(
+        activate("Windows.Foundation.Collections.StringMap")
     )
-    with pytest.raises(TypeError, match=f"GeneratedStyleMap {message}.*String or Guid keys"):
+    with pytest.raises(TypeError, match=f"GeneratedStyleStringMap {message}.*String or Guid keys"):
         object_value_view(string_map)
     with pytest.raises(TypeError, match=message):
         ObjectValueView(string_map.get_view())
-    json_value = T.interface(WinGUID.parse("a3219ecb-f0b3-4dcd-beee-19d48cd3ed1e"))
-    json_object = GeneratedStyleMap(
-        activate("Windows.Data.Json.JsonObject"), value_type=json_value
-    )
+    json_object = GeneratedStyleJsonMap(activate("Windows.Data.Json.JsonObject"))
     with pytest.raises(TypeError, match=message):
         object_value_view(json_object)
     int32_keys = DynWinRTValue.create_map(
         [DynWinRTValue.from_i32(1)], [to_winrt_object(5)], T.i32_type(), OBJECT
     )
     with pytest.raises(TypeError, match=message):
-        object_value_view(GeneratedStyleMap(int32_keys, INT32_KEYS))
+        object_value_view(GeneratedStyleInt32ObjectMap(int32_keys))
 
 
 def test_values_that_are_not_generated_map_wrappers_are_rejected():
     properties = property_set()
     requires = "requires a generated WinRT map wrapper"
+
+    class CustomMap(GeneratedStyleMap):
+        pass
+
+    class UndeclaredRuntimeMap(GeneratedStyleMap):
+        _dynwinrt_runtime_class_type = True
+
+    with pytest.raises(TypeError, match=f"{requires}.*not .*CustomMap"):
+        object_value_view(CustomMap(properties._obj))
+    with pytest.raises(TypeError, match="does not declare a valid generated map projection"):
+        object_value_view(UndeclaredRuntimeMap(properties._obj))
     with pytest.raises(TypeError, match=f"{requires}.*not dict$"):
         object_value_view({"count": to_winrt_object(5)})
     with pytest.raises(TypeError, match=r"not DynWinRTValue; .*IMap_String_Object\.from_value"):

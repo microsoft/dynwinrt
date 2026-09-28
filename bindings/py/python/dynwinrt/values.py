@@ -652,44 +652,56 @@ def _queried_object_map(native: DynWinRTValue, generic: str) -> str | None:
     return None
 
 
-def _generated_map_dispatch(mapping: object, native: DynWinRTValue) -> DynWinRTValue:
-    """The interface pointer codegen uses for this wrapper's map operations."""
+def _generated_map_dispatch(
+    mapping: object, native: DynWinRTValue
+) -> tuple[DynWinRTValue, WinGUID]:
+    """The interface pointer and IID codegen uses for this wrapper's map operations."""
     wrapper_type = type(mapping)
-    if getattr(wrapper_type, "_dynwinrt_runtime_class_type", False):
-        dispatch = getattr(mapping, "_collection_obj", native)
-    elif getattr(wrapper_type, "_dynwinrt_interface_type", False):
+    declarations = wrapper_type.__dict__
+    if declarations.get("_dynwinrt_runtime_class_type") is True:
+        declaration = declarations.get("_dynwinrt_map_dispatch")
+        if not (
+            isinstance(declaration, tuple)
+            and len(declaration) == 2
+            and isinstance(declaration[0], WinGUID)
+            and declaration[1] in ("_obj", "_collection_obj")
+        ):
+            raise TypeError(
+                f"{wrapper_type.__qualname__} does not declare a valid generated map projection"
+            )
+        declared_iid, dispatch_name = declaration
+        dispatch = native if dispatch_name == "_obj" else getattr(mapping, dispatch_name, None)
+    elif declarations.get("_dynwinrt_interface_type") is True:
+        declared_iid = declarations.get("_dynwinrt_interface_iid")
         dispatch = native
     else:
         raise TypeError(
             "object_value_view() requires a generated WinRT map wrapper, "
             f"not {wrapper_type.__qualname__}"
         )
-    if not isinstance(dispatch, DynWinRTValue):
+    if not isinstance(declared_iid, WinGUID) or not isinstance(dispatch, DynWinRTValue):
         raise TypeError(
             f"{wrapper_type.__qualname__} has an invalid generated map projection"
         )
-    return dispatch
+    return dispatch, declared_iid
 
 
-def _projected_object_map(dispatch: DynWinRTValue, generic: str) -> str | None:
-    """The Object map IID already projected by ``dispatch``, if any.
-
-    QueryInterface is reflexive: asking an interface pointer for its own IID
-    returns the same physical pointer. Comparing ``as_raw`` therefore proves
-    that the generated wrapper dispatches through the Object-valued map, not
-    merely that the same COM identity implements one.
-    """
-    dispatch_raw = dispatch.as_raw()
+def _projected_object_map(
+    dispatch: DynWinRTValue, declared_iid: WinGUID, generic: str
+) -> str | None:
+    """The declared Object map interface supported by ``dispatch``, if any."""
+    declared = declared_iid.to_string().lower()
     for name, iid in _object_maps(generic):
+        if iid.to_string().lower() != declared:
+            continue
         try:
             interface = dispatch.cast(iid)
         except OSError as error:
             if error.winerror == _E_NOINTERFACE:
-                continue
+                return None
             raise
         try:
-            if interface.as_raw() == dispatch_raw:
-                return name
+            return name
         finally:
             interface.release()
     return None
@@ -733,8 +745,8 @@ def _check_object_map(mapping: object, *, mutable: bool) -> None:
             "ObjectValueView"
         )
     generic = "IMap" if writable else "IMapView"
-    dispatch = _generated_map_dispatch(mapping, native)
-    if _projected_object_map(dispatch, generic) is not None:
+    dispatch, declared_iid = _generated_map_dispatch(mapping, native)
+    if _projected_object_map(dispatch, declared_iid, generic) is not None:
         return
     implemented = _queried_object_map(native, generic)
     if implemented is not None:

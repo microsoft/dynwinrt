@@ -326,11 +326,13 @@ box = view.raw["count"]              # the native DynWinRTValue box
   `DynWinRTValue` objects. Use it to keep a box's COM identity: with
   `preserve_type=True`, a value that is read and written back keeps its
   `PropertyType`, but it is a new box.
-- `QueryInterface` confirms both the map's value type and that the wrapper
-  actually dispatches through that `IMap`/`IMapView` interface. A wrapper for
-  another map on the same COM identity is rejected rather than dispatching
-  through the wrong vtable. Other maps, such as `StringMap` or `JsonObject`,
-  raise `TypeError`; the type stubs reject them too.
+- The generated wrapper declares the exact `IMap`/`IMapView` interface used by
+  its mapping methods, and `QueryInterface` confirms support for that IID. A
+  wrapper for another map on the same COM identity is rejected rather than
+  dispatching through the wrong vtable. Other maps, such as `StringMap` or
+  `JsonObject`, raise `TypeError`; the type stubs reject them too. Runtime-class
+  wrappers generated without this declaration fail closed; reproject them with
+  `value.as_interface(IMap_String_Object)` (or the Guid/read-only equivalent).
 - Generated `IPropertySet` wrappers, such as `ApplicationDataContainer.values`,
   are not Python mappings. Pass
   `container.values.as_interface(IMap_String_Object)` instead.
