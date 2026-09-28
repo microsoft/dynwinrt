@@ -1597,6 +1597,51 @@ async def run_check(
                 runtime._dynwinrt_can_cast(released, iid)
             except RuntimeError as error:
                 released_error = str(error)
+            unsupported_iid = dw.WinGUID.parse(
+                '11111111-1111-1111-1111-111111111111'
+            )
+            qi_subject = dw.DynWinRTValue.activation_factory(
+                'Windows.Foundation.Uri'
+            )
+            unsupported_error = None
+            try:
+                unexpected_projection = qi_subject.cast(unsupported_iid)
+            except OSError as error:
+                unsupported_error = error.winerror
+            else:
+                unexpected_projection.release()
+            unsupported = runtime._dynwinrt_can_cast(qi_subject, unsupported_iid)
+            qi_subject.release()
+
+            controlled_error = OSError(
+                None,
+                'controlled QI failure',
+                None,
+                -2147467259,
+            )
+
+            class FailingValue:
+                def is_released(self):
+                    return False
+
+                def is_null(self):
+                    return False
+
+                def as_raw(self):
+                    return 1
+
+                def cast(self, _iid):
+                    raise controlled_error
+
+            original_value_type = runtime.DynWinRTValue
+            qi_error = None
+            runtime.DynWinRTValue = FailingValue
+            try:
+                runtime._dynwinrt_can_cast(FailingValue(), iid)
+            except OSError as error:
+                qi_error = error
+            finally:
+                runtime.DynWinRTValue = original_value_type
             if (
                 results != [False, False, False, False]
                 or legacy != (1, 2)
@@ -1605,12 +1650,18 @@ async def run_check(
                 or int_error != 'unexpected-int-error'
                 or released_error is None
                 or 'released' not in released_error
+                or unsupported_error != -2147467262
+                or unsupported
+                or qi_error is not controlled_error
             ):
                 cr['error'] = (
                     'runtime dispatch helpers failed: '
                     f'casts={results!r}, legacy={legacy!r}, error={legacy_error!r}, '
                     f'int_guards={int_guards!r}, int_error={int_error!r}, '
-                    f'released_error={released_error!r}'
+                    f'released_error={released_error!r}, '
+                    f'unsupported_error={unsupported_error!r}, '
+                    f'unsupported={unsupported!r}, qi_error='
+                    f'{getattr(qi_error, "winerror", None)!r}'
                 )
             else:
                 cr['pass'] = True

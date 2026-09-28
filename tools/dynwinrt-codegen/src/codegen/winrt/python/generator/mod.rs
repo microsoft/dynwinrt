@@ -132,6 +132,11 @@ def _dynwinrt_delegate(value, iid, parameter_types):
     if not callable(value):
         raise TypeError('delegate value must be callable or a DynWinRTValue')
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
+
+
+_E_NOINTERFACE = -2147467262  # 0x80004002 as a signed winerror
+
+
 def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
@@ -152,8 +157,10 @@ def _dynwinrt_can_cast(value, iid):
         raise
     try:
         projected = raw.cast(iid)
-    except OSError:
-        return False
+    except OSError as error:
+        if error.winerror == _E_NOINTERFACE:
+            return False
+        raise
     projected.release()
     return True
 
@@ -332,9 +339,15 @@ mod tests {
         );
         assert!(runtime.contains("raw.as_raw()"));
         assert!(runtime.contains(
-            "if str(error) == 'Cannot get raw pointer from non-object':\n            return False"
+            "or str(error) == 'Cannot get raw pointer from non-object'\n        ):\n            return False"
         ));
-        assert!(runtime.contains("except OSError:\n        return False"));
+        assert!(
+            runtime
+                .contains("_E_NOINTERFACE = -2147467262  # 0x80004002 as a signed winerror\n\n\ndef _dynwinrt_can_cast(value, iid):")
+        );
+        assert!(runtime.contains(
+            "except OSError as error:\n        if error.winerror == _E_NOINTERFACE:\n            return False\n        raise"
+        ));
         assert!(!runtime.contains("except RuntimeError:\n        return False"));
         assert!(runtime.contains(
             "def _dynwinrt_legacy_call(impl, parameter_names, args, kwargs, public_name):"
