@@ -123,6 +123,17 @@ pub(crate) fn py_delegate_callable_type(
     format!("Callable[[{}], object]", arguments.join(", "))
 }
 
+/// Runtime annotations must resolve without importing the callback's projected
+/// argument types eagerly, which would reintroduce package import cycles.
+pub(crate) fn py_runtime_delegate_callable_type() -> &'static str {
+    "Callable[..., object]"
+}
+
+/// Runtime-safe annotation for a Python callable or existing native delegate.
+pub(crate) fn py_runtime_delegate_param_type() -> &'static str {
+    "Callable[..., object] | DynWinRTValue | DynWinRtDelegate"
+}
+
 /// Annotation for a delegate-typed input: a Python callable or an existing
 /// native delegate object/value.
 pub(crate) fn py_delegate_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {

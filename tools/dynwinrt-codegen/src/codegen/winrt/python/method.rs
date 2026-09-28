@@ -10,8 +10,8 @@ use crate::codegen::winrt::shared::imports::{
 };
 
 use super::delegates::{
-    py_delegate_callable_type, py_delegate_input_arg, py_delegate_param_type, py_event_handler_arg,
-    py_once_callback_check,
+    py_delegate_input_arg, py_event_handler_arg, py_once_callback_check,
+    py_runtime_delegate_callable_type, py_runtime_delegate_param_type,
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::signature::{
@@ -19,7 +19,7 @@ use super::signature::{
 };
 use super::type_helpers::{
     method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
-    py_method_return_type, py_output_type, py_param_list,
+    py_method_return_type, py_output_type, py_runtime_param_list,
 };
 
 fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
@@ -198,7 +198,7 @@ fn generate_factory_method_invoke_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, context);
+    let py_params = py_runtime_param_list(&in_params, context);
 
     let return_py_type = py_factory_return_type(&context.class_name(class), method, context);
 
@@ -276,7 +276,7 @@ fn generate_static_method_invoke_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, context);
+    let py_params = py_runtime_param_list(&in_params, context);
 
     let py_return = py_method_return_type(method, context);
 
@@ -597,16 +597,8 @@ pub(crate) fn generate_method_body(
 
         // on_/subscribe_ accept Python callables, whose arguments are projected,
         // and native delegates, which are registered unchanged.
-        let (input_signature, callable_signature) = match delegate_typ {
-            Some(typ) => (
-                py_delegate_param_type(typ, context),
-                py_delegate_callable_type(typ, context),
-            ),
-            None => (
-                "Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'".to_string(),
-                "Callable[..., object]".to_string(),
-            ),
-        };
+        let input_signature = py_runtime_delegate_param_type();
+        let callable_signature = py_runtime_delegate_callable_type();
 
         out.push_str(&format!(
             "    def on_{}(self, callback: {}):\n",
@@ -707,7 +699,7 @@ pub(crate) fn generate_method_body(
             .first()
             .map(|p| {
                 if is_delegate_type(&p.typ, context) {
-                    py_delegate_param_type(&p.typ, context)
+                    py_runtime_delegate_param_type().to_string()
                 } else {
                     super::type_helpers::py_param_type_safe(&p.typ, context)
                 }
@@ -735,7 +727,7 @@ pub(crate) fn generate_method_body(
             iface_var, method.vtable_index, obj_expr, arg
         ));
     } else {
-        let py_params = py_param_list(&in_params, context);
+        let py_params = py_runtime_param_list(&in_params, context);
         let py_return = py_method_return_type(method, context);
         let method_name = name_override
             .map(|s| s.to_string())

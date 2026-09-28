@@ -11,13 +11,15 @@ use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 /// Generated `on_`, `subscribe_` and `once_` signatures for an event. `on_` and
 /// `subscribe_` also accept native delegates.
-pub fn event_signatures(event: &str, callback: &str) -> [String; 3] {
+pub fn event_signatures(event: &str, _callback: &str) -> [String; 3] {
     [
-        format!("def on_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"),
         format!(
-            "def subscribe_{event}(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
+            "def on_{event}(self, callback: Callable[..., object] | DynWinRTValue | DynWinRtDelegate):"
         ),
-        format!("def once_{event}(self, callback: {callback}):"),
+        format!(
+            "def subscribe_{event}(self, callback: Callable[..., object] | DynWinRTValue | DynWinRtDelegate):"
+        ),
+        format!("def once_{event}(self, callback: Callable[..., object]):"),
     ]
 }
 

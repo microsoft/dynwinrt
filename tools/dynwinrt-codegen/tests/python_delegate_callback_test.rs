@@ -87,9 +87,13 @@ fn bespoke_event_delegates_are_typed_and_projected() {
         "Callable[['BackgroundTaskRegistration', 'BackgroundTaskCompletedEventArgs'], object]";
     let py = output.read(module, "py");
     assert!(
-        py.contains(&format!(
-            "def on_completed(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate'):"
-        )),
+        py.contains(
+            "def on_completed(self, callback: Callable[..., object] | DynWinRTValue | DynWinRtDelegate):"
+        ),
+        "{py}"
+    );
+    assert!(
+        py.contains("def once_completed(self, callback: Callable[..., object]):"),
         "{py}"
     );
     assert!(
@@ -121,6 +125,130 @@ fn bespoke_event_delegates_are_typed_and_projected() {
 }
 
 #[test]
+fn runtime_delegate_annotations_resolve_and_stubs_remain_precise() {
+    let Some(output) = Output::generate(
+        "Windows.Foundation.Collections.PropertySet,\
+         Windows.ApplicationModel.Background.BackgroundTaskRegistration",
+    ) else {
+        return;
+    };
+    let property_runtime = output
+        .0
+        .join("windows__foundation__collections__property_set.py");
+    let bespoke_runtime = output
+        .0
+        .join("windows__application_model__background__background_task_registration.py");
+    let property_stub = output.read("windows__foundation__collections__property_set", "pyi");
+    let bespoke_stub = output.read(
+        "windows__application_model__background__background_task_registration",
+        "pyi",
+    );
+    assert!(
+        property_stub.contains(
+            "def on_map_changed(self, callback: Callable[['IObservableMap_String_Object', \
+             'IMapChangedEventArgs_String'], object] | \
+             'DynWinRTValue | DynWinRtDelegate') -> 'DynWinRTValue': ..."
+        ),
+        "{property_stub}"
+    );
+    assert!(
+        bespoke_stub.contains(
+            "def on_completed(self, callback: Callable[['BackgroundTaskRegistration', \
+             'BackgroundTaskCompletedEventArgs'], object] | \
+             'DynWinRTValue | DynWinRtDelegate') -> 'DynWinRTValue': ..."
+        ),
+        "{bespoke_stub}"
+    );
+
+    let script = r#"
+import ast
+import collections.abc
+import pathlib
+import sys
+import typing
+
+class DynWinRTValue:
+    pass
+
+class DynWinRtDelegate:
+    pass
+
+namespace = {
+    "Callable": collections.abc.Callable,
+    "DynWinRTValue": DynWinRTValue,
+    "DynWinRtDelegate": DynWinRtDelegate,
+}
+cases = [
+    (pathlib.Path(sys.argv[1]), "PropertySet", "map_changed"),
+    (pathlib.Path(sys.argv[2]), "BackgroundTaskRegistration", "completed"),
+]
+for path, class_name, event in cases:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    source_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    wanted = {f"on_{event}", f"once_{event}"}
+    methods = []
+    for method in source_class.body:
+        if isinstance(method, ast.FunctionDef) and method.name in wanted:
+            method.body = [ast.Pass()]
+            method.decorator_list = []
+            methods.append(method)
+    minimal = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            ast.ClassDef(
+                name=class_name,
+                bases=[],
+                keywords=[],
+                body=methods,
+                decorator_list=[],
+            ),
+        ],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(minimal)
+    local = dict(namespace)
+    exec(compile(minimal, str(path), "exec"), local)
+    generated = local[class_name]
+    on_hints = typing.get_type_hints(getattr(generated, f"on_{event}"))
+    once_hints = typing.get_type_hints(getattr(generated, f"once_{event}"))
+    expected = (
+        collections.abc.Callable[..., object]
+        | DynWinRTValue
+        | DynWinRtDelegate
+    )
+    assert on_hints == {"callback": expected}, on_hints
+    assert once_hints == {
+        "callback": collections.abc.Callable[..., object]
+    }, once_hints
+print("runtime-delegate-type-hints-ok")
+"#;
+    let result = Command::new("python")
+        .args(["-B", "-c", script])
+        .arg(property_runtime)
+        .arg(bespoke_runtime)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("runtime-delegate-type-hints-ok"),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+}
+
+#[test]
 fn static_events_callback_parameters_and_setters_project_callables() {
     let Some(output) = Output::generate(
         "Windows.Gaming.Input.Gamepad,Windows.System.Threading.ThreadPool,\
@@ -134,7 +262,7 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     let gamepad = output.read("windows__gaming__input__gamepad", "py");
     assert!(
         gamepad.contains(
-            "def add_gamepad_added(value: Callable[[DynWinRTValue | None, 'Gamepad'], object] | 'DynWinRTValue | DynWinRtDelegate')"
+            "def add_gamepad_added(value: Callable[..., object] | DynWinRTValue | DynWinRtDelegate)"
         ),
         "{gamepad}"
     );
@@ -150,7 +278,7 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     let thread_pool = output.read("windows__system__threading__thread_pool", "py");
     assert!(
         thread_pool.contains(
-            "def run_async(handler: Callable[[DynWinRTValue], object] | 'DynWinRTValue | DynWinRtDelegate')"
+            "def run_async(handler: Callable[..., object] | DynWinRTValue | DynWinRtDelegate)"
         ),
         "{thread_pool}"
     );
@@ -163,7 +291,8 @@ fn static_events_callback_parameters_and_setters_project_callables() {
         "{thread_pool}"
     );
 
-    let timer_callback =
+    let timer_callback = "Callable[..., object] | DynWinRTValue | DynWinRtDelegate";
+    let timer_stub_callback =
         "Callable[['ThreadPoolTimer'], object] | 'DynWinRTValue | DynWinRtDelegate'";
     let timer = output.read("windows__system__threading__thread_pool_timer", "py");
     assert!(
@@ -186,12 +315,14 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     let timer_stub = output.read("windows__system__threading__thread_pool_timer", "pyi");
     assert!(
         timer_stub.contains(&format!(
-            "def create_timer(handler: {timer_callback}, delay: timedelta)"
+            "def create_timer(handler: {timer_stub_callback}, delay: timedelta)"
         )),
         "{timer_stub}"
     );
 
-    let command_callback = "Callable[['IUICommand'], object] | 'DynWinRTValue | DynWinRtDelegate'";
+    let command_callback = "Callable[..., object] | DynWinRTValue | DynWinRtDelegate";
+    let command_stub_callback =
+        "Callable[['IUICommand'], object] | 'DynWinRTValue | DynWinRtDelegate'";
     let command = output.read("windows__ui__popups__ui_command", "py");
     assert!(
         command.contains(&format!("def invoked(self, value: {command_callback}):")),
@@ -208,7 +339,7 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     let command_stub = output.read("windows__ui__popups__ui_command", "pyi");
     assert!(
         command_stub.contains(&format!(
-            "def invoked(self, value: {command_callback}) -> None"
+            "def invoked(self, value: {command_stub_callback}) -> None"
         )),
         "{command_stub}"
     );

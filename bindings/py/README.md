@@ -128,6 +128,11 @@ Callback parameter annotations are non-null by default, matching generated
 method-output typing. This is an intentionally optimistic typing policy, not a
 guarantee from the `Invoke` metadata: WinMD carries no nullability information,
 and the runtime still passes `None` when WinRT supplies a null reference.
+Precise callback signatures live in the generated `.pyi` contract. Executable
+`.py` methods use the cycle-safe runtime annotation
+`Callable[..., object] | DynWinRTValue | DynWinRtDelegate`, so
+`typing.get_type_hints()` resolves without eagerly importing the callback
+argument graph.
 
 Projected callback arguments are created outside the lifetime scope that was
 active when the callback was subscribed. Short-lived arguments are therefore

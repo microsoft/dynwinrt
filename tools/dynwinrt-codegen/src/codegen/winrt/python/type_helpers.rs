@@ -539,6 +539,24 @@ pub(super) fn py_param_list(
         .join(", ")
 }
 
+pub(super) fn py_runtime_param_list(
+    in_params: &[&crate::meta::ParamMeta],
+    context: &PythonProjectionContext,
+) -> String {
+    in_params
+        .iter()
+        .map(|param| {
+            let param_type = if context.is_delegate_type(&param.typ) {
+                super::delegates::py_runtime_delegate_param_type().to_string()
+            } else {
+                py_param_type_safe(&param.typ, context)
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(super) fn py_constructor_param_list(
     in_params: &[&crate::meta::ParamMeta],
     context: &PythonProjectionContext,
@@ -778,6 +796,10 @@ mod tests {
         assert_eq!(
             py_param_list(&[&param], &context),
             "handler: Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'"
+        );
+        assert_eq!(
+            py_runtime_param_list(&[&param], &context),
+            "handler: Callable[..., object] | DynWinRTValue | DynWinRtDelegate"
         );
     }
 

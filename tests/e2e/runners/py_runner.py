@@ -860,10 +860,28 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'map_changed_event_projection':
+            from collections.abc import Callable
+            from typing import get_type_hints
+
             key = check['set_key']
             sender_type = generated_type(pkg_name, check['expected_type'])
             args_type = generated_type(pkg_name, 'IMapChangedEventArgs_String')
             change_type = generated_type(pkg_name, 'CollectionChange')
+            on_hints = get_type_hints(getattr(obj, f'on_{member}'))
+            once_hints = get_type_hints(getattr(obj, f'once_{member}'))
+            expected_callback = (
+                Callable[..., object]
+                | dw.DynWinRTValue
+                | dw.DynWinRtDelegate
+            )
+            if on_hints != {'callback': expected_callback}:
+                cr['error'] = f'on_{member} runtime hints were {on_hints!r}'
+                return cr
+            if once_hints != {'callback': Callable[..., object]}:
+                cr['error'] = (
+                    f'once_{member} runtime hints were {once_hints!r}'
+                )
+                return cr
 
             def box(value):
                 if isinstance(value, str):
