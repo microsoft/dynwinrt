@@ -71,7 +71,7 @@ class TextHandler:
     def to_string(self) -> str:
         return "Implemented in Python"
 
-with RoApartment(1), IStringable.implement(TextHandler()) as impl:
+with RoApartment(), IStringable.implement(TextHandler()) as impl:
     print(impl.value.to_string())  # Crosses the native vtable in both directions.
 ```
 

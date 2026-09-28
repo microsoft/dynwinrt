@@ -750,8 +750,7 @@ pub fn generate_class<'a>(
         || !class.required_interfaces.is_empty()
     {
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class):\n");
-        out.push_str("        return interface_class.from_value(self._obj)\n");
+        out.push_str(&as_interface_method(context));
     }
 
     if winui::is_dispatcher_queue(class) {
@@ -877,8 +876,7 @@ pub fn generate_class<'a>(
             "        return cls._from_native(obj.cast(IID_{symbol}))\n"
         ));
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class):\n");
-        out.push_str("        return interface_class.from_value(self._obj)\n");
+        out.push_str(&as_interface_method(context));
         let iface_plan = interface_member_plan(req_iface, context);
         let overload = |method: &'a MethodMeta| InstanceOverload {
             iface_var: reg_var.clone(),

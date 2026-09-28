@@ -20,7 +20,7 @@ use windows::core::{Error, HRESULT};
 use crate::errors::map_windows_error;
 use crate::runtime::{
     DynWinRTMethodSig, DynWinRTType, DynWinRTValue, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID,
-    wrap_python_callback_context,
+    native_outputs, wrap_python_callback_context,
 };
 
 const RO_E_CLOSED: HRESULT = HRESULT(0x80000013_u32 as i32);
@@ -206,15 +206,11 @@ impl CallbackCell {
             let result = (|| -> PyResult<Vec<dynwinrt::WinRTValue>> {
                 let inputs = args
                     .iter()
-                    .map(|value| Py::new(py, DynWinRTValue(value.clone())))
+                    .map(|value| Py::new(py, DynWinRTValue::new(value.clone())))
                     .collect::<PyResult<Vec<_>>>()?;
                 let inputs = PyList::new(py, inputs)?;
                 let outputs = callback.call1(py, (interface_index, vtable_index, inputs))?;
-                Ok(outputs
-                    .extract::<Vec<DynWinRTValue>>(py)?
-                    .into_iter()
-                    .map(|value| value.0)
-                    .collect())
+                native_outputs("implementation callback", outputs.extract(py)?)
             })();
             result.map_err(|error| {
                 let message = format!(
@@ -353,7 +349,7 @@ impl DynWinRTImplementation {
         self.with_native(|native| {
             native
                 .to_value()
-                .map(DynWinRTValue)
+                .map(DynWinRTValue::new)
                 .map_err(map_windows_error)
         })
     }
@@ -572,7 +568,7 @@ mod tests {
             globals
                 .set_item(
                     "result",
-                    DynWinRTValue(dynwinrt::WinRTValue::HString("finished".into())),
+                    DynWinRTValue::new(dynwinrt::WinRTValue::HString("finished".into())),
                 )
                 .unwrap();
             let function = py

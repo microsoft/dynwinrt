@@ -1111,13 +1111,142 @@ def nullable_reference_results(g, dw, own):
         dw.release_projected(view)
 
 
+RELEASED = (
+    r"has been released \(its projected_lifetime_scope\(\) exited, or "
+    r"release_projected\(\) / DynWinRTValue\.release\(\) was called\) and can no "
+    r"longer be used\."
+)
+INSPECTABLE_IID = "af86e2e0-b12d-4c6a-9c5a-d7aa65101e90"
+PROPERTY_VALUE_NAMES = (
+    "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "single",
+    "double", "char16", "boolean", "string", "guid", "date_time", "time_span",
+    "point", "size", "rect",
+)
+
+
+def released_references(g, dw, own):
+    """Released values stay released through generated implementation code."""
+
+    class Text:
+        def to_string(self):
+            return "released reference"
+
+    text_owner = own(g.IStringable.implement(Text()))
+    live = text_owner.to_value()
+
+    def released_value():
+        value = text_owner.to_value()
+        value.release()
+        assert value.is_released() and value.is_null()
+        return value
+
+    # A stored event handler invoked with a released sender.
+    callbacks = {}
+
+    class Reference:
+        def get_capacity(self):
+            return 1
+
+        def add_closed(self, handler):
+            callbacks[len(callbacks) + 1] = handler
+            return g.EventRegistrationToken(value=len(callbacks))
+
+        def remove_closed(self, token):
+            callbacks.pop(token.value, None)
+
+        def close(self):
+            pass
+
+    reference = Reference()
+    reference_owner = own(g.IMemoryBufferReference.implement(
+        reference, g.IClosable.implementation(reference)
+    ))
+    sender = g.IMemoryBufferReference.from_implementation(reference_owner)
+    senders = []
+    unsubscribe = sender.subscribe_closed(lambda value, _args: senders.append(value))
+    handler = callbacks[1]
+    with dw.projected_lifetime_scope():
+        scoped_sender = g.IMemoryBufferReference.from_value(sender._obj)
+    for released_sender in (released_value(), scoped_sender):
+        expect_error(
+            lambda: handler(released_sender, None),
+            r"\(argument 0 of delegate Invoke\(\)\) " + RELEASED,
+        )
+    assert senders == [], "A released sender must not reach the native handler as null"
+    handler(None, None)
+    handler(dw.DynWinRTValue.null_value(), None)
+    assert senders == [None, None]
+    unsubscribe()
+
+    # An element of an array result.
+    items = {"value": [live, None]}
+    methods = {
+        "get_type": not_implemented,
+        "get_is_numeric_scalar": not_implemented,
+        "get_inspectable_array": lambda self: items["value"],
+    }
+    for name in PROPERTY_VALUE_NAMES:
+        methods[f"get_{name}"] = methods[f"get_{name}_array"] = not_implemented
+    properties_owner = own(g.IPropertyValue.implement(type("Inspectables", (), methods)()))
+    properties = g.IPropertyValue.from_implementation(properties_owner)
+    result = properties.get_inspectable_array()
+    assert len(result) == 2 and result[1] is None
+    result[0].release()
+    items["value"] = [released_value(), live]
+    expect_hresult(properties.get_inspectable_array, PYTHON_CALLBACK_ERROR)
+    take_error(
+        properties_owner,
+        r"\(element 0 of DynWinRTArray\.from_object_values\(\)\) " + RELEASED,
+    )
+
+    # A direct result.
+    class Items:
+        item = None
+        get_size = index_of = first = not_implemented
+
+        def get_at(self, index):
+            return self.item
+
+    vector_handlers = Items()
+    vector_owner = own(g.IBindableVectorView.implement(
+        vector_handlers, g.IBindableIterable.implementation(vector_handlers)
+    ))
+    vector = g.IBindableVectorView.from_implementation(vector_owner)
+    assert vector.get_at(0) is None
+    vector_handlers.item = released_value()
+    expect_hresult(lambda: vector.get_at(0), PYTHON_CALLBACK_ERROR)
+    take_error(vector_owner, r"\(output 0 of implementation callback\) " + RELEASED)
+    vector_handlers.item = live
+    item = vector.get_at(0)
+    assert item.identity_raw() == live.identity_raw()
+    item.release()
+
+    # Generated struct results store reference fields through the same helper.
+    runtime = importlib.import_module(f"{g.__name__}._runtime")
+    iid = dw.WinGUID.parse(INSPECTABLE_IID)
+    null = dw.DynWinRTValue.null_value()
+    assert runtime._implementation_reference(null, iid, "item") is null
+    released = released_value()
+    assert runtime._implementation_reference(released, iid, "item") is released
+    fields = dw.DynWinRTStruct.create(dw.DynWinRTType.struct_type(
+        "E2E.ReleasedReferenceField", [dw.DynWinRTType.object()]
+    ))
+    fields.set_object(0, runtime._implementation_reference(None, iid, "item"))
+    fields.set_object(0, runtime._implementation_reference(live, iid, "item"))
+    expect_error(
+        lambda: fields.set_object(0, runtime._implementation_reference(released, iid, "item")),
+        r"\(field 0 of DynWinRTStruct\.set_object\(\)\) " + RELEASED,
+    )
+    live.release()
+
+
 CASES = {
     case.__name__: case for case in (
         management_handle, property_views, background_task, multi_interface_lifetime, dispose_disconnects,
         reentrant_dispose, callback_error, async_handler_rejected,
         async_result_rejected, required_interfaces, memory_buffer_event,
         array_contracts, value_shapes, fill_array, fill_array_wrong_length, named_outputs,
-        nullable_reference_results,
+        nullable_reference_results, released_references,
         public_view_success_gc, public_view_failed_cast_gc,
     )
 }

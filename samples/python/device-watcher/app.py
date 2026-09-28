@@ -13,7 +13,7 @@ from generated.windows.devices.enumeration import (
 
 
 async def enumerate_devices(timeout: int, show_names: bool) -> None:
-    with RoApartment(1), projected_lifetime_scope():
+    with RoApartment(), projected_lifetime_scope():
         watcher = DeviceInformation.create_watcher()
         if watcher is None:
             raise RuntimeError("DeviceInformation returned no watcher")

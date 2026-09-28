@@ -54,6 +54,7 @@ fn import_line(
     if needs_legacy_int_guard {
         legacy_helpers.push_str("    _dynwinrt_legacy_int_guard,\n");
     }
+    let as_interface = context.support_symbol_import(PythonSupportSymbol::AsInterface);
     format!(
         "\
 from ._runtime import (
@@ -66,7 +67,7 @@ from ._runtime import (
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
 {legacy_helpers}    _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
-    _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    {as_interface}, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
@@ -167,7 +168,33 @@ def _dynwinrt_legacy_int_guard(value, minimum=None, maximum=None):
         (minimum is None or minimum <= converted)
         and (maximum is None or converted <= maximum)
     )
+
+
+def _dynwinrt_as_interface(native, interface_class):
+    if (
+        isinstance(interface_class, type)
+        and (
+            getattr(interface_class, '_dynwinrt_runtime_class_type', False)
+            or getattr(interface_class, '_dynwinrt_projectable_class_type', False)
+        )
+        and not hasattr(interface_class, 'from_value')
+    ):
+        name = interface_class.__name__
+        raise TypeError(
+            f'as_interface() requires a generated interface class, but {name} is a '
+            f'runtime class. Use dynwinrt.project_as(obj, {name}) to cast to a runtime class.'
+        )
+    return interface_class.from_value(native)
 \n";
+
+/// `as_interface()`, emitted for every generated class and interface view.
+/// It references the module's allocated name for the runtime-support helper.
+fn as_interface_method(context: &PythonProjectionContext) -> String {
+    format!(
+        "    def as_interface(self, interface_class):\n        return {}(self._obj, interface_class)\n",
+        context.support_symbol_reference(PythonSupportSymbol::AsInterface)
+    )
+}
 
 pub fn generate_runtime_support_module() -> String {
     format!(
@@ -195,7 +222,12 @@ def _dynwinrt_box_reference(value, value_type, wrap):
 def _dynwinrt_unbox_reference(value):
     raw = getattr(value, '_obj', None)
     if isinstance(raw, DynWinRTValue):
-        return None if raw.is_null() else value.value
+        # A released wrapper is not a null reference: reading its value raises.
+        # Runtimes without is_released() keep treating it as None.
+        is_released = getattr(raw, 'is_released', None)
+        if raw.is_null() and not (is_released is not None and is_released()):
+            return None
+        return value.value
     return value
 
 

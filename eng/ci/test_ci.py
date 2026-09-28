@@ -244,6 +244,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("cargo test -p dynwinrt-codegen `", runtime)
         self.assertIn("--test implementation_naming_test", runtime)
         self.assertIn("--test python_overload_legacy_compat_test", runtime)
+        self.assertIn("--test python_released_implementation_test", runtime)
 
     def test_release_notes_validated_in_lightweight_lane(self):
         steps = [
