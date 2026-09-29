@@ -37,6 +37,7 @@ from python_bindings.windows.foundation.collections import (
 from python_bindings.windows.system.threading import (
     ThreadPool,
     ThreadPoolTimer,
+    WorkItemOptions,
     WorkItemPriority,
 )
 from python_bindings.windows.globalization import Calendar
@@ -250,10 +251,8 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
 
 
 def check_delegate_callback_parameters() -> None:
-    # Mypy cannot contextually infer this lambda across canonical @overload arities.
-    # Keep the assertion: --strict flags this ignore when inference improves.
     inferred_work: WinRTCoroutine[None] = ThreadPool.run_async(
-        lambda operation: assert_type(operation, DynWinRTValue)  # type: ignore[assert-type]
+        lambda operation: assert_type(operation, DynWinRTValue)
     )
 
     def on_work_item(operation: DynWinRTValue) -> None:
@@ -264,6 +263,11 @@ def check_delegate_callback_parameters() -> None:
         lambda operation: assert_type(operation, DynWinRTValue),
         WorkItemPriority.Normal,
     )
+    options_work: WinRTCoroutine[None] = ThreadPool.run_with_priority_and_options_async(
+        lambda operation: assert_type(operation, DynWinRTValue),
+        WorkItemPriority.Normal,
+        WorkItemOptions.TimeSliced,
+    )
     timer: ThreadPoolTimer | None = ThreadPoolTimer.create_timer(
         lambda elapsed: assert_type(elapsed.delay, timedelta),
         timedelta(milliseconds=1),
@@ -272,11 +276,13 @@ def check_delegate_callback_parameters() -> None:
         WinRTCoroutine[None],
         WinRTCoroutine[None],
         WinRTCoroutine[None],
+        WinRTCoroutine[None],
         ThreadPoolTimer | None,
     ] = (
         inferred_work,
         work,
         priority_work,
+        options_work,
         timer,
     )
 
@@ -291,5 +297,9 @@ def check_native_delegate_inputs(
     properties.subscribe_map_changed(raw)()
     ThreadPool.run_async(native)
     ThreadPool.run_async(raw)
+    ThreadPool.run_with_priority_async(native, WorkItemPriority.Normal)
+    ThreadPool.run_with_priority_and_options_async(
+        native, WorkItemPriority.Normal, WorkItemOptions.TimeSliced
+    )
     static_token = Gamepad.add_gamepad_added(native)
     Gamepad.remove_gamepad_added(static_token)

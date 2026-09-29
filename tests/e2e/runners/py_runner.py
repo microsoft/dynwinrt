@@ -1277,17 +1277,53 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'work_item_callback_passthrough':
+            run_async = getattr(cls, member)
+            priority_type = generated_type(pkg_name, 'WorkItemPriority')
+            options_type = generated_type(pkg_name, 'WorkItemOptions')
+            priority = priority_type.Normal
+            options = options_type.TimeSliced
+            with_priority = cls.run_with_priority_async
+            with_options = cls.run_with_priority_and_options_async
             received = []
-            await getattr(cls, member)(received.append)
-            if len(received) != 1:
+            await run_async(received.append)
+            await with_priority(received.append, priority)
+            await with_options(received.append, priority, options)
+            if len(received) != 3:
                 cr['error'] = f'work item ran {len(received)} times'
                 return cr
-            if not isinstance(received[0], dw.DynWinRTValue):
+            if not all(isinstance(value, dw.DynWinRTValue) for value in received):
                 cr['error'] = (
-                    'work item callable did not receive the raw IAsyncAction: '
-                    f'{type(received[0]).__name__}'
+                    'work item callables did not receive raw IAsyncAction values: '
+                    f'{received!r}'
                 )
                 return cr
+
+            invalid_calls = [
+                ((received.append, priority), {}),
+                ((received.append, priority, options), {}),
+                ((received.append,), {'priority': priority}),
+                ((received.append,), {'priority': priority, 'options': options}),
+                ((), {'handler': received.append, 'priority': priority}),
+                (
+                    (),
+                    {
+                        'handler': received.append,
+                        'priority': priority,
+                        'options': options,
+                    },
+                ),
+            ]
+            for args, kwargs in invalid_calls:
+                try:
+                    run_async(*args, **kwargs)
+                except TypeError:
+                    pass
+                else:
+                    cr['error'] = (
+                        'run_async accepted a priority/options call shape: '
+                        f'args={args!r}, kwargs={kwargs!r}'
+                    )
+                    return cr
 
             threading_namespace = importlib.import_module(
                 namespace_module_name(pkg_name, 'Windows.System.Threading')
@@ -1298,11 +1334,15 @@ async def run_check(
                 threading_namespace.WorkItemHandler_PARAM_TYPES,
                 native_received.append,
             )
-            await getattr(cls, member)(delegate)
+            await run_async(delegate)
+            await with_priority(delegate, priority)
+            await with_options(delegate, priority, options)
             raw_value = delegate.to_value()
-            await getattr(cls, member)(raw_value)
+            await run_async(raw_value)
+            await with_priority(raw_value, priority)
+            await with_options(raw_value, priority, options)
             raw_value.release()
-            if len(native_received) != 2 or not all(
+            if len(native_received) != 6 or not all(
                 isinstance(value, dw.DynWinRTValue)
                 for value in native_received
             ):

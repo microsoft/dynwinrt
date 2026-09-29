@@ -173,15 +173,15 @@ def work(action: DynWinRTValue) -> None:
 operation = ThreadPool.run_async(work)
 ```
 
-Mypy may infer an unannotated callback lambda parameter as `Any` when the
-documented method name has several `@overload` signatures (for example,
-`ThreadPool.run_async`). The generated stubs still preserve the exact
-`Invoke`-derived callback and argument types. Use a named callback with an
-explicit parameter annotation, as above, or an exact ABI-name method such as
-`run_with_priority_async` when that signature fits. Pyright retains contextual
-lambda inference for these overloads.
+`ThreadPool.run_async(handler)` intentionally retains its original single
+argument and exact callback annotation, so mypy can infer the type of an
+unannotated callback lambda. Its priority and options overloads remain
+separate as `run_with_priority_async(handler, priority)` and
+`run_with_priority_and_options_async(handler, priority, options)`. These are
+distinct names in both generated Python and `.pyi`; passing priority or options
+to `run_async` is not supported.
 
-WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
+WinRT flags enums are projected as `enum.IntFlag`. Most overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
 That name is the documented (CLR) method name, so `StorageFile.CopyAsync`
 overloads are all `copy_async(...)`. The unique `[Overload]` ABI names emitted by

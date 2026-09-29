@@ -18,6 +18,8 @@
 //! `copy_overload`, `copy_overload_default_options`, and so on. The
 //! established suffix heuristics (`Foo2`, `FooOverload...`, `FooWithOptions`
 //! next to `foo`) still merge on top of the CLR name.
+//! `ThreadPool.RunAsync` deliberately keeps its three ABI names so its
+//! original single-argument callable retains contextual lambda typing.
 //!
 //! Names are planned per Python class namespace: a runtime class shares one
 //! namespace between its static and instance members, properties, event
@@ -54,6 +56,7 @@ use super::signature::{
 };
 
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
+const ITHREAD_POOL_STATICS_IID: &str = "b6bf67dd-84bd-44f8-ac1c-93ebcb9dba91";
 
 /// Members inherited from the `collections.abc` bases of generated collection mixins.
 const COLLECTION_MIXIN_MEMBERS: &[&str] = &[
@@ -250,12 +253,38 @@ impl<'a> ClassMemberPlan<'a> {
             .collect();
         let instance = class_instance_interfaces(class).collect();
         let reserved = class_reserved_names(class, context);
-        let mut scopes =
-            plan_scopes_with_context(&[statics, instance], &reserved, context).into_iter();
+        let mut scopes = plan_scopes_with_context(
+            &[statics, instance],
+            &reserved,
+            context,
+            &class_abi_name_exceptions(class),
+        )
+        .into_iter();
         Self {
             statics: scopes.next().expect("static scope"),
             instance: scopes.next().expect("instance scope"),
         }
+    }
+}
+
+fn class_abi_name_exceptions(class: &ClassMeta) -> BTreeSet<(usize, String)> {
+    let original_work_item = class.namespace == "Windows.System.Threading"
+        && class.name == "ThreadPool"
+        && class.static_interfaces.iter().any(|interface| {
+            interface.namespace == class.namespace
+                && interface.name == "IThreadPoolStatics"
+                && interface.iid.eq_ignore_ascii_case(ITHREAD_POOL_STATICS_IID)
+                && interface.methods.iter().any(|method| {
+                    method.name == "RunAsync"
+                        && method.raw_name == "RunAsync"
+                        && method.vtable_index == 6
+                })
+        });
+    if original_work_item {
+        // Keep the single-argument callable signature contextually typed by mypy.
+        BTreeSet::from([(0, "run_async".to_string())])
+    } else {
+        BTreeSet::new()
     }
 }
 
@@ -268,6 +297,7 @@ pub(crate) fn interface_member_plan<'a>(
         &[vec![interface]],
         &interface_reserved_names(interface),
         context,
+        &BTreeSet::new(),
     )
     .pop()
     .expect("interface scope")
@@ -505,7 +535,12 @@ fn plan_scopes<'a>(
     scopes: &[Vec<&'a InterfaceMeta>],
     reserved: &HashSet<String>,
 ) -> Vec<ScopePlan<'a>> {
-    plan_scopes_with_context(scopes, reserved, &PythonProjectionContext::default())
+    plan_scopes_with_context(
+        scopes,
+        reserved,
+        &PythonProjectionContext::default(),
+        &BTreeSet::new(),
+    )
 }
 
 /// Plan the scopes of one Python class namespace; `reserved` holds its
@@ -514,6 +549,7 @@ fn plan_scopes_with_context<'a>(
     scopes: &[Vec<&'a InterfaceMeta>],
     reserved: &HashSet<String>,
     context: &PythonProjectionContext,
+    abi_name_exceptions: &BTreeSet<(usize, String)>,
 ) -> Vec<ScopePlan<'a>> {
     let mut entries = Vec::new();
     for (scope, interfaces) in scopes.iter().enumerate() {
@@ -629,7 +665,7 @@ fn plan_scopes_with_context<'a>(
             .or_insert_with(|| entry.abi_key.clone());
     }
 
-    let mut fallback = BTreeSet::<(usize, String)>::new();
+    let mut fallback = abi_name_exceptions.clone();
     let groups = loop {
         let key_of = |index: usize| -> &String {
             let entry = &entries[index];
@@ -1595,6 +1631,85 @@ mod tests {
     }
 
     #[test]
+    fn thread_pool_statics_keep_exact_callable_names_and_slots() {
+        let handler = TypeMeta::Delegate {
+            namespace: "Windows.System.Threading".into(),
+            name: "WorkItemHandler".into(),
+            iid: "1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa".into(),
+        };
+        let context = PythonProjectionContext::packaged([handler.type_identity()]).unwrap();
+        let class = ClassMeta {
+            name: "ThreadPool".into(),
+            namespace: "Windows.System.Threading".into(),
+            full_name: "Windows.System.Threading.ThreadPool".into(),
+            static_interfaces: vec![InterfaceMeta {
+                name: "IThreadPoolStatics".into(),
+                namespace: "Windows.System.Threading".into(),
+                iid: "b6bf67dd-84bd-44f8-ac1c-93ebcb9dba91".into(),
+                methods: vec![
+                    overload("RunAsync", "RunAsync", 6, &[("handler", handler.clone())]),
+                    overload(
+                        "RunWithPriorityAsync",
+                        "RunAsync",
+                        7,
+                        &[("handler", handler.clone()), ("priority", TypeMeta::I32)],
+                    ),
+                    overload(
+                        "RunWithPriorityAndOptionsAsync",
+                        "RunAsync",
+                        8,
+                        &[
+                            ("handler", handler),
+                            ("priority", TypeMeta::I32),
+                            ("options", TypeMeta::I32),
+                        ],
+                    ),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let plan = ClassMemberPlan::new(&class, &context);
+        let planned = summarize(&plan.statics);
+        for (name, slot, public) in [
+            ("RunAsync", 6, "run_async"),
+            ("RunWithPriorityAsync", 7, "run_with_priority_async"),
+            (
+                "RunWithPriorityAndOptionsAsync",
+                8,
+                "run_with_priority_and_options_async",
+            ),
+        ] {
+            assert_eq!(planned.group(name, slot), public, "{planned:?}");
+            assert_eq!(planned.attribute(name, slot), public, "{planned:?}");
+            let group = plan
+                .statics
+                .groups
+                .iter()
+                .find(|group| group.name == public)
+                .unwrap();
+            assert_eq!(group.candidates.len(), 1);
+            assert!(group.legacy_fallback.is_none());
+        }
+        assert!(planned.aliases.is_empty(), "{planned:?}");
+        assert_eq!(planned.fallbacks, ["run_async"]);
+
+        let mut unrelated = class.clone();
+        unrelated.name = "OtherThreadPool".into();
+        unrelated.full_name = "Windows.System.Threading.OtherThreadPool".into();
+        let unrelated = summarize(&ClassMemberPlan::new(&unrelated, &context).statics);
+        assert_eq!(unrelated.group("RunWithPriorityAsync", 7), "run_async");
+
+        let mut other_interface = class.clone();
+        other_interface.static_interfaces[0].iid = "11111111-1111-1111-1111-111111111111".into();
+        let other_interface = summarize(&ClassMemberPlan::new(&other_interface, &context).statics);
+        assert_eq!(
+            other_interface.group("RunWithPriorityAsync", 7),
+            "run_async"
+        );
+    }
+
+    #[test]
     fn clr_name_falls_back_when_the_name_is_a_property_or_generated_member() {
         let getter = MethodMeta {
             name: "get_Source".into(),
@@ -2163,8 +2278,8 @@ mod tests {
             }
         }
 
-        assert_eq!(runtime_count, 766);
-        assert_eq!(all_plan_sites, 897);
+        assert_eq!(runtime_count, 765);
+        assert_eq!(all_plan_sites, 896);
         assert_eq!(bool_shadows, 0);
         assert!(interface_fallbacks.is_empty());
         assert_eq!(
@@ -2174,6 +2289,7 @@ mod tests {
                 "Windows.Networking.Sockets.ServerMessageWebSocket.close",
                 "Windows.Networking.Sockets.ServerStreamWebSocket.close",
                 "Windows.Networking.Sockets.StreamWebSocket.close",
+                "Windows.System.Threading.ThreadPool.run_async",
                 "Windows.UI.Notifications.TileUpdateManagerForUser.create_tile_updater_for_application",
             ]
             .into_iter()
