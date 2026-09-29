@@ -41,6 +41,14 @@ struct Generated {
 
 impl Generated {
     fn new() -> Option<Self> {
+        Self::generate(false)
+    }
+
+    fn without_stubs() -> Option<Self> {
+        Self::generate(true)
+    }
+
+    fn generate(no_pyi: bool) -> Option<Self> {
         if !Path::new(WINDOWS_WINMD).is_file() {
             eprintln!("Skipping JSON SDK regression: Windows.winmd not found");
             return None;
@@ -51,17 +59,21 @@ impl Generated {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         let root = repo_root().join("target").join(&package);
-        let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
-            .args([
-                "generate",
-                "--winmd",
-                WINDOWS_WINMD,
-                "--class-name",
-                JSON_CLASSES,
-                "--lang",
-                "py",
-                "--output",
-            ])
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command.args([
+            "generate",
+            "--winmd",
+            WINDOWS_WINMD,
+            "--class-name",
+            JSON_CLASSES,
+            "--lang",
+            "py",
+        ]);
+        if no_pyi {
+            command.arg("--no-pyi");
+        }
+        let output = command
+            .arg("--output")
             .arg(&root)
             .output()
             .expect("generate stock JSON bindings");
@@ -112,6 +124,21 @@ fn assert_success(output: Output) {
     );
 }
 
+fn matching_runtime_available() -> bool {
+    let available = Command::new(python())
+        .args([
+            "-c",
+            "from dynwinrt import DynWinRTInterfacePlan, DynWinRTValue; assert hasattr(DynWinRTValue, '_validate_non_null_collection_input')",
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        available || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
+        "the JSON runtime regressions require the matching Python binding"
+    );
+    available
+}
+
 #[test]
 fn stock_json_generation_preserves_receiver_dependent_contract() {
     let Some(generated) = Generated::new() else {
@@ -121,6 +148,41 @@ fn stock_json_generation_preserves_receiver_dependent_contract() {
     let object = generated.module("windows__data__json__json_object.py");
     let array_stub = generated.module("windows__data__json__json_array.pyi");
     let object_stub = generated.module("windows__data__json__json_object.pyi");
+
+    let (stock_array, generic_vector) = array
+        .split_once("\nclass IVector_IJsonValue(")
+        .expect("standalone vector view");
+    for declaration in [
+        "def index_of(self, value: 'IJsonValue')",
+        "def set_at(self, index: int, value: 'IJsonValue')",
+        "def insert_at(self, index: int, value: 'IJsonValue')",
+        "def append(self, value: 'IJsonValue')",
+        "def replace_all(self, items: DynWinRTArray | Sequence['IJsonValue'])",
+    ] {
+        assert!(
+            stock_array.contains(declaration),
+            "{declaration}:\n{stock_array}"
+        );
+    }
+    assert!(
+        generic_vector.contains("def append(self, value: IJsonValue | None)")
+            && generic_vector.contains(
+                "def replace_all(self, items: DynWinRTArray | Sequence[IJsonValue | None])"
+            ),
+        "{generic_vector}"
+    );
+    let (stock_object, generic_map) = object
+        .split_once("\nclass IMap_String_IJsonValue(")
+        .expect("standalone map view");
+    assert!(
+        stock_object.contains("def insert(self, key: str, value: 'IJsonValue')")
+            && stock_object.contains("def set_named_value(self, name: str, value: 'IJsonValue')"),
+        "{stock_object}"
+    );
+    assert!(
+        generic_map.contains("def insert(self, key: str, value: IJsonValue | None)"),
+        "{generic_map}"
+    );
 
     for code in [&array, &object] {
         assert!(
@@ -166,22 +228,59 @@ fn stock_json_generation_preserves_receiver_dependent_contract() {
 }
 
 #[test]
+fn stock_json_no_pyi_runtime_annotations_match_the_native_input_contract() {
+    let Some(generated) = Generated::without_stubs() else {
+        return;
+    };
+    if !matching_runtime_available() {
+        eprintln!("Skipping JSON runtime annotations: matching Python binding not installed");
+        return;
+    }
+    assert!(
+        !generated
+            .root
+            .join("windows__data__json__json_array.pyi")
+            .exists()
+    );
+    assert!(
+        !generated
+            .root
+            .join("windows__data__json__json_object.pyi")
+            .exists()
+    );
+    assert_success(generated.python(
+        r#"
+from inspect import signature
+from JSON_PACKAGE.windows__data__json__json_array import JsonArray, IVector_IJsonValue
+from JSON_PACKAGE.windows__data__json__json_object import JsonObject, IMap_String_IJsonValue
+
+for owner, name, parameter in (
+    (JsonArray, 'append', 'value'),
+    (JsonArray, 'set_at', 'value'),
+    (JsonArray, 'insert_at', 'value'),
+    (JsonArray, 'replace_all', 'items'),
+    (JsonObject, 'insert', 'value'),
+    (JsonObject, 'set_named_value', 'value'),
+):
+    annotation = str(signature(getattr(owner, name)).parameters[parameter].annotation)
+    assert 'IJsonValue' in annotation and 'None' not in annotation, (owner, name, annotation)
+for owner, name, parameter in (
+    (IVector_IJsonValue, 'append', 'value'),
+    (IVector_IJsonValue, 'replace_all', 'items'),
+    (IMap_String_IJsonValue, 'insert', 'value'),
+):
+    annotation = str(signature(getattr(owner, name)).parameters[parameter].annotation)
+    assert 'IJsonValue' in annotation and 'None' in annotation, (owner, name, annotation)
+"#,
+    ));
+}
+
+#[test]
 fn stock_json_mutators_fail_before_native_mutation_but_custom_generics_keep_null() {
     let Some(generated) = Generated::new() else {
         return;
     };
-    let available = Command::new(python())
-        .args([
-            "-c",
-            "from dynwinrt import DynWinRTInterfacePlan, DynWinRTValue; assert hasattr(DynWinRTValue, '_validate_non_null_collection_input')",
-        ])
-        .output()
-        .is_ok_and(|output| output.status.success());
-    assert!(
-        available || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
-        "the JSON native regression requires the matching Python binding"
-    );
-    if !available {
+    if !matching_runtime_available() {
         eprintln!("Skipping JSON native regression: matching Python binding not installed");
         return;
     }

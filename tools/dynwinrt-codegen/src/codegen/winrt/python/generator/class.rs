@@ -42,6 +42,7 @@ pub fn generate_class<'a>(
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let stock_json_receiver = stock_json_class_contract(class).is_some();
     let non_null_json = collection_iface
         .zip(collection_kind)
         .and_then(|(iface, kind)| non_null_json_collection(kind, &iface.generic_args));
@@ -645,6 +646,7 @@ pub fn generate_class<'a>(
                     .name
                     .strip_prefix("put_")
                     .is_some_and(|suffix| property_getters.contains(suffix)),
+            stock_json_receiver,
         }
     };
     // Python evaluates decorators while building the class. Emit every getter
@@ -907,6 +909,7 @@ pub fn generate_class<'a>(
                         .iter()
                         .any(|candidate| candidate.name == format!("get_{suffix}"))
                 }),
+            stock_json_receiver: false,
         };
         let members = reorder_getters_before_setters(&req_iface.methods)
             .into_iter()

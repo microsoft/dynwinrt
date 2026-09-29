@@ -645,6 +645,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                     .iter()
                     .any(|candidate| candidate.name == format!("get_{suffix}"))
             }),
+        stock_json_receiver: false,
     };
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()

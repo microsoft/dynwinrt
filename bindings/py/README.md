@@ -72,9 +72,10 @@ and `IMap<String, IJsonValue>` views, raw `DynWinRTArray` inputs, `replace_all`,
 slice assignment, `extend` and `update`. A rejected null leaves the JSON
 collection unchanged. Use `JsonValue.create_null_value()` to store JSON
 **semantic** null; it is a non-null `IJsonValue` object. Their class stubs type
-elements as non-null, while generic interface stubs retain `| None` because
-custom implementations can store a native null and a view's origin is only
-known at runtime.
+elements as non-null, and the generated `.py` input annotations agree even
+with `--no-pyi`. Generic interface annotations retain `| None` because custom
+implementations can store a native null and a view's origin is only known at
+runtime.
 
 Other arguments keep accepting `None` where they did before. The stubs are
 optimistic, like the generated TypeScript declarations: the runtime still

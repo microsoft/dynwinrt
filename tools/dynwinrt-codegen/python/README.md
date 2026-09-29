@@ -166,7 +166,8 @@ returns `DynWinRTValue | None`. Sequence item assignment, slice assignment, and
 integer indices take one item and slices take an iterable of items. Generic
 nullable `collections.abc` contracts remain unchanged. The stock `JsonArray`
 and `JsonObject` classes instead have non-null `IJsonValue`
-element/value contracts in their stubs. Their native implementations reject
+element/value contracts in both stubs and runtime method input annotations
+(including `--no-pyi` output). Their native implementations reject
 `None` (including through generic interface views) before mutation; use
 `JsonValue.create_null_value()` for JSON semantic null. A custom
 `IVector<IJsonValue>` or `IMap<String, IJsonValue>` may still store a native null.
