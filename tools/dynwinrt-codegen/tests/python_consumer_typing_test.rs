@@ -814,6 +814,81 @@ print("collection-subscript-native-ok", flush=True)
 }
 
 #[test]
+fn thread_pool_abi_names_keep_precise_callable_and_native_inputs() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping ThreadPool typing: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.System.Threading.ThreadPool",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from typing import assert_type
+from dynwinrt import DynWinRTValue, DynWinRtDelegate, WinRTCoroutine
+from sdk.windows.system.threading import ThreadPool, WorkItemOptions, WorkItemPriority
+
+def supported(native: DynWinRtDelegate, raw: DynWinRTValue) -> None:
+    first: WinRTCoroutine[None] = ThreadPool.run_async(
+        lambda action: assert_type(action, DynWinRTValue)
+    )
+    second: WinRTCoroutine[None] = ThreadPool.run_with_priority_async(
+        lambda action: assert_type(action, DynWinRTValue), WorkItemPriority.Normal
+    )
+    third: WinRTCoroutine[None] = ThreadPool.run_with_priority_and_options_async(
+        lambda action: assert_type(action, DynWinRTValue),
+        WorkItemPriority.Normal, WorkItemOptions.TimeSliced,
+    )
+    ThreadPool.run_async(native)
+    ThreadPool.run_with_priority_async(raw, WorkItemPriority.Normal)
+    ThreadPool.run_with_priority_and_options_async(
+        native, WorkItemPriority.Normal, WorkItemOptions.TimeSliced
+    )
+    _ = first, second, third
+"#,
+        &[],
+    );
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from dynwinrt import DynWinRtDelegate
+from sdk.windows.system.threading import ThreadPool, WorkItemOptions, WorkItemPriority
+
+def invalid(native: DynWinRtDelegate) -> None:
+    ThreadPool.run_async(native, WorkItemPriority.Normal)
+    ThreadPool.run_async(native, WorkItemPriority.Normal, WorkItemOptions.TimeSliced)
+    ThreadPool.run_async(handler=native, priority=WorkItemPriority.Normal)
+    ThreadPool.run_async(
+        handler=native, priority=WorkItemPriority.Normal, options=WorkItemOptions.TimeSliced
+    )
+"#,
+        &[
+            "[call-arg]",
+            "[call-arg]",
+            "[call-arg]",
+            "[call-arg]",
+            "[call-arg]",
+        ],
+    );
+}
+
+#[test]
 fn map_changed_handlers_receive_typed_observable_maps_and_arguments() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",

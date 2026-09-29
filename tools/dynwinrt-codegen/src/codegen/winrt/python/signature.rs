@@ -6,10 +6,10 @@
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
-use super::naming::{PythonProjectionContext, PythonSymbol};
+use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
-use crate::codegen::winrt::shared::imports::ireference_inner_type;
+use crate::codegen::winrt::shared::imports::{get_in_params, ireference_inner_type};
 
 pub(crate) fn py_runtime_symbol(
     context: &PythonProjectionContext,
@@ -77,6 +77,531 @@ pub(crate) fn py_integer_bounds(typ: &TypeMeta) -> Option<(i128, i128)> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyPreservationPredicate {
+    /// The candidate accepts builtin ints over a wider range. Exact ints must
+    /// fit the old converter; subclasses stay on the old path without probing
+    /// potentially visible conversion methods.
+    IntBaseRange {
+        index: usize,
+        minimum: i128,
+        maximum: i128,
+    },
+    /// The candidate accepts builtin ints and floats. Only exact builtin
+    /// values are preflighted; subclasses conservatively stay on the old path.
+    RealToIntRange {
+        index: usize,
+        minimum: i128,
+        maximum: i128,
+    },
+    /// The old enum converter calls `int()`. Parse only exact builtin strings
+    /// or numeric values; subclasses conservatively stay on the old path.
+    ExactIntConversionRangeOrSubclass {
+        index: usize,
+        exact_types: &'static str,
+        minimum: i128,
+        maximum: i128,
+    },
+    BuiltinSubclass {
+        index: usize,
+        exact_types: &'static str,
+    },
+    Char16OrStringSubclass {
+        index: usize,
+    },
+    CanCast {
+        index: usize,
+        iid: String,
+    },
+    DynWinRTValue {
+        index: usize,
+    },
+    CallableOrDynWinRTValue {
+        index: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyGuardOverlap {
+    Disjoint,
+    Preserve(Vec<LegacyPreservationPredicate>),
+    /// The overlap cannot be checked without invoking user conversion code or
+    /// consuming an input. The planner must retain the old ABI grouping.
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LegacyConversionDomain {
+    Bool,
+    Integer { minimum: i128, maximum: i128 },
+    Real,
+    EnumInteger { minimum: i128, maximum: i128 },
+    Char16,
+    String,
+    Guid,
+    DateTime,
+    TimeSpan,
+    Struct(TypeIdentity),
+    QueryInterface(String),
+    DynWinRTValue,
+    Delegate,
+    Collection,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CandidateGuardDomain {
+    Bool,
+    Integer { minimum: i128, maximum: i128 },
+    Real,
+    KnownEnum { minimum: i128, maximum: i128 },
+    Char16,
+    String,
+    Guid,
+    DateTime,
+    TimeSpan,
+    Struct(TypeIdentity),
+    QueryInterface(String),
+    DynWinRTValue,
+    Delegate,
+    Collection,
+    Unknown,
+}
+
+fn enum_bounds(typ: &TypeMeta) -> Option<(i128, i128)> {
+    let TypeMeta::Enum { underlying, .. } = typ else {
+        return None;
+    };
+    py_integer_bounds(underlying)
+}
+
+fn hresult(typ: &TypeMeta) -> bool {
+    matches!(typ, TypeMeta::Struct { name, .. } if name == "HResult")
+}
+
+fn legacy_conversion_domain(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> LegacyConversionDomain {
+    if ireference_inner_type(typ).is_some() {
+        return LegacyConversionDomain::Unknown;
+    }
+    if type_kind(typ).is_some() {
+        return LegacyConversionDomain::Collection;
+    }
+    if let Some((minimum, maximum)) = py_integer_bounds(typ) {
+        return LegacyConversionDomain::Integer { minimum, maximum };
+    }
+    if hresult(typ) {
+        return LegacyConversionDomain::Integer {
+            minimum: i32::MIN as i128,
+            maximum: i32::MAX as i128,
+        };
+    }
+    match typ {
+        TypeMeta::Bool => LegacyConversionDomain::Bool,
+        TypeMeta::F32 | TypeMeta::F64 => LegacyConversionDomain::Real,
+        TypeMeta::Enum { .. } => enum_bounds(typ)
+            .map_or(LegacyConversionDomain::Unknown, |(minimum, maximum)| {
+                LegacyConversionDomain::EnumInteger { minimum, maximum }
+            }),
+        TypeMeta::Char16 => LegacyConversionDomain::Char16,
+        TypeMeta::String => LegacyConversionDomain::String,
+        TypeMeta::Guid => LegacyConversionDomain::Guid,
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => {
+            LegacyConversionDomain::DateTime
+        }
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
+            LegacyConversionDomain::TimeSpan
+        }
+        TypeMeta::Struct { .. } => LegacyConversionDomain::Struct(typ.type_identity()),
+        typ @ TypeMeta::RuntimeClass { .. } => py_runtime_class_iid_const(typ)
+            .map(|(iid, _)| LegacyConversionDomain::QueryInterface(iid))
+            .unwrap_or(LegacyConversionDomain::Unknown),
+        typ @ TypeMeta::Interface { .. } => py_interface_iid_const(typ)
+            .map(|(iid, _)| LegacyConversionDomain::QueryInterface(iid))
+            .unwrap_or(LegacyConversionDomain::Unknown),
+        TypeMeta::Delegate { .. } if context.is_delegate_type(typ) => {
+            LegacyConversionDomain::Delegate
+        }
+        TypeMeta::Object | TypeMeta::Delegate { .. } | TypeMeta::Parameterized { .. } => {
+            LegacyConversionDomain::DynWinRTValue
+        }
+        _ => LegacyConversionDomain::Unknown,
+    }
+}
+
+fn candidate_guard_domain(
+    typ: &TypeMeta,
+    permissive: bool,
+    context: &PythonProjectionContext,
+) -> CandidateGuardDomain {
+    if ireference_inner_type(typ).is_some() {
+        return CandidateGuardDomain::Unknown;
+    }
+    if type_kind(typ).is_some() {
+        return CandidateGuardDomain::Collection;
+    }
+    if context.is_delegate_type(typ) {
+        return CandidateGuardDomain::Delegate;
+    }
+    if let Some((minimum, maximum)) = py_integer_bounds(typ) {
+        return CandidateGuardDomain::Integer { minimum, maximum };
+    }
+    if hresult(typ) {
+        return CandidateGuardDomain::Integer {
+            minimum: i32::MIN as i128,
+            maximum: i32::MAX as i128,
+        };
+    }
+    match typ {
+        TypeMeta::Bool => CandidateGuardDomain::Bool,
+        TypeMeta::F32 | TypeMeta::F64 => CandidateGuardDomain::Real,
+        TypeMeta::Enum { .. } if context.is_known_type(typ) => enum_bounds(typ)
+            .map_or(CandidateGuardDomain::Unknown, |(minimum, maximum)| {
+                CandidateGuardDomain::KnownEnum { minimum, maximum }
+            }),
+        TypeMeta::Enum { .. } => CandidateGuardDomain::Integer {
+            minimum: i128::MIN,
+            maximum: i128::MAX,
+        },
+        TypeMeta::Char16 => CandidateGuardDomain::Char16,
+        TypeMeta::String => CandidateGuardDomain::String,
+        TypeMeta::Guid => CandidateGuardDomain::Guid,
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => {
+            CandidateGuardDomain::DateTime
+        }
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
+            CandidateGuardDomain::TimeSpan
+        }
+        TypeMeta::Struct { .. } => CandidateGuardDomain::Struct(typ.type_identity()),
+        typ @ TypeMeta::RuntimeClass { .. } => py_runtime_class_iid_const(typ)
+            .map(|(iid, _)| CandidateGuardDomain::QueryInterface(iid))
+            .unwrap_or(CandidateGuardDomain::DynWinRTValue),
+        typ @ TypeMeta::Interface { .. } if permissive => py_interface_iid_const(typ)
+            .map(|(iid, _)| CandidateGuardDomain::QueryInterface(iid))
+            .unwrap_or(CandidateGuardDomain::DynWinRTValue),
+        TypeMeta::Interface { .. } => CandidateGuardDomain::DynWinRTValue,
+        TypeMeta::Object | TypeMeta::Delegate { .. } | TypeMeta::Parameterized { .. } => {
+            CandidateGuardDomain::DynWinRTValue
+        }
+        _ => CandidateGuardDomain::Unknown,
+    }
+}
+
+fn overlap_parameter(
+    legacy: &LegacyConversionDomain,
+    candidate: &CandidateGuardDomain,
+    index: usize,
+) -> LegacyGuardOverlap {
+    use CandidateGuardDomain as Guard;
+    use LegacyConversionDomain as Legacy;
+    use LegacyGuardOverlap::{Disjoint, Preserve, Unknown};
+    use LegacyPreservationPredicate as Predicate;
+
+    match (legacy, candidate) {
+        (Legacy::Bool, Guard::Bool) => Preserve(Vec::new()),
+        (Legacy::Bool, Guard::Integer { .. } | Guard::Real | Guard::KnownEnum { .. }) => Disjoint,
+        (Legacy::Integer { .. }, Guard::Bool) => Preserve(Vec::new()),
+        (
+            Legacy::Integer { minimum, maximum },
+            Guard::Integer {
+                minimum: candidate_minimum,
+                maximum: candidate_maximum,
+            },
+        ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
+        (Legacy::Integer { minimum, maximum }, Guard::Integer { .. }) => {
+            Preserve(vec![Predicate::IntBaseRange {
+                index,
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (Legacy::Integer { minimum, maximum }, Guard::Real) => {
+            Preserve(vec![Predicate::RealToIntRange {
+                index,
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (
+            Legacy::Integer { minimum, maximum },
+            Guard::KnownEnum {
+                minimum: candidate_minimum,
+                maximum: candidate_maximum,
+            },
+        ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
+        (Legacy::Integer { minimum, maximum }, Guard::KnownEnum { .. }) => {
+            Preserve(vec![Predicate::IntBaseRange {
+                index,
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (Legacy::Integer { .. }, Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Integer { .. }, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Integer { .. }, Guard::Struct(_)) => Unknown,
+        (Legacy::Real, Guard::Bool | Guard::Integer { .. } | Guard::KnownEnum { .. }) => {
+            Preserve(Vec::new())
+        }
+        (Legacy::Real, Guard::Real) => Unknown,
+        (Legacy::Real, Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Real, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Real, Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Real, Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Real, Guard::Struct(_)) => Unknown,
+        (Legacy::EnumInteger { minimum, maximum }, Guard::Bool) => {
+            if *minimum <= 0 && *maximum >= 1 {
+                Preserve(Vec::new())
+            } else {
+                Preserve(vec![Predicate::IntBaseRange {
+                    index,
+                    minimum: *minimum,
+                    maximum: *maximum,
+                }])
+            }
+        }
+        (
+            Legacy::EnumInteger { minimum, maximum },
+            Guard::Integer {
+                minimum: candidate_minimum,
+                maximum: candidate_maximum,
+            },
+        ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
+        (Legacy::EnumInteger { minimum, maximum }, Guard::Integer { .. }) => {
+            Preserve(vec![Predicate::IntBaseRange {
+                index,
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (Legacy::EnumInteger { minimum, maximum }, Guard::Real) => {
+            Preserve(vec![Predicate::ExactIntConversionRangeOrSubclass {
+                index,
+                exact_types: "(int, float)",
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (Legacy::EnumInteger { minimum, maximum }, Guard::String | Guard::Char16) => {
+            Preserve(vec![Predicate::ExactIntConversionRangeOrSubclass {
+                index,
+                exact_types: "(str,)",
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (
+            Legacy::EnumInteger { minimum, maximum },
+            Guard::KnownEnum {
+                minimum: candidate_minimum,
+                maximum: candidate_maximum,
+            },
+        ) if candidate_minimum >= minimum && candidate_maximum <= maximum => Preserve(Vec::new()),
+        (Legacy::EnumInteger { minimum, maximum }, Guard::KnownEnum { .. }) => {
+            Preserve(vec![Predicate::IntBaseRange {
+                index,
+                minimum: *minimum,
+                maximum: *maximum,
+            }])
+        }
+        (Legacy::EnumInteger { .. }, Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::EnumInteger { .. }, Guard::DateTime) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(datetime,)",
+            }])
+        }
+        (Legacy::EnumInteger { .. }, Guard::TimeSpan) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(timedelta,)",
+            }])
+        }
+        (Legacy::EnumInteger { .. }, Guard::Struct(_)) => Unknown,
+        (Legacy::Char16, Guard::Char16) => Preserve(Vec::new()),
+        (Legacy::Char16, Guard::String) => {
+            Preserve(vec![Predicate::Char16OrStringSubclass { index }])
+        }
+        (
+            Legacy::Char16,
+            Guard::Bool
+            | Guard::Integer { .. }
+            | Guard::Real
+            | Guard::KnownEnum { .. }
+            | Guard::Guid
+            | Guard::DateTime
+            | Guard::TimeSpan,
+        ) => Disjoint,
+        (Legacy::Char16, Guard::Struct(_)) => Unknown,
+        (Legacy::String, Guard::String | Guard::Char16) => Preserve(Vec::new()),
+        (
+            Legacy::String,
+            Guard::Bool
+            | Guard::Integer { .. }
+            | Guard::Real
+            | Guard::KnownEnum { .. }
+            | Guard::Guid
+            | Guard::DateTime
+            | Guard::TimeSpan,
+        ) => Disjoint,
+        (Legacy::String, Guard::Struct(_)) => Unknown,
+        (Legacy::Guid, Guard::Guid) => Preserve(Vec::new()),
+        (Legacy::DateTime, Guard::DateTime) => Preserve(Vec::new()),
+        (Legacy::TimeSpan, Guard::TimeSpan) => Preserve(Vec::new()),
+        (Legacy::Struct(left), Guard::Struct(right)) if left == right => Preserve(Vec::new()),
+        (Legacy::Struct(_), Guard::Bool) => Disjoint,
+        (Legacy::Struct(_), Guard::Integer { .. }) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(int,)",
+        }]),
+        (Legacy::Struct(_), Guard::Real) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(int, float)",
+        }]),
+        (Legacy::Struct(_), Guard::Char16 | Guard::String) => {
+            Preserve(vec![Predicate::BuiltinSubclass {
+                index,
+                exact_types: "(str,)",
+            }])
+        }
+        (Legacy::Struct(_), Guard::Guid) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(UUID,)",
+        }]),
+        (Legacy::Struct(_), Guard::DateTime) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(datetime,)",
+        }]),
+        (Legacy::Struct(_), Guard::TimeSpan) => Preserve(vec![Predicate::BuiltinSubclass {
+            index,
+            exact_types: "(timedelta,)",
+        }]),
+        (Legacy::Struct(_), _) | (_, Guard::Struct(_)) => Unknown,
+        (
+            Legacy::Guid | Legacy::DateTime | Legacy::TimeSpan,
+            Guard::Bool
+            | Guard::Integer { .. }
+            | Guard::Real
+            | Guard::KnownEnum { .. }
+            | Guard::Char16
+            | Guard::String
+            | Guard::Guid
+            | Guard::DateTime
+            | Guard::TimeSpan,
+        ) => Disjoint,
+        (Legacy::QueryInterface(left), Guard::QueryInterface(right)) if left == right => {
+            Preserve(Vec::new())
+        }
+        (
+            Legacy::QueryInterface(iid),
+            Guard::QueryInterface(_) | Guard::DynWinRTValue | Guard::KnownEnum { .. },
+        ) => Preserve(vec![Predicate::CanCast {
+            index,
+            iid: iid.clone(),
+        }]),
+        (Legacy::QueryInterface(_), Guard::Bool) => Disjoint,
+        (Legacy::QueryInterface(_), _) => Unknown,
+        (Legacy::DynWinRTValue, Guard::DynWinRTValue | Guard::QueryInterface(_)) => {
+            Preserve(vec![Predicate::DynWinRTValue { index }])
+        }
+        (Legacy::DynWinRTValue, Guard::Bool) => Disjoint,
+        (Legacy::DynWinRTValue, _) => Unknown,
+        (Legacy::Delegate, Guard::Delegate) => Preserve(Vec::new()),
+        (Legacy::Delegate, Guard::DynWinRTValue | Guard::QueryInterface(_)) => {
+            Preserve(vec![Predicate::CallableOrDynWinRTValue { index }])
+        }
+        (Legacy::Delegate | Legacy::Collection, Guard::Bool) => Disjoint,
+        (Legacy::Delegate, _) => Unknown,
+        (
+            Legacy::Bool
+            | Legacy::Integer { .. }
+            | Legacy::Real
+            | Legacy::EnumInteger { .. }
+            | Legacy::Char16
+            | Legacy::String
+            | Legacy::Guid
+            | Legacy::DateTime
+            | Legacy::TimeSpan,
+            Guard::QueryInterface(_) | Guard::DynWinRTValue | Guard::Delegate | Guard::Collection,
+        ) => Unknown,
+        (
+            Legacy::Collection,
+            Guard::Integer { .. }
+            | Guard::Real
+            | Guard::KnownEnum { .. }
+            | Guard::Char16
+            | Guard::String
+            | Guard::Guid
+            | Guard::DateTime
+            | Guard::TimeSpan,
+        ) => Unknown,
+        _ => Unknown,
+    }
+}
+
+pub(crate) fn legacy_guard_overlap(
+    legacy: &MethodMeta,
+    candidate: &MethodMeta,
+    permissive: bool,
+    context: &PythonProjectionContext,
+) -> LegacyGuardOverlap {
+    let legacy_params = get_in_params(legacy);
+    let candidate_params = get_in_params(candidate);
+    if legacy_params.len() != candidate_params.len() {
+        return LegacyGuardOverlap::Disjoint;
+    }
+    let mut predicates = Vec::new();
+    for (index, (legacy, candidate)) in legacy_params.iter().zip(candidate_params).enumerate() {
+        if legacy.typ == candidate.typ {
+            continue;
+        }
+        match overlap_parameter(
+            &legacy_conversion_domain(&legacy.typ, context),
+            &candidate_guard_domain(&candidate.typ, permissive, context),
+            index,
+        ) {
+            LegacyGuardOverlap::Disjoint => return LegacyGuardOverlap::Disjoint,
+            LegacyGuardOverlap::Unknown => return LegacyGuardOverlap::Unknown,
+            LegacyGuardOverlap::Preserve(mut parameter) => predicates.append(&mut parameter),
+        }
+    }
+    LegacyGuardOverlap::Preserve(predicates)
+}
+
 /// Return a stable overload-dispatch sort key for a projected Python argument type.
 ///
 /// Python overload dispatch is branch-ordered, so same-arity branches need a
@@ -126,6 +651,20 @@ pub(crate) fn py_dispatch_type_sort_key(typ: &TypeMeta) -> (u8, u16, u8, u8, Str
 // Python type expression
 // ======================================================================
 
+fn py_argument_iid_const_name(namespace: &str, name: &str) -> String {
+    let qualified = format!("{}_{}", namespace, name)
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("IID_ARG_{}", qualified)
+}
+
 pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
     let TypeMeta::RuntimeClass {
         namespace,
@@ -141,17 +680,32 @@ pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, Stri
     if iid.is_empty() {
         return None;
     }
-    let qualified = format!("{}_{}", namespace, name)
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    Some((format!("IID_ARG_{}", qualified), iid.clone()))
+    Some((py_argument_iid_const_name(namespace, name), iid.clone()))
+}
+
+/// Module-level IID constant used to QueryInterface-check an interface-typed argument.
+pub(crate) fn py_interface_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
+    let TypeMeta::Interface {
+        namespace,
+        name,
+        iid,
+    } = typ
+    else {
+        return None;
+    };
+    if iid.is_empty() {
+        return None;
+    }
+    Some((py_argument_iid_const_name(namespace, name), iid.clone()))
+}
+
+/// Collect the module-level IID constants needed by an input parameter: runtime-class
+/// casts (including collection elements) and interface-parameter dispatch guards.
+pub(crate) fn py_collect_argument_iid_consts(typ: &TypeMeta, output: &mut Vec<(String, String)>) {
+    if let Some(value) = py_interface_iid_const(typ) {
+        output.push(value);
+    }
+    py_collect_runtime_class_iid_consts(typ, output);
 }
 
 pub(crate) fn py_collect_runtime_class_iid_consts(
@@ -180,10 +734,10 @@ pub(crate) fn py_collect_runtime_class_iid_consts(
     }
 }
 
-fn py_runtime_class_wrap(name: &str, typ: &TypeMeta) -> String {
+fn py_runtime_class_wrap(name: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     let raw = format!("getattr({}, '_obj', {})", name, name);
     py_runtime_class_iid_const(typ)
-        .map(|(iid, _)| format!("{}.cast({})", raw, iid))
+        .map(|(iid, _)| format!("{}.cast({})", raw, context.argument_iid_reference(&iid)))
         .unwrap_or(raw)
 }
 
@@ -390,7 +944,7 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta, context: &PythonProjection
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
-        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ, context),
         TypeMeta::Object | TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
@@ -457,7 +1011,7 @@ pub(crate) fn py_wrap_native_value(
             context.struct_symbol(typ, PythonSymbol::PrivatePack),
             name
         ),
-        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ, context),
         TypeMeta::Object
         | TypeMeta::Interface { .. }
         | TypeMeta::Parameterized { .. }
@@ -595,7 +1149,11 @@ pub(crate) fn py_type_guard(
         ),
         typ @ TypeMeta::RuntimeClass { .. } if py_runtime_class_iid_const(typ).is_some() => {
             let (iid, _) = py_runtime_class_iid_const(typ).expect("checked above");
-            format!("_dynwinrt_can_cast({name}, {iid})")
+            format!(
+                "{}({name}, {})",
+                context.support_symbol_reference(PythonSupportSymbol::CanCast),
+                context.argument_iid_reference(&iid)
+            )
         }
         TypeMeta::RuntimeClass {
             namespace,
@@ -634,6 +1192,36 @@ pub(crate) fn py_type_guard(
         }
         _ => "True".to_string(),
     }
+}
+
+/// QueryInterface-based guard for a known interface-typed overload parameter.
+///
+/// Generated runtime-class wrappers do not inherit interface wrapper classes, so the
+/// exact `isinstance` guard from [`py_type_guard`] rejects runtime-class objects and raw
+/// `DynWinRTValue`s that implement the interface. This relaxed guard keeps the exact
+/// check (for interface wrappers and Python implementations) and also accepts any
+/// object that supports the interface through QueryInterface. Returns `None` when the
+/// parameter keeps its exact guard.
+pub(crate) fn py_interface_cast_guard(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> Option<String> {
+    if !matches!(typ, TypeMeta::Interface { .. }) || !context.is_known_type(typ) {
+        return None;
+    }
+
+    let (iid, _) = py_interface_iid_const(typ)?;
+    Some(format!(
+        "({} or {}({name}, {}))",
+        py_type_guard(name, typ, context),
+        context.support_symbol_reference(PythonSupportSymbol::CanCast),
+        context.argument_iid_reference(&iid)
+    ))
+}
+
+pub(crate) fn py_has_permissive_guard(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
+    !context.is_delegate_type(typ) && py_interface_cast_guard("value", typ, context).is_some()
 }
 
 /// Convert a Python return expression, given the raw `.call()` result expression.
@@ -946,6 +1534,52 @@ mod tests {
             vec![(
                 "IID_ARG_Microsoft_UI_Xaml_Media_Geometry".into(),
                 "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            )]
+        );
+    }
+
+    #[test]
+    fn known_interface_inputs_get_a_query_interface_dispatch_guard() {
+        let stream = TypeMeta::Interface {
+            namespace: "Windows.Storage.Streams".into(),
+            name: "IOutputStream".into(),
+            iid: "905a0fe6-bc53-11df-8c49-001e4fc686da".into(),
+        };
+        let context = PythonProjectionContext::packaged([stream.type_identity()]).unwrap();
+        let exact = "isinstance(value, _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream'))";
+
+        assert_eq!(py_type_guard("value", &stream, &context), exact);
+        assert_eq!(
+            py_interface_cast_guard("value", &stream, &context),
+            Some(format!(
+                "({exact} or _dynwinrt_can_cast(value, IID_ARG_Windows_Storage_Streams_IOutputStream))"
+            ))
+        );
+        assert_eq!(
+            py_interface_cast_guard("value", &stream, &PythonProjectionContext::default()),
+            None,
+            "unknown interfaces keep their permissive native-object guard"
+        );
+        assert_eq!(
+            py_interface_cast_guard("value", &geometry_type(), &context),
+            None,
+            "runtime classes already use a QueryInterface guard"
+        );
+        let mut constants = Vec::new();
+        py_collect_argument_iid_consts(&stream, &mut constants);
+        py_collect_argument_iid_consts(
+            &TypeMeta::Interface {
+                namespace: "Contoso".into(),
+                name: "IUnnamed".into(),
+                iid: String::new(),
+            },
+            &mut constants,
+        );
+        assert_eq!(
+            constants,
+            vec![(
+                "IID_ARG_Windows_Storage_Streams_IOutputStream".into(),
+                "905a0fe6-bc53-11df-8c49-001e4fc686da".into(),
             )]
         );
     }

@@ -10,6 +10,7 @@ use crate::codegen::winrt::python::collections::{
     CollectionKind, interface_kind, map_iterable_identity, observable_collection_identity,
     observable_map_identity, observable_vector_identity, runtime_mixin,
 };
+use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
@@ -88,11 +89,16 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         return generate_delegate(iface);
     }
     let implementation = super::super::implementation::project(context, iface);
+    let plan = interface_member_plan(iface, context);
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str(&import_line(context));
+    out.push_str(&import_line(
+        context,
+        plan.has_legacy_fallback(),
+        plan.has_legacy_int_guard(),
+    ));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
     }
@@ -218,13 +224,17 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     let mut argument_iids = Vec::new();
     for method in &iface.methods {
         for parameter in get_in_params(method) {
-            py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+            py_collect_argument_iid_consts(&parameter.typ, &mut argument_iids);
         }
     }
     argument_iids.sort();
     argument_iids.dedup();
     for (name, iid) in argument_iids {
-        out.push_str(&format!("{} = WinGUID.parse('{}')\n", name, iid));
+        out.push_str(&format!(
+            "{} = WinGUID.parse('{}')\n",
+            context.argument_iid_reference(&name),
+            iid
+        ));
     }
     out.push('\n');
 
@@ -578,29 +588,40 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     } else {
         "self._obj"
     };
-    for methods in crate::codegen::winrt::python::overloads::grouped_methods(
-        reorder_getters_before_setters(&iface.methods),
-    ) {
+    let overload = |method| InstanceOverload {
+        iface_var: iface_var.clone(),
+        obj_expr: obj_expr.to_string(),
+        method,
+        sibling_methods: Some(iface.methods.as_slice()),
+        property_has_getter: !method.is_property_setter
+            || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                iface
+                    .methods
+                    .iter()
+                    .any(|candidate| candidate.name == format!("get_{suffix}"))
+            }),
+    };
+    let members = reorder_getters_before_setters(&iface.methods)
+        .into_iter()
+        .map(|method| (iface, method));
+    for member in plan.members(members) {
         out.push('\n');
-        let overloads = methods
-            .into_iter()
-            .map(|method| InstanceOverload {
-                iface_var: iface_var.clone(),
-                obj_expr: obj_expr.to_string(),
-                method,
-                sibling_methods: Some(iface.methods.as_slice()),
-                property_has_getter: !method.is_property_setter
-                    || method.name.strip_prefix("put_").is_some_and(|suffix| {
-                        iface
-                            .methods
-                            .iter()
-                            .any(|candidate| candidate.name == format!("get_{suffix}"))
-                    }),
-            })
-            .collect::<Vec<_>>();
-        out.push_str(&generate_instance_method_group(&overloads, context));
+        out.push_str(&match member {
+            PlannedMember::Accessor(_, method) => {
+                generate_instance_accessor(&overload(method), context)
+            }
+            PlannedMember::Group(group) => generate_instance_method_group(
+                group,
+                |candidate| overload(candidate.method),
+                context,
+            ),
+        });
     }
-    let aliases = generate_compatibility_aliases(iface.methods.iter());
+    let aliases = generate_instance_compatibility_aliases(
+        &plan,
+        |candidate| overload(candidate.method),
+        context,
+    );
     if !aliases.is_empty() {
         out.push('\n');
         out.push_str(&aliases);

@@ -19,6 +19,9 @@ pub type PythonTypeIdentity = TypeIdentity;
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
     AsInterface,
+    CanCast,
+    LegacyCall,
+    LegacyIntGuard,
 }
 
 impl PythonSupportSymbol {
@@ -26,8 +29,21 @@ impl PythonSupportSymbol {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
             Self::AsInterface => "_dynwinrt_as_interface",
+            Self::CanCast => "_dynwinrt_can_cast",
+            Self::LegacyCall => "_dynwinrt_legacy_call",
+            Self::LegacyIntGuard => "_dynwinrt_legacy_int_guard",
         }
     }
+}
+
+fn argument_iid_names<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> BTreeSet<String> {
+    let mut constants = Vec::new();
+    for method in methods {
+        for param in crate::codegen::winrt::shared::imports::get_in_params(method) {
+            super::signature::py_collect_argument_iid_consts(&param.typ, &mut constants);
+        }
+    }
+    constants.into_iter().map(|(name, _)| name).collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -519,6 +535,7 @@ pub struct PythonProjectionContext {
     implementation_helpers: BTreeMap<String, Vec<ImplementationHelper>>,
     module_symbols: HashMap<(PythonTypeIdentity, PythonSymbol), String>,
     module_support_symbols: HashMap<PythonSupportSymbol, String>,
+    module_argument_iids: HashMap<String, String>,
     // Shared by module contexts, which clone the projection state.
     delegate_invokes: Arc<HashMap<PythonTypeIdentity, MethodMeta>>,
 }
@@ -646,6 +663,7 @@ impl PythonProjectionContext {
             implementation_helpers: BTreeMap::new(),
             module_symbols: HashMap::new(),
             module_support_symbols: HashMap::new(),
+            module_argument_iids: HashMap::new(),
             delegate_invokes: Arc::default(),
         })
     }
@@ -749,7 +767,23 @@ impl PythonProjectionContext {
                     .has_default_activation()
                     .then(|| (owner.clone(), PythonSymbol::ActivationFactoryRegistration)),
             );
-        self.with_local_types(Some(owner.clone()), structs, imports, registrations)
+        let argument_iids = argument_iid_names(
+            class
+                .all_interfaces()
+                .chain(class.overridable_interfaces.iter())
+                .flat_map(|interface| interface.methods.iter()),
+        );
+        self.with_local_types_and_iids(
+            Some(owner.clone()),
+            structs,
+            imports,
+            registrations,
+            argument_iids,
+            class
+                .all_interfaces()
+                .chain(class.overridable_interfaces.iter())
+                .map(InterfaceMeta::type_identity),
+        )
     }
 
     pub(super) fn for_interface_module(
@@ -766,12 +800,14 @@ impl PythonProjectionContext {
                 std::slice::from_ref(&delegate.invoke),
             ));
         }
-        self.with_local_types(
+        self.with_local_types_and_iids(
             Some(interface.type_identity()),
             structs,
             self.imported_type_symbols(collect_iface_type_imports_by_identity(interface), generics),
             (!interface.is_delegate())
                 .then(|| (interface.type_identity(), PythonSymbol::Registration)),
+            argument_iid_names(interface.methods.iter()),
+            [interface.type_identity()],
         )
     }
 
@@ -797,6 +833,18 @@ impl PythonProjectionContext {
         structs: &[TypeMeta],
         imports: impl IntoIterator<Item = (PythonTypeIdentity, PythonSymbol)>,
         registrations: impl IntoIterator<Item = (PythonTypeIdentity, PythonSymbol)>,
+    ) -> Cow<'_, Self> {
+        self.with_local_types_and_iids(owner, structs, imports, registrations, [], [])
+    }
+
+    fn with_local_types_and_iids(
+        &self,
+        owner: Option<PythonTypeIdentity>,
+        structs: &[TypeMeta],
+        imports: impl IntoIterator<Item = (PythonTypeIdentity, PythonSymbol)>,
+        registrations: impl IntoIterator<Item = (PythonTypeIdentity, PythonSymbol)>,
+        argument_iids: impl IntoIterator<Item = String>,
+        iid_owners: impl IntoIterator<Item = PythonTypeIdentity>,
     ) -> Cow<'_, Self> {
         let declarations = owner
             .iter()
@@ -917,10 +965,16 @@ impl PythonProjectionContext {
                     .insert((identity.clone(), *role), name);
             }
         }
+        for identity in iid_owners {
+            reserved.insert(format!("IID_{}", context.reference_name(&identity)));
+        }
         // Support imports yield to metadata declarations and their allocated roles.
         for helper in [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CanCast,
+            PythonSupportSymbol::LegacyCall,
+            PythonSupportSymbol::LegacyIntGuard,
         ] {
             let preferred = helper.name();
             let mut name = preferred.to_string();
@@ -931,6 +985,20 @@ impl PythonProjectionContext {
             }
             if name != preferred {
                 context.to_mut().module_support_symbols.insert(helper, name);
+            }
+        }
+        for preferred in argument_iids {
+            let mut name = preferred.clone();
+            let mut index = 2;
+            while !reserved.insert(name.clone()) {
+                name = format!("{preferred}_{index}");
+                index += 1;
+            }
+            if name != preferred {
+                context
+                    .to_mut()
+                    .module_argument_iids
+                    .insert(preferred, name);
             }
         }
         context
@@ -950,6 +1018,12 @@ impl PythonProjectionContext {
         } else {
             format!("{declaration} as {reference}")
         }
+    }
+
+    pub(crate) fn argument_iid_reference<'a>(&'a self, preferred: &'a str) -> &'a str {
+        self.module_argument_iids
+            .get(preferred)
+            .map_or(preferred, String::as_str)
     }
 
     pub(crate) fn declaration_name(&self, identity: &PythonTypeIdentity) -> String {
@@ -1470,6 +1544,9 @@ mod tests {
         let others = [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CanCast,
+            PythonSupportSymbol::LegacyCall,
+            PythonSupportSymbol::LegacyIntGuard,
         ]
         .into_iter()
         .filter(|other| *other != helper)
@@ -1528,6 +1605,40 @@ mod tests {
     #[test]
     fn as_interface_helper_yields_to_visible_roles_without_renaming_metadata() {
         assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::AsInterface);
+    }
+
+    #[test]
+    fn overload_helpers_yield_to_visible_roles_without_renaming_metadata() {
+        for helper in [
+            PythonSupportSymbol::CanCast,
+            PythonSupportSymbol::LegacyCall,
+            PythonSupportSymbol::LegacyIntGuard,
+        ] {
+            assert_support_helper_yields_to_visible_roles(helper);
+        }
+    }
+
+    #[test]
+    fn argument_iid_constants_yield_to_metadata_declarations_and_imports() {
+        let preferred = "IID_ARG_Audit_IFoo";
+        let owner = TypeIdentity::named(TypeIdentityKind::Class, "Audit", preferred);
+        let peer = TypeIdentity::named(TypeIdentityKind::Enum, "Audit", format!("{preferred}_2"));
+        let context = PythonProjectionContext::packaged([owner.clone(), peer.clone()]).unwrap();
+        let module = context.with_local_types_and_iids(
+            Some(owner.clone()),
+            &[],
+            [(peer.clone(), PythonSymbol::Type)],
+            [],
+            [preferred.to_string()],
+            [],
+        );
+        assert_eq!(module.reference_name(&owner), preferred);
+        assert_eq!(module.reference_name(&peer), format!("{preferred}_2"));
+        assert_eq!(
+            module.argument_iid_reference(preferred),
+            format!("{preferred}_3")
+        );
+        assert_eq!(context.argument_iid_reference(preferred), preferred);
     }
 
     #[test]

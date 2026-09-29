@@ -400,7 +400,13 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
     );
 
     let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
-    assert_eq!(pyi.matches("    @overload\n").count(), 4, "{pyi}");
+    assert_eq!(
+        pyi.matches("def __init__(self, value: int) -> None: ...")
+            .count(),
+        1,
+        "I8 and I32 both project as one typed `int` constructor signature:\n{pyi}"
+    );
+    assert_eq!(pyi.matches("    @overload\n").count(), 0, "{pyi}");
 }
 
 #[test]

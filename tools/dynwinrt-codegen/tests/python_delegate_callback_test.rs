@@ -276,12 +276,24 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     );
 
     let thread_pool = output.read("windows__system__threading__thread_pool", "py");
+    let runtime_callback = "Callable[..., object] | DynWinRTValue | DynWinRtDelegate";
     assert!(
         thread_pool.contains(
-            "def run_async(handler: Callable[..., object] | DynWinRTValue | DynWinRtDelegate)"
-        ),
+            &format!("def run_async(handler: {runtime_callback})")
+        ) && thread_pool.contains(&format!(
+            "def run_with_priority_async(handler: {runtime_callback}, priority: 'WorkItemPriority')"
+        )) && thread_pool.contains(&format!(
+            "def run_with_priority_and_options_async(handler: {runtime_callback}, priority: 'WorkItemPriority', options: 'WorkItemOptions')"
+        )) && !thread_pool.contains("def run_async(*args, **kwargs):")
+            && !thread_pool.contains("_dynwinrt_legacy_call("),
         "{thread_pool}"
     );
+    for slot in [6, 7, 8] {
+        assert!(
+            thread_pool.contains(&format!("_IThreadPoolStatics.method({slot}).invoke(")),
+            "{thread_pool}"
+        );
+    }
     assert!(
         thread_pool.contains("'WorkItemHandler_PARAM_TYPES'))"),
         "{thread_pool}"
@@ -290,6 +302,22 @@ fn static_events_callback_parameters_and_setters_project_callables() {
         !thread_pool.contains("'WorkItemHandler_PARAM_TYPES'), lambda "),
         "{thread_pool}"
     );
+    let thread_pool_stub = output.read("windows__system__threading__thread_pool", "pyi");
+    let work_item_callback =
+        "Callable[[DynWinRTValue], object] | 'DynWinRTValue | DynWinRtDelegate'";
+    for signature in [
+        format!("def run_async(handler: {work_item_callback}) -> WinRTCoroutine[None]: ..."),
+        format!(
+            "def run_with_priority_async(handler: {work_item_callback}, priority: 'WorkItemPriority') -> WinRTCoroutine[None]: ..."
+        ),
+        format!(
+            "def run_with_priority_and_options_async(handler: {work_item_callback}, priority: 'WorkItemPriority', options: 'WorkItemOptions') -> WinRTCoroutine[None]: ..."
+        ),
+    ] {
+        assert!(thread_pool_stub.contains(&signature), "{thread_pool_stub}");
+    }
+    assert_eq!(thread_pool_stub.matches("def run_async(").count(), 1);
+    assert!(!thread_pool_stub.contains("@overload"));
 
     let timer_callback = "Callable[..., object] | DynWinRTValue | DynWinRtDelegate";
     let timer_stub_callback =
@@ -297,8 +325,11 @@ fn static_events_callback_parameters_and_setters_project_callables() {
     let timer = output.read("windows__system__threading__thread_pool_timer", "py");
     assert!(
         timer.contains(&format!(
-            "def create_timer(handler: {timer_callback}, delay: timedelta)"
-        )),
+            "def _create_timer_7(handler: {timer_callback}, delay: timedelta)"
+        )) && timer.contains("def create_timer(*args, **kwargs):")
+            && timer.contains(
+                "return _dynwinrt_legacy_call(ThreadPoolTimer._create_timer_7, ('handler', 'delay',), args, kwargs, 'create_timer')"
+            ),
         "{timer}"
     );
     assert!(

@@ -15,6 +15,9 @@ dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
 Generated package manifests pin `dynwinrt` to the exact version of
 `dynwinrt-codegen` that produced them. The runtime wheel includes
 `__init__.pyi` and `py.typed` for static type checking.
+Do not mix generated bindings with an older runtime wheel. Upgrade to the
+matching runtime version and regenerate all Python bindings together; generated
+interface overloads fail explicitly when a required native guard is missing.
 
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
@@ -170,8 +173,26 @@ def work(action: DynWinRTValue) -> None:
 operation = ThreadPool.run_async(work)
 ```
 
-WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
+`ThreadPool.run_async(handler)` intentionally retains its original single
+argument and exact callback annotation, so mypy can infer the type of an
+unannotated callback lambda. Its priority and options overloads remain
+separate as `run_with_priority_async(handler, priority)` and
+`run_with_priority_and_options_async(handler, priority, options)`. These are
+distinct names in both generated Python and `.pyi`; passing priority or options
+to `run_async` is not supported.
+
+WinRT flags enums are projected as `enum.IntFlag`. Most overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
+That name is the documented (CLR) method name, so `StorageFile.CopyAsync`
+overloads are all `copy_async(...)`. The unique `[Overload]` ABI names emitted by
+earlier releases, such as `copy_overload` or `launch_file_with_options_async`,
+remain available as compatibility aliases that keep calling the same overload.
+A method keeps its earlier name when the documented name would clash with
+another member, such as a property or the generated `close()`. Interface
+parameters of overloads accept any object that implements the interface, such
+as a runtime class instance or a `DynWinRTValue`, including a raw async
+operation that implements `IAsyncInfo`. Native QueryInterface failures other
+than `E_NOINTERFACE` propagate instead of silently choosing another overload.
 Activatable runtime classes use normal constructors, for example
 `Uri("https://example.com")`. Constructor overloads come only from WinMD
 `ActivatableAttribute` and public `ComposableAttribute` declarations. Classes
