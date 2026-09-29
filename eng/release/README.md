@@ -1,14 +1,17 @@
 # Release notes
 
-`RELEASE_NOTES.md` is the checked-in description for the next public release.
-Generic package and installation text or release-specific highlights belong
-in that file, without requiring pipeline changes. Use a literal release
-heading: file-based notes do not expand Azure DevOps variables.
+`RELEASE_NOTES.md` is the checked-in description staged from the tagged commit
+for a public release. Keep published version notes intact; draft later changes
+in `UNRELEASED.md`, which is not staged by the release pipeline. Before the
+next release, promote applicable draft entries into `RELEASE_NOTES.md` under
+the new literal release heading: file-based notes do not expand Azure DevOps
+variables.
 
 Before each public release:
 
-1. Update only `RELEASE_NOTES.md` for the release-note content, including the
-   release heading and any version-specific installation commands.
+1. Update `RELEASE_NOTES.md` for that release, including the heading, promoted
+   draft entries and any version-specific installation commands. Remove
+   promoted entries from `UNRELEASED.md`.
 2. Merge the release preparation to `main`.
 3. Tag that exact `main` commit.
 
@@ -23,6 +26,10 @@ in `templateContext.inputs` and reads
 source. This preserves the tagged notes while complying with the 1ES
 restriction on checkout in release jobs. The automatic changelog remains
 enabled and is appended after the checked-in notes.
+The pipeline stages only `RELEASE_NOTES.md`, not `UNRELEASED.md`; rerunning a
+published tag uses the notes at that tag. Check the version heading against
+the tag during release preparation: the validator checks the artifact wiring
+and nonempty notes, not the heading's version.
 
 Build CI and the release pipeline both run `validate_release_notes.ps1` and
 `test_validate_release_notes.ps1` to check the notes file, release task inputs,
