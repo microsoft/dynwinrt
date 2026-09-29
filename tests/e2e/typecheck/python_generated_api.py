@@ -20,6 +20,7 @@ from dynwinrt import (
 )
 from python_bindings.windows.gaming.input import Gamepad
 from python_bindings.windows.application_model.contacts import ContactDate
+from python_bindings.windows.data.xml.dom import XmlDocument, XmlLoadSettings
 from python_bindings.windows.foundation import (
     IReference_UInt32,
     IWwwFormUrlDecoderEntry,
@@ -35,14 +36,27 @@ from python_bindings.windows.foundation.collections import (
     ValueSet,
 )
 from python_bindings.windows.globalization import Calendar
-from python_bindings.windows.storage import IStorageItem, StorageFile, StorageFolder
+from python_bindings.windows.globalization.number_formatting import DecimalFormatter
+from python_bindings.windows.storage import (
+    IStorageItem,
+    NameCollisionOption,
+    StorageFile,
+    StorageFolder,
+)
 from python_bindings.windows.storage.streams import (
     Buffer as WinRTBuffer,
     DataWriter,
     IBuffer,
+    InMemoryRandomAccessStream,
     IOutputStream,
+    RandomAccessStream,
 )
-from python_bindings.windows.system.threading import ThreadPool, ThreadPoolTimer
+from python_bindings.windows.system.threading import (
+    ThreadPool,
+    ThreadPoolTimer,
+    WorkItemOptions,
+    WorkItemPriority,
+)
 
 
 class StructuralAsyncAdapter:
@@ -160,6 +174,49 @@ def check_async_types(
     )
 
 
+def check_documented_overload_names(
+    formatter: DecimalFormatter,
+    calendar: Calendar,
+    document: XmlDocument,
+    settings: XmlLoadSettings,
+) -> None:
+    formatted: List[str] = [
+        formatter.format(5),
+        formatter.format(2.5),
+        formatter.format_int(5),
+        formatter.format_u_int(5),
+        calendar.month_as_string(),
+        calendar.month_as_string(3),
+        calendar.month_as_full_string(),
+    ]
+    document.load_xml("<root />")
+    document.load_xml("<root />", settings)
+    document.load_xml_with_settings("<root />", settings)
+    _: List[str] = formatted
+
+
+async def check_documented_async_overload_names(
+    file: StorageFile,
+    folder: StorageFolder,
+    source: InMemoryRandomAccessStream,
+    target: InMemoryRandomAccessStream,
+) -> None:
+    option = NameCollisionOption.ReplaceExisting
+    copies: List[StorageFile] = [
+        await file.copy_async(folder),
+        await file.copy_async(folder, "copy.txt"),
+        await file.copy_async(folder, "copy.txt", option),
+        await file.copy_overload(folder, "copy.txt", option),
+    ]
+    copied: List[int] = [
+        await RandomAccessStream.copy_async(source, target),
+        await RandomAccessStream.copy_async(source, target, 4),
+        await RandomAccessStream.copy_size_async(source, target, 4),
+    ]
+    writer: DataWriter = DataWriter(source)
+    _: Tuple[List[StorageFile], List[int], DataWriter] = (copies, copied, writer)
+
+
 def check_ibuffer_bytes() -> None:
     interface_buffer: IBuffer = IBuffer.from_bytes(bytearray(b"\x00\xff"))
     runtime_buffer: WinRTBuffer = WinRTBuffer.from_bytes(b"\x01\x02")
@@ -205,14 +262,40 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
 
 
 def check_delegate_callback_parameters() -> None:
-    work: WinRTCoroutine[None] = ThreadPool.run_async(
+    inferred_work: WinRTCoroutine[None] = ThreadPool.run_async(
         lambda operation: assert_type(operation, DynWinRTValue)
+    )
+
+    def on_work_item(operation: DynWinRTValue) -> None:
+        assert_type(operation, DynWinRTValue)
+
+    work: WinRTCoroutine[None] = ThreadPool.run_async(on_work_item)
+    priority_work: WinRTCoroutine[None] = ThreadPool.run_with_priority_async(
+        lambda operation: assert_type(operation, DynWinRTValue),
+        WorkItemPriority.Normal,
+    )
+    options_work: WinRTCoroutine[None] = ThreadPool.run_with_priority_and_options_async(
+        lambda operation: assert_type(operation, DynWinRTValue),
+        WorkItemPriority.Normal,
+        WorkItemOptions.TimeSliced,
     )
     timer: ThreadPoolTimer | None = ThreadPoolTimer.create_timer(
         lambda elapsed: assert_type(elapsed.delay, timedelta),
         timedelta(milliseconds=1),
     )
-    _: Tuple[WinRTCoroutine[None], ThreadPoolTimer | None] = (work, timer)
+    _: Tuple[
+        WinRTCoroutine[None],
+        WinRTCoroutine[None],
+        WinRTCoroutine[None],
+        WinRTCoroutine[None],
+        ThreadPoolTimer | None,
+    ] = (
+        inferred_work,
+        work,
+        priority_work,
+        options_work,
+        timer,
+    )
 
 
 def check_native_delegate_inputs(
@@ -225,5 +308,9 @@ def check_native_delegate_inputs(
     properties.subscribe_map_changed(raw)()
     ThreadPool.run_async(native)
     ThreadPool.run_async(raw)
+    ThreadPool.run_with_priority_async(native, WorkItemPriority.Normal)
+    ThreadPool.run_with_priority_and_options_async(
+        native, WorkItemPriority.Normal, WorkItemOptions.TimeSliced
+    )
     static_token = Gamepad.add_gamepad_added(native)
     Gamepad.remove_gamepad_added(static_token)

@@ -241,7 +241,10 @@ class WorkflowTests(unittest.TestCase):
                               "npm run test:borrowed-copy"):
                 self.assertNotIn(forbidden, commands)
         runtime = "\n".join(step.get("run", "") for step in JOBS["e2e-runtime"]["steps"])
-        self.assertIn("cargo test -p dynwinrt-codegen --test implementation_naming_test", runtime)
+        self.assertIn("cargo test -p dynwinrt-codegen `", runtime)
+        self.assertIn("--test implementation_naming_test", runtime)
+        self.assertIn("--test python_overload_legacy_compat_test", runtime)
+        self.assertIn("--test python_released_implementation_test", runtime)
 
     def test_release_notes_validated_in_lightweight_lane(self):
         steps = [
