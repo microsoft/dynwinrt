@@ -52,6 +52,15 @@ with RoApartment(), projected_lifetime_scope():
         original = DynWinRTArray.from_values([field.to_value()], shape)
         escaped = original.to_value().as_array()
         del original, field
+    elif mode == 'get_struct':
+        inner_shape = DynWinRTType.struct_type('Tests.ScopedInner', [element])
+        outer_shape = DynWinRTType.struct_type('Tests.ScopedOuter', [inner_shape])
+        inner = DynWinRTStruct.create(inner_shape)
+        inner.set_object(0, boxed)
+        outer = DynWinRTStruct.create(outer_shape)
+        outer.set_struct(0, inner)
+        escaped = outer.get_struct(0)
+        del inner, outer
     else:
         shape = DynWinRTType.struct_type('Tests.ScopedObject', [element])
         original = DynWinRTStruct.create(shape)
@@ -122,6 +131,15 @@ with RoApartment(), projected_lifetime_scope():
         container = DynWinRTArray.from_values([field.to_value()], shape)
         clone = container.to_value().as_array()
         del field
+    elif mode == 'get_struct':
+        inner_shape = DynWinRTType.struct_type('Tests.ContainerOwnerRefInner', [DynWinRTType.object()])
+        outer_shape = DynWinRTType.struct_type('Tests.ContainerOwnerRefOuter', [inner_shape])
+        inner = DynWinRTStruct.create(inner_shape)
+        inner.set_object(0, source)
+        container = DynWinRTStruct.create(outer_shape)
+        container.set_struct(0, inner)
+        clone = container.get_struct(0)
+        del inner
     else:
         shape = DynWinRTType.struct_type('Tests.ContainerOwnerRef', [DynWinRTType.object()])
         container = DynWinRTStruct.create(shape)
@@ -136,6 +154,56 @@ gc.collect()
 print('balanced-references', mode, flush=True)
 """
 
+_BORROWED_CALLBACK = r"""
+from dynwinrt import (
+    DynWinRTArray, DynWinRTType, DynWinRTValue, DynWinRTImplementation,
+    DynWinRTImplementationMethod, DynWinRTInterfacePlan, DynWinRTMethodSig,
+    RoApartment, WinGUID, projected_lifetime_scope,
+)
+
+signature = DynWinRTMethodSig().add_in(
+    DynWinRTType.array_type(DynWinRTType.object())
+)
+iid = WinGUID.parse('13fd99ec-a997-4497-aabc-247345013f26')
+interface = DynWinRTType.register_interface(
+    'Tests.IBorrowedContainerCallback', iid,
+).add_method('AcceptArray', signature)
+plan = DynWinRTInterfacePlan.create(
+    'Tests.IBorrowedContainerCallback', interface,
+    [DynWinRTImplementationMethod('AcceptArray', 6, signature)],
+)
+borrowed = []
+copies = []
+
+def dispatch(index, slot, args):
+    assert (index, slot) == (0, 6) and len(args) == 1
+    borrowed.append(args[0])
+    copies.append(args[0].as_array())
+    assert len(copies[0]) == 1
+    return []
+
+with RoApartment():
+    with projected_lifetime_scope():
+        owner = DynWinRTImplementation.create(
+            [plan], dispatch, 'DynWinRT.Tests.BorrowedArrayOwner'
+        )
+        source = DynWinRTValue.activation_factory('Windows.Foundation.Uri')
+        array = DynWinRTArray.from_object_values([source], DynWinRTType.object())
+        raw = array.to_value()
+        receiver = owner.to_value().cast(iid)
+        assert interface.method(6).invoke_all(receiver, [raw]) == []
+
+    assert source.is_released() and array.is_released() and copies[0].is_released()
+    assert not borrowed[0].is_released(), 'the scope consumed a borrowed callback parameter'
+    live_copy = borrowed[0].as_array()
+    assert len(live_copy) == 1
+    live_copy.release()
+    borrowed[0].release()
+    owner.release()
+    assert owner.is_closed
+print('borrowed-callback-retained', flush=True)
+"""
+
 
 @pytest.mark.parametrize(
     "mode",
@@ -146,6 +214,7 @@ print('balanced-references', mode, flush=True)
         "array_of_struct",
         "create_struct",
         "as_struct",
+        "get_struct",
     ],
 )
 def test_escaping_com_container_drops_after_apartment_exit(mode):
@@ -165,7 +234,7 @@ def test_escaping_com_container_drops_after_apartment_exit(mode):
     assert f"clean-exit {mode}" in result.stdout
 
 
-@pytest.mark.parametrize("mode", ["array", "array_of_struct", "struct"])
+@pytest.mark.parametrize("mode", ["array", "array_of_struct", "struct", "get_struct"])
 def test_scope_balances_native_implementation_container_references(mode):
     result = subprocess.run(
         [sys.executable, "-B", "-c", _BALANCE_CONTAINER, mode],
@@ -181,6 +250,22 @@ def test_scope_balances_native_implementation_container_references(mode):
         result.stderr,
     )
     assert f"balanced-references {mode}" in result.stdout
+
+
+def test_borrowed_callback_array_survives_scope_within_its_apartment():
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _BORROWED_CALLBACK],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        hex(result.returncode & 0xFFFFFFFF),
+        result.stdout,
+        result.stderr,
+    )
+    assert "borrowed-callback-retained" in result.stdout
 
 
 def test_scalar_containers_remain_usable_after_scope_exit():
@@ -201,6 +286,7 @@ def test_scalar_containers_remain_usable_after_scope_exit():
 def test_explicit_release_of_com_containers_is_idempotent_and_keeps_source_live():
     with RoApartment():
         boxed = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        identity = boxed.identity_raw()
         array = DynWinRTArray.from_object_values([boxed], DynWinRTType.object())
         shape = DynWinRTType.struct_type("Tests.ExplicitObject", [DynWinRTType.object()])
         record = DynWinRTStruct.create(shape)
@@ -211,7 +297,7 @@ def test_explicit_release_of_com_containers_is_idempotent_and_keeps_source_live(
             container.release()
             container.release()
             assert container.is_released()
-        assert not boxed.is_released()
+        assert not boxed.is_released() and boxed.identity_raw() == identity
         with pytest.raises(RuntimeError, match="DynWinRTArray.release"):
             array.to_value()
         with pytest.raises(RuntimeError, match="DynWinRTStruct.release"):
