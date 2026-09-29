@@ -32,3 +32,15 @@ def test_wheel_exports_typed_implementation_surface():
     signature = inspect.signature(dynwinrt.DynWinRTInterfacePlan.create)
     assert signature.parameters["required_iids"].default == ()
     assert "def from_hresult(" in stub
+
+
+def test_wheel_stubs_raw_native_scope_tracking():
+    stub = (Path(dynwinrt.__file__).parent / "__init__.pyi").read_text(encoding="utf-8")
+    scope = stub.split("class ProjectedLifetimeScope:", 1)[1].split(
+        "\ndef projected_lifetime_scope()", 1
+    )[0]
+    assert 'def track_native(self, value: "DynWinRTValue") -> "DynWinRTValue": ...' in scope
+    assert tuple(inspect.signature(dynwinrt.ProjectedLifetimeScope.track_native).parameters) == (
+        "self",
+        "value",
+    )
