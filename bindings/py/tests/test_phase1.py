@@ -1232,6 +1232,9 @@ def test_projected_lifetime_scope_releases_native_values_before_apartment_exit()
             _dynwinrt_track_projected(SimpleNamespace(_obj=second), "UriFactory")
             assert not first.is_null()
             assert not second.is_null()
+            assert id(first) in scope._registry
+            assert id(second) in scope._registry
+            assert not scope._native_refs
 
         assert scope.disposed
         assert first.is_null()
@@ -1242,19 +1245,40 @@ def test_projected_lifetime_scope_releases_native_values_before_apartment_exit()
 
 
 def test_projected_lifetime_scope_tracks_raw_native_outputs_automatically():
-    with RoApartment(1), projected_lifetime_scope():
+    with RoApartment(1), projected_lifetime_scope() as scope:
         factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
         cast = factory.cast(WinGUID.parse(IID_IURI_FACTORY))
         scalar = DynWinRTValue.from_u32(8080)
         assert not factory.is_released()
         assert not cast.is_released()
+        assert not scope._registry
+        assert id(factory) in scope._native_refs
+        assert id(cast) in scope._native_refs
 
     assert factory.is_released()
     assert cast.is_released()
+    assert not scope._native_refs
     assert scalar.to_u32() == 8080
     assert not scalar.is_released()
     with pytest.raises(RuntimeError, match="released"):
         cast.identity_raw()
+
+
+def test_projected_lifetime_scope_does_not_root_temporary_native_results():
+    with RoApartment(1), projected_lifetime_scope() as scope:
+        temporary = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        reference = weakref.ref(temporary)
+        assert id(temporary) in scope._native_refs
+        del temporary
+        gc.collect()
+        assert reference() is None
+        assert not scope._native_refs
+
+        retained = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        assert id(retained) in scope._native_refs
+        assert not retained.is_released()
+    assert retained.is_released()
+    assert not scope._native_refs
 
 
 def test_projected_lifetime_scope_enforces_lifo_order():

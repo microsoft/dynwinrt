@@ -177,6 +177,7 @@ def _dynwinrt_projected_from_native(
 class ProjectedLifetimeScope:
     def __init__(self):
         self._registry = {}
+        self._native_refs = _WeakValueDictionary()
         self._token = None
         self._owner_thread = None
         self._active = False
@@ -225,7 +226,16 @@ class ProjectedLifetimeScope:
         if not self._active or self._disposed:
             raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
         for native in _dynwinrt_projected_native_values(value):
+            self._native_refs.pop(id(native), None)
             self._registry.setdefault(id(native), (native, type_name))
+        return value
+
+    def track_native(self, value):
+        self._require_owner_thread('track values in')
+        if not self._active or self._disposed:
+            raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
+        if id(value) not in self._registry:
+            self._native_refs[id(value)] = value
         return value
 
     def close(self):
@@ -247,6 +257,13 @@ class ProjectedLifetimeScope:
             try:
                 native.release()
                 del self._registry[key]
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        for key, native in reversed(list(self._native_refs.items())):
+            try:
+                native.release()
+                del self._native_refs[key]
             except BaseException as error:
                 if first_error is None:
                     first_error = error
@@ -296,6 +313,12 @@ def _dynwinrt_track_projected(value, type_name=None):
     scope = _active_projected_lifetime_scope.get()
     if scope is not None and scope._active and not scope._disposed:
         scope.track(value, type_name)
+    return value
+
+def _dynwinrt_track_native(value):
+    scope = _active_projected_lifetime_scope.get()
+    if scope is not None and scope._active and not scope._disposed:
+        scope.track_native(value)
     return value
 
 def project_as(value, wrapper_type):
@@ -682,6 +705,7 @@ for _name in (
             None,
         )?;
 
+        super::runtime::init_native_tracking(m)?;
         Ok(())
     }
 }

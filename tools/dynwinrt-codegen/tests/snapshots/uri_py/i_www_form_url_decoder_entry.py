@@ -98,11 +98,11 @@ class IWwwFormUrlDecoderEntry:
     _dynwinrt_interface_iid = IID_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
-            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native', release_redundant=False)
         return super().__new__(cls)
 
     def _set_native(self, obj: DynWinRTValue, *, cache=True):
-        self._obj = obj
+        self._obj = obj.cast(IID_IWwwFormUrlDecoderEntry)
         self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IWwwFormUrlDecoderEntry')
         if cache:

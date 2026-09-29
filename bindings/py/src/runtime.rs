@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use dynwinrt;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::PyDict;
 use windows::Win32::System::WinRT::{
     RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RO_INIT_TYPE, RoInitialize,
@@ -1103,9 +1104,18 @@ impl DynWinRTMethodHandle {
 // DynWinRTValue — main value container
 // ======================================================================
 
-#[pyclass(from_py_object)]
+#[pyclass(from_py_object, weakref)]
 #[derive(Clone)]
 pub struct DynWinRTValue(pub(crate) dynwinrt::WinRTValue, Lifecycle);
+
+static TRACK_NATIVE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+pub(crate) fn init_native_tracking(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    TRACK_NATIVE.get_or_try_init(module.py(), || {
+        Ok::<Py<PyAny>, PyErr>(module.getattr("_dynwinrt_track_native")?.unbind())
+    })?;
+    Ok(())
+}
 
 fn contains_com_references(typ: &dynwinrt::TypeHandle) -> bool {
     let kind = typ.kind();
@@ -1131,9 +1141,11 @@ pub(crate) fn tracked_native_value(
     };
     let output = Py::new(py, DynWinRTValue::new(value))?;
     if owns_native {
-        py.import("dynwinrt.dynwinrt")?
-            .getattr("_dynwinrt_track_projected")?
-            .call1((output.clone_ref(py), "DynWinRTValue"))?;
+        // Embedding tests may create values before the extension module (and
+        // therefore any projected lifetime scope) has been initialized.
+        if let Some(track) = TRACK_NATIVE.get(py) {
+            track.call1(py, (output.clone_ref(py),))?;
+        }
     }
     Ok(output)
 }

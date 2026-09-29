@@ -774,7 +774,10 @@ function that created it, but after the scope closes it reports
 `is_released() == True`; it cannot be used outside the apartment. Without a
 scope, explicitly call `release()` on every retained native result before
 leaving `RoApartment`. Pure scalar results do not own COM references and remain
-usable after a scope closes.
+usable after a scope closes. The scope retains projected wrappers strongly but
+observes raw native outputs weakly: temporary casts and callback inputs can
+drop normally instead of accumulating references until the scope closes.
+Raw results still held by Python at scope exit are released there.
 
 Scopes nest in LIFO order. Wrappers and raw native results that survive a
 closed scope remain Python objects, but their COM references are released:
