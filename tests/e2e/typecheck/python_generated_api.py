@@ -2,11 +2,13 @@
 # Licensed under the MIT License.
 
 import asyncio
-from collections.abc import Coroutine, Generator, Sequence
+from collections.abc import Callable, Coroutine, Generator, Sequence
+from datetime import timedelta
 from typing import Any, Awaitable, List, Tuple, assert_type
 
 from dynwinrt import (
     DynWinRTArray,
+    DynWinRtDelegate,
     WinRTAsync,
     WinRTAsyncWithProgress,
     WinRTCoroutine,
@@ -16,13 +18,22 @@ from dynwinrt import (
     DynWinRTValue,
     WinGUID,
 )
+from python_bindings.windows.gaming.input import Gamepad
 from python_bindings.windows.application_model.contacts import ContactDate
 from python_bindings.windows.foundation import (
     IReference_UInt32,
     IWwwFormUrlDecoderEntry,
     Uri,
 )
-from python_bindings.windows.foundation.collections import ValueSet
+from python_bindings.windows.foundation.collections import (
+    CollectionChange,
+    IMapChangedEventArgs_String,
+    IObservableMap_String_Object,
+    IObservableMap_String_String,
+    PropertySet,
+    StringMap,
+    ValueSet,
+)
 from python_bindings.windows.globalization import Calendar
 from python_bindings.windows.storage import IStorageItem, StorageFile, StorageFolder
 from python_bindings.windows.storage.streams import (
@@ -31,6 +42,7 @@ from python_bindings.windows.storage.streams import (
     IBuffer,
     IOutputStream,
 )
+from python_bindings.windows.system.threading import ThreadPool, ThreadPoolTimer
 
 
 class StructuralAsyncAdapter:
@@ -164,3 +176,54 @@ async def check_output_nullability(folder: StorageFolder, values: ValueSet) -> N
     assert_type(folder.try_get_item_async("notes.txt"), WinRTCoroutine[IStorageItem | None])
     assert_type(values["key"], DynWinRTValue | None)
     _: Tuple[StorageFile, List[str]] = (created, names)
+
+
+def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> None:
+    def on_properties(
+        sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String
+    ) -> None:
+        size: int = len(sender)
+        value: DynWinRTValue | None = sender[args.key]
+        change: CollectionChange = args.collection_change
+        _: Tuple[int, DynWinRTValue | None, CollectionChange] = (size, value, change)
+
+    unsubscribe: Callable[[], None] = properties.subscribe_map_changed(on_properties)
+    properties.once_map_changed(
+        lambda sender, args: assert_type(sender, IObservableMap_String_Object)
+    )
+    token: DynWinRTValue = properties.on_map_changed(
+        lambda sender, args: assert_type(args, IMapChangedEventArgs_String)
+    )
+    properties.off_map_changed(token)
+    strings.subscribe_map_changed(
+        lambda sender, args: assert_type(
+            (sender, sender[args.key], args.collection_change),
+            Tuple[IObservableMap_String_String, str, CollectionChange],
+        )
+    )
+    unsubscribe()
+
+
+def check_delegate_callback_parameters() -> None:
+    work: WinRTCoroutine[None] = ThreadPool.run_async(
+        lambda operation: assert_type(operation, DynWinRTValue)
+    )
+    timer: ThreadPoolTimer | None = ThreadPoolTimer.create_timer(
+        lambda elapsed: assert_type(elapsed.delay, timedelta),
+        timedelta(milliseconds=1),
+    )
+    _: Tuple[WinRTCoroutine[None], ThreadPoolTimer | None] = (work, timer)
+
+
+def check_native_delegate_inputs(
+    native: DynWinRtDelegate,
+    raw: DynWinRTValue,
+    properties: PropertySet,
+) -> None:
+    token = properties.on_map_changed(native)
+    properties.off_map_changed(token)
+    properties.subscribe_map_changed(raw)()
+    ThreadPool.run_async(native)
+    ThreadPool.run_async(raw)
+    static_token = Gamepad.add_gamepad_added(native)
+    Gamepad.remove_gamepad_added(static_token)

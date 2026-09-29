@@ -127,8 +127,9 @@ of a dynamic projection.
 - [x] Document callback threads and require explicit event unsubscription.
 - [x] Preserve token-based `on_*` / `off_*` compatibility and provide
       idempotent `subscribe_*` and reentrancy-safe `once_*` helpers.
-- [x] Convert `TypedEventHandler` / `EventHandler` callback arguments to typed
-      projected Python values.
+- [x] Convert delegate callback arguments to typed projected Python values
+      derived from each delegate's `Invoke` signature, for events, callback
+      parameters, and delegate-typed properties.
 - [x] Implement Python collection protocols for iterable, vector, and map
       projections.
 - [x] Accept normal Python sequences, mappings, bytes, UUIDs, datetimes, and

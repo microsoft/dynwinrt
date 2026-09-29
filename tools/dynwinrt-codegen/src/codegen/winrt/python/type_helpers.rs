@@ -228,6 +228,36 @@ pub(crate) fn py_output_annotation(
     render_output(typ, Spelling::at(site.position), site, surface, context)
 }
 
+/// Callback parameters keep their projected nominal wrapper types so the
+/// callable describes the object actually delivered at runtime. Nullability
+/// still comes exclusively from the central output policy.
+pub(crate) fn py_callback_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
+    let site = OutputSite::of(OutputPosition::CallbackParam);
+    let base = callback_param_base(typ, site, context);
+    if may_project_none(typ) && output_admits_none(typ, site, AnnotationSurface::Stub, context) {
+        py_optional_type(base)
+    } else {
+        base
+    }
+}
+
+fn callback_param_base(
+    typ: &TypeMeta,
+    site: OutputSite,
+    context: &PythonProjectionContext,
+) -> String {
+    if context.is_delegate_type(typ) {
+        return "DynWinRTValue".to_string();
+    }
+    if let Some(inner) = ireference_inner_type(typ) {
+        return callback_param_base(inner, site, context);
+    }
+    if matches!(typ, TypeMeta::Parameterized { .. }) {
+        return format!("'{}'", context.reference_name_for_type(typ));
+    }
+    spell_value(typ, site, AnnotationSurface::Stub, context)
+}
+
 fn render_output(
     typ: &TypeMeta,
     spelling: Spelling,
@@ -718,26 +748,9 @@ fn py_collection_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -
     }
 }
 
-pub(super) fn py_param_list(
-    in_params: &[&crate::meta::ParamMeta],
-    context: &PythonProjectionContext,
-) -> String {
-    in_params
-        .iter()
-        .map(|p| {
-            let param_type = match &p.typ {
-                typ if context.is_delegate_type(typ) => py_delegate_param_type(typ, context),
-                _ => py_param_type_safe(&p.typ, context),
-            };
-            format!("{}: {}", to_snake_case(&p.name), param_type)
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Method parameters with collection input roles applied. Only collection
-/// elements and map values gain `None`; map keys and general WinRT inputs keep
-/// their existing annotations.
+/// Method parameters with collection input roles applied. Supported reference
+/// elements, values, and keys gain `None`; general WinRT inputs keep their
+/// existing annotations.
 pub(super) fn py_method_param_list(
     method: &MethodMeta,
     context: &PythonProjectionContext,
@@ -763,7 +776,7 @@ pub(super) fn py_method_param_list(
                 }
                 Some(CollectionInputRole::Key) => py_collection_input_type(&param.typ, context),
                 None if context.is_delegate_type(&param.typ) => {
-                    py_delegate_param_type(&param.typ, context)
+                    super::delegates::py_delegate_param_type(&param.typ, context)
                 }
                 None => py_param_type_safe(&param.typ, context),
             };
@@ -773,49 +786,59 @@ pub(super) fn py_method_param_list(
         .join(", ")
 }
 
-/// Produce a typed Python annotation for a delegate parameter, with
-/// `TypedEventHandler` / `EventHandler` unwrapped. Bespoke non-parametric
-/// delegates fall back to `Callable[..., object]`.
-pub(crate) fn py_delegate_callable_type(
-    typ: &TypeMeta,
+/// Runtime method parameters use broad, eagerly resolvable delegate
+/// annotations while retaining collection element/key/value input contracts.
+pub(super) fn py_runtime_method_param_list(
+    method: &MethodMeta,
     context: &PythonProjectionContext,
 ) -> String {
-    match typ {
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
-        {
-            let sender = py_return_type_safe(Some(&args[0]), context);
-            let arg = py_return_type_safe(Some(&args[1]), context);
-            format!("Callable[[{}, {}], object]", sender, arg)
-        }
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
-        {
-            let arg = py_return_type_safe(Some(&args[0]), context);
-            format!("Callable[[object, {}], object]", arg)
-        }
-        TypeMeta::Parameterized { name, args, .. }
-            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
-        {
-            let observable_identity = crate::types::TypeIdentity::closed_generic(
-                crate::types::TypeIdentityKind::Interface,
-                crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                "IObservableVector",
-                args.iter().map(TypeMeta::type_identity),
-            );
-            let observable = context.reference_name(&observable_identity);
-            format!(
-                "Callable[['{}', 'IVectorChangedEventArgs'], object]",
-                observable
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| {
+            matches!(
+                param.direction,
+                crate::meta::ParamDirection::In | crate::meta::ParamDirection::OutFill
             )
-        }
-        _ => "Callable[..., object]".to_string(),
-    }
+        })
+        .map(|(index, param)| {
+            let role = method
+                .collection_inputs
+                .iter()
+                .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
+            let param_type = match role {
+                Some(CollectionInputRole::Element | CollectionInputRole::Value) => {
+                    py_collection_contract_input_type(&param.typ, context)
+                }
+                Some(CollectionInputRole::Key) => py_collection_input_type(&param.typ, context),
+                None if context.is_delegate_type(&param.typ) => {
+                    super::delegates::py_runtime_delegate_param_type().to_string()
+                }
+                None => py_param_type_safe(&param.typ, context),
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-fn py_delegate_param_type(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
-    let sig = py_delegate_callable_type(typ, context);
-    format!("{sig} | 'DynWinRTValue'")
+pub(super) fn py_constructor_param_list(
+    in_params: &[&crate::meta::ParamMeta],
+    context: &PythonProjectionContext,
+) -> String {
+    in_params
+        .iter()
+        .map(|param| {
+            let param_type = if context.is_delegate_type(&param.typ) {
+                super::delegates::py_delegate_constructor_param_type(&param.typ, context)
+            } else {
+                py_param_type_safe(&param.typ, context)
+            };
+            format!("{}: {}", to_snake_case(&param.name), param_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -1349,9 +1372,55 @@ mod tests {
             .type_identity()
             .with_kind(crate::types::TypeIdentityKind::Delegate)])
         .unwrap();
+        let method = MethodMeta {
+            params: vec![param],
+            ..Default::default()
+        };
         assert_eq!(
-            py_param_list(&[&param], &context),
-            "handler: Callable[..., object] | 'DynWinRTValue'"
+            py_method_param_list(&method, &context),
+            "handler: Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'"
+        );
+        assert_eq!(
+            py_runtime_method_param_list(&method, &context),
+            "handler: Callable[..., object] | DynWinRTValue | DynWinRtDelegate"
+        );
+    }
+
+    #[test]
+    fn runtime_method_params_compose_collection_contracts_and_delegate_annotations() {
+        let handler = TypeMeta::Interface {
+            namespace: "Test".into(),
+            name: "Handler".into(),
+            iid: "00000000-0000-0000-0000-000000000000".into(),
+        };
+        let method = MethodMeta {
+            params: vec![
+                ParamMeta {
+                    name: "value".into(),
+                    typ: TypeMeta::Object,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "handler".into(),
+                    typ: handler.clone(),
+                    direction: ParamDirection::In,
+                },
+            ],
+            collection_inputs: vec![(0, CollectionInputRole::Value)],
+            ..Default::default()
+        };
+        let context = PythonProjectionContext::standalone([handler
+            .type_identity()
+            .with_kind(crate::types::TypeIdentityKind::Delegate)])
+        .unwrap();
+
+        assert_eq!(
+            py_method_param_list(&method, &context),
+            "value: DynWinRTValue | _DynWinRTObject | None, handler: Callable[..., object] | 'DynWinRTValue | DynWinRtDelegate'"
+        );
+        assert_eq!(
+            py_runtime_method_param_list(&method, &context),
+            "value: DynWinRTValue | _DynWinRTObject | None, handler: Callable[..., object] | DynWinRTValue | DynWinRtDelegate"
         );
     }
 
