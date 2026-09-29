@@ -94,9 +94,35 @@ pub(crate) fn collect_used_generic_identities_from_methods(
 pub(crate) fn collect_used_generic_identities_from_class(class: &ClassMeta) -> Vec<TypeIdentity> {
     let methods = class
         .all_interfaces()
-        .flat_map(|interface| interface.methods.iter())
+        .flat_map(|interface| {
+            interface
+                .methods
+                .iter()
+                .chain(input_delegate_invokes(interface))
+        })
         .collect::<Vec<_>>();
     collect_used_generic_identities_from_methods_inner(&methods)
+}
+
+/// `Invoke` signatures of the delegates an interface accepts as inputs. Python
+/// callback annotations name their parameter types, and callback adapters
+/// project those parameters.
+pub(crate) fn input_delegate_invokes(
+    interface: &InterfaceMeta,
+) -> impl Iterator<Item = &MethodMeta> {
+    interface
+        .implementation_metadata
+        .delegates
+        .iter()
+        .filter(|delegate| {
+            interface.methods.iter().any(|method| {
+                method
+                    .params
+                    .iter()
+                    .any(|param| param.direction == ParamDirection::In && param.typ == delegate.typ)
+            })
+        })
+        .map(|delegate| &delegate.invoke)
 }
 
 // ======================================================================
@@ -231,6 +257,9 @@ pub(crate) fn collect_class_type_imports_by_identity(class: &ClassMeta) -> HashS
     let mut imports = HashSet::new();
     for iface in class.all_interfaces() {
         collect_methods_type_imports(&iface.methods, "", true, &mut imports);
+        for invoke in input_delegate_invokes(iface) {
+            collect_methods_type_imports(std::slice::from_ref(invoke), "", true, &mut imports);
+        }
     }
     imports.retain(|reference| {
         reference.kind != TypeKind::Class

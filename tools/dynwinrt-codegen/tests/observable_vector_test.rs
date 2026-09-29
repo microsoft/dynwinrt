@@ -53,7 +53,18 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         piid: "0c051752-9fbf-4c70-aa0c-0e4c82d9a761".into(),
         args: vec![TypeMeta::Object],
     };
-    let interface = InterfaceMeta {
+    let observable_type = TypeMeta::Parameterized {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IObservableVector`1".into(),
+        piid: "5917eb53-50b4-4a0d-b309-65862b3f1dbc".into(),
+        args: vec![TypeMeta::Object],
+    };
+    let event_args_type = TypeMeta::Interface {
+        namespace: "Windows.Foundation.Collections".into(),
+        name: "IVectorChangedEventArgs".into(),
+        iid: "575933df-34fe-4480-af15-07691f3d5d9b".into(),
+    };
+    let mut interface = InterfaceMeta {
         name: "IObservableVector_Object".into(),
         namespace: "Windows.Foundation.Collections".into(),
         iid: String::new(),
@@ -66,7 +77,7 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
                 vtable_index: 6,
                 params: vec![ParamMeta {
                     name: "handler".into(),
-                    typ: handler_type,
+                    typ: handler_type.clone(),
                     direction: ParamDirection::In,
                 }],
                 is_event_add: true,
@@ -87,12 +98,20 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         ],
         ..Default::default()
     };
+    interface
+        .implementation_metadata
+        .delegates
+        .push(common::delegate_invoke(
+            handler_type,
+            &[("sender", observable_type), ("event", event_args_type)],
+        ));
     let known_types = HashSet::from([
         "IObservableVector_Object".into(),
         "IVector_Object".into(),
         "IVectorChangedEventArgs".into(),
     ]);
     let delegate_types = HashSet::from(["VectorChangedEventHandler_Object".into()]);
+    let callback = "Callable[['IObservableVector_Object', 'IVectorChangedEventArgs'], object]";
 
     let py = common::generate_interface(&interface, &known_types, &delegate_types);
     assert!(py.contains(
@@ -111,10 +130,20 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         "{py}"
     );
     assert!(py.contains("def as_vector(self) -> 'IVector_Object':"));
-    assert!(py.contains("def on_vector_changed(self, callback: Callable[["));
-    assert!(py.contains("'IObservableVector_Object'"));
-    assert!(py.contains("'IVectorChangedEventArgs'"));
-    assert!(py.contains("_dynwinrt_create_delegate("));
+    for signature in common::event_signatures("vector_changed", callback) {
+        assert!(py.contains(&signature), "{signature}\n{py}");
+    }
+    assert!(
+        py.contains(
+            "lambda __p0__, __p1__: (\
+             (lambda value: None if value.is_null() else \
+             _dynwinrt_symbol('i_observable_vector_object', 'IObservableVector_Object')(value))(__p0__), \
+             (lambda value: None if value.is_null() else \
+             _dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__p1__))"
+        ),
+        "{py}"
+    );
+    assert!(py.contains("_dynwinrt_delegate(callback,"));
     assert!(py.contains("_IObservableVector_Object.method(6).invoke(self._observable_obj"));
 
     let pyi = common::generate_interface_stub(&interface, &known_types, &delegate_types);
@@ -125,15 +154,17 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         "{pyi}"
     );
     assert!(pyi.contains(
-        "from .windows__foundation__collections__i_vector_changed_event_args import IVectorChangedEventArgs"
-    ));
+        "from .windows__foundation__collections__i_vector_changed_event_args import IID_IVectorChangedEventArgs, IVectorChangedEventArgs"
+    ), "{pyi}");
     assert!(pyi.contains(&format!("{create_signature} ...")), "{pyi}");
     assert!(
         pyi.contains("def __getitem__(self, index: int) -> DynWinRTValue | None: ..."),
         "{pyi}"
     );
     assert!(pyi.contains("def as_vector(self) -> 'IVector_Object': ..."));
-    assert!(pyi.contains("def on_vector_changed(self, callback: Callable[["));
+    for signature in common::event_stub_signatures("vector_changed", callback) {
+        assert!(pyi.contains(&signature), "{signature}\n{pyi}");
+    }
 }
 
 #[test]

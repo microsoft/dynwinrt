@@ -4038,6 +4038,17 @@ fn generate_py_files(
                 .map_or_else(Vec::new, |item| item.helpers.clone()),
         )
     }));
+    configured.register_delegate_invokes(
+        all_classes
+            .iter()
+            .flat_map(|class| {
+                class
+                    .all_interfaces()
+                    .chain(class.overridable_interfaces.iter())
+            })
+            .chain(all_interfaces)
+            .chain(shared_interfaces),
+    );
     let context = &configured;
     let current_identities = current
         .iter()
