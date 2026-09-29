@@ -1831,10 +1831,10 @@ impl DynWinRTValue {
         method_index: usize,
         return_type: &DynWinRTType,
     ) -> PyResult<Py<DynWinRTValue>> {
+        let obj_raw = self.receiver("call_0()")?.as_raw();
         let method = dynwinrt::MethodSignature::new(&*TABLE)
             .add_out(return_type.0.clone())
             .build(method_index);
-        let obj_raw = self.com_receiver("call_0()")?.as_raw();
         let result = method
             .call_dynamic(obj_raw, &[])
             .map_err(map_windows_error)?;
@@ -1852,7 +1852,7 @@ impl DynWinRTValue {
         return_type: &DynWinRTType,
         v1: &DynWinRTValue,
     ) -> PyResult<Py<DynWinRTValue>> {
-        let obj_raw = self.com_receiver("call_1()")?.as_raw();
+        let obj_raw = self.receiver("call_1()")?.as_raw();
         v1.check_input("call_1()", InputSlot::Argument(0))?;
         let in_type = TABLE.handle_from_kind(v1.0.get_type_kind());
         let method = dynwinrt::MethodSignature::new(&*TABLE)

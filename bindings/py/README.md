@@ -237,6 +237,13 @@ def work(action: DynWinRTValue) -> None:
 operation = ThreadPool.run_async(work)
 ```
 
+The low-level `DynWinRTValue.call_0()` and `call_1()` helpers require an
+Object holding the intended interface, not a raw Async value. They reject an
+Async receiver with `RuntimeError` before native dispatch: its `IAsyncInfo`
+identity is not proof of the caller-supplied vtable slot and signature. Cast
+to the specific interface IID first when making a metadata-checked low-level
+call, or use the generated async wrapper and its `wait()`/await API.
+
 `ThreadPool.run_async(handler)` intentionally retains its original single
 argument and exact callback annotation, so mypy can infer the type of an
 unannotated callback lambda. Its priority and options overloads remain
