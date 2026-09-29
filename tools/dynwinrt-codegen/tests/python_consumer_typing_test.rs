@@ -531,7 +531,7 @@ fn real_windows_consumers_accept_file_stream_content_and_composition_instances()
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
-from dynwinrt import DynWinRTValue
+from dynwinrt import DynWinRTValue, DynWinRtDelegate
 from sdk.windows.storage import FileIO, StorageFile
 from sdk.windows.media.playback import MediaPlayer
 from sdk.windows.media.speech_synthesis import SpeechSynthesisStream
@@ -807,6 +807,151 @@ print("collection-subscript-native-ok", flush=True)
         assert!(output.status.success(), "{}", diagnostics(&output));
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("collection-subscript-native-ok"),
+            "{}",
+            diagnostics(&output)
+        );
+    }
+}
+
+#[test]
+fn map_changed_handlers_receive_typed_observable_maps_and_arguments() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() {
+        eprintln!("Skipping SDK map events: Windows.winmd or mypy unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Foundation.Collections.PropertySet,Windows.Foundation.Collections.StringMap,\
+             Windows.Foundation.PropertyValue",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from typing import assert_type
+from dynwinrt import DynWinRTValue, DynWinRtDelegate
+from sdk.windows.foundation.collections import (
+    CollectionChange, IMapChangedEventArgs_String, IObservableMap_String_Object,
+    IObservableMap_String_String, PropertySet, StringMap,
+)
+
+def typed(
+    properties: PropertySet,
+    strings: StringMap,
+    native: DynWinRtDelegate,
+    raw: DynWinRTValue,
+) -> None:
+    def on_properties(
+        sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String
+    ) -> None:
+        assert_type(len(sender), int)
+        assert_type(sender[args.key], DynWinRTValue | None)
+        assert_type(args.collection_change, CollectionChange)
+
+    properties.subscribe_map_changed(on_properties)
+    properties.once_map_changed(
+        lambda sender, args: assert_type(sender, IObservableMap_String_Object)
+    )
+    token = properties.on_map_changed(
+        lambda sender, args: assert_type(args, IMapChangedEventArgs_String)
+    )
+    properties.off_map_changed(token)
+    properties.off_map_changed(properties.on_map_changed(native))
+    properties.subscribe_map_changed(raw)()
+    strings.subscribe_map_changed(
+        lambda sender, args: assert_type(sender, IObservableMap_String_String)
+    )
+    strings.subscribe_map_changed(lambda sender, args: assert_type(sender[args.key], str))
+"#,
+        &[],
+    );
+    typecheck(
+        &fixture,
+        &["sdk"],
+        r#"from dynwinrt import DynWinRtDelegate
+from sdk.windows.foundation.collections import PropertySet, StringMap
+
+def wrong_sender(sender: int, args: object) -> None: ...
+def wrong_args(sender: object, args: str) -> None: ...
+
+def untyped(
+    properties: PropertySet,
+    strings: StringMap,
+    native: DynWinRtDelegate,
+) -> None:
+    properties.subscribe_map_changed(wrong_sender)
+    strings.once_map_changed(wrong_args)
+    properties.on_map_changed(lambda sender, args: args.index)
+    strings.subscribe_map_changed(lambda sender, args: sender[0])
+    strings.once_map_changed(native)
+"#,
+        &[
+            "[arg-type]",
+            "[arg-type]",
+            "[attr-defined]",
+            "[index]",
+            "[arg-type]",
+        ],
+    );
+    if has_implementation_runtime() {
+        fs::write(
+            fixture.0.join("map_events_runtime.py"),
+            r#"from dynwinrt import RoApartment, projected_lifetime_scope
+from sdk.windows.foundation import PropertyValue
+from sdk.windows.foundation.collections import (
+    CollectionChange, IMapChangedEventArgs_String, IObservableMap_String_Object,
+    IObservableMap_String_String, PropertySet, StringMap,
+)
+
+with RoApartment(1), projected_lifetime_scope():
+    for collection, sender_type, values in (
+        (PropertySet(), IObservableMap_String_Object,
+         (PropertyValue.create_int32(1), PropertyValue.create_int32(2))),
+        (StringMap(), IObservableMap_String_String, ("first", "second")),
+    ):
+        changes = []
+
+        def handler(sender, args):
+            assert isinstance(sender, sender_type), type(sender)
+            assert isinstance(args, IMapChangedEventArgs_String), type(args)
+            changes.append((args.collection_change, args.key, len(sender), "k" in sender))
+
+        unsubscribe = collection.subscribe_map_changed(handler)
+        collection["k"] = values[0]
+        collection["k"] = values[1]
+        del collection["k"]
+        unsubscribe()
+        collection["k"] = values[0]
+        assert changes == [
+            (CollectionChange.ItemInserted, "k", 1, True),
+            (CollectionChange.ItemChanged, "k", 1, True),
+            (CollectionChange.ItemRemoved, "k", 0, False),
+        ], changes
+print("map-changed-native-ok", flush=True)
+"#,
+        )
+        .unwrap();
+        let output = Command::new(python())
+            .args(["-B", "map_events_runtime.py"])
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("map-changed-native-ok"),
             "{}",
             diagnostics(&output)
         );

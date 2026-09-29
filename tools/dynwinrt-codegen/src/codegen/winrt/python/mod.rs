@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 pub(crate) mod collections;
+pub(crate) mod delegates;
 mod docs;
 mod generator;
 mod implementation;
@@ -163,7 +164,7 @@ pub fn package_structs(
     interfaces: &[crate::meta::InterfaceMeta],
 ) -> Vec<crate::types::TypeMeta> {
     use crate::codegen::winrt::shared::structs::{
-        collect_used_structs_from_class, collect_used_structs_from_iface,
+        collect_used_structs_from_class_and_callbacks, collect_used_structs_from_iface,
     };
     use crate::types::TypeMeta;
     use std::collections::BTreeMap;
@@ -171,7 +172,7 @@ pub fn package_structs(
     let mut structs = BTreeMap::new();
     for typ in classes
         .iter()
-        .flat_map(collect_used_structs_from_class)
+        .flat_map(collect_used_structs_from_class_and_callbacks)
         .chain(interfaces.iter().flat_map(collect_used_structs_from_iface))
     {
         if let TypeMeta::Struct {
@@ -206,7 +207,7 @@ pub fn validate_struct_symbol_uniqueness(
     interfaces: &[crate::meta::InterfaceMeta],
 ) -> Result<(), String> {
     use crate::codegen::winrt::shared::structs::{
-        collect_used_structs_from_class, collect_used_structs_from_iface,
+        collect_used_structs_from_class_and_callbacks, collect_used_structs_from_iface,
         collect_used_structs_from_struct,
     };
     use crate::types::TypeMeta;
@@ -237,7 +238,10 @@ pub fn validate_struct_symbol_uniqueness(
     }
 
     for class in classes {
-        validate(&class.full_name, collect_used_structs_from_class(class))?;
+        validate(
+            &class.full_name,
+            collect_used_structs_from_class_and_callbacks(class),
+        )?;
     }
     for interface in interfaces {
         validate(

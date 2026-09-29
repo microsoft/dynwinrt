@@ -10,6 +10,7 @@ pub(crate) const IVECTOR_PIID: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
 pub(crate) const IVECTOR_VIEW_PIID: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
 pub(crate) const IOBSERVABLE_VECTOR_PIID: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
 pub(crate) const IMAP_PIID: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
+pub(crate) const IOBSERVABLE_MAP_PIID: &str = "65df2bf5-bf39-41b5-aebc-5a9d865e472b";
 pub(crate) const IMAP_VIEW_PIID: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
 pub(crate) const IKEY_VALUE_PAIR_PIID: &str = "02b51929-c1c4-4a7e-8940-0312b5c18500";
 
@@ -40,6 +41,13 @@ pub(crate) fn kind_from_piid(piid: &str) -> Option<CollectionKind> {
 
 pub(crate) fn interface_kind(iface: &InterfaceMeta) -> Option<CollectionKind> {
     iface.generic_piid.as_deref().and_then(kind_from_piid)
+}
+
+/// Collection protocol of an interface's own Python projection. An
+/// `IObservableMap<K, V>` projection extends its `IMap<K, V>` companion.
+pub(crate) fn projected_interface_kind(iface: &InterfaceMeta) -> Option<CollectionKind> {
+    interface_kind(iface)
+        .or_else(|| observable_map_identity(iface).map(|_| CollectionKind::MutableMapping))
 }
 
 pub(crate) fn class_interface(class: &ClassMeta) -> Option<&InterfaceMeta> {
@@ -124,6 +132,25 @@ pub(crate) fn observable_vector_identity(iface: &InterfaceMeta) -> Option<TypeId
                 iface.generic_args.iter().map(TypeMeta::type_identity),
             )
         })
+}
+
+/// The mutable `IMap<K, V>` an `IObservableMap<K, V>` projection extends.
+pub(crate) fn observable_map_identity(iface: &InterfaceMeta) -> Option<TypeIdentity> {
+    (iface.generic_piid.as_deref() == Some(IOBSERVABLE_MAP_PIID) && iface.generic_args.len() == 2)
+        .then(|| {
+            TypeIdentity::closed_generic(
+                TypeIdentityKind::Interface,
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IMap",
+                iface.generic_args.iter().map(TypeMeta::type_identity),
+            )
+        })
+}
+
+/// Observable collections extend their mutable companion in Python, so an
+/// event sender still behaves as a sequence or mapping.
+pub(crate) fn observable_collection_identity(iface: &InterfaceMeta) -> Option<TypeIdentity> {
+    observable_vector_identity(iface).or_else(|| observable_map_identity(iface))
 }
 
 pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool {

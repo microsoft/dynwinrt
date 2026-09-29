@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use super::super::shared::implementation_symbols::{
     HelperOwner, ImplementationHelper, allocate_helpers, interface_helpers,
@@ -535,6 +536,8 @@ pub struct PythonProjectionContext {
     module_symbols: HashMap<(PythonTypeIdentity, PythonSymbol), String>,
     module_support_symbols: HashMap<PythonSupportSymbol, String>,
     module_argument_iids: HashMap<String, String>,
+    // Shared by module contexts, which clone the projection state.
+    delegate_invokes: Arc<HashMap<PythonTypeIdentity, MethodMeta>>,
 }
 
 impl PythonProjectionContext {
@@ -661,6 +664,7 @@ impl PythonProjectionContext {
             module_symbols: HashMap::new(),
             module_support_symbols: HashMap::new(),
             module_argument_iids: HashMap::new(),
+            delegate_invokes: Arc::default(),
         })
     }
 
@@ -1127,6 +1131,28 @@ impl PythonProjectionContext {
         self.implementation_helpers
             .get(&self.normalize_identity(identity).canonical_key())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// Record the `Invoke` signatures, with generic arguments substituted, of
+    /// the delegates referenced by `interfaces`.
+    pub fn register_delegate_invokes<'a>(
+        &mut self,
+        interfaces: impl IntoIterator<Item = &'a InterfaceMeta>,
+    ) {
+        let entries = interfaces
+            .into_iter()
+            .flat_map(|interface| &interface.implementation_metadata.delegates)
+            .map(|delegate| (self.identity_for_type(&delegate.typ), &delegate.invoke))
+            .collect::<Vec<_>>();
+        let invokes = Arc::make_mut(&mut self.delegate_invokes);
+        for (identity, invoke) in entries {
+            invokes.entry(identity).or_insert_with(|| invoke.clone());
+        }
+    }
+
+    /// The `Invoke` signature of a registered delegate type.
+    pub(crate) fn delegate_invoke(&self, typ: &TypeMeta) -> Option<&MethodMeta> {
+        self.delegate_invokes.get(&self.identity_for_type(typ))
     }
 
     pub(crate) fn implementation_helper_name(
