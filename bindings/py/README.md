@@ -156,7 +156,9 @@ parameter such as `ThreadPool.run_async(handler)`, or a delegate-typed
 property) receives the delegate's arguments as projected Python values, typed
 from the delegate's `Invoke` signature. WinRT `Object` arguments stay
 `DynWinRTValue | None`, and `IReference<T>` arguments are native values or
-`None`. Async-operation arguments stay raw `DynWinRTValue` objects so a
+`None`. Delegate-typed callback arguments are raw `DynWinRTValue | None`
+because a null native delegate is passed to the callable as `None`.
+Async-operation arguments stay raw `DynWinRTValue` objects so a
 callback projection cannot take over or cancel the operation's completion.
 For example, `map_changed` handlers of `PropertySet`, `StringMap`,
 `ValueSet`, and other `IObservableMap<K, V>` implementations receive the
@@ -174,10 +176,11 @@ value passed to a runtime class is reserved for wrapping an existing native
 instance before constructor overload dispatch. Keep the delegate object for a
 constructor, or pass the raw delegate to a named factory/method instead.
 
-Callback parameter annotations are non-null by default, matching generated
-method-output typing. This is an intentionally optimistic typing policy, not a
-guarantee from the `Invoke` metadata: WinMD carries no nullability information,
-and the runtime still passes `None` when WinRT supplies a null reference.
+Callback parameter annotations are non-null by default except for `Object`,
+`IReference<T>`, and delegate-typed arguments. This is an intentionally
+optimistic typing policy, not a guarantee from the `Invoke` metadata: WinMD
+carries no nullability information, and the runtime still passes `None` when
+WinRT supplies a null reference.
 Precise callback signatures live in the generated `.pyi` contract. Executable
 `.py` methods use the cycle-safe runtime annotation
 `Callable[..., object] | DynWinRTValue | DynWinRtDelegate`, so

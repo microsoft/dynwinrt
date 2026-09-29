@@ -563,6 +563,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_collection_helper_collision_test `
             collection_helper_aliases_execute_for_packaged_and_standalone_outputs -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt-codegen --test python_delegate_callback_test `
+            nested_delegate_callback_argument_preserves_native_null -- --exact --nocapture
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild -Codegen $env:DYNWINRT_CODEGEN
       # This optional-SDK behavioral smoke is separate from generated coverage

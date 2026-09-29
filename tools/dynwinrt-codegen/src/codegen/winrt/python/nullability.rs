@@ -230,9 +230,7 @@ fn stub_output_admits_none(
     site: OutputSite,
     context: &PythonProjectionContext,
 ) -> bool {
-    use OutputPosition::{
-        Activation, AsyncResult, CallbackParam, CollectionElement, OutParam, Property, Return,
-    };
+    use OutputPosition::{Activation, AsyncResult, CollectionElement, OutParam, Property, Return};
 
     if site.container == Some(ElementContainer::MapKey) {
         // output_admits_none only reaches this branch after
@@ -247,7 +245,7 @@ fn stub_output_admits_none(
     }
     // Delegate-typed values are raw handles that are null while unset.
     if context.is_delegate_type(typ) {
-        return site.position != CallbackParam;
+        return true;
     }
     // `Try*` members report "not found" through a null result, and the
     // Windows SDK documentation names the other members that return null.
@@ -386,9 +384,8 @@ mod tests {
             let site = OutputSite::of(position);
             assert!(admits(&nullable_u32(), site, AnnotationSurface::Stub));
             assert!(admits(&TypeMeta::Object, site, AnnotationSurface::Stub));
-            assert_eq!(
+            assert!(
                 admits(&handler(), site, AnnotationSurface::Stub),
-                position != OutputPosition::CallbackParam,
                 "{position:?}"
             );
         }

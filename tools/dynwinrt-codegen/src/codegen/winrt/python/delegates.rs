@@ -63,12 +63,11 @@ fn callback_params<'a>(
 
 /// Annotation of one argument passed to a Python callback.
 ///
-/// Callback arguments are annotated as non-null, except WinRT `Object` and
-/// `IReference<T>`. WinMD metadata does not record nullability, so this is an
-/// optimistic policy shared with method outputs: the runtime still passes
-/// `None` for a null reference. Every callback-argument annotation goes through
-/// this function so a position-aware output-nullability policy can take it
-/// over.
+/// Callback arguments are annotated as non-null, except WinRT `Object`,
+/// `IReference<T>`, and delegate-typed raw values. WinMD metadata does not
+/// record nullability, so this is an optimistic policy shared with method
+/// outputs: the runtime still passes `None` for a null reference. Every
+/// callback-argument annotation goes through the central output policy.
 pub(crate) fn py_delegate_argument_type(
     typ: &TypeMeta,
     context: &PythonProjectionContext,
