@@ -152,13 +152,17 @@ def _dynwinrt_cache_projected(value):
             pass
     return value
 
-def _dynwinrt_projected_from_native(wrapper_type, native, initializer_name):
+def _dynwinrt_projected_from_native(
+    wrapper_type, native, initializer_name, *, release_redundant=True
+):
     key = _dynwinrt_projected_cache_key(wrapper_type, native)
     if key is not None:
         cached = _projected_wrapper_cache.get(key)
         if cached is not None:
             if _dynwinrt_projected_wrapper_is_live(cached):
-                _dynwinrt_release_redundant_native(native, cached)
+                # A direct interface constructor borrows its source.
+                if release_redundant:
+                    _dynwinrt_release_redundant_native(native, cached)
                 return cached
             _projected_wrapper_cache.pop(key, None)
     wrapper = object.__new__(wrapper_type)

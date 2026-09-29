@@ -858,7 +858,7 @@ pub fn generate_class<'a>(
         out.push_str("    def __new__(cls, *args, **kwargs):\n");
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-             \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n\
+             \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native', release_redundant=False)\n\
              \x20       return super().__new__(cls)\n\n",
         );
         out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");

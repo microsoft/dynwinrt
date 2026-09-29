@@ -144,6 +144,12 @@ retain the receiving interface subclass: `TaggedBuffer.from_value(raw)` and
 `value.as_interface(TaggedBuffer)` return `TaggedBuffer`, not `IBuffer`.
 Independent static factories such as `IBuffer.from_bytes` keep their declared
 base-interface result.
+Direct runtime construction such as `IBuffer(raw)` also QueryInterface-checks
+the IID before retaining or caching a native pointer. It raises `E_NOINTERFACE`
+for a mismatched object and does not release the caller's raw value on a cache
+hit; the resulting view owns a separate reference. A `DynWinRTValue` annotation
+alone cannot establish the runtime IID, so prefer `from_value()` or
+`as_interface()` for explicit intent.
 
 WinRT `Object` inputs accept a `DynWinRTValue` or a projected native wrapper
 whose `_obj` is a `DynWinRTValue`, including interface views and runtime-class

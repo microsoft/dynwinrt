@@ -440,6 +440,13 @@ wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
 `DynWinRTValue`. `as_interface()` accepts generated interface classes only;
 passing a runtime class raises `TypeError` that points to `project_as()`. Do not
 call the internal `_from_native()` method from application code.
+Legacy direct construction with `InterfaceClass(raw)` also checks the
+interface IID before retaining or caching the pointer. A non-implementing
+object raises `E_NOINTERFACE` before any interface method can dispatch; a
+successful view owns its own QueryInterface reference and does not consume the
+raw source, even when the view is returned from the identity cache. Stubs
+require a `DynWinRTValue` for explicit raw projection, but Python's type system
+cannot prove its runtime IID.
 
 ### Views of `Object`-valued maps
 

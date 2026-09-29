@@ -188,8 +188,12 @@ fn stock_json_mutators_fail_before_native_mutation_but_custom_generics_keep_null
     let script = r#"
 import operator
 from dynwinrt import DynWinRTArray, DynWinRTType, DynWinRTValue, RoApartment, release_projected
-from JSON_PACKAGE.windows__data__json__json_array import JsonArray, IVector_IJsonValue, IID_IJsonValue
-from JSON_PACKAGE.windows__data__json__json_object import JsonObject, IMap_String_IJsonValue
+from JSON_PACKAGE.windows__data__json__json_array import (
+    JsonArray, IVector_IJsonValue, IID_IJsonValue, IID_IVector_IJsonValue,
+)
+from JSON_PACKAGE.windows__data__json__json_object import (
+    JsonObject, IMap_String_IJsonValue, IID_IMap_String_IJsonValue,
+)
 from JSON_PACKAGE.windows__data__json__json_value import JsonValue
 
 def rejected_without_mutation(receiver, mutation):
@@ -263,6 +267,10 @@ with RoApartment():
     generic_vector = IVector_IJsonValue.from_value(
         DynWinRTValue.create_vector([native_null], element)
     )
+    borrowed_vector = generic_vector._obj.cast(IID_IVector_IJsonValue)
+    assert IVector_IJsonValue(borrowed_vector) is generic_vector
+    assert not borrowed_vector.is_released()
+    borrowed_vector.release()
     assert generic_vector[0] is None
     generic_vector.append(None)
     generic_vector.replace_all(array_of_null)
@@ -283,6 +291,10 @@ with RoApartment():
             element,
         )
     )
+    borrowed_map = generic_map._obj.cast(IID_IMap_String_IJsonValue)
+    assert IMap_String_IJsonValue(borrowed_map) is generic_map
+    assert not borrowed_map.is_released()
+    borrowed_map.release()
     generic_map.update({'next': None})
     assert generic_map['original'] is None and generic_map['next'] is None
     try:
