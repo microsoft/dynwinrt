@@ -121,11 +121,11 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         py.contains("_dynwinrt_symbol('i_vector_object', 'IVector_Object')._set_native(self, obj)")
     );
     assert!(py.contains("self._observable_obj = obj.cast(IID_IObservableVector_Object)"));
-    let create_signature = "def create(items: Iterable['DynWinRTValue | _DynWinRTObject']) -> 'IObservableVector_Object':";
+    let create_signature = "def create(items: Iterable[DynWinRTValue | _DynWinRTObject | None]) -> 'IObservableVector_Object':";
     assert!(py.contains(create_signature), "{py}");
     assert!(
         py.contains(
-            "_dynwinrt_new_vector(items, lambda item: getattr(item, '_obj', item), DynWinRTType.object())"
+            "_dynwinrt_new_vector(items, lambda item: _dynwinrt_collection_item(item, lambda item: getattr(item, '_obj', item), True, 'collection element'), DynWinRTType.object())"
         ),
         "{py}"
     );

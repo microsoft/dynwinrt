@@ -10,6 +10,7 @@ pub(crate) mod member_plan;
 pub(crate) mod method;
 pub(crate) mod naming;
 mod native_types;
+pub(crate) mod nullability;
 mod shared;
 pub(crate) mod signature;
 pub(crate) mod structs;
@@ -94,8 +95,18 @@ pub(crate) fn collect_referenced_delegate_names(
         result: &mut std::collections::HashSet<PythonTypeIdentity>,
     ) {
         use crate::types::TypeMeta;
-        if context.is_delegate_type(typ) {
-            result.insert(context.identity_for_type(typ));
+        if context.is_delegate_type(typ)
+            && result.insert(context.identity_for_type(typ))
+            && let Some(invoke) = context.delegate_invoke(typ)
+        {
+            // Invoke arguments may themselves be delegates, whose stub modules
+            // export ABI constants rather than a Python class to import.
+            for parameter in &invoke.params {
+                collect(&parameter.typ, context, result);
+            }
+            if let Some(return_type) = &invoke.return_type {
+                collect(return_type, context, result);
+            }
         }
         match typ {
             TypeMeta::AsyncActionWithProgress(inner)

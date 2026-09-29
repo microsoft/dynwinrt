@@ -3,7 +3,7 @@
 
 //! Python method signatures, argument wrapping, and return conversion.
 
-use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
+use crate::meta::{CollectionInputRole, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
@@ -1031,6 +1031,59 @@ pub(crate) fn py_wrap_native_value(
     }
 }
 
+/// Wrap one Python collection item through the shared runtime validator.
+///
+/// Reference elements and map values accept `None` and encode a real null
+/// `DynWinRTValue`. Map keys and value-type positions reject `None` with a
+/// stable `TypeError` before type-specific conversion (and before `.cast()`).
+pub(crate) fn py_wrap_collection_item(
+    name: &str,
+    typ: &TypeMeta,
+    role: CollectionInputRole,
+    context: &PythonProjectionContext,
+) -> String {
+    // The native collection plan accepts null for the Python projection's
+    // supported COM-pointer shapes in every role, including map keys. String,
+    // Guid, scalar, enum and struct keys still fail closed here.
+    let allow_none = super::nullability::may_project_none(typ);
+    let label = match role {
+        CollectionInputRole::Element => "collection element",
+        CollectionInputRole::Key => "map key",
+        CollectionInputRole::Value => "map value",
+    };
+    format!(
+        "{}({name}, lambda item: {}, {}, '{label}')",
+        context.support_symbol_reference(PythonSupportSymbol::CollectionItem),
+        py_wrap_arg("item", typ, context),
+        if allow_none { "True" } else { "False" }
+    )
+}
+
+/// Wrap a parameter that is itself a collection element/value contract. The
+/// `ReplaceAll` array is the only array-shaped case; its individual elements
+/// use the same validator as append/insert/set operations.
+pub(crate) fn py_wrap_collection_input(
+    name: &str,
+    typ: &TypeMeta,
+    role: CollectionInputRole,
+    context: &PythonProjectionContext,
+) -> String {
+    if let TypeMeta::Array(inner) = typ {
+        return format!(
+            "_dynwinrt_array({}, lambda item: {}, {}, {})",
+            name,
+            py_wrap_collection_item("item", inner, role, context),
+            py_dynwinrt_type(inner),
+            if matches!(inner.as_ref(), TypeMeta::U8) {
+                "True"
+            } else {
+                "False"
+            }
+        );
+    }
+    py_wrap_collection_item(name, typ, role, context)
+}
+
 fn py_wrap_collection(
     name: &str,
     typ: &TypeMeta,
@@ -1057,8 +1110,8 @@ fn py_wrap_collection(
         return Some(format!(
             "_dynwinrt_map({}, lambda item: {}, lambda item: {}, {}, {})",
             name,
-            py_wrap_native_value("item", key, context),
-            py_wrap_native_value("item", value, context),
+            py_wrap_collection_item("item", key, CollectionInputRole::Key, context),
+            py_wrap_collection_item("item", value, CollectionInputRole::Value, context),
             py_dynwinrt_type(key),
             py_dynwinrt_type(value)
         ));
@@ -1071,7 +1124,7 @@ fn py_wrap_collection(
         return Some(format!(
             "_dynwinrt_vector({}, lambda item: {}, {})",
             name,
-            py_wrap_native_value("item", element, context),
+            py_wrap_collection_item("item", element, CollectionInputRole::Element, context),
             py_dynwinrt_type(element)
         ));
     }
@@ -1536,6 +1589,43 @@ mod tests {
                 "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
             )]
         );
+    }
+
+    #[test]
+    fn collection_items_validate_none_before_type_specific_conversion() {
+        let context = PythonProjectionContext::default();
+        let geometry = geometry_type();
+        let nullable =
+            py_wrap_collection_item("value", &geometry, CollectionInputRole::Element, &context);
+        assert!(nullable.contains("_dynwinrt_collection_item(value,"));
+        assert!(nullable.contains(".cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"));
+        assert!(nullable.contains("True, 'collection element'"));
+
+        let key = py_wrap_collection_item("key", &geometry, CollectionInputRole::Key, &context);
+        assert!(key.contains("True, 'map key'"));
+        let string_key =
+            py_wrap_collection_item("key", &TypeMeta::String, CollectionInputRole::Key, &context);
+        assert!(string_key.contains("False, 'map key'"));
+        let guid_key =
+            py_wrap_collection_item("key", &TypeMeta::Guid, CollectionInputRole::Key, &context);
+        assert!(guid_key.contains("False, 'map key'"));
+        let scalar = py_wrap_collection_item(
+            "value",
+            &TypeMeta::I32,
+            CollectionInputRole::Value,
+            &context,
+        );
+        assert!(scalar.contains("DynWinRTValue.from_i32(item)"));
+        assert!(scalar.contains("False, 'map value'"));
+
+        let array = py_wrap_collection_input(
+            "items",
+            &TypeMeta::Array(Box::new(geometry)),
+            CollectionInputRole::Element,
+            &context,
+        );
+        assert!(array.starts_with("_dynwinrt_array(items, lambda item:"));
+        assert!(array.contains("True, 'collection element'"));
     }
 
     #[test]

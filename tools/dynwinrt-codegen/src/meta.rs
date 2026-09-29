@@ -57,6 +57,177 @@ pub struct MethodMeta {
     pub param_docs: std::collections::HashMap<String, String>,
     /// XML `<returns>` text.
     pub returns_doc: Option<String>,
+    /// The Windows SDK documentation says the result can be null: a method's
+    /// return value (for asynchronous methods, the completed result) or a
+    /// property's value. See `documented_nulls`.
+    pub documented_null_result: bool,
+    /// Set on the members that read elements of the
+    /// `Windows.Foundation.Collections` interface declaring them.
+    pub element_access: Option<ElementAccess>,
+    /// Input parameters that represent collection elements, map keys, or map
+    /// values. Python uses this to validate and wrap `None` at the collection
+    /// boundary without changing general WinRT parameter conversion.
+    pub collection_inputs: Vec<(usize, CollectionInputRole)>,
+    /// Logical output indexes whose native contract permits a null reference
+    /// independently of general result nullability. `IMapView.Split` uses this
+    /// for its two optional map-view halves.
+    pub contract_nullable_outputs: Vec<usize>,
+}
+
+/// How a member reads the elements of the `Windows.Foundation.Collections`
+/// interface declaring it: `GetAt`, `GetMany`, `Lookup`, `Current`, `Key` and
+/// `Value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementAccess {
+    /// `IIterator`, `IVectorView`, `IMapView` and `IKeyValuePair.Value`.
+    ReadOnly,
+    /// `IVector` and `IMap`, in which anyone can store null.
+    Mutable,
+    /// The key of an `IKeyValuePair`. Whether null is valid depends on the
+    /// declared key ABI type.
+    MapKey,
+}
+
+/// The role of an input parameter on a collection interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionInputRole {
+    Element,
+    Key,
+    Value,
+}
+
+fn collection_element_access(
+    namespace: &str,
+    definition: &str,
+    member: &str,
+) -> Option<ElementAccess> {
+    if namespace != WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE {
+        return None;
+    }
+    let access = match (definition, member) {
+        ("IKeyValuePair`2", "get_Key") => return Some(ElementAccess::MapKey),
+        ("IKeyValuePair`2", "get_Value") => return Some(ElementAccess::ReadOnly),
+        ("IIterator`1" | "IVectorView`1" | "IMapView`2", _) => ElementAccess::ReadOnly,
+        ("IVector`1" | "IMap`2", _) => ElementAccess::Mutable,
+        _ => return None,
+    };
+    matches!(
+        member,
+        "GetAt" | "GetMany" | "Lookup" | "get_Current" | "get_Key" | "get_Value"
+    )
+    .then_some(access)
+}
+
+fn collection_input_roles(
+    namespace: &str,
+    definition: &str,
+    member: &str,
+) -> Vec<(usize, CollectionInputRole)> {
+    if namespace != WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE {
+        return Vec::new();
+    }
+    use CollectionInputRole::{Element, Key, Value};
+    match (definition, member) {
+        ("IVector`1" | "IVectorView`1", "IndexOf") => vec![(0, Element)],
+        ("IVector`1", "SetAt" | "InsertAt") => vec![(1, Element)],
+        ("IVector`1", "Append" | "ReplaceAll") => vec![(0, Element)],
+        ("IMap`2" | "IMapView`2", "Lookup" | "HasKey") | ("IMap`2", "Remove") => vec![(0, Key)],
+        ("IMap`2", "Insert") => vec![(0, Key), (1, Value)],
+        _ => Vec::new(),
+    }
+}
+
+fn collection_nullable_output_indices(
+    namespace: &str,
+    definition: &str,
+    member: &str,
+) -> Vec<usize> {
+    if namespace == WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE
+        && definition == "IMapView`2"
+        && member == "Split"
+    {
+        vec![0, 1]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod collection_contract_tests {
+    use super::*;
+
+    #[test]
+    fn map_view_split_alone_has_two_optional_outputs() {
+        assert_eq!(
+            collection_nullable_output_indices(
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IMapView`2",
+                "Split"
+            ),
+            vec![0, 1]
+        );
+        for (definition, member) in [
+            ("IMapView`2", "Lookup"),
+            ("IMap`2", "Split"),
+            ("IVectorView`1", "Split"),
+        ] {
+            assert!(
+                collection_nullable_output_indices(
+                    WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    definition,
+                    member
+                )
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn map_key_inputs_cover_mutable_and_view_operations() {
+        for (definition, member) in [
+            ("IMap`2", "Lookup"),
+            ("IMap`2", "HasKey"),
+            ("IMap`2", "Remove"),
+            ("IMapView`2", "Lookup"),
+            ("IMapView`2", "HasKey"),
+        ] {
+            assert_eq!(
+                collection_input_roles(
+                    WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    definition,
+                    member
+                ),
+                vec![(0, CollectionInputRole::Key)]
+            );
+        }
+        assert_eq!(
+            collection_input_roles(WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE, "IMap`2", "Insert"),
+            vec![
+                (0, CollectionInputRole::Key),
+                (1, CollectionInputRole::Value)
+            ]
+        );
+    }
+
+    #[test]
+    fn key_value_pair_key_and_value_have_distinct_element_contracts() {
+        assert_eq!(
+            collection_element_access(
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IKeyValuePair`2",
+                "get_Key"
+            ),
+            Some(ElementAccess::MapKey)
+        );
+        assert_eq!(
+            collection_element_access(
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IKeyValuePair`2",
+                "get_Value"
+            ),
+            Some(ElementAccess::ReadOnly)
+        );
+    }
 }
 
 /// A WinRT interface with its methods.
@@ -1224,6 +1395,8 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     let mut ancestor_key: Option<(String, String)> = def
         .extends()
         .map(|e| (e.namespace().to_string(), e.name().to_string()));
+    // The documentation lists inherited members under the class declaring them.
+    let mut documentation_owners = vec![full_name.clone()];
     while let Some((ext_ns, ext_name)) = ancestor_key.take() {
         if ext_ns == "System" && ext_name == "Object" {
             break;
@@ -1232,6 +1405,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             Some(d) => d,
             None => break,
         };
+        documentation_owners.push(format!("{ext_ns}.{ext_name}"));
         for iface_impl in parent_def.interface_impls() {
             let iface_ty = iface_impl.interface(&[]);
             if iface_impl.has_attribute("OverridableAttribute") {
@@ -1378,6 +1552,19 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         }
     }
 
+    for interface in default_interface
+        .iter_mut()
+        .chain(required_interfaces.iter_mut())
+        .chain(factory_interfaces.iter_mut())
+        .chain(static_interfaces.iter_mut())
+    {
+        for method in &mut interface.methods {
+            method.documented_null_result |= documentation_owners
+                .iter()
+                .any(|owner| crate::documented_nulls::documents_null_result(owner, method));
+        }
+    }
+
     Some(ClassMeta {
         name: name.to_string(),
         namespace: namespace.to_string(),
@@ -1426,6 +1613,36 @@ fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
     parse_interface_methods(index, &def, name, namespace, &iid, &[])
+}
+
+/// The parsed methods that the documentation lists under `namespace.name`:
+/// the members of a class's interfaces, or an interface's own members.
+#[cfg(test)]
+pub(crate) fn documented_owner_methods(
+    index: &reader::Index,
+    namespace: &str,
+    name: &str,
+) -> Vec<MethodMeta> {
+    let Some(def) = index.get(namespace, name).next() else {
+        return Vec::new();
+    };
+    if def.extends().is_none() {
+        return parse_interface(index, namespace, name)
+            .map(|interface| interface.methods)
+            .unwrap_or_default();
+    }
+    parse_class_from_index(index, namespace, name)
+        .map(|class| {
+            class
+                .default_interface
+                .into_iter()
+                .chain(class.required_interfaces)
+                .chain(class.factory_interfaces)
+                .chain(class.static_interfaces)
+                .flat_map(|interface| interface.methods)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_interface_type(
@@ -1582,6 +1799,9 @@ fn parse_interface_methods(
 ) -> Option<InterfaceMeta> {
     let winmd_generics: Vec<windows_metadata::Type> =
         generic_args.iter().map(type_meta_to_winmd_type).collect();
+    // The documentation lists interface members under the interface
+    // definition, e.g. `Windows.Foundation.Collections.IVector`1`.
+    let documentation_owner = format!("{namespace}.{}", def.name());
 
     let mut methods = Vec::new();
     let mut implementation_metadata = InterfaceImplementationMetadata {
@@ -1741,7 +1961,11 @@ fn parse_interface_methods(
             format!("({})", clr_sig_types.join(","))
         };
 
-        methods.push(MethodMeta {
+        let element_access = collection_element_access(namespace, def.name(), &raw_name);
+        let collection_inputs = collection_input_roles(namespace, def.name(), &raw_name);
+        let contract_nullable_outputs =
+            collection_nullable_output_indices(namespace, def.name(), &raw_name);
+        let mut method_meta = MethodMeta {
             name: method_name.clone(),
             vtable_index,
             params,
@@ -1756,7 +1980,14 @@ fn parse_interface_methods(
             deprecated: None,
             param_docs: std::collections::HashMap::new(),
             returns_doc: None,
-        });
+            documented_null_result: false,
+            element_access,
+            collection_inputs,
+            contract_nullable_outputs,
+        };
+        method_meta.documented_null_result =
+            crate::documented_nulls::documents_null_result(&documentation_owner, &method_meta);
+        methods.push(method_meta);
     }
 
     let (generic_piid, generic_args_vec) = if !generic_args.is_empty() {

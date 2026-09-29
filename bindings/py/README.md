@@ -22,6 +22,56 @@ interface overloads fail explicitly when a required native guard is missing.
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
 
+### Nullability in type stubs
+
+WinRT metadata does not record which values can be null, and most APIs raise
+an exception instead of returning null. The generated `.pyi` stubs therefore
+type the values you receive as non-null by default: method and property
+results, async results and out values. For example,
+`StorageFolder.create_file_async()` returns `WinRTCoroutine[StorageFile]`.
+
+These values keep `| None`:
+
+- `IReference<T>` values, projected as `T | None` everywhere;
+- results of `Try*` members, such as `try_get_item_async()` or
+  `JsonObject.try_parse()`, where null means "not found";
+- results of Windows SDK members whose documentation says they can return
+  null, such as `Accelerometer.get_default()`,
+  `DispatcherQueue.get_for_current_thread()` or
+  `StorageFolder.get_parent_async()`. The codegen embeds this list, derived
+  from the Windows SDK API reference; it does not cover Windows App SDK
+  (`Microsoft.*`) APIs;
+- `Object`/`IInspectable` values (`DynWinRTValue | None`) and delegate-typed
+  values, which are often null.
+
+Reference-type elements read from WinRT collection interfaces are always typed
+`T | None`, including vectors, views, iterables, iterators, map keys and values,
+and key-value-pair keys and values. Here reference means the projection's
+supported COM-pointer shapes: `Object`, interfaces, runtime classes, delegates,
+and parameterized interfaces. Async wrappers are not collection element
+shapes. Reference-type elements of returned WinRT arrays are also `T | None`;
+the array value itself remains non-null. String, GUID, scalar, enum, and struct
+array elements and keys remain non-null. A view or iterator obtained from a
+mutable collection can expose a null slot, and WinRT collection interfaces do
+not retain enough provenance for the stubs to distinguish that case. For
+example, a `JsonArray` holds
+`IJsonValue | None`, and `get_files_async()` returns
+`WinRTCoroutine[Sequence[StorageFile | None]]`. Value-type elements remain
+non-null.
+
+Mutable collections accept `None` when their element, map-key, or map-value
+type is a WinRT reference type and store a real null WinRT value. This includes
+`append()`, `insert()`, index and slice assignment, `extend()`, `update()` and
+`setdefault()`. String, GUID, scalar, enum, and struct keys and value-type
+elements reject `None` with `TypeError`.
+
+Other arguments keep accepting `None` where they did before. The stubs are
+optimistic, like the generated TypeScript declarations: the runtime still
+returns `None` when a WinRT API returns null, so check the API documentation
+when a result can legitimately be absent. The inline annotations of the
+generated `.py` modules, which `typing.get_type_hints()` and `--no-pyi` output
+expose, still mark every object result `| None`.
+
 ## Async WinRT operations
 
 Generated async methods return typed, asyncio-compatible operation objects:
@@ -109,7 +159,9 @@ parameter such as `ThreadPool.run_async(handler)`, or a delegate-typed
 property) receives the delegate's arguments as projected Python values, typed
 from the delegate's `Invoke` signature. WinRT `Object` arguments stay
 `DynWinRTValue | None`, and `IReference<T>` arguments are native values or
-`None`. Async-operation arguments stay raw `DynWinRTValue` objects so a
+`None`. Delegate-typed callback arguments are raw `DynWinRTValue | None`
+because a null native delegate is passed to the callable as `None`.
+Async-operation arguments stay raw `DynWinRTValue` objects so a
 callback projection cannot take over or cancel the operation's completion.
 For example, `map_changed` handlers of `PropertySet`, `StringMap`,
 `ValueSet`, and other `IObservableMap<K, V>` implementations receive the
@@ -127,10 +179,11 @@ value passed to a runtime class is reserved for wrapping an existing native
 instance before constructor overload dispatch. Keep the delegate object for a
 constructor, or pass the raw delegate to a named factory/method instead.
 
-Callback parameter annotations are non-null by default, matching generated
-method-output typing. This is an intentionally optimistic typing policy, not a
-guarantee from the `Invoke` metadata: WinMD carries no nullability information,
-and the runtime still passes `None` when WinRT supplies a null reference.
+Callback parameter annotations are non-null by default except for `Object`,
+`IReference<T>`, and delegate-typed arguments. This is an intentionally
+optimistic typing policy, not a guarantee from the `Invoke` metadata: WinMD
+carries no nullability information, and the runtime still passes `None` when
+WinRT supplies a null reference.
 Precise callback signatures live in the generated `.pyi` contract. Executable
 `.py` methods use the cycle-safe runtime annotation
 `Callable[..., object] | DynWinRTValue | DynWinRtDelegate`, so

@@ -1116,10 +1116,10 @@ fn python_full_identity_collision_imports_named_peer_not_generic_self() {
                  from pyviews.{peer_module} import {peer_name} as Peer\n\
                  from pyviews.{foreign_module} import {foreign_name} as Foreign\n\
                  def check(box: Box, peer: Peer, foreign: Foreign) -> None:\n\
-                 \x20   assert_type(box.echo_self(box), Box | None)\n\
-                 \x20   assert_type(box.echo_peer(peer), Peer | None)\n\
-                 \x20   assert_type(box.echo_foreign(foreign), Foreign | None)\n\
-                 \x20   assert_type(peer.echo_self(peer), Peer | None)\n"
+                 \x20   assert_type(box.echo_self(box), Box)\n\
+                 \x20   assert_type(box.echo_peer(peer), Peer)\n\
+                 \x20   assert_type(box.echo_foreign(foreign), Foreign)\n\
+                 \x20   assert_type(peer.echo_self(peer), Peer)\n"
             ),
         );
         typecheck_py_package(&fixture.0);

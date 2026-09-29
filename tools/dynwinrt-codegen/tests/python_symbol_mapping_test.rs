@@ -331,7 +331,7 @@ fn python_class_self_and_base_markers_use_declarations_in_both_layouts() {
                     "fixture must require a local self binding"
                 );
                 assert!(
-                    stub.contains("def echo_self(self, value: 'WidgetLike') -> Widget | None:"),
+                    stub.contains("def echo_self(self, value: 'WidgetLike') -> Widget:"),
                     "{stub}"
                 );
                 assert!(
@@ -375,13 +375,13 @@ fn python_class_self_and_base_markers_use_declarations_in_both_layouts() {
 def alpha(value: AlphaWidget, peer: BetaWidget, child: AlphaDerived) -> None:
     own: AlphaBaseLike = value
     foreign: BetaBaseLike = child
-    assert_type(value.echo_self(value), AlphaWidget | None)
-    assert_type(value.echo_foreign(peer), BetaWidget | None)
+    assert_type(value.echo_self(value), AlphaWidget)
+    assert_type(value.echo_foreign(peer), BetaWidget)
 def beta(value: BetaWidget, peer: AlphaWidget, child: BetaDerived) -> None:
     own: BetaBaseLike = value
     foreign: AlphaBaseLike = child
-    assert_type(value.echo_self(value), BetaWidget | None)
-    assert_type(value.echo_foreign(peer), AlphaWidget | None)
+    assert_type(value.echo_self(value), BetaWidget)
+    assert_type(value.echo_foreign(peer), AlphaWidget)
 "#,
         );
         support(&package, &[]);
@@ -587,13 +587,13 @@ fn python_named_class_closed_generic_collision_uses_allocated_declaration() {
 from typing import assert_type
 assert_type(Named(), Named)
 assert_type(Named(7), Named)
-assert_type(Named.get_current(), Named | None)
+assert_type(Named.get_current(), Named)
 def check(named: Named, generic: Bucket, derived: Derived) -> None:
     base: NamedLike = derived
-    assert_type(named.echo_self(named), Named | None)
-    assert_type(named.echo_generic(generic), Bucket | None)
-    assert_type(generic.echo_self(generic), Bucket | None)
-    assert_type(generic.echo_named(named), Named | None)
+    assert_type(named.echo_self(named), Named)
+    assert_type(named.echo_generic(generic), Bucket)
+    assert_type(generic.echo_self(generic), Bucket)
+    assert_type(generic.echo_named(named), Named)
 "#,
             ),
         );
@@ -2172,8 +2172,8 @@ fn python_cross_role_class_owners_keep_self_bindings_and_qualified_helpers() {
                     r#"{imports}
 from typing import assert_type
 def check(value: Owner) -> None:
-    assert_type(value.echo_self(value), Owner | None)
-    assert_type(value.get_self(), Owner | None)
+    assert_type(value.echo_self(value), Owner)
+    assert_type(value.get_self(), Owner)
     assert_type(value.echo_payload(URLValue(17)), URLValue)
 "#
                 ),
@@ -2705,9 +2705,9 @@ fn python_enum_closed_generic_collision_preserves_projection_and_native_identity
 from typing import assert_type
 assert_type(RootKind(0), Kind)
 def check(local: IUse, foreign: IForeign) -> None:
-    assert_type(local.get_bucket(), Bucket | None)
-    assert_type(local.get_bucket(), RootBucket | None)
-    assert_type(foreign.get_bucket(), Bucket | None)
+    assert_type(local.get_bucket(), Bucket)
+    assert_type(local.get_bucket(), RootBucket)
+    assert_type(foreign.get_bucket(), Bucket)
     assert_type(local.echo_kind(Kind.Unknown), Kind)
     assert_type(foreign.echo_kind(Kind.Unknown), Kind)
     assert_type(local.echo_kinds([Kind.Unknown]), list[Kind])
@@ -2911,10 +2911,10 @@ fn python_class_companion_aliases_preserve_cli_and_standalone_contracts() {
                     r#"{imports}
 from typing import assert_type
 def check(owner: Widget, peer: Peer, use: IUse) -> None:
-    assert_type(owner.echo(peer), Peer | None)
-    assert_type(peer.echo(owner), Widget | None)
-    assert_type(use.echo_owner(owner), Widget | None)
-    assert_type(use.echo_peer(peer), Peer | None)
+    assert_type(owner.echo(peer), Peer)
+    assert_type(peer.echo(owner), Widget)
+    assert_type(use.echo_owner(owner), Widget)
+    assert_type(use.echo_peer(peer), Peer)
 "#,
                 ),
             );

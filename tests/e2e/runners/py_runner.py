@@ -506,26 +506,159 @@ async def run_check(
             cr['pass'] = True
 
         elif kind == 'nullable_object_array_roundtrip':
+            from uuid import UUID
+
             uri_cls = generated_type(pkg_name, 'Uri')
+            property_value_cls = generated_type(pkg_name, 'IPropertyValue')
+            property_type_cls = generated_type(pkg_name, 'PropertyType')
             uri = uri_cls.create_uri('https://example.com/null-array')
-            boxed = getattr(cls, member)(
-                [dw.DynWinRTValue.null_value(), uri._obj]
-            )
+
+            boxed = getattr(cls, member)([dw.DynWinRTValue.null_value(), uri._obj])
             if boxed is None:
-                cr['error'] = 'CreateInspectableArray returned None'
+                cr['error'] = 'create_inspectable_array returned None'
                 return cr
-            values = boxed.call_0(
-                38,
-                dw.DynWinRTType.array_type(dw.DynWinRTType.object()),
-            ).as_array().to_values()
+            try:
+                property_value = property_value_cls.from_value(boxed)
+            finally:
+                boxed.release()
+            try:
+                if property_value.type != property_type_cls.InspectableArray:
+                    cr['error'] = (
+                        'inspectable array reported property type '
+                        f'{property_value.type!r}'
+                    )
+                    return cr
+                if property_value.is_numeric_scalar:
+                    cr['error'] = 'inspectable array reported a numeric scalar'
+                    return cr
+                values = property_value.get_inspectable_array()
+            finally:
+                dw.release_projected(property_value)
+
             if len(values) != 2:
                 cr['error'] = f'expected 2 inspectable values, got {len(values)}'
-            elif not values[0].is_null():
+            elif values[0] is not None:
                 cr['error'] = 'null inspectable array element was not preserved'
+            elif values[1] is None:
+                cr['error'] = 'non-null inspectable array element became None'
             elif values[1].identity_raw() != uri._obj.identity_raw():
                 cr['error'] = 'inspectable array element lost COM identity'
             else:
                 cr['pass'] = True
+            if len(values) > 1 and values[1] is not None:
+                values[1].release()
+            if not cr['pass']:
+                return cr
+
+            def unused(_self):
+                raise AssertionError('unexpected IPropertyValue callback')
+
+            value_names = (
+                'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64',
+                'uint64', 'single', 'double', 'char16', 'boolean', 'string',
+                'guid', 'date_time', 'time_span', 'point', 'size', 'rect',
+            )
+            callbacks = {
+                f'get_{name}': unused
+                for name in value_names
+            }
+            callbacks.update({
+                f'get_{name}_array': unused
+                for name in value_names
+            })
+            scalar_values = {
+                'get_uint8': 200,
+                'get_int16': -1234,
+                'get_uint16': 54321,
+                'get_int32': -123456,
+                'get_uint32': 4_000_000_000,
+                'get_int64': -5_000_000_000,
+                'get_uint64': 10_000_000_000,
+                'get_single': 1.25,
+                'get_double': -2.5,
+                'get_char16': 'Z',
+                'get_boolean': True,
+                'get_string': 'dynwinrt',
+                'get_guid': UUID('01234567-89ab-cdef-0123-456789abcdef'),
+            }
+            array_values = {
+                'get_uint8_array': bytes([0, 255]),
+                'get_int16_array': [-1234, 2345],
+                'get_uint16_array': [0, 65535],
+                'get_int32_array': [1, -2],
+                'get_uint32_array': [0, 4_000_000_000],
+                'get_int64_array': [-5_000_000_000, 5_000_000_000],
+                'get_uint64_array': [0, 10_000_000_000],
+                'get_single_array': [1.25, -0.5],
+                'get_double_array': [2.5, -4.0],
+                'get_char16_array': ['A', 'Z'],
+                'get_boolean_array': [True, False],
+                'get_string_array': ['first', 'second'],
+                'get_guid_array': [scalar_values['get_guid']],
+            }
+
+            def returning(value):
+                return lambda _self: value
+
+            callbacks.update({
+                name: returning(value)
+                for name, value in scalar_values.items()
+            })
+            callbacks.update({
+                name: returning(value)
+                for name, value in array_values.items()
+            })
+            callbacks.update({
+                'get_type': lambda _self: property_type_cls.Int32,
+                'get_is_numeric_scalar': lambda _self: True,
+                'get_inspectable_array': lambda _self: [None, uri._obj],
+            })
+            handlers = type('PropertyValueHandlers', (), callbacks)()
+            with property_value_cls.implement(handlers) as implementation:
+                view = implementation.value
+                if view.type != property_type_cls.Int32:
+                    cr['error'] = 'implemented property value returned the wrong type'
+                    return cr
+                if not view.is_numeric_scalar:
+                    cr['error'] = 'implemented property value was not numeric'
+                    return cr
+                for getter, expected in scalar_values.items():
+                    actual = getattr(view, getter)()
+                    if actual != expected:
+                        cr['error'] = (
+                            f'implemented {getter} returned {actual!r}, '
+                            f'expected {expected!r}'
+                        )
+                        return cr
+                for getter, expected in array_values.items():
+                    actual = getattr(view, getter)()
+                    if actual != expected:
+                        cr['error'] = (
+                            f'implemented {getter} returned {actual!r}, '
+                            f'expected {expected!r}'
+                        )
+                        return cr
+                values = view.get_inspectable_array()
+                try:
+                    if len(values) != 2 or values[0] is not None:
+                        cr['error'] = (
+                            'implemented inspectable array did not preserve null'
+                        )
+                        return cr
+                    if values[1] is None:
+                        cr['error'] = (
+                            'implemented inspectable array lost its object'
+                        )
+                        return cr
+                    if values[1].identity_raw() != uri._obj.identity_raw():
+                        cr['error'] = (
+                            'implemented inspectable array lost COM identity'
+                        )
+                        return cr
+                finally:
+                    if len(values) > 1 and values[1] is not None:
+                        values[1].release()
+            cr['pass'] = True
 
         elif kind == 'projection_identity':
             import weakref

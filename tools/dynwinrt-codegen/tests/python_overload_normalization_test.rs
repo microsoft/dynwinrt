@@ -843,11 +843,11 @@ def formatting(formatter: DecimalFormatter) -> None:
     assert_type(formatter.format_u_int(5), str)
 
 async def storage(file: StorageFile, folder: StorageFolder) -> None:
-    assert_type(await file.copy_async(folder), StorageFile | None)
-    assert_type(await file.copy_async(folder, "name.txt"), StorageFile | None)
+    assert_type(await file.copy_async(folder), StorageFile)
+    assert_type(await file.copy_async(folder, "name.txt"), StorageFile)
     option = NameCollisionOption.ReplaceExisting
-    assert_type(await file.copy_async(folder, "name.txt", option), StorageFile | None)
-    assert_type(await file.copy_overload(folder, "name.txt", option), StorageFile | None)
+    assert_type(await file.copy_async(folder, "name.txt", option), StorageFile)
+    assert_type(await file.copy_overload(folder, "name.txt", option), StorageFile)
     await file.move_async(folder)
 
 async def launching(file: StorageFile, uri: Uri) -> None:

@@ -14,6 +14,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::{FieldMeta, TypeMeta};
+use windows_metadata::{
+    MethodAttributes, MethodCallAttributes, MethodImplAttributes, ParamAttributes, Signature, Type,
+    TypeAttributes, Value, writer,
+};
 
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -73,6 +77,420 @@ fn class_wrapper(module: &str, class: &str, argument: &str) -> String {
         "(lambda value: None if value.is_null() else \
          _dynwinrt_symbol('{module}', '{class}')._from_native(value))({argument})"
     )
+}
+
+fn guid(file: &mut writer::File, definition: writer::TypeDef, id: u32) {
+    let attribute = file.TypeRef("Windows.Foundation.Metadata", "GuidAttribute");
+    let constructor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![
+                Type::U32,
+                Type::U16,
+                Type::U16,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+                Type::U8,
+            ],
+        },
+        writer::MemberRefParent::TypeRef(attribute),
+    );
+    let values = [
+        Value::U32(id),
+        Value::U16(0x6281),
+        Value::U16(0x4900),
+        Value::U8(0xb7),
+        Value::U8(0x82),
+        Value::U8(4),
+        Value::U8(3),
+        Value::U8(2),
+        Value::U8(1),
+        Value::U8(9),
+        Value::U8(0x10),
+    ]
+    .into_iter()
+    .map(|value| (String::new(), value))
+    .collect::<Vec<_>>();
+    file.Attribute(
+        writer::HasAttribute::TypeDef(definition),
+        writer::AttributeType::MemberRef(constructor),
+        &values,
+    );
+}
+
+fn write_nested_delegate_metadata(path: &Path) {
+    let mut file = writer::File::new("NestedDelegateCallbacks");
+    let base = file.TypeRef("System", "MulticastDelegate");
+    for (name, id, argument) in [
+        ("InnerHandler", 0x31d447a1, None),
+        (
+            "OuterHandler",
+            0x31d447a2,
+            Some(Type::named("Audit", "InnerHandler")),
+        ),
+    ] {
+        let definition = file.TypeDef(
+            "Audit",
+            name,
+            writer::TypeDefOrRef::TypeRef(base),
+            TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+        );
+        guid(&mut file, definition, id);
+        file.MethodDef(
+            ".ctor",
+            &Signature {
+                flags: MethodCallAttributes::HASTHIS,
+                return_type: Type::Void,
+                types: vec![],
+            },
+            MethodAttributes::Public | MethodAttributes::SpecialName,
+            MethodImplAttributes::default(),
+        );
+        file.MethodDef(
+            "Invoke",
+            &Signature {
+                flags: MethodCallAttributes::HASTHIS,
+                return_type: Type::Void,
+                types: argument.iter().cloned().collect(),
+            },
+            MethodAttributes::Public | MethodAttributes::Virtual | MethodAttributes::NewSlot,
+            MethodImplAttributes::default(),
+        );
+        if argument.is_some() {
+            file.Param("inner", 1, ParamAttributes::In);
+        }
+    }
+    let emitter = file.TypeDef(
+        "Audit",
+        "IEmitter",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public
+            | TypeAttributes::Interface
+            | TypeAttributes::Abstract
+            | TypeAttributes::WindowsRuntime,
+    );
+    guid(&mut file, emitter, 0x31d447a3);
+    file.MethodDef(
+        "SetHandler",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![Type::named("Audit", "OuterHandler")],
+        },
+        MethodAttributes::Public
+            | MethodAttributes::Abstract
+            | MethodAttributes::Virtual
+            | MethodAttributes::NewSlot,
+        MethodImplAttributes::default(),
+    );
+    file.Param("handler", 1, ParamAttributes::In);
+    fs::write(path, file.into_stream()).unwrap();
+}
+
+fn generate_nested_delegate_views(binary: &Path, metadata: &Path, generated: &Path) {
+    let output = Command::new(binary)
+        .args(["generate", "--winmd"])
+        .arg(metadata)
+        .args(["--namespace", "Audit", "--lang", "py", "--output"])
+        .arg(generated)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn nested_delegate_callback_argument_preserves_native_null() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target")
+        .join(format!(
+            "nd{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+    fs::create_dir_all(&root).unwrap();
+    let fixture = Output(root);
+    let metadata = fixture.0.join("Nested.winmd");
+    write_nested_delegate_metadata(&metadata);
+    let generated = fixture.0.join("projected");
+    generate_nested_delegate_views(
+        Path::new(env!("CARGO_BIN_EXE_dynwinrt-codegen")),
+        &metadata,
+        &generated,
+    );
+    let stub = fs::read_to_string(generated.join("audit__i_emitter.pyi")).unwrap();
+    let signature = stub
+        .lines()
+        .rev()
+        .find(|line| line.contains("def set_handler("))
+        .expect("generated IEmitter.set_handler signature");
+    assert_eq!(
+        signature,
+        "    def set_handler(self, handler: Callable[[DynWinRTValue | None], object] | \
+         'DynWinRTValue | DynWinRtDelegate') -> None: ..."
+    );
+    assert!(
+        !stub.contains("from .audit__inner_handler import IID_InnerHandler, InnerHandler"),
+        "{stub}"
+    );
+    let runtime = fs::read_to_string(generated.join("audit__i_emitter.py")).unwrap();
+    let null_projection =
+        "lambda __p0__: ((lambda value: None if value.is_null() else value)(__p0__),)";
+    assert!(runtime.contains(null_projection), "{runtime}");
+
+    if let Some(main_codegen) = std::env::var_os("DYNWINRT_MAIN_CODEGEN") {
+        let baseline = fixture.0.join("main");
+        generate_nested_delegate_views(Path::new(&main_codegen), &metadata, &baseline);
+        let main_stub = fs::read_to_string(baseline.join("audit__i_emitter.pyi")).unwrap();
+        let main_signature = main_stub
+            .lines()
+            .rev()
+            .find(|line| line.contains("def set_handler("))
+            .expect("main IEmitter.set_handler signature");
+        assert_eq!(signature, main_signature);
+        let main_runtime = fs::read_to_string(baseline.join("audit__i_emitter.py")).unwrap();
+        assert!(main_runtime.contains(null_projection), "{main_runtime}");
+        eprintln!("#191 main and #190 IEmitter stubs: {signature}");
+    }
+
+    let python = std::env::var_os("DYNWINRT_TEST_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("python"));
+    let checker = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests")
+        .join("e2e")
+        .join("check_generated_python.py");
+    let checked = Command::new(&python)
+        .arg(checker)
+        .arg(&generated)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let mypy_available = Command::new(&python)
+        .args(["-m", "mypy", "--version"])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        mypy_available || std::env::var("DYNWINRT_REQUIRE_MYPY").as_deref() != Ok("1"),
+        "DYNWINRT_REQUIRE_MYPY=1 but mypy is unavailable"
+    );
+    for (file, consumer, expected_errors) in [
+        (
+            "valid.py",
+            r#"from typing import assert_type
+from dynwinrt import DynWinRTValue, DynWinRtDelegate
+from projected.audit import IEmitter
+
+def use(emitter: IEmitter, raw: DynWinRTValue, native: DynWinRtDelegate) -> None:
+    def callback(inner: DynWinRTValue | None) -> None:
+        if inner is not None:
+            inner.identity_raw()
+    emitter.set_handler(callback)
+    emitter.set_handler(lambda inner: assert_type(inner, DynWinRTValue | None))
+    emitter.set_handler(raw)
+    emitter.set_handler(native)
+"#,
+            0,
+        ),
+        (
+            "invalid.py",
+            r#"from dynwinrt import DynWinRTValue
+from projected.audit import IEmitter
+
+def nonnullable(inner: DynWinRTValue) -> None: ...
+def invalid(emitter: IEmitter) -> None:
+    emitter.set_handler(nonnullable)
+"#,
+            1,
+        ),
+    ] {
+        fs::write(
+            fixture.0.join(file),
+            format!("# pyright: strict, reportPrivateUsage=false\n{consumer}"),
+        )
+        .unwrap();
+        if mypy_available {
+            let output = Command::new(&python)
+                .args([
+                    "-B",
+                    "-m",
+                    "mypy",
+                    "--strict",
+                    "--no-incremental",
+                    "--follow-imports=silent",
+                    "--no-pretty",
+                    "--show-error-codes",
+                    "--cache-dir",
+                    ".mypy_cache",
+                ])
+                .arg(file)
+                .current_dir(&fixture.0)
+                .env(
+                    "MYPYPATH",
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("..")
+                        .join("..")
+                        .join("bindings")
+                        .join("py"),
+                )
+                .output()
+                .unwrap();
+            let diagnostics = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let errors = diagnostics
+                .lines()
+                .filter(|line| line.contains(": error:"))
+                .count();
+            assert_eq!(errors, expected_errors, "{diagnostics}");
+            assert_eq!(
+                output.status.success(),
+                expected_errors == 0,
+                "{diagnostics}"
+            );
+            if expected_errors != 0 {
+                assert!(diagnostics.contains("[arg-type]"), "{diagnostics}");
+            }
+        }
+        if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
+            let output = Command::new(pyright)
+                .args(["--pythonpath"])
+                .arg(&python)
+                .arg(file)
+                .current_dir(&fixture.0)
+                .output()
+                .unwrap();
+            let diagnostics = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let errors = diagnostics
+                .lines()
+                .filter(|line| line.contains(" - error: "))
+                .count();
+            assert_eq!(errors, expected_errors, "{diagnostics}");
+            assert_eq!(
+                output.status.success(),
+                expected_errors == 0,
+                "{diagnostics}"
+            );
+            if expected_errors != 0 {
+                assert!(diagnostics.contains("reportArgumentType"), "{diagnostics}");
+            }
+        }
+    }
+
+    let runtime_available = Command::new(&python)
+        .args(["-c", "from dynwinrt import DynWinRTImplementation"])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        runtime_available
+            || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
+        "the nested delegate callback probe requires the matching Python binding"
+    );
+    if !runtime_available {
+        eprintln!("Skipping nested delegate native callback: set DYNWINRT_TEST_PYTHON.");
+        return;
+    }
+    fs::write(
+        fixture.0.join("native.py"),
+        r#"from dynwinrt import (
+    DynWinRTImplementation, DynWinRTImplementationMethod, DynWinRTInterfacePlan,
+    DynWinRTMethodSig, DynWinRTType, DynWinRTValue, DynWinRtDelegate, RoApartment,
+    WinGUID, projected_lifetime_scope, release_projected,
+)
+from projected.audit import IEmitter
+
+inner_iid = WinGUID.parse("31d447a1-6281-4900-b782-040302010910")
+outer_iid = WinGUID.parse("31d447a2-6281-4900-b782-040302010910")
+emitter_iid = WinGUID.parse("31d447a3-6281-4900-b782-040302010910")
+emitter_sig = DynWinRTMethodSig().add_in(DynWinRTType.delegate(outer_iid))
+emitter_type = DynWinRTType.register_interface("Audit.IEmitter", emitter_iid)
+emitter_type = emitter_type.add_method("SetHandler", emitter_sig)
+plan = DynWinRTInterfacePlan.create(
+    "Audit.IEmitter", emitter_type,
+    [DynWinRTImplementationMethod("SetHandler", 6, emitter_sig)],
+)
+outer_sig = DynWinRTMethodSig().add_in(DynWinRTType.delegate(inner_iid))
+received = []
+
+with RoApartment(1), projected_lifetime_scope():
+    inner = DynWinRtDelegate.create(inner_iid, [], lambda: None)
+    inner_value = inner.to_value()
+    def callback(argument):
+        if argument is None:
+            received.append(None)
+        else:
+            assert isinstance(argument, DynWinRTValue), type(argument)
+            assert not argument.is_null()
+            received.append(argument.identity_raw() == inner_value.identity_raw())
+    def dispatch(_interface, slot, args):
+        assert slot == 6
+        args[0].invoke_delegate(outer_iid, outer_sig, [DynWinRTValue.null_value()])
+        args[0].invoke_delegate(outer_iid, outer_sig, [inner_value])
+        return []
+    try:
+        with DynWinRTImplementation.create([plan], dispatch) as owner:
+            value = owner.to_value()
+            try:
+                emitter = IEmitter.from_value(value)
+                try:
+                    emitter.set_handler(callback)
+                finally:
+                    release_projected(emitter)
+            finally:
+                value.release()
+    finally:
+        inner_value.release()
+assert received == [None, True], received
+print("delegate-typed-native-null-ok", received)
+"#,
+    )
+    .unwrap();
+    let output = Command::new(&python)
+        .args(["-B", "native.py"])
+        .current_dir(&fixture.0)
+        .output()
+        .unwrap();
+    let diagnostics = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{diagnostics}");
+    assert!(
+        diagnostics.contains("delegate-typed-native-null-ok [None, True]"),
+        "{diagnostics}"
+    );
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
 }
 
 #[test]

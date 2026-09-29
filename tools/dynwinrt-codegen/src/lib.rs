@@ -5,6 +5,7 @@ pub mod codegen;
 mod com_activation_registry;
 pub mod com_metadata;
 mod contract_registry;
+mod documented_nulls;
 pub mod meta;
 pub mod types;
 mod win32_contracts;

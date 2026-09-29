@@ -158,8 +158,8 @@ class ReferenceHandlers:
             handler(self.sender, None)
         return EventRegistrationToken(value=1)
 
-    def remove_closed(self, token: EventRegistrationToken) -> None:
-        value: int = token.value
+    def remove_closed(self, cookie: EventRegistrationToken) -> None:
+        value: int = cookie.value
         assert value == 1
 
 
@@ -205,8 +205,8 @@ class ReaderHandlers:
     detach_buffer = unused
     detach_stream = unused
 
-    def read_bytes(self, capacity: int) -> bytes:
-        return bytes(capacity)
+    def read_bytes(self, value_capacity: int) -> bytes:
+        return bytes(value_capacity)
 
 
 class WriterHandlers:

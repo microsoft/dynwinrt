@@ -135,7 +135,7 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         "{class_stub}"
     );
     assert!(
-        class_stub.contains("def use_base(self, value: 'BaseLike') -> Base | None:"),
+        class_stub.contains("def use_base(self, value: 'BaseLike') -> Base:"),
         "{class_stub}"
     );
     assert!(

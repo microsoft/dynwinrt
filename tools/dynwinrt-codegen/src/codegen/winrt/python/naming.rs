@@ -19,6 +19,7 @@ pub type PythonTypeIdentity = TypeIdentity;
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
     AsInterface,
+    CollectionItem,
     CanCast,
     LegacyCall,
     LegacyIntGuard,
@@ -29,6 +30,7 @@ impl PythonSupportSymbol {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
             Self::AsInterface => "_dynwinrt_as_interface",
+            Self::CollectionItem => "_dynwinrt_collection_item",
             Self::CanCast => "_dynwinrt_can_cast",
             Self::LegacyCall => "_dynwinrt_legacy_call",
             Self::LegacyIntGuard => "_dynwinrt_legacy_int_guard",
@@ -972,6 +974,7 @@ impl PythonProjectionContext {
         for helper in [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CollectionItem,
             PythonSupportSymbol::CanCast,
             PythonSupportSymbol::LegacyCall,
             PythonSupportSymbol::LegacyIntGuard,
@@ -1544,6 +1547,7 @@ mod tests {
         let others = [
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::AsInterface,
+            PythonSupportSymbol::CollectionItem,
             PythonSupportSymbol::CanCast,
             PythonSupportSymbol::LegacyCall,
             PythonSupportSymbol::LegacyIntGuard,
@@ -1605,6 +1609,11 @@ mod tests {
     #[test]
     fn as_interface_helper_yields_to_visible_roles_without_renaming_metadata() {
         assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::AsInterface);
+    }
+
+    #[test]
+    fn collection_item_helper_yields_to_visible_roles_without_renaming_metadata() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::CollectionItem);
     }
 
     #[test]

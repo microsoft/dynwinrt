@@ -15,14 +15,15 @@ use super::delegates::{
 };
 use super::member_plan::{Candidate, LegacyPreservation, MethodGroup};
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, to_snake_case};
+use super::nullability::AnnotationSurface;
 use super::signature::{
     LegacyPreservationPredicate, py_convert_return, py_has_permissive_guard,
     py_interface_cast_guard, py_type_guard, py_wrap_arg, py_wrap_async,
-    py_wrap_async_with_converters,
+    py_wrap_async_with_converters, py_wrap_collection_input,
 };
 use super::type_helpers::{
     method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
-    py_method_return_type, py_output_type, py_runtime_param_list,
+    py_method_return_type, py_property_type, py_runtime_method_param_list,
 };
 
 fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
@@ -55,13 +56,28 @@ pub(crate) fn py_wrap_method_arg(
     py_wrap_arg(name, typ, context)
 }
 
-fn py_build_method_args_expr(
-    in_params: &[&crate::meta::ParamMeta],
-    context: &PythonProjectionContext,
-) -> String {
-    in_params
+fn py_build_method_args_expr(method: &MethodMeta, context: &PythonProjectionContext) -> String {
+    method
+        .params
         .iter()
-        .map(|param| py_wrap_method_arg(&to_snake_case(&param.name), &param.typ, context))
+        .enumerate()
+        .filter(|(_, param)| {
+            matches!(
+                param.direction,
+                crate::meta::ParamDirection::In | crate::meta::ParamDirection::OutFill
+            )
+        })
+        .map(|(index, param)| {
+            let name = to_snake_case(&param.name);
+            match method
+                .collection_inputs
+                .iter()
+                .find_map(|(parameter, role)| (*parameter == index).then_some(*role))
+            {
+                Some(role) => py_wrap_collection_input(&name, &param.typ, role, context),
+                None => py_wrap_method_arg(&name, &param.typ, context),
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -401,9 +417,14 @@ fn generate_factory_method_invoke_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_runtime_param_list(&in_params, context);
+    let py_params = py_runtime_method_param_list(method, context);
 
-    let return_py_type = py_factory_return_type(&context.class_name(class), method, context);
+    let return_py_type = py_factory_return_type(
+        &context.class_name(class),
+        method,
+        AnnotationSurface::Runtime,
+        context,
+    );
 
     let mut out = String::new();
     let method_name = name_override
@@ -424,7 +445,7 @@ fn generate_factory_method_invoke_named(
     }
     out.push_str(&method_pydoc(method, &in_params));
 
-    let args_expr = py_build_method_args_expr(&in_params, context);
+    let args_expr = py_build_method_args_expr(method, context);
     let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
         &context.registration_symbol(iface),
@@ -479,9 +500,9 @@ fn generate_static_method_invoke_named(
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_runtime_param_list(&in_params, context);
+    let py_params = py_runtime_method_param_list(method, context);
 
-    let py_return = py_method_return_type(method, context);
+    let py_return = py_method_return_type(method, AnnotationSurface::Runtime, context);
 
     let mut out = String::new();
     let iface_symbol = context.reference_name(&iface.type_identity());
@@ -524,7 +545,7 @@ fn generate_static_method_invoke_named(
             ));
         }
         out.push_str(&method_pydoc(method, &in_params));
-        let args_expr = py_build_method_args_expr(&in_params, context);
+        let args_expr = py_build_method_args_expr(method, context);
         let call_expr = method_call_expr(
             &context.registration_symbol(iface),
             method,
@@ -873,7 +894,7 @@ pub(crate) fn generate_method_body(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_output_type(typ, context))
+            .map(|typ| py_property_type(method, typ, AnnotationSurface::Runtime, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
@@ -914,8 +935,8 @@ pub(crate) fn generate_method_body(
             iface_var, method.vtable_index, obj_expr, arg
         ));
     } else {
-        let py_params = py_runtime_param_list(&in_params, context);
-        let py_return = py_method_return_type(method, context);
+        let py_params = py_runtime_method_param_list(method, context);
+        let py_return = py_method_return_type(method, AnnotationSurface::Runtime, context);
         let method_name = name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -931,7 +952,7 @@ pub(crate) fn generate_method_body(
         ));
         out.push_str(&method_pydoc(method, &in_params));
 
-        let args_expr = py_build_method_args_expr(&in_params, context);
+        let args_expr = py_build_method_args_expr(method, context);
         let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr, context);
         emit_method_result(&mut out, &call_expr, method, context);
     }

@@ -14,6 +14,7 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
+from ._runtime import _dynwinrt_collection_item
 from dynwinrt.dynwinrt import _WinRTIterableMixin, _WinRTSequenceMixin
 
 if TYPE_CHECKING:
@@ -99,8 +100,8 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
     def get_at(self, index: int) -> IWwwFormUrlDecoderEntry | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(value))(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._collection_obj, [DynWinRTValue.from_u32(index)]))
 
-    def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]:
-        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._collection_obj, [getattr(value, '_obj', value)])
+    def index_of(self, value: IWwwFormUrlDecoderEntry | None) -> tuple[int, bool]:
+        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._collection_obj, [_dynwinrt_collection_item(value, lambda item: getattr(item, '_obj', item), True, 'collection element')])
         return (_results[0].to_u32(), _results[1].to_bool())
 
     def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list[IWwwFormUrlDecoderEntry | None]:
@@ -151,8 +152,8 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
     def get_at(self, index: int) -> IWwwFormUrlDecoderEntry | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(value))(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, [DynWinRTValue.from_u32(index)]))
 
-    def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]:
-        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._obj, [getattr(value, '_obj', value)])
+    def index_of(self, value: IWwwFormUrlDecoderEntry | None) -> tuple[int, bool]:
+        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._obj, [_dynwinrt_collection_item(value, lambda item: getattr(item, '_obj', item), True, 'collection element')])
         return (_results[0].to_u32(), _results[1].to_bool())
 
     def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list[IWwwFormUrlDecoderEntry | None]:

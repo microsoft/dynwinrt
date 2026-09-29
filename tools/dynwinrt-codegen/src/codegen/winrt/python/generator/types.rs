@@ -11,6 +11,7 @@ use crate::codegen::winrt::python::collections::{
     observable_map_identity, observable_vector_identity, runtime_mixin,
 };
 use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
+use crate::meta::CollectionInputRole;
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
@@ -98,6 +99,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         context,
         plan.has_legacy_fallback(),
         plan.has_legacy_int_guard(),
+    ));
+    out.push_str(&collection_item_import(
+        context,
+        iface.methods.iter(),
+        interface_kind(iface).is_some(),
     ));
     if implementation.supported {
         out.push_str(super::super::implementation::IMPORTS);
@@ -370,11 +376,17 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     if let Some(ref piid) = iface.generic_piid {
         if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
-            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let elem_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
+            let wrap = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[0],
+                CollectionInputRole::Element,
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             let vector_identity = observable_vector
                 .as_ref()
                 .expect("observable vector companion");
@@ -395,11 +407,17 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             out.push('\n');
         } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
-            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let elem_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
+            let wrap = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[0],
+                CollectionInputRole::Element,
                 context,
             );
-            let wrap = py_wrap_native_value("item", &iface.generic_args[0], context);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Iterable[{}]) -> '{}':\n",
@@ -413,16 +431,28 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
             let key_type = py_dynwinrt_type(&iface.generic_args[0]);
             let val_type = py_dynwinrt_type(&iface.generic_args[1]);
-            let key_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let key_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[0],
+                    context,
+                );
+            let val_annotation =
+                crate::codegen::winrt::python::type_helpers::py_collection_input_type(
+                    &iface.generic_args[1],
+                    context,
+                );
+            let wrap_key = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[0],
+                CollectionInputRole::Key,
                 context,
             );
-            let val_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+            let wrap_value = py_wrap_collection_item(
+                "item",
                 &iface.generic_args[1],
+                CollectionInputRole::Value,
                 context,
             );
-            let wrap_key = py_wrap_native_value("item", &iface.generic_args[0], context);
-            let wrap_value = py_wrap_native_value("item", &iface.generic_args[1], context);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Mapping[{}, {}]) -> '{}':\n",
@@ -742,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_create_inputs_remain_non_nullable() {
+    fn collection_create_reference_inputs_accept_none() {
         let iface = InterfaceMeta {
             name: "IVector_Widget".into(),
             iid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
@@ -761,7 +791,127 @@ mod tests {
         .unwrap();
         let code = generate_interface(&context, &iface);
 
-        assert!(code.contains("def create(items: Iterable['WidgetLike'])"));
-        assert!(!code.contains("def create(items: Iterable[WidgetLike | None])"));
+        assert!(code.contains("def create(items: Iterable[WidgetLike | None])"));
+        assert!(code.contains(
+            "_dynwinrt_collection_item(item, lambda item: getattr(item, '_obj', item), True, 'collection element')"
+        ));
+    }
+
+    #[test]
+    fn collection_factories_alias_a_colliding_item_helper() {
+        let colliding = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "_dynwinrt_collection_item".into(),
+            default_interface: None,
+        };
+        let vector = InterfaceMeta {
+            name: "IVector_Collision".into(),
+            iid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
+            generic_piid: Some("913337e9-11a1-4345-a3a2-4e7f956e222d".into()),
+            generic_args: vec![colliding.clone()],
+            methods: vec![MethodMeta {
+                name: "Append".into(),
+                raw_name: "Append".into(),
+                vtable_index: 13,
+                params: vec![crate::meta::ParamMeta {
+                    name: "value".into(),
+                    typ: colliding.clone(),
+                    direction: ParamDirection::In,
+                }],
+                collection_inputs: vec![(0, crate::meta::CollectionInputRole::Element)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let map = InterfaceMeta {
+            name: "IMap_Collision_Collision".into(),
+            iid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            generic_piid: Some("3c2925fe-8519-45c1-aa79-197b6718c1c1".into()),
+            generic_args: vec![colliding.clone(), colliding.clone()],
+            methods: vec![MethodMeta {
+                name: "Insert".into(),
+                raw_name: "Insert".into(),
+                vtable_index: 10,
+                params: vec![
+                    crate::meta::ParamMeta {
+                        name: "key".into(),
+                        typ: colliding.clone(),
+                        direction: ParamDirection::In,
+                    },
+                    crate::meta::ParamMeta {
+                        name: "value".into(),
+                        typ: colliding.clone(),
+                        direction: ParamDirection::In,
+                    },
+                ],
+                return_type: Some(TypeMeta::Bool),
+                collection_inputs: vec![
+                    (0, crate::meta::CollectionInputRole::Key),
+                    (1, crate::meta::CollectionInputRole::Value),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let interfaces = [vector, map];
+        let context = PythonProjectionContext::packaged(
+            interfaces
+                .iter()
+                .map(InterfaceMeta::type_identity)
+                .chain([colliding.type_identity()]),
+        )
+        .unwrap();
+
+        for interface in &interfaces {
+            let code = generate_interface(&context, interface);
+            assert!(
+                code.contains(
+                    "from ._runtime import _dynwinrt_collection_item as _dynwinrt_collection_item_2"
+                ),
+                "{code}"
+            );
+            assert!(code.contains("def create("), "{code}");
+            assert!(code.contains("_dynwinrt_collection_item_2(item,"), "{code}");
+            assert!(
+                !code.contains("lambda item: _dynwinrt_collection_item(item,"),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_factory_key_nullability_follows_the_declared_key_type() {
+        let reference_key = TypeMeta::Interface {
+            namespace: "Windows.Foundation".into(),
+            name: "IStringable".into(),
+            iid: "96369f54-8eb6-48f0-abce-c1b211e627c3".into(),
+        };
+        let iface = |key| InterfaceMeta {
+            name: "IMap_Key_Object".into(),
+            iid: "3c2925fe-8519-45c1-aa79-197b6718c1c1".into(),
+            generic_piid: Some("3c2925fe-8519-45c1-aa79-197b6718c1c1".into()),
+            generic_args: vec![key, TypeMeta::Object],
+            ..Default::default()
+        };
+        let context = PythonProjectionContext::default();
+
+        let reference = generate_interface(&context, &iface(reference_key));
+        let create = reference
+            .lines()
+            .find(|line| line.contains("def create(items: Mapping["))
+            .expect("map factory");
+        assert!(
+            create.contains("None"),
+            "reference-key map factory must accept None: {create}"
+        );
+        assert!(reference.contains("True, 'map key'"));
+        assert!(reference.contains("True, 'map value'"));
+
+        for key in [TypeMeta::String, TypeMeta::Guid] {
+            let generated = generate_interface(&context, &iface(key));
+            assert!(generated.contains("False, 'map key'"));
+            assert!(!generated.contains("Mapping[str | None"));
+            assert!(!generated.contains("Mapping[UUID | None"));
+        }
     }
 }

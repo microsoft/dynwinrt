@@ -8,13 +8,12 @@
 //! substituted, drives both the `Callable[...]` annotation offered to callers
 //! and the adapter that projects native arguments before the callable runs.
 
-use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::meta::{ParamDirection, ParamMeta};
 use crate::types::TypeMeta;
 
 use super::naming::PythonProjectionContext;
 use super::signature::{py_convert_return, py_runtime_symbol};
-use super::type_helpers::{py_output_type, py_return_type, py_return_type_safe};
+use super::type_helpers::{py_callback_param_type, py_return_type_safe};
 
 /// Generated symbols that describe a delegate's native ABI.
 pub(crate) struct DelegateAbi {
@@ -64,21 +63,17 @@ fn callback_params<'a>(
 
 /// Annotation of one argument passed to a Python callback.
 ///
-/// Callback arguments are annotated as non-null, except WinRT `Object` and
-/// `IReference<T>`. WinMD metadata does not record nullability, so this is an
-/// optimistic policy shared with method outputs: the runtime still passes
-/// `None` for a null reference. Every callback-argument annotation goes through
-/// this function so a position-aware output-nullability policy can take it
-/// over.
+/// Callback arguments are annotated as non-null, except WinRT `Object`,
+/// `IReference<T>`, and delegate-typed raw values. WinMD metadata does not
+/// record nullability, so this is an optimistic policy shared with method
+/// outputs: the runtime still passes `None` for a null reference. Every
+/// callback-argument annotation goes through the central output policy.
 pub(crate) fn py_delegate_argument_type(
     typ: &TypeMeta,
     context: &PythonProjectionContext,
 ) -> String {
     if typ.is_async() {
         return "DynWinRTValue".to_string();
-    }
-    if context.is_delegate_type(typ) {
-        return py_output_type(typ, context);
     }
     let unknown = matches!(
         typ,
@@ -87,10 +82,10 @@ pub(crate) fn py_delegate_argument_type(
             | TypeMeta::Enum { .. }
             | TypeMeta::Parameterized { .. }
     ) && !context.is_known_type(typ);
-    if unknown || matches!(typ, TypeMeta::Object) || ireference_inner_type(typ).is_some() {
+    if unknown {
         py_return_type_safe(Some(typ), context)
     } else {
-        py_return_type(Some(typ), context)
+        py_callback_param_type(typ, context)
     }
 }
 
