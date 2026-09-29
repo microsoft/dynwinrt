@@ -4,7 +4,7 @@
 //! Rendering helpers for Python type stubs.
 
 use crate::codegen::winrt::shared::imports::get_in_params;
-use crate::meta::MethodMeta;
+use crate::meta::{CollectionInputRole, MethodMeta};
 use crate::types::{FieldMeta, TypeMeta};
 
 use super::delegates::{py_delegate_callable_type, py_delegate_param_type};
@@ -14,7 +14,8 @@ use super::nullability::{AnnotationSurface, ElementContainer};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
     method_pydoc_with_indent, py_collection_item_type, py_factory_return_type,
-    py_method_param_list, py_method_return_type, py_param_type_safe, py_property_type,
+    py_method_param_list, py_method_param_list_for_receiver, py_method_return_type,
+    py_param_type_safe, py_property_type,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -185,6 +186,7 @@ pub(super) fn emit_method_stub(
     event_has_remove: bool,
     property_has_getter: bool,
     overrides_mutable_sequence: bool,
+    stock_json_receiver: bool,
 ) -> String {
     emit_method_stub_named(
         method,
@@ -194,6 +196,7 @@ pub(super) fn emit_method_stub(
         event_has_remove,
         property_has_getter,
         overrides_mutable_sequence,
+        stock_json_receiver,
     )
 }
 
@@ -215,6 +218,7 @@ pub(super) fn emit_method_stub_named(
     event_has_remove: bool,
     property_has_getter: bool,
     overrides_mutable_sequence: bool,
+    stock_json_receiver: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
@@ -324,8 +328,22 @@ pub(super) fn emit_method_stub_named(
             );
         }
     } else {
-        let py_params = py_method_param_list(method, context);
-        let py_return = py_method_return_type(method, AnnotationSurface::Stub, context);
+        let py_params = py_method_param_list_for_receiver(method, context, stock_json_receiver);
+        let py_return = match (stock_json_receiver, method.raw_name.as_str(), return_type) {
+            (true, "GetAt", Some(typ))
+                if super::collections::non_null_json_input(CollectionInputRole::Element, typ)
+                    .is_some() =>
+            {
+                py_param_type_safe(typ, context)
+            }
+            (true, "Lookup", Some(typ))
+                if super::collections::non_null_json_input(CollectionInputRole::Value, typ)
+                    .is_some() =>
+            {
+                py_param_type_safe(typ, context)
+            }
+            _ => py_method_return_type(method, AnnotationSurface::Stub, context),
+        };
         let method_name = name_override
             .map(str::to_string)
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -340,6 +358,7 @@ pub(super) fn emit_method_stub_named(
         // them. Empty structural protocols can make mypy consider the
         // override compatible.
         let override_ignore = if overrides_mutable_sequence
+            && !stock_json_receiver
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
                 py_param_type_safe(&param.typ, context)
@@ -463,6 +482,7 @@ mod tests {
             true,
             true,
             false,
+            false,
         );
         assert!(code.contains("def on_changed("));
         assert!(code.contains("-> 'DynWinRTValue': ..."));
@@ -478,6 +498,7 @@ mod tests {
             4,
             false,
             true,
+            false,
             false,
         );
         assert!(code.contains("def on_changed("));
@@ -504,7 +525,15 @@ mod tests {
         };
         let context =
             PythonProjectionContext::standalone([reference_type.type_identity()]).unwrap();
-        let reference = emit_method_stub(&append(reference_type), &context, 4, false, true, true);
+        let reference = emit_method_stub(
+            &append(reference_type),
+            &context,
+            4,
+            false,
+            true,
+            true,
+            false,
+        );
         let scalar = emit_method_stub(
             &append(TypeMeta::I32),
             &PythonProjectionContext::default(),
@@ -512,6 +541,7 @@ mod tests {
             false,
             true,
             true,
+            false,
         );
 
         assert!(reference.contains("type: ignore[override, unused-ignore]"));

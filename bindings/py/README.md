@@ -54,8 +54,8 @@ the array value itself remains non-null. String, GUID, scalar, enum, and struct
 array elements and keys remain non-null. A view or iterator obtained from a
 mutable collection can expose a null slot, and WinRT collection interfaces do
 not retain enough provenance for the stubs to distinguish that case. For
-example, a `JsonArray` holds
-`IJsonValue | None`, and `get_files_async()` returns
+example, a custom `IVector<IJsonValue>` can hold `IJsonValue | None`, and
+`get_files_async()` returns
 `WinRTCoroutine[Sequence[StorageFile | None]]`. Value-type elements remain
 non-null.
 
@@ -64,6 +64,17 @@ type is a WinRT reference type and store a real null WinRT value. This includes
 `append()`, `insert()`, index and slice assignment, `extend()`, `update()` and
 `setdefault()`. String, GUID, scalar, enum, and struct keys and value-type
 elements reject `None` with `TypeError`.
+
+Stock `Windows.Data.Json.JsonArray` and `JsonObject` are exceptions: their
+native APIs reject a null `IJsonValue` pointer. Generated wrappers check the
+receiver's native class before mutation, including generic `IVector<IJsonValue>`
+and `IMap<String, IJsonValue>` views, raw `DynWinRTArray` inputs, `replace_all`,
+slice assignment, `extend` and `update`. A rejected null leaves the JSON
+collection unchanged. Use `JsonValue.create_null_value()` to store JSON
+**semantic** null; it is a non-null `IJsonValue` object. Their class stubs type
+elements as non-null, while generic interface stubs retain `| None` because
+custom implementations can store a native null and a view's origin is only
+known at runtime.
 
 Other arguments keep accepting `None` where they did before. The stubs are
 optimistic, like the generated TypeScript declarations: the runtime still

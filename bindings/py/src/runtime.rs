@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use windows::Win32::System::WinRT::{
     RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RO_INIT_TYPE, RoInitialize,
 };
-use windows::core::{GUID, HSTRING, IUnknown, Interface};
+use windows::core::{GUID, HSTRING, IInspectable, IUnknown, Interface};
 
 use crate::errors::{
     InputSlot, map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error,
@@ -1146,6 +1146,27 @@ impl DynWinRTValue {
         }
     }
 
+    /// Match a native runtime class only after confirming its class interface.
+    /// Custom collections with the same generic IID need not provide a class
+    /// name (or accept the stock class's element contract).
+    fn matches_runtime_class(&self, iid: &GUID, name: &str) -> PyResult<bool> {
+        let receiver = self.receiver("collection runtime-class check")?;
+        let mut raw = std::ptr::null_mut();
+        match unsafe { receiver.query(iid, &mut raw) }.ok() {
+            Ok(()) => {
+                let class_interface = unsafe { IUnknown::from_raw(raw) };
+                let inspectable: IInspectable =
+                    class_interface.cast().map_err(map_windows_error)?;
+                let actual = inspectable
+                    .GetRuntimeClassName()
+                    .map_err(map_windows_error)?;
+                Ok(actual == name)
+            }
+            Err(error) if error.code() == windows::Win32::Foundation::E_NOINTERFACE => Ok(false),
+            Err(error) => Err(map_windows_error(error)),
+        }
+    }
+
     /// Reject this value if released; `slot` names where `operation` received it.
     pub(crate) fn check_input(&self, operation: &str, slot: InputSlot) -> PyResult<()> {
         match self.1 {
@@ -1624,6 +1645,34 @@ impl DynWinRTValue {
 
     fn is_null(&self) -> bool {
         self.0.is_null_object()
+    }
+
+    fn _matches_runtime_class(&self, iid: &WinGUID, name: &str) -> PyResult<bool> {
+        self.matches_runtime_class(&iid.0, name)
+    }
+
+    /// Validate the receiver-specific native collection contract before any
+    /// method call. An array may already contain nulls when supplied as a
+    /// DynWinRTArray or a raw DynWinRTValue.
+    fn _validate_non_null_collection_input(
+        &self,
+        value: DynWinRTValue,
+        iid: &WinGUID,
+        name: &str,
+    ) -> PyResult<DynWinRTValue> {
+        value.check_input("collection input", InputSlot::Argument(0))?;
+        let contains_null = match &value.0 {
+            dynwinrt::WinRTValue::Array(data) => {
+                (0..data.len()).any(|index| data.get(index).is_null_object())
+            }
+            other => other.is_null_object(),
+        };
+        if contains_null && self.matches_runtime_class(&iid.0, name)? {
+            return Err(PyTypeError::new_err(format!(
+                "{name} requires a non-null IJsonValue; use JsonValue.create_null_value() for JSON null"
+            )));
+        }
+        Ok(value)
     }
 
     /// Guard-only QueryInterface probe; never treats a native failure as a non-match.

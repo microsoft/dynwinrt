@@ -7,8 +7,9 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_identity, observable_collection_identity,
-    observable_map_identity, observable_vector_identity, runtime_mixin,
+    CollectionKind, interface_kind, map_iterable_identity, non_null_json_collection,
+    observable_collection_identity, observable_map_identity, observable_vector_identity,
+    runtime_mixin,
 };
 use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
 use crate::meta::CollectionInputRole;
@@ -308,6 +309,14 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             &py_runtime_symbol(context, identity, &format!("IID_{companion_name}")),
             "_obj",
         );
+    }
+    if let Some(contract) =
+        collection_kind.and_then(|kind| non_null_json_collection(kind, &iface.generic_args))
+    {
+        out.push_str(&format!(
+            "    _dynwinrt_non_null_collection_contract = (WinGUID.parse('{}'), '{}')\n",
+            contract.class_iid, contract.class_name
+        ));
     }
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
     out.push_str(

@@ -8,7 +8,8 @@ use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, class_interface, interface_kind, map_iterable_identity, runtime_mixin,
+    CollectionKind, class_interface, interface_kind, map_iterable_identity,
+    non_null_json_collection, runtime_mixin, stock_json_class_contract,
 };
 use crate::codegen::winrt::python::member_plan::{
     ClassMemberPlan, PlannedMember, ScopePlan, class_instance_interfaces, interface_member_plan,
@@ -41,6 +42,9 @@ pub fn generate_class<'a>(
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let non_null_json = collection_iface
+        .zip(collection_kind)
+        .and_then(|(iface, kind)| non_null_json_collection(kind, &iface.generic_args));
     let known_full_names = context.known_full_names();
     let winui_bootstrap = winui::resolve_application_bootstrap(class, &known_full_names);
     let has_public_composition = class
@@ -328,6 +332,12 @@ pub fn generate_class<'a>(
         out.push_str("    _dynwinrt_runtime_class_type = True\n");
     } else if native_projectable {
         out.push_str("    _dynwinrt_projectable_class_type = True\n");
+    }
+    if let Some(contract) = non_null_json {
+        out.push_str(&format!(
+            "    _dynwinrt_non_null_collection_contract = (WinGUID.parse('{}'), '{}')\n",
+            contract.class_iid, contract.class_name
+        ));
     }
     if matches!(
         collection_kind,
@@ -831,6 +841,14 @@ pub fn generate_class<'a>(
         }
         out.push_str("    _dynwinrt_interface_type = True\n");
         out.push_str(&format!("    _dynwinrt_interface_iid = IID_{symbol}\n"));
+        if let Some(contract) = interface_kind(req_iface)
+            .and_then(|kind| non_null_json_collection(kind, &req_iface.generic_args))
+        {
+            out.push_str(&format!(
+                "    _dynwinrt_non_null_collection_contract = (WinGUID.parse('{}'), '{}')\n",
+                contract.class_iid, contract.class_name
+            ));
+        }
         if matches!(
             interface_kind(req_iface),
             Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
@@ -1333,6 +1351,13 @@ fn generate_python_constructor(
         out.push_str(&format!(
             "                if _allow_native_overrides:\n                    pass\n                else:\n                    raise TypeError(\"{} native overrides require public composable construction: \" + \", \".join(_native_overrides))\n",
             context.class_name(class)
+        ));
+    }
+    if let Some(contract) = stock_json_class_contract(class) {
+        out.push_str(&format!(
+            "        if not obj._matches_runtime_class(WinGUID.parse('{}'), '{}'):\n\
+             \x20           raise TypeError('Expected a native {}')\n",
+            contract.class_iid, contract.class_name, contract.class_name
         ));
     }
     if let Some(default_iface) = &class.default_interface {

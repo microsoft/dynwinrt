@@ -150,9 +150,15 @@ Collection subscripts use the input contract for keys and values: for example,
 `properties["uri"] = uri` accepts a generated `Uri`, while reading the item still
 returns `DynWinRTValue | None`. Sequence item assignment, slice assignment, and
 `insert` likewise accept projected inputs without changing their read types;
-integer indices take one item and slices take an iterable of items. Existing
-nullable `collections.abc` contracts remain unchanged. To pass a native null
-reference, use `DynWinRTValue.null_value()`, not implicit `None` boxing.
+integer indices take one item and slices take an iterable of items. Generic
+nullable `collections.abc` contracts remain unchanged. The stock `JsonArray`
+and `JsonObject` classes instead have non-null `IJsonValue`
+element/value contracts in their stubs. Their native implementations reject
+`None` (including through generic interface views) before mutation; use
+`JsonValue.create_null_value()` for JSON semantic null. A custom
+`IVector<IJsonValue>` or `IMap<String, IJsonValue>` may still store a native null.
+For other nullable WinRT positions, pass `DynWinRTValue.null_value()` rather
+than implicit `None` boxing.
 
 The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the

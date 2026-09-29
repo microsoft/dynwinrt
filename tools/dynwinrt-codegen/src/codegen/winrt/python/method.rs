@@ -9,6 +9,7 @@ use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
+use super::collections::non_null_json_input;
 use super::delegates::{
     py_delegate_input_arg, py_event_handler_arg, py_once_callback_check,
     py_runtime_delegate_callable_type, py_runtime_delegate_param_type,
@@ -56,7 +57,11 @@ pub(crate) fn py_wrap_method_arg(
     py_wrap_arg(name, typ, context)
 }
 
-fn py_build_method_args_expr(method: &MethodMeta, context: &PythonProjectionContext) -> String {
+fn py_build_method_args_expr(
+    method: &MethodMeta,
+    context: &PythonProjectionContext,
+    receiver: Option<&str>,
+) -> String {
     method
         .params
         .iter()
@@ -69,13 +74,23 @@ fn py_build_method_args_expr(method: &MethodMeta, context: &PythonProjectionCont
         })
         .map(|(index, param)| {
             let name = to_snake_case(&param.name);
-            match method
+            let role = method
                 .collection_inputs
                 .iter()
-                .find_map(|(parameter, role)| (*parameter == index).then_some(*role))
-            {
+                .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
+            let wrapped = match role {
                 Some(role) => py_wrap_collection_input(&name, &param.typ, role, context),
                 None => py_wrap_method_arg(&name, &param.typ, context),
+            };
+            if let (Some(receiver), Some(role)) = (receiver, role)
+                && let Some(contract) = non_null_json_input(role, &param.typ)
+            {
+                format!(
+                    "{receiver}._validate_non_null_collection_input({wrapped}, WinGUID.parse('{}'), '{}')",
+                    contract.class_iid, contract.class_name
+                )
+            } else {
+                wrapped
             }
         })
         .collect::<Vec<_>>()
@@ -445,7 +460,7 @@ fn generate_factory_method_invoke_named(
     }
     out.push_str(&method_pydoc(method, &in_params));
 
-    let args_expr = py_build_method_args_expr(method, context);
+    let args_expr = py_build_method_args_expr(method, context, None);
     let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
         &context.registration_symbol(iface),
@@ -545,7 +560,7 @@ fn generate_static_method_invoke_named(
             ));
         }
         out.push_str(&method_pydoc(method, &in_params));
-        let args_expr = py_build_method_args_expr(method, context);
+        let args_expr = py_build_method_args_expr(method, context, None);
         let call_expr = method_call_expr(
             &context.registration_symbol(iface),
             method,
@@ -952,7 +967,7 @@ pub(crate) fn generate_method_body(
         ));
         out.push_str(&method_pydoc(method, &in_params));
 
-        let args_expr = py_build_method_args_expr(method, context);
+        let args_expr = py_build_method_args_expr(method, context, Some(obj_expr));
         let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr, context);
         emit_method_result(&mut out, &call_expr, method, context);
     }

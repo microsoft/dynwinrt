@@ -422,6 +422,22 @@ def _dynwinrt_normalize_index(value, length):
         raise IndexError('collection index out of range')
     return value
 
+def _dynwinrt_preflight_non_null_collection(self, values):
+    contract = getattr(type(self), '_dynwinrt_non_null_collection_contract', None)
+    if contract is None:
+        return None
+    native = getattr(self, '_collection_obj', self._obj)
+    if not native._matches_runtime_class(*contract):
+        return None
+    items = list(values)
+    for item in items:
+        raw = getattr(item, '_obj', item)
+        if raw is None:
+            raw = DynWinRTValue.null_value()
+        if isinstance(raw, DynWinRTValue):
+            native._validate_non_null_collection_input(raw, *contract)
+    return items
+
 class _WinRTSequenceMixin(_Sequence):
     def __len__(self):
         return self.size
@@ -464,6 +480,10 @@ class _WinRTMutableSequenceMixin(_MutableSequence):
         else:
             index = min(index, length)
         self.insert_at(index, value)
+
+    def extend(self, values):
+        checked = _dynwinrt_preflight_non_null_collection(self, values)
+        return super().extend(values if checked is None else checked)
 
 class _WinRTIterableMixin(_Iterable):
     def __iter__(self):
@@ -513,6 +533,22 @@ class _WinRTMutableMappingMixin(_MutableMapping):
         if not self.has_key(key):
             raise KeyError(key)
         self.remove(key)
+
+    def update(self, other=(), /, **kwargs):
+        contract = getattr(type(self), '_dynwinrt_non_null_collection_contract', None)
+        native = getattr(self, '_collection_obj', self._obj)
+        if contract is None or not native._matches_runtime_class(*contract):
+            return super().update(other, **kwargs)
+        if hasattr(other, 'keys'):
+            entries = [(key, other[key]) for key in other.keys()]
+        else:
+            entries = list(other)
+        entries.extend(kwargs.items())
+        for key, _ in entries:
+            if key is None:
+                raise TypeError('map key cannot be None')
+        _dynwinrt_preflight_non_null_collection(self, (value for _, value in entries))
+        return super().update(entries)
 
 async def _dynwinrt_convert_future(future, converter):
     try:

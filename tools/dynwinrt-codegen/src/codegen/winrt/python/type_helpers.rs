@@ -755,6 +755,14 @@ pub(super) fn py_method_param_list(
     method: &MethodMeta,
     context: &PythonProjectionContext,
 ) -> String {
+    py_method_param_list_for_receiver(method, context, false)
+}
+
+pub(super) fn py_method_param_list_for_receiver(
+    method: &MethodMeta,
+    context: &PythonProjectionContext,
+    stock_json_receiver: bool,
+) -> String {
     method
         .params
         .iter()
@@ -771,6 +779,19 @@ pub(super) fn py_method_param_list(
                 .iter()
                 .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
             let param_type = match role {
+                Some(role @ (CollectionInputRole::Element | CollectionInputRole::Value))
+                    if stock_json_receiver
+                        && super::collections::non_null_json_input(role, &param.typ).is_some() =>
+                {
+                    if let TypeMeta::Array(element) = &param.typ {
+                        format!(
+                            "DynWinRTArray | Sequence[{}]",
+                            py_param_type_safe(element, context)
+                        )
+                    } else {
+                        py_param_type_safe(&param.typ, context)
+                    }
+                }
                 Some(CollectionInputRole::Element | CollectionInputRole::Value) => {
                     py_collection_contract_input_type(&param.typ, context)
                 }
