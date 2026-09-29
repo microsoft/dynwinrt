@@ -658,27 +658,29 @@ def _generated_map_dispatch(
     """The interface pointer and IID codegen uses for this wrapper's map operations."""
     wrapper_type = type(mapping)
     declarations = wrapper_type.__dict__
-    if declarations.get("_dynwinrt_runtime_class_type") is True:
+    runtime_class = declarations.get("_dynwinrt_runtime_class_type") is True
+    if runtime_class:
         declaration = declarations.get("_dynwinrt_map_dispatch")
-        if not (
-            isinstance(declaration, tuple)
-            and len(declaration) == 2
-            and isinstance(declaration[0], WinGUID)
-            and declaration[1] in ("_obj", "_collection_obj")
-        ):
-            raise TypeError(
-                f"{wrapper_type.__qualname__} does not declare a valid generated map projection"
-            )
-        declared_iid, dispatch_name = declaration
-        dispatch = native if dispatch_name == "_obj" else getattr(mapping, dispatch_name, None)
     elif declarations.get("_dynwinrt_interface_type") is True:
-        declared_iid = declarations.get("_dynwinrt_interface_iid")
-        dispatch = native
+        declaration = declarations.get("_dynwinrt_map_dispatch")
+        if "_dynwinrt_map_dispatch" not in declarations:
+            declaration = (declarations.get("_dynwinrt_interface_iid"), "_obj")
     else:
         raise TypeError(
             "object_value_view() requires a generated WinRT map wrapper, "
             f"not {wrapper_type.__qualname__}"
         )
+    if not (
+        isinstance(declaration, tuple)
+        and len(declaration) == 2
+        and isinstance(declaration[0], WinGUID)
+        and declaration[1] in (("_obj", "_collection_obj") if runtime_class else ("_obj",))
+    ):
+        raise TypeError(
+            f"{wrapper_type.__qualname__} does not declare a valid generated map projection"
+        )
+    declared_iid, dispatch_name = declaration
+    dispatch = native if dispatch_name == "_obj" else getattr(mapping, dispatch_name, None)
     if not isinstance(declared_iid, WinGUID) or not isinstance(dispatch, DynWinRTValue):
         raise TypeError(
             f"{wrapper_type.__qualname__} has an invalid generated map projection"

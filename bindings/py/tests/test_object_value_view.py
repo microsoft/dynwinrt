@@ -170,6 +170,7 @@ class GeneratedStyleMapView(GeneratedStyle, _WinRTMappingMixin):
 
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_VIEW_STRING_OBJECT
+    _dynwinrt_map_dispatch = (IMAP_VIEW_STRING_OBJECT, "_obj")
 
 
 class GeneratedStyleMap(GeneratedStyle, _WinRTMutableMappingMixin):
@@ -179,6 +180,7 @@ class GeneratedStyleMap(GeneratedStyle, _WinRTMutableMappingMixin):
     VIEW_TYPE = GeneratedStyleMapView
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_STRING_OBJECT
+    _dynwinrt_map_dispatch = (IMAP_STRING_OBJECT, "_obj")
 
     @staticmethod
     def methods(key, value):
@@ -237,6 +239,7 @@ class GeneratedStyleDefaultRuntimeMap(GeneratedStyleMap):
 class GeneratedStyleStringMapView(GeneratedStyleMapView):
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_VIEW_STRING_STRING
+    _dynwinrt_map_dispatch = (IMAP_VIEW_STRING_STRING, "_obj")
 
     def __init__(self, native):
         super().__init__(native, value_type=T.hstring())
@@ -246,6 +249,7 @@ class GeneratedStyleStringMap(GeneratedStyleMap):
     VIEW_TYPE = GeneratedStyleStringMapView
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_STRING_STRING
+    _dynwinrt_map_dispatch = (IMAP_STRING_STRING, "_obj")
 
     def __init__(self, native):
         super().__init__(native, value_type=T.hstring())
@@ -254,6 +258,7 @@ class GeneratedStyleStringMap(GeneratedStyleMap):
 class GeneratedStyleGuidObjectMapView(GeneratedStyleMapView):
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_VIEW_GUID_OBJECT
+    _dynwinrt_map_dispatch = (IMAP_VIEW_GUID_OBJECT, "_obj")
 
     def __init__(self, native):
         super().__init__(native, keys=GUID_KEYS)
@@ -263,6 +268,7 @@ class GeneratedStyleGuidObjectMap(GeneratedStyleMap):
     VIEW_TYPE = GeneratedStyleGuidObjectMapView
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_GUID_OBJECT
+    _dynwinrt_map_dispatch = (IMAP_GUID_OBJECT, "_obj")
 
     def __init__(self, native):
         super().__init__(native, keys=GUID_KEYS)
@@ -271,6 +277,7 @@ class GeneratedStyleGuidObjectMap(GeneratedStyleMap):
 class GeneratedStyleInt32ObjectMap(GeneratedStyleMap):
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_INT32_OBJECT
+    _dynwinrt_map_dispatch = (IMAP_INT32_OBJECT, "_obj")
 
     def __init__(self, native):
         super().__init__(native, keys=INT32_KEYS)
@@ -279,6 +286,7 @@ class GeneratedStyleInt32ObjectMap(GeneratedStyleMap):
 class GeneratedStyleJsonMap(GeneratedStyleMap):
     _dynwinrt_interface_type = True
     _dynwinrt_interface_iid = IMAP_STRING_JSON
+    _dynwinrt_map_dispatch = (IMAP_STRING_JSON, "_obj")
 
     def __init__(self, native):
         super().__init__(native, value_type=JSON_VALUE)
@@ -450,6 +458,11 @@ def test_object_value_view_picks_the_view_for_the_map_protocol():
 
 
 def test_multi_map_identity_uses_only_the_wrappers_projected_map():
+    class MisleadingStringMap(GeneratedStyleStringMap):
+        _dynwinrt_interface_type = True
+        _dynwinrt_interface_iid = IMAP_STRING_OBJECT
+        _dynwinrt_map_dispatch = (IMAP_STRING_STRING, "_obj")
+
     with object_and_string_maps() as (raw, stores, calls):
         object_map = GeneratedStyleMap(raw)
         string_map = GeneratedStyleStringMap(raw)
@@ -471,6 +484,10 @@ def test_multi_map_identity_uses_only_the_wrappers_projected_map():
             object_value_view(string_map)
         # QI does not enter either map implementation, and rejection happens
         # before any mapping operation can dispatch through the wrong vtable.
+        assert calls == before
+
+        with pytest.raises(TypeError, match="projects a different WinRT map interface"):
+            object_value_view(MisleadingStringMap(raw))
         assert calls == before
 
         runtime_map = GeneratedStyleRuntimeMap(raw)
@@ -535,6 +552,17 @@ def test_the_view_types_are_public_and_generic():
         assert name in values.__all__ and name not in dynwinrt.__all__
     assert ObjectValueView[str] is not None and MutableObjectValueView[UUID] is not None
     assert issubclass(MutableObjectValueView, ObjectValueView)
+
+
+def test_legacy_direct_map_interface_retains_its_exact_iid_contract():
+    class LegacyMap(GeneratedStyleMap):
+        _dynwinrt_interface_type = True
+        _dynwinrt_interface_iid = IMAP_STRING_OBJECT
+
+    mapping = LegacyMap(activate("Windows.Foundation.Collections.PropertySet"))
+    view = object_value_view(mapping)
+    view["count"] = 5
+    assert view.raw is mapping and view["count"] == 5
 
 
 @pytest.mark.parametrize("class_name", ["PropertySet", "ValueSet"])
@@ -911,10 +939,28 @@ def test_values_that_are_not_generated_map_wrappers_are_rejected():
     class UndeclaredRuntimeMap(GeneratedStyleMap):
         _dynwinrt_runtime_class_type = True
 
+    class InvalidInterfaceMarker(GeneratedStyleMap):
+        _dynwinrt_interface_type = True
+        _dynwinrt_interface_iid = IMAP_STRING_OBJECT
+        _dynwinrt_map_dispatch = ("not a WinGUID", "_obj")
+
+    class InvalidInterfaceDispatch(GeneratedStyleMap):
+        _dynwinrt_interface_type = True
+        _dynwinrt_interface_iid = IMAP_STRING_OBJECT
+        _dynwinrt_map_dispatch = (IMAP_STRING_OBJECT, "_collection_obj")
+
+        def __init__(self, native):
+            super().__init__(native)
+            self._collection_obj = self._obj
+
     with pytest.raises(TypeError, match=f"{requires}.*not .*CustomMap"):
         object_value_view(CustomMap(properties._obj))
     with pytest.raises(TypeError, match="does not declare a valid generated map projection"):
         object_value_view(UndeclaredRuntimeMap(properties._obj))
+    with pytest.raises(TypeError, match="does not declare a valid generated map projection"):
+        object_value_view(InvalidInterfaceMarker(properties._obj))
+    with pytest.raises(TypeError, match="does not declare a valid generated map projection"):
+        object_value_view(InvalidInterfaceDispatch(properties._obj))
     with pytest.raises(TypeError, match=f"{requires}.*not dict$"):
         object_value_view({"count": to_winrt_object(5)})
     with pytest.raises(TypeError, match=r"not DynWinRTValue; .*IMap_String_Object\.from_value"):

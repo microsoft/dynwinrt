@@ -312,9 +312,7 @@ pub fn generate_class(
         } else {
             "_collection_obj"
         };
-        out.push_str(&format!(
-            "    _dynwinrt_map_dispatch = (IID_{symbol}, '{dispatch}')\n"
-        ));
+        emit_map_dispatch(&mut out, &format!("IID_{symbol}"), dispatch);
     }
 
     out.push_str(&generate_python_constructor(
@@ -836,6 +834,12 @@ pub fn generate_class(
         }
         out.push_str("    _dynwinrt_interface_type = True\n");
         out.push_str(&format!("    _dynwinrt_interface_iid = IID_{symbol}\n"));
+        if matches!(
+            interface_kind(req_iface),
+            Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
+        ) {
+            emit_map_dispatch(&mut out, &format!("IID_{symbol}"), "_obj");
+        }
         out.push_str("    def __new__(cls, *args, **kwargs):\n");
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\

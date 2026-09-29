@@ -8,7 +8,7 @@ use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
     CollectionKind, interface_kind, map_iterable_identity, observable_collection_identity,
-    observable_vector_identity, runtime_mixin,
+    observable_map_identity, observable_vector_identity, runtime_mixin,
 };
 use crate::types::{TypeIdentity, TypeIdentityKind};
 
@@ -103,6 +103,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     }
     let collection_kind = interface_kind(iface);
     let observable_vector = observable_vector_identity(iface);
+    let observable_map = observable_map_identity(iface);
     let observable_collection = observable_collection_identity(iface);
     if observable_vector.is_none()
         && let Some(mixin) = collection_kind.and_then(runtime_mixin)
@@ -278,6 +279,19 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         ));
     } else {
         out.push_str("    _dynwinrt_interface_iid = None\n");
+    }
+    if matches!(
+        collection_kind,
+        Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
+    ) {
+        emit_map_dispatch(&mut out, &format!("IID_{}", iface.name), "_obj");
+    } else if let Some(identity) = &observable_map {
+        let companion_name = context.projected_name(identity);
+        emit_map_dispatch(
+            &mut out,
+            &py_runtime_symbol(context, identity, &format!("IID_{companion_name}")),
+            "_obj",
+        );
     }
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
     out.push_str(

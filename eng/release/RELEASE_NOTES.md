@@ -41,7 +41,9 @@ See the supported contracts and lifetime rules in the
   cancellation and progress. Task scheduling is one-shot; direct awaits remain repeatable.
 - Copy between `IBuffer` and JavaScript `Buffer`/`Uint8Array` or Python `bytes`/`bytearray`.
 - Explicitly unbox supported `IPropertyValue` scalars and arrays with
-  `unboxObject()` / `unbox_object()`; generated `Object` results remain unchanged.
+  `unboxObject()` / `unbox_object()`; Python also has opt-in
+  `to_winrt_object()` and `dynwinrt.values.object_value_view()` for exact
+  boxing and Object-valued maps. Generated `Object` results remain unchanged.
 
 ### Expanded Classic COM projections
 
@@ -119,6 +121,11 @@ do not mix old signed declarations with corrected unsigned declarations.
   closed generic interfaces together. Do not mix old and new stubs. Prefer public
   namespace exports over hard-coded internal or long generated module paths.
   Worker threads need their own `RoApartment` and `projected_lifetime_scope()`.
+- **Rust (`dynwinrt` core):** exhaustive matches on the public
+  `PropertyValueData` and `PropertyValueUnboxResult` enums must add arms for
+  the new payload variants and `PropertyValueUnboxResult::Unsupported(PropertyType)`.
+  Handle unsupported boxes explicitly; keep `Null` and `NotPropertyValue`
+  distinct rather than treating either as an unsupported box.
 - **JavaScript/TypeScript collections:** guard nullable collection outputs.
   A present `null` differs from the `undefined` returned for a missing map key
   or out-of-range `at()` index. Map `get()` now propagates conversion and native

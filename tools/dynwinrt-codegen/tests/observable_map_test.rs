@@ -169,6 +169,32 @@ fn string_object_map() -> InterfaceMeta {
     }
 }
 
+#[test]
+fn standalone_map_interfaces_declare_their_native_dispatch() {
+    let map = string_object_map();
+    let mut view = map.clone();
+    view.name = "IMapView_String_Object".into();
+    view.iid = "e480ce40-a338-4ada-adcf-272272e48cb9".into();
+    view.generic_piid = Some(view.iid.clone());
+
+    for (interface, name) in [
+        (&map, "IMap_String_Object"),
+        (&view, "IMapView_String_Object"),
+    ] {
+        let py = common::generate_interface(interface, &map_known_types(), &map_delegates());
+        assert!(
+            py.contains(&format!("_dynwinrt_map_dispatch = (IID_{name}, '_obj')")),
+            "{py}"
+        );
+        assert!(
+            py.contains(&format!("self._obj = obj.cast(IID_{name})")),
+            "{py}"
+        );
+        let pyi = common::generate_interface_stub(interface, &map_known_types(), &map_delegates());
+        assert!(!pyi.contains("_dynwinrt_map_dispatch"), "{pyi}");
+    }
+}
+
 fn map_known_types() -> HashSet<String> {
     HashSet::from([
         "IObservableMap_String_Object".into(),
@@ -205,6 +231,27 @@ fn observable_map_projects_python_mutable_mapping_and_typed_events() {
     assert!(
         py.contains("self._observable_obj = obj.cast(IID_IObservableMap_String_Object)"),
         "{py}"
+    );
+    assert!(
+        py.contains(
+            "_dynwinrt_map_dispatch = (_dynwinrt_symbol('i_map_string_object', 'IID_IMap_String_Object'), '_obj')"
+        ),
+        "{py}"
+    );
+    let packaged = dynwinrt_codegen::codegen::python::generate_interface(
+        &common::packaged_projection_context(
+            &[],
+            std::slice::from_ref(&interface),
+            &map_known_types(),
+            &map_delegates(),
+        ),
+        &interface,
+    );
+    assert!(
+        packaged.contains(
+            "_dynwinrt_map_dispatch = (_dynwinrt_symbol('windows__foundation__collections__i_map_string_object', 'IID_IMap_String_Object'), '_obj')"
+        ),
+        "{packaged}"
     );
     for signature in common::event_signatures("map_changed", MAP_CALLBACK) {
         assert!(py.contains(&signature), "{signature}\n{py}");
@@ -336,6 +383,12 @@ fn runtime_class_map_changed_events_project_observable_sender_and_arguments() {
     assert!(!py.contains("\nclass IObservableMap_String_Object"), "{py}");
     assert!(
         py.contains("\nclass IMap_String_Object(_WinRTMutableMappingMixin):"),
+        "{py}"
+    );
+    assert!(
+        py.contains(
+            "class IMap_String_Object(_WinRTMutableMappingMixin):\n    _dynwinrt_interface_type = True\n    _dynwinrt_interface_iid = IID_IMap_String_Object\n    _dynwinrt_map_dispatch = (IID_IMap_String_Object, '_obj')"
+        ),
         "{py}"
     );
 
@@ -500,6 +553,50 @@ fn windows_observable_maps_type_and_project_map_changed_handlers() {
 
         let class_py = output.read(&format!("windows__foundation__collections__{class}.py"));
         let interface_py = output.read(&format!("{observable_module}.py"));
+        let map_py = output.read(&format!(
+            "windows__foundation__collections__i_map_string_{}.py",
+            value.to_lowercase()
+        ));
+        let map_view_py = output.read(&format!(
+            "windows__foundation__collections__i_map_view_string_{}.py",
+            value.to_lowercase()
+        ));
+        assert!(
+            interface_py.contains(&format!(
+                "_dynwinrt_map_dispatch = (_dynwinrt_symbol('windows__foundation__collections__i_map_string_{}', 'IID_IMap_String_{value}'), '_obj')",
+                value.to_lowercase()
+            )),
+            "{interface_py}"
+        );
+        assert!(
+            map_py.contains(&format!(
+                "_dynwinrt_map_dispatch = (IID_IMap_String_{value}, '_obj')"
+            )),
+            "{map_py}"
+        );
+        assert!(
+            map_view_py.contains(&format!(
+                "_dynwinrt_map_dispatch = (IID_IMapView_String_{value}, '_obj')"
+            )),
+            "{map_view_py}"
+        );
+        let dispatch = if class == "property_set" {
+            "_collection_obj"
+        } else {
+            "_obj"
+        };
+        assert!(
+            class_py.contains(&format!(
+                "_dynwinrt_map_dispatch = (IID_IMap_String_{value}, '{dispatch}')"
+            )),
+            "{class_py}"
+        );
+        assert!(
+            class_py.contains(&format!(
+                "self.{dispatch} = obj.cast(IID_IMap_String_{value})"
+            )),
+            "{class_py}"
+        );
         for py in [&class_py, &interface_py] {
             for signature in common::event_signatures("map_changed", &callback) {
                 assert!(py.contains(&signature), "{signature}\n{py}");

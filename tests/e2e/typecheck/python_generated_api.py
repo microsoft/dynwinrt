@@ -222,14 +222,23 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
     ) -> None:
         size: int = len(sender)
         value: DynWinRTValue | None = sender[args.key]
-        unboxed: WinRTObjectValue = object_value_view(properties)[args.key]
+        sender_view: MutableObjectValueView[str] = object_value_view(sender)
+        native: MutableMapping[str, DynWinRTValue | None] = sender_view.raw
+        unboxed: WinRTObjectValue = sender_view[args.key]
         change: CollectionChange = args.collection_change
         _: Tuple[
             int,
             DynWinRTValue | None,
+            MutableMapping[str, DynWinRTValue | None],
             WinRTObjectValue,
             CollectionChange,
-        ] = (size, value, unboxed, change)
+        ] = (size, value, native, unboxed, change)
+
+    def on_strings(
+        sender: IObservableMap_String_String, args: IMapChangedEventArgs_String
+    ) -> None:
+        object_value_view(sender)  # type: ignore[arg-type]
+        assert_type(sender[args.key], str)
 
     unsubscribe: Callable[[], None] = properties.subscribe_map_changed(on_properties)
     # Lambda parameters are inferred from the typed callback, not Any.
@@ -246,6 +255,7 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
             Tuple[IObservableMap_String_String, str, CollectionChange],
         )
     )
+    strings.subscribe_map_changed(on_strings)()
     unsubscribe()
 
 

@@ -1074,6 +1074,16 @@ async def run_check(
                 if expected_value is not None and not same_value(value, expected_value):
                     cr['error'] = f'{expected_change.name}: sender[{key!r}] was {value!r}'
                     return cr
+            if check['expected_type'] == 'IObservableMap_String_String':
+                try:
+                    dw.values.object_value_view(observed[0][0])
+                except TypeError as error:
+                    if 'not a WinRT map with Object values' not in str(error):
+                        cr['error'] = f'StringMap observable sender: {error}'
+                        return cr
+                else:
+                    cr['error'] = 'a StringMap observable sender was accepted as an Object map'
+                    return cr
             if once_changes != [change_type.ItemInserted]:
                 cr['error'] = f'once handler observed {once_changes!r}'
             elif token_keys != [key, key, key]:
@@ -2245,30 +2255,54 @@ async def run_check(
                         cr['error'] = f'{label}: {value!r} was stored as {stored}'
                         return cr
 
-                null_events = []
+                events = []
 
-                def observe_null(sender, args):
-                    if args.key == 'event-null':
-                        null_events.append((sender, args, sender[args.key]))
+                def observe_value(sender, args):
+                    if args.key in ('event-null', 'event-boxed'):
+                        sender_view = v.object_value_view(sender)
+                        events.append((
+                            sender,
+                            args,
+                            sender_view,
+                            sender[args.key],
+                            sender_view[args.key],
+                        ))
 
-                unsubscribe = mapping.subscribe_map_changed(observe_null)
+                unsubscribe = mapping.subscribe_map_changed(observe_value)
                 try:
                     view['event-null'] = None
+                    view['event-boxed'] = 6
                 finally:
                     unsubscribe()
                 if (
-                    len(null_events) != 1
-                    or not isinstance(null_events[0][0], observable_type)
-                    or not isinstance(null_events[0][1], args_type)
-                    or null_events[0][2] is not None
-                    or view['event-null'] is not None
+                    len(events) != 2
+                    or any(
+                        not isinstance(sender, observable_type)
+                        or not isinstance(args, args_type)
+                        or sender_view.raw is not sender
+                        for sender, args, sender_view, _, _ in events
+                    )
+                    or events[0][1].key != 'event-null'
+                    or events[0][3:] != (None, None)
+                    or events[1][1].key != 'event-boxed'
+                    or not isinstance(events[1][3], dw.DynWinRTValue)
+                    or stored_type(events[1][3]) != kinds.Int32
+                    or events[1][4] != 6
                 ):
                     cr['error'] = (
-                        f'{label}: MapChanged/null view boundary was '
-                        f'{null_events!r}, {view["event-null"]!r}'
+                        f'{label}: MapChanged Object sender/view boundary was {events!r}'
                     )
                     return cr
-                del view['event-null']
+                events[1][2]['event-written'] = v.UInt32(9)
+                if (
+                    stored_type(mapping['event-written']) != kinds.UInt32
+                    or events[1][2]['event-written'] != 9
+                    or view['event-written'] != 9
+                ):
+                    cr['error'] = f'{label}: callback sender view did not write through'
+                    return cr
+                for key in ('event-null', 'event-boxed', 'event-written'):
+                    del view[key]
 
                 view['empty'] = None
                 if mapping['empty'] is not None or dict(view) != expected or view != expected:

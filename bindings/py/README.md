@@ -376,6 +376,11 @@ count = view["count"]                # 5
 box = view.raw["count"]              # the native DynWinRTValue box
 ```
 
+`PropertySet` and `ValueSet` `map_changed` callbacks can also call
+`object_value_view(sender)` on their projected `IObservableMap<String, Object>`
+sender. The returned view keeps `.raw is sender`; null entries still read as
+`None`.
+
 - The view is live: every operation goes to the map, and the view holds no
   WinRT reference of its own. An `IMap` gets a `MutableObjectValueView`, a
   `collections.abc.MutableMapping`; an `IMapView` gets a read-only
