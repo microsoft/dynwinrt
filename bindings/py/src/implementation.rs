@@ -20,7 +20,7 @@ use windows::core::{Error, HRESULT};
 use crate::errors::map_windows_error;
 use crate::runtime::{
     DynWinRTMethodSig, DynWinRTType, DynWinRTValue, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID,
-    native_outputs, wrap_python_callback_context,
+    native_outputs, tracked_native_value, wrap_python_callback_context,
 };
 
 const RO_E_CLOSED: HRESULT = HRESULT(0x80000013_u32 as i32);
@@ -345,12 +345,12 @@ impl DynWinRTImplementation {
         })
     }
 
-    fn to_value(&self) -> PyResult<DynWinRTValue> {
+    fn to_value(&self, py: Python<'_>) -> PyResult<Py<DynWinRTValue>> {
         self.with_native(|native| {
             native
                 .to_value()
-                .map(DynWinRTValue::new)
                 .map_err(map_windows_error)
+                .and_then(|value| tracked_native_value(py, value))
         })
     }
 

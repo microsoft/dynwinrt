@@ -741,8 +741,9 @@ stay on the caller's native thread but release the Python GIL while WinUI pumps
 messages. WinRT callbacks reacquire the GIL, and worker threads can use
 `DispatcherQueue.try_enqueue()` to return to the UI thread.
 
-Use a projection lifetime scope inside the COM apartment so wrappers release
-their native values before `RoUninitialize`:
+Use a projection lifetime scope inside the COM apartment so projected wrappers
+and raw native `DynWinRTValue` outputs release their owned COM references
+before `RoUninitialize`:
 
 ```python
 from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment, projected_lifetime_scope
@@ -752,8 +753,18 @@ with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
     # Create and use WinUI objects here.
 ```
 
-Scopes nest in LIFO order. Wrappers that survive a closed scope remain Python
-objects, but their native values are released: using one afterwards, as the
+Native factory and method outputs are tracked automatically, even when a
+generated factory returns a bare `DynWinRTValue` (for example,
+`PropertyValue.create_uint32(8080)`). A raw result can escape the Python
+function that created it, but after the scope closes it reports
+`is_released() == True`; it cannot be used outside the apartment. Without a
+scope, explicitly call `release()` on every retained native result before
+leaving `RoApartment`. Pure scalar results do not own COM references and remain
+usable after a scope closes.
+
+Scopes nest in LIFO order. Wrappers and raw native results that survive a
+closed scope remain Python objects, but their COM references are released:
+using one afterwards, as the
 object of a call, as an argument, or inside a sequence, mapping, array, or
 struct input, raises `RuntimeError` explaining that it was released, as it
 does after `release_projected(wrapper)` or `DynWinRTValue.release()`.

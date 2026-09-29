@@ -552,7 +552,7 @@ class _WinRTMutableMappingMixin(_MutableMapping):
 
 async def _dynwinrt_convert_future(future, converter):
     try:
-        completed = await future
+        completed = _dynwinrt_track_projected(await future, 'WinRTAsync completion')
         return converter(completed._get_async_results())
     except BaseException:
         if not future.done():

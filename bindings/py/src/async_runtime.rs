@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::errors::{
     map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
 };
-use crate::runtime::DynWinRTValue;
+use crate::runtime::{DynWinRTValue, tracked_native_value};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
@@ -632,7 +632,7 @@ impl AsyncOperation {
             *state = ExecutionState::Idle;
         }
 
-        let raw = Py::new(py, DynWinRTValue::new(result?))?;
+        let raw = tracked_native_value(py, result?)?;
         self.converter.call1(py, (raw,))
     }
 

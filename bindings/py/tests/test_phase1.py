@@ -1241,6 +1241,22 @@ def test_projected_lifetime_scope_releases_native_values_before_apartment_exit()
         release_projected(SimpleNamespace(_obj=second))
 
 
+def test_projected_lifetime_scope_tracks_raw_native_outputs_automatically():
+    with RoApartment(1), projected_lifetime_scope():
+        factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        cast = factory.cast(WinGUID.parse(IID_IURI_FACTORY))
+        scalar = DynWinRTValue.from_u32(8080)
+        assert not factory.is_released()
+        assert not cast.is_released()
+
+    assert factory.is_released()
+    assert cast.is_released()
+    assert scalar.to_u32() == 8080
+    assert not scalar.is_released()
+    with pytest.raises(RuntimeError, match="released"):
+        cast.identity_raw()
+
+
 def test_projected_lifetime_scope_enforces_lifo_order():
     outer = projected_lifetime_scope()
     inner = projected_lifetime_scope()

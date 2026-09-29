@@ -6,7 +6,9 @@ use pyo3::prelude::*;
 use windows::core::{GUID, IInspectable, IUnknown, Interface};
 
 use crate::errors::map_windows_error;
-use crate::runtime::{DynWinRTMethodSig, DynWinRTValue, WinGUID, native_arguments};
+use crate::runtime::{
+    DynWinRTMethodSig, DynWinRTValue, WinGUID, native_arguments, tracked_native_value,
+};
 
 type DelegateCall =
     dyn Fn(&IUnknown, &[dynwinrt::WinRTValue]) -> windows::core::Result<Vec<dynwinrt::WinRTValue>>;
@@ -50,8 +52,9 @@ impl DynWinRTDelegateMethod {
         &self,
         value: &Bound<'_, DynWinRTValue>,
         args: Vec<DynWinRTValue>,
-    ) -> PyResult<Vec<DynWinRTValue>> {
+    ) -> PyResult<Vec<Py<DynWinRTValue>>> {
         // Keep native pins, not a Python value borrow, across reentrant Invoke.
+        let py = value.py();
         let value = value.try_borrow()?.clone();
         let delegate = value.query(&self.iid, "delegate Invoke()")?;
         let dynwinrt::WinRTValue::Object(object) = &delegate else {
@@ -61,8 +64,10 @@ impl DynWinRTDelegateMethod {
         };
         let args = native_arguments("delegate Invoke()", args)?;
         (self.call.0)(object, &args)
-            .map(|outputs| outputs.into_iter().map(DynWinRTValue::new).collect())
-            .map_err(map_windows_error)
+            .map_err(map_windows_error)?
+            .into_iter()
+            .map(|result| tracked_native_value(py, result))
+            .collect()
     }
 }
 

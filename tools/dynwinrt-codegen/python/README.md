@@ -52,6 +52,13 @@ with RoApartment(), projected_lifetime_scope():
     print(uri.host)
 ```
 
+The matching Python binding also tracks raw native `DynWinRTValue` results
+from generated factories and methods in an active lifetime scope. For example,
+`PropertyValue.create_uint32(8080)` returns a raw value; if it escapes the
+scope, its owned COM reference has already been released before the apartment
+exits. A raw result retained without a scope must instead be released
+explicitly inside its apartment.
+
 ## CLI options
 
 | Option | Description |
