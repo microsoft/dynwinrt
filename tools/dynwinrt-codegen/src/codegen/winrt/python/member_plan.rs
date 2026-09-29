@@ -57,6 +57,65 @@ use super::signature::{
 
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 const ITHREAD_POOL_STATICS_IID: &str = "b6bf67dd-84bd-44f8-ac1c-93ebcb9dba91";
+const WORK_ITEM_HANDLER_IID: &str = "1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa";
+
+#[derive(Clone, Copy)]
+enum ThreadPoolInput {
+    Handler,
+    Priority,
+    Options,
+}
+
+impl ThreadPoolInput {
+    fn matches(self, typ: &TypeMeta) -> bool {
+        match (self, typ) {
+            (
+                Self::Handler,
+                TypeMeta::Delegate {
+                    namespace,
+                    name,
+                    iid,
+                }
+                | TypeMeta::Interface {
+                    namespace,
+                    name,
+                    iid,
+                },
+            ) => {
+                namespace == "Windows.System.Threading"
+                    && name == "WorkItemHandler"
+                    && iid.eq_ignore_ascii_case(WORK_ITEM_HANDLER_IID)
+            }
+            (
+                Self::Priority,
+                TypeMeta::Enum {
+                    namespace,
+                    name,
+                    underlying,
+                    ..
+                },
+            ) => {
+                namespace == "Windows.System.Threading"
+                    && name == "WorkItemPriority"
+                    && underlying.as_ref() == &TypeMeta::I32
+            }
+            (
+                Self::Options,
+                TypeMeta::Enum {
+                    namespace,
+                    name,
+                    underlying,
+                    ..
+                },
+            ) => {
+                namespace == "Windows.System.Threading"
+                    && name == "WorkItemOptions"
+                    && underlying.as_ref() == &TypeMeta::U32
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Members inherited from the `collections.abc` bases of generated collection mixins.
 const COLLECTION_MIXIN_MEMBERS: &[&str] = &[
@@ -268,24 +327,69 @@ impl<'a> ClassMemberPlan<'a> {
 }
 
 fn class_abi_name_exceptions(class: &ClassMeta) -> BTreeSet<(usize, String)> {
-    let original_work_item = class.namespace == "Windows.System.Threading"
-        && class.name == "ThreadPool"
-        && class.static_interfaces.iter().any(|interface| {
+    if class.namespace != "Windows.System.Threading" || class.name != "ThreadPool" {
+        return BTreeSet::new();
+    }
+    let interfaces = class
+        .static_interfaces
+        .iter()
+        .filter(|interface| {
             interface.namespace == class.namespace
                 && interface.name == "IThreadPoolStatics"
                 && interface.iid.eq_ignore_ascii_case(ITHREAD_POOL_STATICS_IID)
-                && interface.methods.iter().any(|method| {
-                    method.name == "RunAsync"
-                        && method.raw_name == "RunAsync"
-                        && method.vtable_index == 6
-                })
-        });
-    if original_work_item {
-        // Keep the single-argument callable signature contextually typed by mypy.
-        BTreeSet::from([(0, "run_async".to_string())])
-    } else {
-        BTreeSet::new()
+        })
+        .collect::<Vec<_>>();
+    let [interface] = interfaces.as_slice() else {
+        return BTreeSet::new();
+    };
+    let expected: [(&str, usize, &[(&str, ThreadPoolInput)]); 3] = [
+        ("RunAsync", 6, &[("handler", ThreadPoolInput::Handler)]),
+        (
+            "RunWithPriorityAsync",
+            7,
+            &[
+                ("handler", ThreadPoolInput::Handler),
+                ("priority", ThreadPoolInput::Priority),
+            ],
+        ),
+        (
+            "RunWithPriorityAndOptionsAsync",
+            8,
+            &[
+                ("handler", ThreadPoolInput::Handler),
+                ("priority", ThreadPoolInput::Priority),
+                ("options", ThreadPoolInput::Options),
+            ],
+        ),
+    ];
+    let methods = interface
+        .methods
+        .iter()
+        .filter(|method| method.raw_name == "RunAsync")
+        .collect::<Vec<_>>();
+    if methods.len() != expected.len()
+        || !expected.iter().all(|(name, slot, parameters)| {
+            methods.iter().any(|method| {
+                method.name == *name
+                    && method.vtable_index == *slot
+                    && !is_accessor(method)
+                    && method.return_type.as_ref() == Some(&TypeMeta::AsyncAction)
+                    && method.params.len() == parameters.len()
+                    && method.params.iter().zip(parameters.iter()).all(
+                        |(param, (expected_name, expected_type))| {
+                            param.direction == ParamDirection::In
+                                && to_snake_case(&param.name) == *expected_name
+                                && expected_type.matches(&param.typ)
+                        },
+                    )
+            })
+        })
+    {
+        return BTreeSet::new();
     }
+
+    // Keep the original single-argument callback contextually typed by mypy.
+    BTreeSet::from([(0, "run_async".to_string())])
 }
 
 /// Member plan for an interface wrapper class.
@@ -1638,6 +1742,39 @@ mod tests {
             iid: "1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa".into(),
         };
         let context = PythonProjectionContext::packaged([handler.type_identity()]).unwrap();
+        let enumeration = |name: &str, underlying| TypeMeta::Enum {
+            namespace: "Windows.System.Threading".into(),
+            name: name.into(),
+            underlying: Box::new(underlying),
+            members: Vec::new(),
+            is_flags: name == "WorkItemOptions",
+            doc: None,
+            deprecated: None,
+        };
+        let priority = enumeration("WorkItemPriority", TypeMeta::I32);
+        let options = enumeration("WorkItemOptions", TypeMeta::U32);
+        let mut methods = vec![
+            overload("RunAsync", "RunAsync", 6, &[("handler", handler.clone())]),
+            overload(
+                "RunWithPriorityAsync",
+                "RunAsync",
+                7,
+                &[("handler", handler.clone()), ("priority", priority.clone())],
+            ),
+            overload(
+                "RunWithPriorityAndOptionsAsync",
+                "RunAsync",
+                8,
+                &[
+                    ("handler", handler),
+                    ("priority", priority),
+                    ("options", options),
+                ],
+            ),
+        ];
+        for method in &mut methods {
+            method.return_type = Some(TypeMeta::AsyncAction);
+        }
         let class = ClassMeta {
             name: "ThreadPool".into(),
             namespace: "Windows.System.Threading".into(),
@@ -1646,25 +1783,7 @@ mod tests {
                 name: "IThreadPoolStatics".into(),
                 namespace: "Windows.System.Threading".into(),
                 iid: "b6bf67dd-84bd-44f8-ac1c-93ebcb9dba91".into(),
-                methods: vec![
-                    overload("RunAsync", "RunAsync", 6, &[("handler", handler.clone())]),
-                    overload(
-                        "RunWithPriorityAsync",
-                        "RunAsync",
-                        7,
-                        &[("handler", handler.clone()), ("priority", TypeMeta::I32)],
-                    ),
-                    overload(
-                        "RunWithPriorityAndOptionsAsync",
-                        "RunAsync",
-                        8,
-                        &[
-                            ("handler", handler),
-                            ("priority", TypeMeta::I32),
-                            ("options", TypeMeta::I32),
-                        ],
-                    ),
-                ],
+                methods,
                 ..Default::default()
             }],
             ..Default::default()
@@ -1706,6 +1825,55 @@ mod tests {
         assert_eq!(
             other_interface.group("RunWithPriorityAsync", 7),
             "run_async"
+        );
+
+        let mut raw_name_drift = class.clone();
+        raw_name_drift.static_interfaces[0].methods[1].raw_name = "OtherAsync".into();
+        assert!(class_abi_name_exceptions(&raw_name_drift).is_empty());
+        let raw_name_plan = summarize(&ClassMemberPlan::new(&raw_name_drift, &context).statics);
+        assert_eq!(
+            raw_name_plan.group("RunWithPriorityAndOptionsAsync", 8),
+            "run_async"
+        );
+
+        let mut abi_name_drift = class.clone();
+        abi_name_drift.static_interfaces[0].methods[1].name = "OtherPriorityAsync".into();
+        assert!(class_abi_name_exceptions(&abi_name_drift).is_empty());
+
+        let mut slot_drift = class.clone();
+        slot_drift.static_interfaces[0].methods[2].vtable_index = 9;
+        assert!(class_abi_name_exceptions(&slot_drift).is_empty());
+
+        let mut order_drift = class.clone();
+        order_drift.static_interfaces[0].methods[2]
+            .params
+            .swap(1, 2);
+        assert!(class_abi_name_exceptions(&order_drift).is_empty());
+
+        let mut type_drift = class.clone();
+        type_drift.static_interfaces[0].methods[1].params[1].typ = TypeMeta::String;
+        assert!(class_abi_name_exceptions(&type_drift).is_empty());
+
+        let mut return_drift = class.clone();
+        return_drift.static_interfaces[0].methods[2].return_type = Some(TypeMeta::Object);
+        assert!(class_abi_name_exceptions(&return_drift).is_empty());
+    }
+
+    #[test]
+    fn sdk_thread_pool_exception_matches_real_method_metadata() {
+        const WINMD: &str =
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
+        if !std::path::Path::new(WINMD).is_file() {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+        let class = crate::meta::parse_class(WINMD, "Windows.System.Threading", "ThreadPool")
+            .expect("ThreadPool metadata");
+        assert_eq!(
+            class_abi_name_exceptions(&class),
+            BTreeSet::from([(0, "run_async".to_string())]),
+            "{:#?}",
+            class.static_interfaces
         );
     }
 
