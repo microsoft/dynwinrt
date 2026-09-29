@@ -15,7 +15,8 @@ use windows::core::{GUID, HSTRING, IInspectable, IUnknown, Interface};
 
 use crate::errors::{
     InputSlot, map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error,
-    non_object_receiver_error, released_input_error, released_receiver_error,
+    non_object_receiver_error, released_input_error, released_native_container_error,
+    released_receiver_error,
 };
 
 /// Shared MetadataTable — created once, used everywhere.
@@ -1125,6 +1126,13 @@ fn contains_com_references(typ: &dynwinrt::TypeHandle) -> bool {
             && (0..typ.field_count()).any(|index| contains_com_references(&typ.field_type(index))))
 }
 
+fn track_native_owner(py: Python<'_>, owner: Py<PyAny>) -> PyResult<()> {
+    if let Some(track) = TRACK_NATIVE.get(py) {
+        track.call1(py, (owner,))?;
+    }
+    Ok(())
+}
+
 /// Keep native COM ownership on the creating thread until the active lifetime
 /// scope closes. Python retains the exact returned value, not an extra AddRef.
 pub(crate) fn tracked_native_value(
@@ -1141,11 +1149,28 @@ pub(crate) fn tracked_native_value(
     };
     let output = Py::new(py, DynWinRTValue::new(value))?;
     if owns_native {
-        // Embedding tests may create values before the extension module (and
-        // therefore any projected lifetime scope) has been initialized.
-        if let Some(track) = TRACK_NATIVE.get(py) {
-            track.call1(py, (output.clone_ref(py),))?;
-        }
+        track_native_owner(py, output.clone_ref(py).into_any())?;
+    }
+    Ok(output)
+}
+
+fn tracked_native_array(py: Python<'_>, array: dynwinrt::ArrayData) -> PyResult<Py<DynWinRTArray>> {
+    let owns_com = contains_com_references(&array.element_type);
+    let output = Py::new(py, DynWinRTArray(Some(array)))?;
+    if owns_com {
+        track_native_owner(py, output.clone_ref(py).into_any())?;
+    }
+    Ok(output)
+}
+
+fn tracked_native_struct(
+    py: Python<'_>,
+    data: dynwinrt::ValueTypeData,
+) -> PyResult<Py<DynWinRTStruct>> {
+    let owns_com = contains_com_references(&data.type_handle());
+    let output = Py::new(py, DynWinRTStruct(Some(data)))?;
+    if owns_com {
+        track_native_owner(py, output.clone_ref(py).into_any())?;
     }
     Ok(output)
 }
@@ -1923,9 +1948,10 @@ impl DynWinRTValue {
         self.0.as_array().is_some()
     }
 
-    fn as_array(&self) -> PyResult<DynWinRTArray> {
+    fn as_array(&self, py: Python<'_>) -> PyResult<Py<DynWinRTArray>> {
+        self.ensure_live()?;
         match &self.0 {
-            dynwinrt::WinRTValue::Array(data) => Ok(DynWinRTArray(data.clone())),
+            dynwinrt::WinRTValue::Array(data) => tracked_native_array(py, data.clone()),
             _ => Err(PyRuntimeError::new_err("Value is not an Array")),
         }
     }
@@ -1934,9 +1960,10 @@ impl DynWinRTValue {
         self.0.as_struct().is_some()
     }
 
-    fn as_struct(&self) -> PyResult<DynWinRTStruct> {
+    fn as_struct(&self, py: Python<'_>) -> PyResult<Py<DynWinRTStruct>> {
+        self.ensure_live()?;
         match &self.0 {
-            dynwinrt::WinRTValue::Struct(data) => Ok(DynWinRTStruct(data.clone())),
+            dynwinrt::WinRTValue::Struct(data) => tracked_native_struct(py, data.clone()),
             _ => Err(PyRuntimeError::new_err("Value is not a Struct")),
         }
     }
@@ -1946,122 +1973,144 @@ impl DynWinRTValue {
 // DynWinRTArray — array container with blittable fast paths
 // ======================================================================
 
-#[pyclass(unsendable, from_py_object)]
+#[pyclass(unsendable, from_py_object, weakref)]
 #[derive(Clone)]
-pub struct DynWinRTArray(dynwinrt::ArrayData);
+pub struct DynWinRTArray(Option<dynwinrt::ArrayData>);
 
 impl DynWinRTArray {
+    fn data(&self) -> PyResult<&dynwinrt::ArrayData> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| released_native_container_error("DynWinRTArray"))
+    }
+
+    fn scalar_array(typ: dynwinrt::TypeHandle, values: &[dynwinrt::WinRTValue]) -> Self {
+        Self(Some(dynwinrt::ArrayData::from_values(typ, values)))
+    }
+
     fn from_elements(
         operation: &str,
         values: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
-    ) -> PyResult<Self> {
+    ) -> PyResult<dynwinrt::ArrayData> {
         let values = native_inputs(operation, values, InputSlot::Element)?;
-        Ok(Self(dynwinrt::ArrayData::from_values(
+        Ok(dynwinrt::ArrayData::from_values(
             element_type.0.clone(),
             &values,
-        )))
+        ))
     }
 }
 
 #[pymethods]
 impl DynWinRTArray {
-    fn __len__(&self) -> usize {
-        self.0.len()
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self.data()?.len())
     }
 
     /// Per-element access.
     fn get(&self, py: Python<'_>, index: i64) -> PyResult<Py<DynWinRTValue>> {
+        let data = self.data()?;
         let index = checked_index(index)?;
-        self.0
-            .try_get(index)
+        data.try_get(index)
             .map_err(map_dynwinrt_error)
             .and_then(|value| tracked_native_value(py, value))
     }
 
     /// Convert all elements to a list of DynWinRTValue.
     fn to_values(&self, py: Python<'_>) -> PyResult<Vec<Py<DynWinRTValue>>> {
-        (0..self.0.len())
-            .map(|i| tracked_native_value(py, self.0.get(i)))
+        let data = self.data()?;
+        (0..data.len())
+            .map(|i| tracked_native_value(py, data.get(i)))
             .collect()
     }
 
     // -- Typed list extraction (works for both Values and CoTaskMem arrays) --
 
-    fn to_i8_list(&self) -> Vec<i32> {
-        (0..self.0.len())
-            .map(|i| self.0.get(i).as_i32().unwrap_or(0))
-            .collect()
+    fn to_i8_list(&self) -> PyResult<Vec<i32>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| data.get(i).as_i32().unwrap_or(0))
+            .collect())
     }
-    fn to_u8_list(&self) -> Vec<u8> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_u8_list(&self) -> PyResult<Vec<u8>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::U8(v) => v,
                 other => other.as_i32().unwrap_or(0) as u8,
             })
-            .collect()
+            .collect())
     }
-    fn to_i16_list(&self) -> Vec<i32> {
-        (0..self.0.len())
-            .map(|i| self.0.get(i).as_i32().unwrap_or(0))
-            .collect()
+    fn to_i16_list(&self) -> PyResult<Vec<i32>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| data.get(i).as_i32().unwrap_or(0))
+            .collect())
     }
-    fn to_u16_list(&self) -> Vec<u32> {
-        (0..self.0.len())
-            .map(|i| self.0.get(i).as_i32().unwrap_or(0) as u32)
-            .collect()
+    fn to_u16_list(&self) -> PyResult<Vec<u32>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| data.get(i).as_i32().unwrap_or(0) as u32)
+            .collect())
     }
     fn to_i32_list(&self) -> PyResult<Vec<i32>> {
-        (0..self.0.len())
-            .map(|i| self.0.get_i32(i).map_err(map_dynwinrt_error))
+        let data = self.data()?;
+        (0..data.len())
+            .map(|i| data.get_i32(i).map_err(map_dynwinrt_error))
             .collect()
     }
     fn to_u32_list(&self) -> PyResult<Vec<u32>> {
-        (0..self.0.len())
-            .map(|i| self.0.get_u32(i).map_err(map_dynwinrt_error))
+        let data = self.data()?;
+        (0..data.len())
+            .map(|i| data.get_u32(i).map_err(map_dynwinrt_error))
             .collect()
     }
-    fn to_f32_list(&self) -> Vec<f32> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_f32_list(&self) -> PyResult<Vec<f32>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::F32(v) => v,
                 dynwinrt::WinRTValue::F64(v) => v as f32,
                 other => other.as_i32().unwrap_or(0) as f32,
             })
-            .collect()
+            .collect())
     }
-    fn to_f64_list(&self) -> Vec<f64> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_f64_list(&self) -> PyResult<Vec<f64>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::F64(v) => v,
                 dynwinrt::WinRTValue::F32(v) => v as f64,
                 other => other.as_i32().unwrap_or(0) as f64,
             })
-            .collect()
+            .collect())
     }
-    fn to_i64_list(&self) -> Vec<i64> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_i64_list(&self) -> PyResult<Vec<i64>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::I64(v) => v,
                 other => other.as_i32().unwrap_or(0) as i64,
             })
-            .collect()
+            .collect())
     }
-    fn to_u64_list(&self) -> Vec<u64> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_u64_list(&self) -> PyResult<Vec<u64>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::U64(v) => v,
                 other => other.as_i32().unwrap_or(0) as u64,
             })
-            .collect()
+            .collect())
     }
-    fn to_string_list(&self) -> Vec<String> {
-        (0..self.0.len())
-            .map(|i| match self.0.get(i) {
+    fn to_string_list(&self) -> PyResult<Vec<String>> {
+        let data = self.data()?;
+        Ok((0..data.len())
+            .map(|i| match data.get(i) {
                 dynwinrt::WinRTValue::HString(s) => s.to_string(),
                 other => format!("{:?}", other),
             })
-            .collect()
+            .collect())
     }
 
     // -- Construction from Python lists --
@@ -2077,16 +2126,13 @@ impl DynWinRTArray {
                 )?))
             })
             .collect::<PyResult<_>>()?;
-        Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(
-            TABLE.i8_type(),
-            &wvals,
-        )))
+        Ok(Self::scalar_array(TABLE.i8_type(), &wvals))
     }
     #[staticmethod]
     fn from_u8_values(values: Vec<u8>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::U8).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
+        Self::scalar_array(TABLE.u8_type(), &wvals)
     }
     #[staticmethod]
     fn from_i16_values(values: Vec<i32>) -> PyResult<DynWinRTArray> {
@@ -2099,10 +2145,7 @@ impl DynWinRTArray {
                 )?))
             })
             .collect::<PyResult<_>>()?;
-        Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(
-            TABLE.i16_type(),
-            &wvals,
-        )))
+        Ok(Self::scalar_array(TABLE.i16_type(), &wvals))
     }
     #[staticmethod]
     fn from_u16_values(values: Vec<u32>) -> PyResult<DynWinRTArray> {
@@ -2115,46 +2158,43 @@ impl DynWinRTArray {
                 )?))
             })
             .collect::<PyResult<_>>()?;
-        Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(
-            TABLE.u16_type(),
-            &wvals,
-        )))
+        Ok(Self::scalar_array(TABLE.u16_type(), &wvals))
     }
     #[staticmethod]
     fn from_i32_values(values: Vec<i32>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i32_type(), &wvals))
+        Self::scalar_array(TABLE.i32_type(), &wvals)
     }
     #[staticmethod]
     fn from_u32_values(values: Vec<u32>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u32_type(), &wvals))
+        Self::scalar_array(TABLE.u32_type(), &wvals)
     }
     #[staticmethod]
     fn from_f32_values(values: Vec<f32>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::F32).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f32_type(), &wvals))
+        Self::scalar_array(TABLE.f32_type(), &wvals)
     }
     #[staticmethod]
     fn from_f64_values(values: Vec<f64>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::F64).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f64_type(), &wvals))
+        Self::scalar_array(TABLE.f64_type(), &wvals)
     }
     #[staticmethod]
     fn from_i64_values(values: Vec<i64>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::I64).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i64_type(), &wvals))
+        Self::scalar_array(TABLE.i64_type(), &wvals)
     }
     #[staticmethod]
     fn from_u64_values(values: Vec<u64>) -> DynWinRTArray {
         let wvals: Vec<dynwinrt::WinRTValue> =
             values.into_iter().map(dynwinrt::WinRTValue::U64).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u64_type(), &wvals))
+        Self::scalar_array(TABLE.u64_type(), &wvals)
     }
     #[staticmethod]
     fn from_string_values(values: Vec<String>) -> DynWinRTArray {
@@ -2162,18 +2202,19 @@ impl DynWinRTArray {
             .into_iter()
             .map(|s| dynwinrt::WinRTValue::HString(HSTRING::from(&s)))
             .collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(
-            TABLE.make(dynwinrt::TypeKind::HString),
-            &wvals,
-        ))
+        Self::scalar_array(TABLE.make(dynwinrt::TypeKind::HString), &wvals)
     }
 
     #[staticmethod]
     fn from_values(
+        py: Python<'_>,
         values: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
-    ) -> PyResult<DynWinRTArray> {
-        Self::from_elements("DynWinRTArray.from_values()", values, element_type)
+    ) -> PyResult<Py<DynWinRTArray>> {
+        tracked_native_array(
+            py,
+            Self::from_elements("DynWinRTArray.from_values()", values, element_type)?,
+        )
     }
 
     /// Build a DynWinRTArray of WinRT object/interface elements.
@@ -2184,24 +2225,29 @@ impl DynWinRTArray {
     /// and the element type drives ABI size and IID computation.
     #[staticmethod]
     fn from_object_values(
+        py: Python<'_>,
         values: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
-    ) -> PyResult<DynWinRTArray> {
-        Self::from_elements("DynWinRTArray.from_object_values()", values, element_type)
+    ) -> PyResult<Py<DynWinRTArray>> {
+        tracked_native_array(
+            py,
+            Self::from_elements("DynWinRTArray.from_object_values()", values, element_type)?,
+        )
     }
 
     /// Return the u8 array data as a Python `bytes` object. Safe for both
     /// `Values`-backed and `CoTaskMem`-backed arrays.
-    fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
-        let len = self.0.len();
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let data = self.data()?;
+        let len = data.len();
         let mut buf: Vec<u8> = Vec::with_capacity(len);
         for i in 0..len {
-            buf.push(match self.0.get(i) {
+            buf.push(match data.get(i) {
                 dynwinrt::WinRTValue::U8(v) => v,
                 other => other.as_i32().unwrap_or(0) as u8,
             });
         }
-        pyo3::types::PyBytes::new(py, &buf)
+        Ok(pyo3::types::PyBytes::new(py, &buf))
     }
 
     /// Build a u8 DynWinRTArray from a Python `bytes` or `bytearray` (much more
@@ -2220,19 +2266,27 @@ impl DynWinRTArray {
         };
         let wvals: Vec<dynwinrt::WinRTValue> =
             slice.into_iter().map(dynwinrt::WinRTValue::U8).collect();
-        Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(
-            TABLE.u8_type(),
-            &wvals,
-        )))
+        Ok(Self::scalar_array(TABLE.u8_type(), &wvals))
     }
 
     /// Wrap as DynWinRTValue::Array for passing to call().
     fn to_value(&self, py: Python<'_>) -> PyResult<Py<DynWinRTValue>> {
-        tracked_native_value(py, dynwinrt::WinRTValue::Array(self.0.clone()))
+        tracked_native_value(py, dynwinrt::WinRTValue::Array(self.data()?.clone()))
+    }
+
+    fn is_released(&self) -> bool {
+        self.0.is_none()
+    }
+
+    fn release(&mut self) {
+        drop(self.0.take());
     }
 
     fn __repr__(&self) -> String {
-        format!("DynWinRTArray(len={})", self.0.len())
+        match &self.0 {
+            Some(data) => format!("DynWinRTArray(len={})", data.len()),
+            None => "DynWinRTArray(released)".to_string(),
+        }
     }
 }
 
@@ -2240,28 +2294,46 @@ impl DynWinRTArray {
 // DynWinRTStruct — typed field access by index
 // ======================================================================
 
-#[pyclass(unsendable, from_py_object)]
+#[pyclass(unsendable, from_py_object, weakref)]
 #[derive(Clone)]
-pub struct DynWinRTStruct(dynwinrt::ValueTypeData);
+pub struct DynWinRTStruct(Option<dynwinrt::ValueTypeData>);
+
+impl DynWinRTStruct {
+    fn data(&self) -> PyResult<&dynwinrt::ValueTypeData> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| released_native_container_error("DynWinRTStruct"))
+    }
+
+    fn data_mut(&mut self) -> PyResult<&mut dynwinrt::ValueTypeData> {
+        self.0
+            .as_mut()
+            .ok_or_else(|| released_native_container_error("DynWinRTStruct"))
+    }
+}
 
 #[pymethods]
 impl DynWinRTStruct {
     /// Create a zero-initialized struct of the given type.
     #[staticmethod]
-    fn create(typ: &DynWinRTType) -> DynWinRTStruct {
-        DynWinRTStruct(typ.0.default_value())
+    fn create(py: Python<'_>, typ: &DynWinRTType) -> PyResult<Py<DynWinRTStruct>> {
+        tracked_native_struct(py, typ.0.default_value())
     }
 
     // -- Blittable field access (get/set pairs) --
 
     fn get_i8(&self, index: i64) -> PyResult<i32> {
-        get_typed_field(&self.0, index, dynwinrt::TypeKind::I8, &[], |value: i8| {
-            value as i32
-        })
+        get_typed_field(
+            self.data()?,
+            index,
+            dynwinrt::TypeKind::I8,
+            &[],
+            |value: i8| value as i32,
+        )
     }
     fn set_i8(&mut self, index: i64, value: i32) -> PyResult<()> {
         set_typed_field(
-            &mut self.0,
+            self.data_mut()?,
             index,
             checked_i8(value, "set_i8")?,
             dynwinrt::TypeKind::I8,
@@ -2270,13 +2342,17 @@ impl DynWinRTStruct {
     }
 
     fn get_u8(&self, index: i64) -> PyResult<u32> {
-        get_typed_field(&self.0, index, dynwinrt::TypeKind::U8, &[], |value: u8| {
-            value as u32
-        })
+        get_typed_field(
+            self.data()?,
+            index,
+            dynwinrt::TypeKind::U8,
+            &[],
+            |value: u8| value as u32,
+        )
     }
     fn set_u8(&mut self, index: i64, value: u32) -> PyResult<()> {
         set_typed_field(
-            &mut self.0,
+            self.data_mut()?,
             index,
             checked_u8(value, "set_u8")?,
             dynwinrt::TypeKind::U8,
@@ -2286,7 +2362,7 @@ impl DynWinRTStruct {
 
     fn get_i16(&self, index: i64) -> PyResult<i32> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::I16,
             &[],
@@ -2295,7 +2371,7 @@ impl DynWinRTStruct {
     }
     fn set_i16(&mut self, index: i64, value: i32) -> PyResult<()> {
         set_typed_field(
-            &mut self.0,
+            self.data_mut()?,
             index,
             checked_i16(value, "set_i16")?,
             dynwinrt::TypeKind::I16,
@@ -2305,7 +2381,7 @@ impl DynWinRTStruct {
 
     fn get_u16(&self, index: i64) -> PyResult<u32> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::U16,
             &[dynwinrt::TypeKind::Char16],
@@ -2314,7 +2390,7 @@ impl DynWinRTStruct {
     }
     fn set_u16(&mut self, index: i64, value: u32) -> PyResult<()> {
         set_typed_field(
-            &mut self.0,
+            self.data_mut()?,
             index,
             checked_u16(value, "set_u16")?,
             dynwinrt::TypeKind::U16,
@@ -2324,7 +2400,7 @@ impl DynWinRTStruct {
 
     fn get_i32(&self, index: i64) -> PyResult<i32> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::I32,
             &[],
@@ -2332,12 +2408,12 @@ impl DynWinRTStruct {
         )
     }
     fn set_i32(&mut self, index: i64, value: i32) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value, dynwinrt::TypeKind::I32, &[])
+        set_typed_field(self.data_mut()?, index, value, dynwinrt::TypeKind::I32, &[])
     }
 
     fn get_u32(&self, index: i64) -> PyResult<u32> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::U32,
             &[],
@@ -2345,12 +2421,12 @@ impl DynWinRTStruct {
         )
     }
     fn set_u32(&mut self, index: i64, value: u32) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value, dynwinrt::TypeKind::U32, &[])
+        set_typed_field(self.data_mut()?, index, value, dynwinrt::TypeKind::U32, &[])
     }
 
     fn get_f32(&self, index: i64) -> PyResult<f64> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::F32,
             &[],
@@ -2359,7 +2435,7 @@ impl DynWinRTStruct {
     }
     fn set_f32(&mut self, index: i64, value: f64) -> PyResult<()> {
         set_typed_field(
-            &mut self.0,
+            self.data_mut()?,
             index,
             value as f32,
             dynwinrt::TypeKind::F32,
@@ -2369,7 +2445,7 @@ impl DynWinRTStruct {
 
     fn get_f64(&self, index: i64) -> PyResult<f64> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::F64,
             &[],
@@ -2377,12 +2453,12 @@ impl DynWinRTStruct {
         )
     }
     fn set_f64(&mut self, index: i64, value: f64) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value, dynwinrt::TypeKind::F64, &[])
+        set_typed_field(self.data_mut()?, index, value, dynwinrt::TypeKind::F64, &[])
     }
 
     fn get_i64(&self, index: i64) -> PyResult<i64> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::I64,
             &[],
@@ -2390,12 +2466,12 @@ impl DynWinRTStruct {
         )
     }
     fn set_i64(&mut self, index: i64, value: i64) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value, dynwinrt::TypeKind::I64, &[])
+        set_typed_field(self.data_mut()?, index, value, dynwinrt::TypeKind::I64, &[])
     }
 
     fn get_u64(&self, index: i64) -> PyResult<u64> {
         get_typed_field(
-            &self.0,
+            self.data()?,
             index,
             dynwinrt::TypeKind::U64,
             &[],
@@ -2403,14 +2479,14 @@ impl DynWinRTStruct {
         )
     }
     fn set_u64(&mut self, index: i64, value: u64) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value, dynwinrt::TypeKind::U64, &[])
+        set_typed_field(self.data_mut()?, index, value, dynwinrt::TypeKind::U64, &[])
     }
 
     // -- Non-blittable field access --
 
     fn get_hstring(&self, index: i64) -> PyResult<String> {
         let index = checked_index(index)?;
-        self.0
+        self.data()?
             .get_field_hstring(index)
             .map(|value| value.to_string())
             .map_err(map_dynwinrt_error)
@@ -2418,37 +2494,48 @@ impl DynWinRTStruct {
 
     fn set_hstring(&mut self, index: i64, value: String) -> PyResult<()> {
         let index = checked_index(index)?;
-        self.0
+        self.data_mut()?
             .set_field_hstring(index, HSTRING::from(&value))
             .map_err(map_dynwinrt_error)
     }
 
     fn get_guid(&self, index: i64) -> PyResult<WinGUID> {
-        get_typed_field(&self.0, index, dynwinrt::TypeKind::Guid, &[], WinGUID)
+        get_typed_field(self.data()?, index, dynwinrt::TypeKind::Guid, &[], WinGUID)
     }
 
     fn set_guid(&mut self, index: i64, value: &WinGUID) -> PyResult<()> {
-        set_typed_field(&mut self.0, index, value.0, dynwinrt::TypeKind::Guid, &[])
+        set_typed_field(
+            self.data_mut()?,
+            index,
+            value.0,
+            dynwinrt::TypeKind::Guid,
+            &[],
+        )
     }
 
-    fn get_struct(&self, index: i64) -> PyResult<DynWinRTStruct> {
+    fn get_struct(&self, py: Python<'_>, index: i64) -> PyResult<Py<DynWinRTStruct>> {
         let index = checked_index(index)?;
-        self.0
+        let data = self
+            .data()?
             .get_field_struct_checked(index)
-            .map(DynWinRTStruct)
-            .map_err(map_dynwinrt_error)
+            .map_err(map_dynwinrt_error)?;
+        tracked_native_struct(py, data)
     }
 
     fn set_struct(&mut self, index: i64, value: &DynWinRTStruct) -> PyResult<()> {
         let index = checked_index(index)?;
-        self.0
-            .set_field_struct_checked(index, &value.0)
+        self.data_mut()?
+            .set_field_struct_checked(index, value.data()?)
             .map_err(map_dynwinrt_error)
     }
 
     fn get_object(&self, py: Python<'_>, index: i64) -> PyResult<Py<DynWinRTValue>> {
         let index = checked_index(index)?;
-        let value = match self.0.get_field_object(index).map_err(map_dynwinrt_error)? {
+        let value = match self
+            .data()?
+            .get_field_object(index)
+            .map_err(map_dynwinrt_error)?
+        {
             Some(object) => dynwinrt::WinRTValue::Object(object),
             None => dynwinrt::WinRTValue::Null,
         };
@@ -2457,14 +2544,13 @@ impl DynWinRTStruct {
 
     fn set_object(&mut self, index: i64, value: &DynWinRTValue) -> PyResult<()> {
         let index = checked_index(index)?;
+        let data = self.data_mut()?;
         value.check_input("DynWinRTStruct.set_object()", InputSlot::Field(index))?;
         match &value.0 {
-            dynwinrt::WinRTValue::Object(obj) => self
-                .0
+            dynwinrt::WinRTValue::Object(obj) => data
                 .set_field_object(index, Some(obj))
                 .map_err(map_dynwinrt_error),
-            dynwinrt::WinRTValue::Null => self
-                .0
+            dynwinrt::WinRTValue::Null => data
                 .set_field_object(index, None)
                 .map_err(map_dynwinrt_error),
             _ => Err(PyTypeError::new_err(
@@ -2475,11 +2561,23 @@ impl DynWinRTStruct {
 
     /// Wrap as DynWinRTValue::Struct for passing to call().
     fn to_value(&self, py: Python<'_>) -> PyResult<Py<DynWinRTValue>> {
-        tracked_native_value(py, dynwinrt::WinRTValue::Struct(self.0.clone()))
+        tracked_native_value(py, dynwinrt::WinRTValue::Struct(self.data()?.clone()))
+    }
+
+    fn is_released(&self) -> bool {
+        self.0.is_none()
+    }
+
+    fn release(&mut self) {
+        drop(self.0.take());
     }
 
     fn __repr__(&self) -> String {
-        "DynWinRTStruct(...)".to_string()
+        if self.is_released() {
+            "DynWinRTStruct(released)".to_string()
+        } else {
+            "DynWinRTStruct(...)".to_string()
+        }
     }
 }
 
@@ -2848,7 +2946,7 @@ mod tests {
             dynwinrt::WinRTValue::HResult(windows::core::HRESULT(0)),
             dynwinrt::WinRTValue::HResult(windows::core::HRESULT(0x80004005u32 as i32)),
         ];
-        let array = DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.hresult(), &values));
+        let array = DynWinRTArray::scalar_array(TABLE.hresult(), &values);
 
         assert_eq!(array.to_i32_list().unwrap(), vec![0, 0x80004005u32 as i32]);
     }

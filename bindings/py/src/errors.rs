@@ -32,6 +32,12 @@ pub(crate) fn released_receiver_error() -> PyErr {
     PyRuntimeError::new_err(format!("This WinRT object {RELEASED_REASON}"))
 }
 
+pub(crate) fn released_native_container_error(name: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "This {name} has been released (its projected_lifetime_scope() exited, or {name}.release() was called) and can no longer be used."
+    ))
+}
+
 /// Where a value was handed to native code, with a 0-based index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputSlot {

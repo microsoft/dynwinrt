@@ -780,6 +780,16 @@ observes raw native outputs weakly: temporary casts and callback inputs can
 drop normally instead of accumulating references until the scope closes.
 Raw results still held by Python at scope exit are released there.
 
+`DynWinRTArray` and `DynWinRTStruct` can independently own COM references,
+including after `DynWinRTValue.as_array()` or `.as_struct()` clones an already
+tracked value. COM-bearing containers created or extracted inside a scope are
+also observed weakly and released before the apartment exits. Retained
+containers then report `is_released()` and reject reads, writes and
+`to_value()` with the released-object `RuntimeError`, rather than exposing
+silently emptied storage. Scalar-only containers remain usable after the
+scope. Without a scope, call `release()` on COM-bearing arrays and structs
+inside their apartment; repeated release is safe.
+
 Scopes nest in LIFO order. Wrappers and raw native results that survive a
 closed scope remain Python objects, but their COM references are released:
 using one afterwards, as the

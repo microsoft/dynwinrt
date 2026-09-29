@@ -40,6 +40,11 @@ def test_wheel_stubs_raw_native_scope_tracking():
         "\ndef projected_lifetime_scope()", 1
     )[0]
     assert 'def track_native(self, value: "DynWinRTValue") -> "DynWinRTValue": ...' in scope
+    for name in ("DynWinRTArray", "DynWinRTStruct"):
+        assert f'def track_native(self, value: "{name}") -> "{name}": ...' in scope
+        class_body = stub.split(f"class {name}:", 1)[1].split("\n@final\nclass ", 1)[0]
+        assert "def is_released(self) -> bool: ..." in class_body
+        assert "def release(self) -> None: ..." in class_body
     assert tuple(inspect.signature(dynwinrt.ProjectedLifetimeScope.track_native).parameters) == (
         "self",
         "value",
