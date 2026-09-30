@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dynwinrt;
@@ -117,6 +120,72 @@ fn set_typed_field<T: Copy>(
 // Runtime initialization
 // ======================================================================
 
+#[derive(Default)]
+struct ManagedApartments {
+    contexts: usize,
+    manual: usize,
+    pending: Vec<i32>,
+}
+
+impl ManagedApartments {
+    fn count(&self) -> usize {
+        self.contexts + self.manual + self.pending.len()
+    }
+}
+
+thread_local! {
+    static MANAGED_APARTMENTS: RefCell<ManagedApartments> = RefCell::new(ManagedApartments::default());
+    static NATIVE_CALLBACK_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) struct NativeCallbackGuard {
+    counted: bool,
+    _owner_thread: PhantomData<Rc<()>>,
+}
+
+impl NativeCallbackGuard {
+    pub(crate) fn enter() -> Self {
+        let counted = NATIVE_CALLBACK_DEPTH.with(|depth| {
+            let Some(next) = depth.get().checked_add(1) else {
+                return false;
+            };
+            depth.set(next);
+            true
+        });
+        Self {
+            counted,
+            _owner_thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for NativeCallbackGuard {
+    fn drop(&mut self) {
+        if self.counted {
+            NATIVE_CALLBACK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+}
+
+fn in_native_callback() -> bool {
+    NATIVE_CALLBACK_DEPTH.with(|depth| depth.get() != 0)
+}
+
+fn would_uninitialize_final_apartment() -> bool {
+    in_native_callback() && MANAGED_APARTMENTS.with(|state| state.borrow().count() <= 1)
+}
+
+fn check_reentrant_uninitialize(operation: &str) -> PyResult<()> {
+    if would_uninitialize_final_apartment() {
+        return Err(PyRuntimeError::new_err(format!(
+            "{operation} cannot risk uninitializing the final COM apartment during a synchronous \
+             native callback on this thread; retry after the callback and native invocation \
+             return. Recover a dropped context with RoApartment.recover_pending() on this thread."
+        )));
+    }
+    Ok(())
+}
+
 #[pyclass]
 pub struct WinAppSDKContext(pub(crate) dynwinrt::WinAppSdkContext);
 
@@ -132,6 +201,7 @@ impl WinAppSDKContext {
 pub struct RoApartment {
     apartment_type: i32,
     active: bool,
+    close_rejected: bool,
 }
 
 /// `apartment_type` used when Python omits it: the multithreaded apartment.
@@ -162,21 +232,55 @@ impl RoApartment {
             ));
         }
         unsafe { RoInitialize(ro_init_type(self.apartment_type)) }.map_err(map_windows_error)?;
+        MANAGED_APARTMENTS.with(|state| state.borrow_mut().contexts += 1);
         self.active = true;
         Ok(())
     }
 
-    fn uninitialize(&mut self) {
-        if self.active {
-            unsafe { windows::Win32::System::WinRT::RoUninitialize() };
-            self.active = false;
+    fn uninitialize(&mut self, operation: &str) -> PyResult<()> {
+        if !self.active {
+            return Ok(());
         }
+        if let Err(error) = check_reentrant_uninitialize(operation) {
+            self.close_rejected = true;
+            return Err(error);
+        }
+        MANAGED_APARTMENTS.with(|state| state.borrow_mut().contexts -= 1);
+        self.active = false;
+        self.close_rejected = false;
+        unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+        Ok(())
     }
 }
 
 impl Drop for RoApartment {
     fn drop(&mut self) {
-        self.uninitialize();
+        if !self.active {
+            return;
+        }
+        let pending = would_uninitialize_final_apartment();
+        MANAGED_APARTMENTS.with(|state| {
+            let mut state = state.borrow_mut();
+            state.contexts -= 1;
+            if pending {
+                state.pending.push(self.apartment_type);
+            }
+        });
+        self.active = false;
+        if pending {
+            if !self.close_rejected {
+                Python::try_attach(|py| {
+                    PyRuntimeError::new_err(
+                        "RoApartment was dropped during a synchronous native callback; its \
+                         COM apartment remains active. Call RoApartment.recover_pending().close() \
+                         on this thread after the callback and native invocation return.",
+                    )
+                    .write_unraisable(py, None);
+                });
+            }
+        } else {
+            unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+        }
     }
 }
 
@@ -188,6 +292,7 @@ impl RoApartment {
         Self {
             apartment_type: apartment_type.unwrap_or(DEFAULT_APARTMENT_TYPE),
             active: false,
+            close_rejected: false,
         }
     }
 
@@ -201,13 +306,35 @@ impl RoApartment {
         _exc_type: &Bound<'_, PyAny>,
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
-    ) -> bool {
-        self.uninitialize();
-        false
+    ) -> PyResult<bool> {
+        self.uninitialize("RoApartment.__exit__()")?;
+        Ok(false)
     }
 
-    fn close(&mut self) {
-        self.uninitialize();
+    fn close(&mut self) -> PyResult<()> {
+        self.uninitialize("RoApartment.close()")
+    }
+
+    #[staticmethod]
+    fn recover_pending() -> PyResult<Self> {
+        if in_native_callback() {
+            return Err(PyRuntimeError::new_err(
+                "recover_pending() must be called on the owner thread after the synchronous \
+                 native callback and invocation return",
+            ));
+        }
+        MANAGED_APARTMENTS.with(|state| {
+            let mut state = state.borrow_mut();
+            let apartment_type = state.pending.pop().ok_or_else(|| {
+                PyRuntimeError::new_err("no dropped RoApartment is pending on this thread")
+            })?;
+            state.contexts += 1;
+            Ok(Self {
+                apartment_type,
+                active: true,
+                close_rejected: false,
+            })
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -228,13 +355,30 @@ pub fn init_winappsdk(major: u32, minor: u32) -> PyResult<WinAppSDKContext> {
 #[pyfunction]
 pub fn ro_initialize(apartment_type: Option<i32>) -> PyResult<()> {
     let init_type = ro_init_type(apartment_type.unwrap_or(DEFAULT_APARTMENT_TYPE));
-    unsafe { RoInitialize(init_type) }.map_err(map_windows_error)
+    unsafe { RoInitialize(init_type) }.map_err(map_windows_error)?;
+    MANAGED_APARTMENTS.with(|state| state.borrow_mut().manual += 1);
+    Ok(())
 }
 
 #[pyfunction]
-pub fn ro_uninitialize() {
+pub fn ro_uninitialize() -> PyResult<()> {
     use windows::Win32::System::WinRT::RoUninitialize;
+    check_reentrant_uninitialize("ro_uninitialize()")?;
+    MANAGED_APARTMENTS.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.manual == 0 && (state.contexts != 0 || !state.pending.is_empty()) {
+            return Err(PyRuntimeError::new_err(
+                "ro_uninitialize() has no matching ro_initialize() on this thread; close the \
+                 RoApartment or recover a dropped context with RoApartment.recover_pending()",
+            ));
+        }
+        if state.manual != 0 {
+            state.manual -= 1;
+        }
+        Ok(())
+    })?;
     unsafe { RoUninitialize() };
+    Ok(())
 }
 
 // ======================================================================
@@ -348,6 +492,7 @@ pub fn register_xaml_runtime_class(
                 0x8001010Eu32 as i32,
             )));
         }
+        let _callback_guard = NativeCallbackGuard::enter();
         Python::attach(|py| {
             let result = (|| -> PyResult<IUnknown> {
                 let invocation_context = context.call_method0(py, "copy")?;
@@ -724,6 +869,7 @@ impl DynWinRTOverrideInterface {
                         if std::thread::current().id() != thread_id {
                             return windows::core::HRESULT(0x8001010Eu32 as i32);
                         }
+                        let _callback_guard = NativeCallbackGuard::enter();
                         Python::attach(|py| {
                             let result = (|| -> PyResult<()> {
                                 let invocation_context = context.call_method0(py, "copy")?;
@@ -752,6 +898,7 @@ impl DynWinRTOverrideInterface {
                             if std::thread::current().id() != thread_id {
                                 return windows::core::HRESULT(0x8001010Eu32 as i32);
                             }
+                            let _callback_guard = NativeCallbackGuard::enter();
                             Python::attach(|py| {
                                 let result = (|| -> PyResult<(f32, f32)> {
                                     let invocation_context = context.call_method0(py, "copy")?;
@@ -1461,6 +1608,7 @@ impl DynWinRTValue {
         let callback = wrap_python_callback_context(py, callback)?;
 
         let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let py_val = Py::new(py, DynWinRTValue::new(val))?;
@@ -2359,6 +2507,7 @@ fn create_python_delegate(
 ) -> PyResult<dynwinrt::WinRTValue> {
     let delegate_callback: dynwinrt::delegate::DelegateCallback =
         Box::new(move |args: &[dynwinrt::WinRTValue]| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let py_args = args
@@ -2480,6 +2629,7 @@ impl DynWinRtElementFactory {
 
         let get_callbacks = callbacks.clone();
         let get_callback: dynwinrt::ElementFactoryGetCallback = Box::new(move |args| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let (callback, error_target) = {
                     let callbacks = get_callbacks.lock().map_err(|_| E_FAIL)?;
@@ -2507,6 +2657,7 @@ impl DynWinRtElementFactory {
 
         let recycle_callbacks = callbacks.clone();
         let recycle_callback: dynwinrt::ElementFactoryRecycleCallback = Box::new(move |args| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let (callback, error_target) = {
                     let callbacks = match recycle_callbacks.lock() {
@@ -2605,6 +2756,89 @@ mod tests {
     use pyo3::types::PyDict;
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn reentrant_apartment_guard_preserves_nested_and_manual_initializations() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            Python::attach(|py| {
+                let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0));
+                apartment.initialize().unwrap();
+                let outer_callback = NativeCallbackGuard::enter();
+                let inner_callback = NativeCallbackGuard::enter();
+                let error = apartment.uninitialize("RoApartment.close()").unwrap_err();
+                assert!(error.is_instance_of::<PyRuntimeError>(py));
+                assert!(error.to_string().contains("retry after the callback"));
+                assert!(apartment.active);
+
+                let mut nested = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0));
+                nested.initialize().unwrap();
+                nested.uninitialize("RoApartment.close()").unwrap();
+                ro_initialize(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                ro_uninitialize().unwrap();
+                assert!(ro_uninitialize().is_err());
+                assert!(apartment.active);
+                drop(inner_callback);
+                assert!(apartment.uninitialize("RoApartment.close()").is_err());
+                drop(outer_callback);
+
+                assert!(ro_uninitialize().is_err());
+                apartment.uninitialize("RoApartment.close()").unwrap();
+                assert!(!apartment.active);
+                apartment.uninitialize("RoApartment.close()").unwrap();
+                let mut other_model = RoApartment::new(Some(RO_INIT_MULTITHREADED.0));
+                other_model.initialize().unwrap();
+                other_model.uninitialize("RoApartment.close()").unwrap();
+            });
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn dropped_final_apartment_requires_owner_thread_recovery() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            Python::attach(|py| {
+                let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0));
+                apartment.initialize().unwrap();
+                let callback = NativeCallbackGuard::enter();
+                apartment
+                    .uninitialize("RoApartment.__exit__()")
+                    .unwrap_err();
+                drop(apartment);
+                assert!(RoApartment::recover_pending().is_err());
+                drop(callback);
+
+                let wrong_thread_error = py.detach(|| {
+                    std::thread::spawn(|| {
+                        Python::attach(|py| {
+                            RoApartment::recover_pending()
+                                .err()
+                                .expect("wrong-thread recovery should fail")
+                                .value(py)
+                                .str()
+                                .unwrap()
+                                .to_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                    })
+                    .join()
+                    .unwrap()
+                });
+                assert!(wrong_thread_error.contains("on this thread"));
+
+                let mut recovered = RoApartment::recover_pending().unwrap();
+                assert!(recovered.active);
+                assert!(RoApartment::recover_pending().is_err());
+                recovered.uninitialize("RoApartment.close()").unwrap();
+                assert!(!recovered.active);
+            });
+        })
+        .join()
+        .unwrap();
+    }
 
     #[derive(Default)]
     struct QueryCounts {

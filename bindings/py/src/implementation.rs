@@ -19,8 +19,8 @@ use windows::core::{Error, HRESULT};
 
 use crate::errors::map_windows_error;
 use crate::runtime::{
-    DynWinRTMethodSig, DynWinRTType, DynWinRTValue, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID,
-    native_outputs, wrap_python_callback_context,
+    DynWinRTMethodSig, DynWinRTType, DynWinRTValue, NativeCallbackGuard,
+    PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID, native_outputs, wrap_python_callback_context,
 };
 
 const RO_E_CLOSED: HRESULT = HRESULT(0x80000013_u32 as i32);
@@ -192,6 +192,7 @@ impl CallbackCell {
         if self.interpreter.stopping.load(Ordering::Acquire) {
             return Err(closed_error());
         }
+        let _callback_guard = NativeCallbackGuard::enter();
         Python::try_attach(|py| {
             if self.interpreter.stopping.load(Ordering::Acquire) {
                 return Err(closed_error());
