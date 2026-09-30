@@ -3456,6 +3456,45 @@ mod tests {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    fn initialize_embedded_binding(py: Python<'_>) {
+        let package_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("python")
+            .join("dynwinrt");
+        let package = PyModule::new(py, "dynwinrt").unwrap();
+        package
+            .setattr("__path__", vec![package_path.to_string_lossy().to_string()])
+            .unwrap();
+        package.setattr("__package__", "dynwinrt").unwrap();
+        let native = PyModule::new(py, "dynwinrt.dynwinrt").unwrap();
+        native.setattr("__package__", "dynwinrt").unwrap();
+        let spec = py
+            .import("importlib.machinery")
+            .unwrap()
+            .getattr("ModuleSpec")
+            .unwrap()
+            .call1(("dynwinrt.dynwinrt", py.None()))
+            .unwrap();
+        spec.setattr(
+            "origin",
+            package_path
+                .join("dynwinrt.pyd")
+                .to_string_lossy()
+                .to_string(),
+        )
+        .unwrap();
+        native.setattr("__spec__", spec).unwrap();
+        let modules = py.import("sys").unwrap().getattr("modules").unwrap();
+        modules.set_item("dynwinrt", &package).unwrap();
+        modules.set_item("dynwinrt.dynwinrt", &native).unwrap();
+        package.setattr("dynwinrt", &native).unwrap();
+        crate::dynwinrt::init(&native).unwrap();
+
+        let source = std::fs::read_to_string(package_path.join("__init__.py")).unwrap();
+        let source = std::ffi::CString::new(source).unwrap();
+        py.run(source.as_c_str(), Some(&package.dict()), None)
+            .unwrap();
+    }
+
     #[test]
     fn guarded_python_native_containers_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -4042,6 +4081,7 @@ mod tests {
         }
 
         Python::initialize();
+        Python::attach(initialize_embedded_binding);
         let mut apartment = RoApartment::new(Some(1));
         apartment.initialize().unwrap();
         let (source, counts) = QueryProbe::new();
@@ -4259,42 +4299,7 @@ mod tests {
         let owner_thread = thread::current().id();
         unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.unwrap();
         let (aliases, attempts_after_gate) = Python::attach(|py| {
-            let package_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("python")
-                .join("dynwinrt");
-            let package = PyModule::new(py, "dynwinrt").unwrap();
-            package
-                .setattr("__path__", vec![package_path.to_string_lossy().to_string()])
-                .unwrap();
-            package.setattr("__package__", "dynwinrt").unwrap();
-            let native = PyModule::new(py, "dynwinrt.dynwinrt").unwrap();
-            native.setattr("__package__", "dynwinrt").unwrap();
-            let spec = py
-                .import("importlib.machinery")
-                .unwrap()
-                .getattr("ModuleSpec")
-                .unwrap()
-                .call1(("dynwinrt.dynwinrt", py.None()))
-                .unwrap();
-            spec.setattr(
-                "origin",
-                package_path
-                    .join("dynwinrt.pyd")
-                    .to_string_lossy()
-                    .to_string(),
-            )
-            .unwrap();
-            native.setattr("__spec__", spec).unwrap();
-            let modules = py.import("sys").unwrap().getattr("modules").unwrap();
-            modules.set_item("dynwinrt", &package).unwrap();
-            modules.set_item("dynwinrt.dynwinrt", &native).unwrap();
-            package.setattr("dynwinrt", &native).unwrap();
-            crate::dynwinrt::init(&native).unwrap();
-
-            let source = std::fs::read_to_string(package_path.join("__init__.py")).unwrap();
-            let source = std::ffi::CString::new(source).unwrap();
-            py.run(source.as_c_str(), Some(&package.dict()), None)
-                .unwrap();
+            initialize_embedded_binding(py);
 
             let locals = PyDict::new(py);
             let script = std::ffi::CString::new(
