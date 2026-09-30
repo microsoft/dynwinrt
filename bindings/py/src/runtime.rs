@@ -1118,14 +1118,6 @@ pub(crate) fn init_native_tracking(module: &Bound<'_, PyModule>) -> PyResult<()>
     Ok(())
 }
 
-fn contains_com_references(typ: &dynwinrt::TypeHandle) -> bool {
-    let kind = typ.kind();
-    kind.is_com_pointer()
-        || matches!(kind, dynwinrt::TypeKind::ArrayOfIUnknown)
-        || (matches!(kind, dynwinrt::TypeKind::Struct(_))
-            && (0..typ.field_count()).any(|index| contains_com_references(&typ.field_type(index))))
-}
-
 fn track_native_owner(py: Python<'_>, owner: Py<PyAny>) -> PyResult<()> {
     if let Some(track) = TRACK_NATIVE.get(py) {
         track.call1(py, (owner,))?;
@@ -1139,14 +1131,7 @@ pub(crate) fn tracked_native_value(
     py: Python<'_>,
     value: dynwinrt::WinRTValue,
 ) -> PyResult<Py<DynWinRTValue>> {
-    let owns_native = match &value {
-        dynwinrt::WinRTValue::Object(_)
-        | dynwinrt::WinRTValue::Async(_)
-        | dynwinrt::WinRTValue::ArrayOfIUnknown(_) => true,
-        dynwinrt::WinRTValue::Array(array) => contains_com_references(&array.element_type),
-        dynwinrt::WinRTValue::Struct(data) => contains_com_references(&data.type_handle()),
-        _ => false,
-    };
+    let owns_native = value.contains_com_references();
     let output = Py::new(py, DynWinRTValue::new(value))?;
     if owns_native {
         track_native_owner(py, output.clone_ref(py).into_any())?;
@@ -1155,7 +1140,7 @@ pub(crate) fn tracked_native_value(
 }
 
 fn tracked_native_array(py: Python<'_>, array: dynwinrt::ArrayData) -> PyResult<Py<DynWinRTArray>> {
-    let owns_com = contains_com_references(&array.element_type);
+    let owns_com = array.contains_com_references();
     let output = Py::new(py, DynWinRTArray(Some(array)))?;
     if owns_com {
         track_native_owner(py, output.clone_ref(py).into_any())?;
@@ -1167,7 +1152,7 @@ fn tracked_native_struct(
     py: Python<'_>,
     data: dynwinrt::ValueTypeData,
 ) -> PyResult<Py<DynWinRTStruct>> {
-    let owns_com = contains_com_references(&data.type_handle());
+    let owns_com = data.type_handle().contains_com_references();
     let output = Py::new(py, DynWinRTStruct(Some(data)))?;
     if owns_com {
         track_native_owner(py, output.clone_ref(py).into_any())?;
@@ -1994,10 +1979,8 @@ impl DynWinRTArray {
         element_type: &DynWinRTType,
     ) -> PyResult<dynwinrt::ArrayData> {
         let values = native_inputs(operation, values, InputSlot::Element)?;
-        Ok(dynwinrt::ArrayData::from_values(
-            element_type.0.clone(),
-            &values,
-        ))
+        dynwinrt::ArrayData::try_from_values(element_type.0.clone(), &values)
+            .map_err(map_windows_error)
     }
 }
 

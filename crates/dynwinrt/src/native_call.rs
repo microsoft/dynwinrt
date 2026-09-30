@@ -1328,7 +1328,7 @@ fn invalid_argument(message: &str) -> windows_core::Error {
     windows_core::Error::new(windows_core::HRESULT(0x80070057u32 as i32), message)
 }
 
-fn validate_array_element(
+pub(crate) fn validate_array_element(
     expected: &TypeHandle,
     value: &WinRTValue,
     index: usize,
@@ -1363,6 +1363,9 @@ fn validate_array_element(
         return Ok(());
     }
     if matches!(expected.kind(), TypeKind::Char16) && matches!(value, WinRTValue::U16(_)) {
+        return Ok(());
+    }
+    if matches!(expected.kind(), TypeKind::HResult) && matches!(value, WinRTValue::I32(_)) {
         return Ok(());
     }
     if value.get_type_kind() != expected.kind() {

@@ -790,6 +790,14 @@ silently emptied storage. Scalar-only containers remain usable after the
 scope. Without a scope, call `release()` on COM-bearing arrays and structs
 inside their apartment; repeated release is safe.
 
+`DynWinRTArray.from_values()` and `from_object_values()` validate every
+element against its declared native type before retaining an independent
+reference. Mismatched scalar/object or struct identities and unsupported
+nested array elements raise `OSError` instead of storing a value that cannot
+be marshaled safely; nullable interface elements still accept native null.
+For arrays produced by lower-level native paths, scope tracking also checks
+the **actual owned elements**, not only the declared array element type.
+
 Scopes nest in LIFO order. Wrappers and raw native results that survive a
 closed scope remain Python objects, but their COM references are released:
 using one afterwards, as the

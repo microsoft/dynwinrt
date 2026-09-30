@@ -204,6 +204,85 @@ with RoApartment():
 print('borrowed-callback-retained', flush=True)
 """
 
+_REJECT_INVALID_ARRAY = r"""
+import sys
+from dynwinrt import (
+    DynWinRTArray, DynWinRTType, DynWinRTValue, DynWinRTImplementation,
+    DynWinRTImplementationMethod, DynWinRTInterfacePlan, DynWinRTMethodSig,
+    RoApartment, WinGUID, projected_lifetime_scope,
+)
+
+mode = sys.argv[1]
+signature = DynWinRTMethodSig().add_out(DynWinRTType.hstring())
+iid = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
+interface = DynWinRTType.register_interface(
+    'Tests.IArrayContractOwner', iid,
+).add_method('ToString', signature)
+plan = DynWinRTInterfacePlan.create(
+    'Tests.IArrayContractOwner', interface,
+    [DynWinRTImplementationMethod('ToString', 6, signature)],
+)
+with RoApartment(), projected_lifetime_scope():
+    owner = DynWinRTImplementation.create(
+        [plan], lambda *_: [DynWinRTValue.from_hstring('alive')],
+        'DynWinRT.Tests.ArrayContractOwner',
+    )
+    source = owner.to_value()
+    identity = source.identity_raw()
+    if mode in ('i32_object', 'i32_object_helper', 'i32_object_late'):
+        constructor = (
+            DynWinRTArray.from_values if mode != 'i32_object_helper'
+            else DynWinRTArray.from_object_values
+        )
+        elements = (
+            [DynWinRTValue.from_i32(17), source]
+            if mode == 'i32_object_late' else [source]
+        )
+        declared = DynWinRTType.i32_type()
+    elif mode == 'object_scalar_late':
+        constructor = DynWinRTArray.from_values
+        elements = [source, DynWinRTValue.from_i32(17)]
+        declared = DynWinRTType.object()
+    elif mode == 'wrong_iid':
+        constructor = DynWinRTArray.from_object_values
+        elements = [source]
+        declared = DynWinRTType.interface(
+            WinGUID.parse('905a0fe0-bc53-11df-8c49-001e4fc686da')
+        )  # IBuffer is not implemented by the IStringable fixture.
+    else:
+        constructor = DynWinRTArray.from_values
+        declared = (
+            DynWinRTType.i32_type()
+            if mode == 'nested_scalar'
+            else DynWinRTType.array_type(DynWinRTType.object())
+        )
+        elements = []
+        if mode in ('nested_object', 'nested_scalar'):
+            inner = DynWinRTArray.from_object_values(
+                [source], DynWinRTType.object()
+            )
+            elements = [inner.to_value()]
+    try:
+        constructor(elements, declared)
+    except OSError as error:
+        expected_hresult = -2147467262 if mode == 'wrong_iid' else -2147024809
+        assert error.winerror == expected_hresult, error  # E_NOINTERFACE / E_INVALIDARG
+        assert ('Array element 0' in str(error)
+                or 'Array element 1' in str(error)
+                or 'nested WinRT arrays' in str(error)), error
+    else:
+        raise AssertionError(f'{mode} accepted an unsupported array element contract')
+
+    assert not source.is_released() and source.identity_raw() == identity
+    if mode in ('nested_object', 'nested_scalar'):
+        elements[0].release()
+        inner.release()
+    source.release()
+    owner.release()
+    assert owner.is_closed, f'{mode} retained a native reference on rejection'
+print('array-contract-rejected-before-owning', mode, flush=True)
+"""
+
 
 @pytest.mark.parametrize(
     "mode",
@@ -250,6 +329,73 @@ def test_scope_balances_native_implementation_container_references(mode):
         result.stderr,
     )
     assert f"balanced-references {mode}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "i32_object",
+        "i32_object_helper",
+        "i32_object_late",
+        "object_scalar_late",
+        "wrong_iid",
+        "nested_object",
+        "nested_scalar",
+        "nested_empty",
+    ],
+)
+def test_invalid_array_contract_fails_before_retaining_native_references(mode):
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _REJECT_INVALID_ARRAY, mode],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        mode,
+        hex(result.returncode & 0xFFFFFFFF),
+        result.stdout,
+        result.stderr,
+    )
+    assert f"array-contract-rejected-before-owning {mode}" in result.stdout
+
+
+def test_checked_array_contracts_keep_valid_null_scalars_and_struct_owners():
+    with RoApartment(), projected_lifetime_scope():
+        source = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        identity = source.identity_raw()
+        object_type = DynWinRTType.object()
+
+        objects = DynWinRTArray.from_object_values(
+            [source, DynWinRTValue.null_value()], object_type
+        )
+        assert objects.get(0).identity_raw() == identity
+        assert objects.get(1).is_null()
+        assert DynWinRTArray.from_values([DynWinRTValue.null_value()], object_type).get(0).is_null()
+
+        signed = DynWinRTType.enum_type("Tests.CheckedArrayEnum", ["One"], [1])
+        assert DynWinRTArray.from_values([DynWinRTValue.from_i32(1)], signed).get(0).to_int() == 1
+        assert DynWinRTArray.from_values(
+            [DynWinRTValue.from_u16(ord("x"))], DynWinRTType.char16()
+        ).get(0).to_int() == ord("x")
+        assert DynWinRTArray.from_values(
+            [DynWinRTValue.from_i32(8080)], DynWinRTType.i32_type()
+        ).to_i32_list() == [8080]
+        assert DynWinRTArray.from_values(
+            [DynWinRTValue.from_i32(-1)], DynWinRTType.hresult()
+        ).to_i32_list() == [-1]
+
+        shape = DynWinRTType.struct_type("Tests.CheckedArrayStruct", [object_type])
+        record = DynWinRTStruct.create(shape)
+        record.set_object(0, source)
+        structured = DynWinRTArray.from_values([record.to_value()], shape)
+        assert structured.get(0).as_struct().get_object(0).identity_raw() == identity
+
+        structured.release()
+        objects.release()
+        record.release()
+        assert not source.is_released() and source.identity_raw() == identity
 
 
 def test_borrowed_callback_array_survives_scope_within_its_apartment():

@@ -136,6 +136,18 @@ impl TypeHandle {
         }
     }
 
+    /// Whether a value with this declared layout can own COM references.
+    pub fn contains_com_references(&self) -> bool {
+        match self.kind {
+            kind if kind.is_com_pointer() => true,
+            TypeKind::ArrayOfIUnknown => true,
+            TypeKind::Struct(_) => (0..self.field_count())
+                .any(|index| self.field_type(index).contains_com_references()),
+            TypeKind::Array(_) => self.array_element_type().contains_com_references(),
+            _ => false,
+        }
+    }
+
     /// Create a zero-initialized ValueTypeData. Only valid for Struct types.
     pub fn default_value(&self) -> ValueTypeData {
         ValueTypeData::new(self)
