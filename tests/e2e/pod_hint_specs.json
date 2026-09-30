@@ -1,0 +1,15 @@
+{
+  "$schema": "./e2e_specs.schema.json",
+  "specs": [
+    {
+      "id": "pod_hint_rect_vector_preparation",
+      "namespace": "Microsoft.Windows.AI.Imaging",
+      "class": "ImageObjectExtractorHint",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "pod_rect_vector_factory", "member": "include_rects" }
+      ]
+    }
+  ]
+}

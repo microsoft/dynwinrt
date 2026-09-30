@@ -703,6 +703,115 @@ async function runCheck(
         obj.setToNow();
         cr.pass = true;
       }
+    } else if (kind === "pod_point_input") {
+      const mod = generatedRoot(generatedDir);
+      const points = [
+        { x: 1.25, y: 2.5 },
+        { x: 3.5, y: 4.75 },
+      ];
+      const owned: any[] = [];
+      try {
+        const stroke = obj.createStroke(points);
+        assert.ok(stroke);
+        owned.push(stroke);
+        const view = stroke.getInkPoints();
+        assert.ok(view);
+        owned.push(view);
+        const output = view.toArray();
+        owned.push(...output);
+        assert.deepEqual(
+          output.map((point: any) => point.position),
+          points,
+        );
+        cr.pass = true;
+      } finally {
+        for (const value of owned.reverse()) mod.releaseProjected(value);
+      }
+    } else if (kind === "pod_geoposition_input") {
+      const mod = generatedRoot(generatedDir);
+      const positions = [
+        { latitude: 10, longitude: 20, altitude: 30 },
+        { latitude: 11, longitude: 21, altitude: 40 },
+      ];
+      const reference = mod.AltitudeReferenceSystem.Ellipsoid;
+      for (const args of [[], [reference], [reference, 4326]]) {
+        const owned: any[] = [];
+        try {
+          const path =
+            args.length === 0
+              ? cls.create(positions)
+              : args.length === 1
+                ? cls.createWithAltitudeReference(positions, ...args)
+                : cls.createWithAltitudeReferenceAndSpatialReference(
+                    positions,
+                    ...args,
+                  );
+          owned.push(path);
+          const view = path.positions;
+          assert.ok(view);
+          owned.push(view);
+          assert.deepEqual(view.toArray(), positions);
+          const bounds = mod.GeoboundingBox.tryCompute(positions, ...args);
+          assert.ok(bounds);
+          owned.push(bounds);
+          assert.deepEqual(bounds.northwestCorner, {
+            latitude: 11,
+            longitude: 20,
+            altitude: 40,
+          });
+          assert.deepEqual(bounds.southeastCorner, {
+            latitude: 10,
+            longitude: 21,
+            altitude: 30,
+          });
+          assert.equal(bounds.minAltitude, 30);
+          assert.equal(bounds.maxAltitude, 40);
+          assert.equal(mod.GeoboundingBox.tryCompute([], ...args), null);
+        } finally {
+          for (const value of owned.reverse()) mod.releaseProjected(value);
+        }
+      }
+      cr.pass = true;
+    } else if (kind === "pod_rect_vector_factory") {
+      const mod = generatedRoot(generatedDir);
+      const names = Object.keys(mod).filter((name) =>
+        name.startsWith("IVector_WindowsGraphicsRectInt32_"),
+      );
+      assert.equal(names.length, 1);
+      const Vector = mod[names[0]];
+      const rects = [
+        { x: -1, y: 2, width: 30, height: 40 },
+        { x: 50, y: -6, width: 70, height: 80 },
+      ];
+      // Only prepare the metadata-generated hint input. Do not activate AI,
+      // bootstrap WinAppSDK, load a model, or invoke the hint factory.
+      for (const initial of [[], rects]) {
+        const vector = Vector.create(initial);
+        const snapshot = vector.getView();
+        assert.ok(snapshot);
+        try {
+          assert.equal(vector._obj.isNull(), false);
+          assert.deepEqual(vector.toArray(), initial);
+          vector.append(rects[0]);
+          vector.setAt(0, rects[1]);
+          vector.insertAt(0, rects[0]);
+          assert.equal(vector.indexOf(rects[1]), 1);
+          vector.replaceAll(rects);
+          assert.deepEqual(
+            vector.getMany(0, [rects[0], rects[0], rects[0]]),
+            rects,
+          );
+          assert.deepEqual(snapshot.toArray(), initial);
+          vector.removeAt(0);
+          vector.removeAtEnd();
+          assert.equal(vector.size, 0);
+          vector.clear();
+        } finally {
+          mod.releaseProjected(vector);
+          mod.releaseProjected(snapshot);
+        }
+      }
+      cr.pass = true;
     } else if (kind === "nested_struct_runtime") {
       const mod = generatedRoot(generatedDir);
       const DirectXPixelFormat = await importClass(
