@@ -283,6 +283,55 @@ with RoApartment(), projected_lifetime_scope():
 print('array-contract-rejected-before-owning', mode, flush=True)
 """
 
+_STOCK_URI_ARRAY = r"""
+from dynwinrt import (
+    DynWinRTArray, DynWinRTMethodSig, DynWinRTType, DynWinRTValue,
+    RoApartment, WinGUID, projected_lifetime_scope,
+)
+
+factory_iid = WinGUID.parse('44a9796f-723e-4fdf-a218-033e75b0c084')
+stringable_iid = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
+factory_type = DynWinRTType.register_interface(
+    'Tests.IUriRuntimeClassFactoryArrayBoundary', factory_iid,
+).add_method(
+    'CreateUri',
+    DynWinRTMethodSig()
+        .add_in(DynWinRTType.hstring())
+        .add_out(DynWinRTType.object()),
+)
+
+with RoApartment(), projected_lifetime_scope():
+    def exercise(url):
+        factory = DynWinRTValue.activation_factory(
+            'Windows.Foundation.Uri'
+        ).cast(factory_iid)
+        uri = factory_type.method(6).invoke(factory, [DynWinRTValue.from_hstring(url)])
+        identity = uri.identity_raw()
+        try:
+            DynWinRTArray.from_values([uri], DynWinRTType.i32_type())
+        except OSError as error:
+            assert error.winerror == -2147024809 and 'Array element 0' in str(error)
+        else:
+            raise AssertionError('stock Uri pointer was stored in an I32 array')
+
+        checked = DynWinRTArray.from_values(
+            [uri, DynWinRTValue.null_value()],
+            DynWinRTType.interface(stringable_iid),
+        )
+        typed = checked.get(0)
+        assert typed.identity_raw() == identity
+        assert typed.as_raw() != uri.as_raw(), 'typed element did not QueryInterface'
+        assert checked.get(1).is_null()
+        assert uri.identity_raw() == identity and not uri.is_released()
+        return uri, checked
+
+    first_uri, first_array = exercise('https://example.com/first')
+    second_uri, second_array = exercise('https://example.com/second')
+assert first_uri.is_released() and first_array.is_released()
+assert second_uri.is_released() and second_array.is_released()
+print('stock-uri-array-one-apartment', flush=True)
+"""
+
 
 @pytest.mark.parametrize(
     "mode",
@@ -359,6 +408,22 @@ def test_invalid_array_contract_fails_before_retaining_native_references(mode):
         result.stderr,
     )
     assert f"array-contract-rejected-before-owning {mode}" in result.stdout
+
+
+def test_stock_uri_checked_arrays_repeat_within_one_apartment():
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _STOCK_URI_ARRAY],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        hex(result.returncode & 0xFFFFFFFF),
+        result.stdout,
+        result.stderr,
+    )
+    assert "stock-uri-array-one-apartment" in result.stdout
 
 
 def test_checked_array_contracts_keep_valid_null_scalars_and_struct_owners():

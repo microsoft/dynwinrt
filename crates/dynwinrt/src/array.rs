@@ -677,18 +677,41 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;
-    use windows::Foundation::{IStringable, IUriRuntimeClass, Uri};
-    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-    use windows_core::h;
+    use crate::{
+        MethodSignature, WinRtImplementation, WinRtImplementationPlan, WinRtInterfaceDefinition,
+        WinRtMethodDefinition, WinRtThreadingPolicy,
+    };
+    use std::sync::Arc;
+    use windows::Foundation::IStringable;
+
+    fn stringable_owner(table: &Arc<MetadataTable>) -> windows_core::Result<WinRtImplementation> {
+        let signature = MethodSignature::new(table).add_out(table.hstring());
+        let plan = WinRtImplementationPlan::new(
+            vec![WinRtInterfaceDefinition {
+                name: "Windows.Foundation.IStringable".into(),
+                interface_type: table.interface(IStringable::IID),
+                required_iids: vec![],
+                methods: vec![WinRtMethodDefinition {
+                    name: "ToString".into(),
+                    vtable_index: 6,
+                    signature,
+                }],
+            }],
+            WinRtThreadingPolicy::OwnerThread,
+        )?;
+        WinRtImplementation::new(
+            plan,
+            Arc::new(|_, _, _| Ok(vec![WinRTValue::HString("array".into())])),
+            Some("DynWinRt.Tests.Array"),
+        )
+    }
 
     #[test]
     fn checked_elements_reject_mismatched_and_nested_payloads_before_ownership()
     -> windows_core::Result<()> {
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let uri = Uri::CreateUri(h!("https://example.com"))?;
-        let source: IUriRuntimeClass = uri.cast()?;
-        let source = WinRTValue::Object(source.cast()?);
         let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
         let wrong = ArrayData::try_from_values(table.i32_type(), &[source.clone()])
             .expect_err("COM input cannot be stored as I32");
         assert_eq!(wrong.code().0, 0x80070057u32 as i32);
@@ -722,12 +745,11 @@ mod tests {
     #[test]
     fn checked_elements_preserve_typed_qi_null_enum_char16_and_structs() -> windows_core::Result<()>
     {
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let uri = Uri::CreateUri(h!("https://example.com"))?;
-        let default: IUriRuntimeClass = uri.cast()?;
-        let expected: IStringable = uri.cast()?;
-        let source = WinRTValue::Object(default.cast()?);
         let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
+        let expected: IStringable = source.as_object().unwrap().cast()?;
+        assert_ne!(source.as_object().unwrap().as_raw(), expected.as_raw());
 
         let typed = ArrayData::try_from_values(
             table.interface(IStringable::IID),
@@ -763,10 +785,9 @@ mod tests {
     #[test]
     fn actual_payloads_keep_mislabeled_arrays_visible_to_scope_tracking() -> windows_core::Result<()>
     {
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let uri = Uri::CreateUri(h!("https://example.com"))?;
-        let source = WinRTValue::Object(uri.cast()?);
         let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
         let mislabeled = ArrayData::from_values(table.i32_type(), &[source.clone()]);
         assert!(mislabeled.contains_com_references());
         assert!(WinRTValue::Array(mislabeled).contains_com_references());
