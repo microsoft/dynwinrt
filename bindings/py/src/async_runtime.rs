@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::errors::{
     map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
 };
-use crate::runtime::DynWinRTValue;
+use crate::runtime::{DynWinRTValue, NativeCallbackGuard};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
@@ -870,6 +870,7 @@ impl DynWinRTAsyncWithProgress {
         let weak_dispatcher = Arc::downgrade(&dispatcher);
 
         let progress_callback: dynwinrt::ProgressCallback = Box::new(move |value| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let Some(dispatcher) = weak_dispatcher.upgrade() else {
                     return;

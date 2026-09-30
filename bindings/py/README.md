@@ -505,7 +505,44 @@ with RoApartment(RO_INIT_SINGLETHREADED):
 model are supported. Requesting a conflicting model raises `OSError` with
 `RPC_E_CHANGED_MODE`. The low-level `ro_initialize()` API remains available, but
 each successful call, including `S_FALSE`, must be paired with one
-`ro_uninitialize()` call on the same thread.
+`ro_uninitialize()` call on the same thread. `ro_uninitialize()` rejects calls
+without a matching `dynwinrt.ro_initialize()` on that thread, including calls
+intended to balance an initialization made by another library.
+
+Do not close the final managed apartment from a synchronous native-to-Python
+callback (for example, a `PropertySet.map_changed` handler). `close()`,
+`__exit__()`, and `ro_uninitialize()` raise `RuntimeError` **before**
+`RoUninitialize` in that situation. A named `RoApartment` remains active; wait
+for both the callback and its outer native call to return, release any retained
+native callback values, then retry `apartment.close()` on the owner thread.
+Non-final nested initializations may still be balanced inside the callback.
+`ro_uninitialize()` cannot consume a `RoApartment` initialization.
+
+If a final `RoApartment` is dropped during a callback (including an unnamed
+`with RoApartment():` whose `__exit__` failed), its initialization stays in a
+same-thread pending lease rather than being uninitialized inside the native
+stack. After the native call returns, recover the lease explicitly:
+
+```python
+apartment = RoApartment.recover_pending()  # on the original OS thread
+# Release any remaining native PropertySet / callback references first.
+apartment.close()
+```
+
+`recover_pending()` raises if called inside a callback or if no lease is
+pending on that thread; calling it from another thread cannot consume the
+owner's lease. It does not close or release anything automatically. Retain a
+named apartment when possible so `.close()` can simply be retried. An implicit
+drop without an earlier failed close emits a native stderr diagnostic.
+
+An apartment is bound to the OS thread on which `RoApartment()` was created.
+Calling `__enter__()`, `close()`, or `__exit__()` on another thread raises
+`RuntimeError` without changing its state; retry on the creating thread.
+If its last Python reference is instead dropped on a different thread, native
+uninitialization is **not** attempted there: a native stderr diagnostic identifies
+the pending lease, which the creating thread can explicitly retrieve using
+`RoApartment.recover_pending()` and close after native references are released.
+Do not depend on Python garbage collection to close an apartment.
 
 WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message

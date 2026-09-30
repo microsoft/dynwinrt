@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::sync::{Arc, Mutex};
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, ThreadId};
 
 use dynwinrt;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyRuntimeError, PyTypeError};
@@ -117,6 +121,143 @@ fn set_typed_field<T: Copy>(
 // Runtime initialization
 // ======================================================================
 
+#[derive(Default)]
+struct ManagedApartments {
+    contexts: usize,
+    manual: usize,
+    pending: Vec<i32>,
+}
+
+impl ManagedApartments {
+    fn count(&self) -> usize {
+        self.contexts + self.manual + self.pending.len()
+    }
+}
+
+struct ForeignDropQueue {
+    owner_alive: bool,
+    pending: Vec<i32>,
+}
+
+struct OwnerDropQueue(Arc<Mutex<ForeignDropQueue>>);
+
+impl OwnerDropQueue {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(ForeignDropQueue {
+            owner_alive: true,
+            pending: Vec::new(),
+        })))
+    }
+}
+
+impl Drop for OwnerDropQueue {
+    fn drop(&mut self) {
+        let (pending, poisoned) = {
+            let (mut queue, poisoned) = lock_foreign_drops(&self.0);
+            queue.owner_alive = false;
+            (queue.pending.len(), poisoned)
+        };
+        if poisoned {
+            native_apartment_diagnostic("RoApartment owner-thread pending state was poisoned");
+        }
+        if pending != 0 {
+            native_apartment_diagnostic(&format!(
+                "{} dropped RoApartment initialization(s) were not recovered before their \
+                 owner OS thread exited",
+                pending
+            ));
+        }
+    }
+}
+
+fn lock_foreign_drops(queue: &Mutex<ForeignDropQueue>) -> (MutexGuard<'_, ForeignDropQueue>, bool) {
+    match queue.lock() {
+        Ok(guard) => (guard, false),
+        Err(poisoned) => {
+            queue.clear_poison();
+            (poisoned.into_inner(), true)
+        }
+    }
+}
+
+fn native_apartment_diagnostic(message: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{message}");
+}
+
+thread_local! {
+    static MANAGED_APARTMENTS: RefCell<ManagedApartments> = RefCell::new(ManagedApartments::default());
+    static NATIVE_CALLBACK_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static FOREIGN_DROPS: OwnerDropQueue = OwnerDropQueue::new();
+}
+
+pub(crate) struct NativeCallbackGuard {
+    counted: bool,
+    _owner_thread: PhantomData<Rc<()>>,
+}
+
+impl NativeCallbackGuard {
+    pub(crate) fn enter() -> Self {
+        let counted = NATIVE_CALLBACK_DEPTH.with(|depth| {
+            let Some(next) = depth.get().checked_add(1) else {
+                return false;
+            };
+            depth.set(next);
+            true
+        });
+        Self {
+            counted,
+            _owner_thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for NativeCallbackGuard {
+    fn drop(&mut self) {
+        if self.counted {
+            NATIVE_CALLBACK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+}
+
+fn check_reentrant_uninitialize(operation: &str) -> PyResult<()> {
+    let callback_active = NATIVE_CALLBACK_DEPTH
+        .try_with(|depth| depth.get() != 0)
+        .map_err(|_| {
+            PyRuntimeError::new_err(format!(
+                "{operation}: owner-thread callback state is unavailable during teardown"
+            ))
+        })?;
+    let final_apartment = if callback_active {
+        MANAGED_APARTMENTS
+            .try_with(|state| {
+                state
+                    .try_borrow()
+                    .map(|state| state.count() <= 1)
+                    .map_err(|_| {
+                        PyRuntimeError::new_err(
+                            "owner-thread apartment state is already in use; retry after the callback",
+                        )
+                    })
+            })
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "owner-thread apartment state is unavailable during teardown",
+                )
+            })??
+    } else {
+        false
+    };
+    if final_apartment {
+        return Err(PyRuntimeError::new_err(format!(
+            "{operation} cannot risk uninitializing the final COM apartment during a synchronous \
+             native callback on this thread; retry after the callback and native invocation \
+             return. Recover a dropped context with RoApartment.recover_pending() on this thread."
+        )));
+    }
+    Ok(())
+}
+
 #[pyclass]
 pub struct WinAppSDKContext(pub(crate) dynwinrt::WinAppSdkContext);
 
@@ -128,10 +269,13 @@ impl WinAppSDKContext {
     }
 }
 
-#[pyclass(unsendable)]
+#[pyclass]
 pub struct RoApartment {
     apartment_type: i32,
     active: bool,
+    close_rejected: bool,
+    owner_thread: ThreadId,
+    foreign_drops: Arc<Mutex<ForeignDropQueue>>,
 }
 
 /// `apartment_type` used when Python omits it: the multithreaded apartment.
@@ -155,28 +299,155 @@ fn ro_init_type(apartment_type: i32) -> RO_INIT_TYPE {
 }
 
 impl RoApartment {
+    fn enqueue_owner_recovery(&self) -> (bool, bool) {
+        let (mut queue, poisoned) = lock_foreign_drops(&self.foreign_drops);
+        if queue.owner_alive {
+            // The owner's contexts count still owns this native initialization.
+            queue.pending.push(self.apartment_type);
+            (true, poisoned)
+        } else {
+            (false, poisoned)
+        }
+    }
+
+    fn check_owner_thread(&self, operation: &str) -> PyResult<()> {
+        if thread::current().id() != self.owner_thread {
+            return Err(PyRuntimeError::new_err(format!(
+                "{operation} must run on the OS thread where RoApartment was created; \
+                 its apartment is unchanged. Retry on that owner thread, or recover a \
+                 guard dropped on another thread with RoApartment.recover_pending()."
+            )));
+        }
+        Ok(())
+    }
+
     fn initialize(&mut self) -> PyResult<()> {
+        self.check_owner_thread("RoApartment.__enter__()")?;
         if self.active {
             return Err(PyRuntimeError::new_err(
                 "the COM apartment context is already active",
             ));
         }
         unsafe { RoInitialize(ro_init_type(self.apartment_type)) }.map_err(map_windows_error)?;
+        MANAGED_APARTMENTS.with(|state| state.borrow_mut().contexts += 1);
         self.active = true;
         Ok(())
     }
 
-    fn uninitialize(&mut self) {
-        if self.active {
-            unsafe { windows::Win32::System::WinRT::RoUninitialize() };
-            self.active = false;
+    fn uninitialize(&mut self, operation: &str) -> PyResult<()> {
+        self.check_owner_thread(operation)?;
+        if !self.active {
+            return Ok(());
         }
+        if let Err(error) = check_reentrant_uninitialize(operation) {
+            self.close_rejected = true;
+            return Err(error);
+        }
+        MANAGED_APARTMENTS
+            .try_with(|state| {
+                let mut state = state.try_borrow_mut().map_err(|_| {
+                    PyRuntimeError::new_err(
+                        "owner-thread apartment state is already in use; retry close()",
+                    )
+                })?;
+                if state.contexts == 0 {
+                    return Err(PyRuntimeError::new_err(
+                        "RoApartment has no matching initialization on its owner thread",
+                    ));
+                }
+                state.contexts -= 1;
+                Ok(())
+            })
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "owner-thread apartment state is unavailable during teardown",
+                )
+            })??;
+        self.active = false;
+        self.close_rejected = false;
+        unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+        Ok(())
     }
 }
 
 impl Drop for RoApartment {
     fn drop(&mut self) {
-        self.uninitialize();
+        if !self.active {
+            return;
+        }
+        if thread::current().id() != self.owner_thread {
+            let (queued, poisoned) = self.enqueue_owner_recovery();
+            self.active = false;
+            if poisoned {
+                native_apartment_diagnostic(
+                    "RoApartment owner-thread pending state was poisoned; its native \
+                     initialization remains recoverable on the owner thread.",
+                );
+            }
+            let message = if queued {
+                "RoApartment was dropped on a different OS thread; its COM apartment remains \
+                 active on the creating thread. Call RoApartment.recover_pending().close() \
+                 there after native calls and retained references have been released."
+            } else {
+                "RoApartment was dropped after its owner OS thread exited; its COM apartment \
+                 cannot be recovered on a different thread."
+            };
+            native_apartment_diagnostic(message);
+            return;
+        }
+        let disposition = MANAGED_APARTMENTS.try_with(|state| {
+            let Ok(mut state) = state.try_borrow_mut() else {
+                return None;
+            };
+            if state.contexts == 0 {
+                return None;
+            }
+            let callback_active = NATIVE_CALLBACK_DEPTH.try_with(|depth| depth.get() != 0);
+            let pending = match callback_active {
+                Ok(active) => active && state.count() <= 1,
+                Err(_) => true,
+            };
+            state.contexts -= 1;
+            if pending {
+                state.pending.push(self.apartment_type);
+            }
+            Some((pending, callback_active.is_err()))
+        });
+        self.active = false;
+        match disposition {
+            Ok(Some((true, true))) => native_apartment_diagnostic(
+                "RoApartment callback state was unavailable during owner-thread teardown; \
+                 its COM initialization remains pending without native uninitialization.",
+            ),
+            Ok(Some((true, false))) if !self.close_rejected => native_apartment_diagnostic(
+                "RoApartment was dropped during a synchronous native callback; its \
+                     COM apartment remains active. Call RoApartment.recover_pending().close() \
+                     on this thread after the callback and native invocation return.",
+            ),
+            Ok(Some((true, false))) => {}
+            Ok(Some((false, false))) => {
+                unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+            }
+            _ => {
+                let (queued, poisoned) = self.enqueue_owner_recovery();
+                if poisoned {
+                    native_apartment_diagnostic(
+                        "RoApartment owner-thread pending state was poisoned during teardown",
+                    );
+                }
+                if queued {
+                    native_apartment_diagnostic(
+                        "RoApartment owner-thread apartment state was unavailable during Drop; \
+                         native initialization remains pending for recover_pending()",
+                    );
+                } else {
+                    native_apartment_diagnostic(
+                        "RoApartment owner-thread state and recovery queue were unavailable \
+                         during teardown; native uninitialization was not attempted",
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -184,11 +455,21 @@ impl Drop for RoApartment {
 impl RoApartment {
     #[new]
     #[pyo3(signature = (apartment_type=None))]
-    fn new(apartment_type: Option<i32>) -> Self {
-        Self {
+    fn new(apartment_type: Option<i32>) -> PyResult<Self> {
+        let foreign_drops = FOREIGN_DROPS
+            .try_with(|queue| queue.0.clone())
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "RoApartment cannot be created after its owner-thread state was destroyed",
+                )
+            })?;
+        Ok(Self {
             apartment_type: apartment_type.unwrap_or(DEFAULT_APARTMENT_TYPE),
             active: false,
-        }
+            close_rejected: false,
+            owner_thread: thread::current().id(),
+            foreign_drops,
+        })
     }
 
     fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
@@ -201,20 +482,86 @@ impl RoApartment {
         _exc_type: &Bound<'_, PyAny>,
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
-    ) -> bool {
-        self.uninitialize();
-        false
+    ) -> PyResult<bool> {
+        self.uninitialize("RoApartment.__exit__()")?;
+        Ok(false)
     }
 
-    fn close(&mut self) {
-        self.uninitialize();
+    fn close(&mut self) -> PyResult<()> {
+        self.uninitialize("RoApartment.close()")
     }
 
-    fn __repr__(&self) -> String {
-        format!(
+    #[staticmethod]
+    fn recover_pending() -> PyResult<Self> {
+        let callback_active = NATIVE_CALLBACK_DEPTH
+            .try_with(|depth| depth.get() != 0)
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "owner-thread callback state is unavailable during teardown",
+                )
+            })?;
+        if callback_active {
+            return Err(PyRuntimeError::new_err(
+                "recover_pending() must be called on the owner thread after the synchronous \
+                 native callback and invocation return",
+            ));
+        }
+        let foreign_drops = FOREIGN_DROPS
+            .try_with(|queue| queue.0.clone())
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "owner-thread apartment recovery queue is unavailable during teardown",
+                )
+            })?;
+        let local = MANAGED_APARTMENTS
+            .try_with(|state| -> PyResult<Option<i32>> {
+                let mut state = state.try_borrow_mut().map_err(|_| {
+                    PyRuntimeError::new_err("owner-thread apartment state is already in use")
+                })?;
+                let apartment_type = state.pending.pop();
+                if apartment_type.is_some() {
+                    state.contexts += 1;
+                }
+                Ok(apartment_type)
+            })
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "owner-thread apartment state is unavailable during teardown",
+                )
+            })??;
+        let apartment_type = match local {
+            Some(apartment_type) => apartment_type,
+            None => {
+                let (pending, poisoned) = {
+                    let (mut queue, poisoned) = lock_foreign_drops(&foreign_drops);
+                    (queue.pending.pop(), poisoned)
+                };
+                if poisoned {
+                    native_apartment_diagnostic(
+                        "RoApartment owner-thread pending state was poisoned; recovering its \
+                         native initialization before any COM uninitialization.",
+                    );
+                }
+                pending.ok_or_else(|| {
+                    PyRuntimeError::new_err("no dropped RoApartment is pending on this thread")
+                })?
+            }
+        };
+        Ok(Self {
+            apartment_type,
+            active: true,
+            close_rejected: false,
+            owner_thread: thread::current().id(),
+            foreign_drops,
+        })
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        self.check_owner_thread("RoApartment.__repr__()")?;
+        Ok(format!(
             "RoApartment(apartment_type={}, active={})",
             self.apartment_type, self.active
-        )
+        ))
     }
 }
 
@@ -228,13 +575,34 @@ pub fn init_winappsdk(major: u32, minor: u32) -> PyResult<WinAppSDKContext> {
 #[pyfunction]
 pub fn ro_initialize(apartment_type: Option<i32>) -> PyResult<()> {
     let init_type = ro_init_type(apartment_type.unwrap_or(DEFAULT_APARTMENT_TYPE));
-    unsafe { RoInitialize(init_type) }.map_err(map_windows_error)
+    unsafe { RoInitialize(init_type) }.map_err(map_windows_error)?;
+    MANAGED_APARTMENTS.with(|state| state.borrow_mut().manual += 1);
+    Ok(())
 }
 
 #[pyfunction]
-pub fn ro_uninitialize() {
+pub fn ro_uninitialize() -> PyResult<()> {
     use windows::Win32::System::WinRT::RoUninitialize;
+    check_reentrant_uninitialize("ro_uninitialize()")?;
+    MANAGED_APARTMENTS
+        .try_with(|state| {
+            let mut state = state.try_borrow_mut().map_err(|_| {
+                PyRuntimeError::new_err("owner-thread apartment state is already in use")
+            })?;
+            if state.manual == 0 {
+                return Err(PyRuntimeError::new_err(
+                    "ro_uninitialize() has no matching ro_initialize() on this thread; close the \
+                     RoApartment or recover a dropped context with RoApartment.recover_pending()",
+                ));
+            }
+            state.manual -= 1;
+            Ok(())
+        })
+        .map_err(|_| {
+            PyRuntimeError::new_err("owner-thread apartment state is unavailable during teardown")
+        })??;
     unsafe { RoUninitialize() };
+    Ok(())
 }
 
 // ======================================================================
@@ -348,6 +716,7 @@ pub fn register_xaml_runtime_class(
                 0x8001010Eu32 as i32,
             )));
         }
+        let _callback_guard = NativeCallbackGuard::enter();
         Python::attach(|py| {
             let result = (|| -> PyResult<IUnknown> {
                 let invocation_context = context.call_method0(py, "copy")?;
@@ -724,6 +1093,7 @@ impl DynWinRTOverrideInterface {
                         if std::thread::current().id() != thread_id {
                             return windows::core::HRESULT(0x8001010Eu32 as i32);
                         }
+                        let _callback_guard = NativeCallbackGuard::enter();
                         Python::attach(|py| {
                             let result = (|| -> PyResult<()> {
                                 let invocation_context = context.call_method0(py, "copy")?;
@@ -752,6 +1122,7 @@ impl DynWinRTOverrideInterface {
                             if std::thread::current().id() != thread_id {
                                 return windows::core::HRESULT(0x8001010Eu32 as i32);
                             }
+                            let _callback_guard = NativeCallbackGuard::enter();
                             Python::attach(|py| {
                                 let result = (|| -> PyResult<(f32, f32)> {
                                     let invocation_context = context.call_method0(py, "copy")?;
@@ -1461,6 +1832,7 @@ impl DynWinRTValue {
         let callback = wrap_python_callback_context(py, callback)?;
 
         let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let py_val = Py::new(py, DynWinRTValue::new(val))?;
@@ -2359,6 +2731,7 @@ fn create_python_delegate(
 ) -> PyResult<dynwinrt::WinRTValue> {
     let delegate_callback: dynwinrt::delegate::DelegateCallback =
         Box::new(move |args: &[dynwinrt::WinRTValue]| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let py_args = args
@@ -2480,6 +2853,7 @@ impl DynWinRtElementFactory {
 
         let get_callbacks = callbacks.clone();
         let get_callback: dynwinrt::ElementFactoryGetCallback = Box::new(move |args| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let (callback, error_target) = {
                     let callbacks = get_callbacks.lock().map_err(|_| E_FAIL)?;
@@ -2507,6 +2881,7 @@ impl DynWinRtElementFactory {
 
         let recycle_callbacks = callbacks.clone();
         let recycle_callback: dynwinrt::ElementFactoryRecycleCallback = Box::new(move |args| {
+            let _callback_guard = NativeCallbackGuard::enter();
             Python::attach(|py| {
                 let (callback, error_target) = {
                     let callbacks = match recycle_callbacks.lock() {
@@ -2605,6 +2980,288 @@ mod tests {
     use pyo3::types::PyDict;
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    struct LateDropProbe {
+        apartment: Option<RoApartment>,
+        state_was_destroyed: Arc<std::sync::atomic::AtomicBool>,
+        creation_was_rejected: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Drop for LateDropProbe {
+        fn drop(&mut self) {
+            self.state_was_destroyed.store(
+                MANAGED_APARTMENTS.try_with(|_| ()).is_err(),
+                Ordering::SeqCst,
+            );
+            self.creation_was_rejected
+                .store(RoApartment::new(None).is_err(), Ordering::SeqCst);
+            drop(self.apartment.take());
+        }
+    }
+
+    thread_local! {
+        static LATE_APARTMENT_DROP: RefCell<Option<LateDropProbe>> = const { RefCell::new(None) };
+    }
+
+    #[test]
+    fn reentrant_apartment_guard_preserves_nested_and_manual_initializations() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            Python::attach(|py| {
+                let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                apartment.initialize().unwrap();
+                let outer_callback = NativeCallbackGuard::enter();
+                let inner_callback = NativeCallbackGuard::enter();
+                let error = apartment.uninitialize("RoApartment.close()").unwrap_err();
+                assert!(error.is_instance_of::<PyRuntimeError>(py));
+                assert!(error.to_string().contains("retry after the callback"));
+                assert!(apartment.active);
+
+                let mut nested = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                nested.initialize().unwrap();
+                nested.uninitialize("RoApartment.close()").unwrap();
+                ro_initialize(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                ro_uninitialize().unwrap();
+                assert!(ro_uninitialize().is_err());
+                assert!(apartment.active);
+                drop(inner_callback);
+                assert!(apartment.uninitialize("RoApartment.close()").is_err());
+                drop(outer_callback);
+
+                assert!(ro_uninitialize().is_err());
+                apartment.uninitialize("RoApartment.close()").unwrap();
+                assert!(!apartment.active);
+                apartment.uninitialize("RoApartment.close()").unwrap();
+                let mut other_model = RoApartment::new(Some(RO_INIT_MULTITHREADED.0)).unwrap();
+                other_model.initialize().unwrap();
+                other_model.uninitialize("RoApartment.close()").unwrap();
+            });
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn dropped_final_apartment_requires_owner_thread_recovery() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            Python::attach(|py| {
+                let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                apartment.initialize().unwrap();
+                let callback = NativeCallbackGuard::enter();
+                apartment
+                    .uninitialize("RoApartment.__exit__()")
+                    .unwrap_err();
+                drop(apartment);
+                assert!(RoApartment::recover_pending().is_err());
+                drop(callback);
+
+                let wrong_thread_error = py.detach(|| {
+                    std::thread::spawn(|| {
+                        Python::attach(|py| {
+                            RoApartment::recover_pending()
+                                .err()
+                                .expect("wrong-thread recovery should fail")
+                                .value(py)
+                                .str()
+                                .unwrap()
+                                .to_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                    })
+                    .join()
+                    .unwrap()
+                });
+                assert!(wrong_thread_error.contains("on this thread"));
+
+                let mut recovered = RoApartment::recover_pending().unwrap();
+                assert!(recovered.active);
+                assert!(RoApartment::recover_pending().is_err());
+                recovered.uninitialize("RoApartment.close()").unwrap();
+                assert!(!recovered.active);
+            });
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn foreign_close_and_drop_preserve_owner_thread_retry() {
+        let _serial = crate::errors::UNRAISABLE_HOOK_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        std::thread::spawn(|| {
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            let apartment = std::thread::spawn(move || {
+                assert!(apartment.uninitialize("RoApartment.close()").is_err());
+                assert!(apartment.active);
+                apartment
+            })
+            .join()
+            .unwrap();
+            assert!(apartment.active);
+
+            let callback = NativeCallbackGuard::enter();
+            std::thread::spawn(move || drop(apartment)).join().unwrap();
+            assert!(RoApartment::recover_pending().is_err());
+            drop(callback);
+
+            let mut recovered = RoApartment::recover_pending().unwrap();
+            assert!(recovered.active);
+            recovered.uninitialize("RoApartment.close()").unwrap();
+            let mut other_model = RoApartment::new(Some(RO_INIT_MULTITHREADED.0)).unwrap();
+            other_model.initialize().unwrap();
+            other_model.uninitialize("RoApartment.close()").unwrap();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn poisoned_foreign_drop_queue_keeps_lease_recoverable() {
+        let _serial = crate::errors::UNRAISABLE_HOOK_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        std::thread::spawn(|| {
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            let queue = apartment.foreign_drops.clone();
+            let poisoned = std::panic::catch_unwind(|| {
+                let _guard = queue.lock().unwrap();
+                panic!("poison the owner-thread recovery queue");
+            });
+            assert!(poisoned.is_err());
+
+            std::thread::spawn(move || drop(apartment)).join().unwrap();
+            assert!(!queue.is_poisoned());
+            let poisoned_again = std::panic::catch_unwind(|| {
+                let _guard = queue.lock().unwrap();
+                panic!("poison the owner-thread queue before recovery");
+            });
+            assert!(poisoned_again.is_err());
+            let mut recovered = RoApartment::recover_pending().unwrap();
+            assert!(!queue.is_poisoned());
+            recovered.uninitialize("RoApartment.close()").unwrap();
+            assert!(RoApartment::recover_pending().is_err());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn closed_owner_queue_rejects_foreign_drop_without_native_cleanup() {
+        let _serial = crate::errors::UNRAISABLE_HOOK_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            sender.send(apartment).unwrap();
+        });
+        let apartment = receiver.recv().unwrap();
+        owner.join().unwrap();
+
+        let queue = apartment.foreign_drops.clone();
+        assert!(!lock_foreign_drops(&queue).0.owner_alive);
+        drop(apartment);
+        let (queue, _) = lock_foreign_drops(&queue);
+        assert!(queue.pending.is_empty());
+    }
+
+    #[test]
+    fn foreign_drop_does_not_wait_for_owners_python_gil() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            Python::attach(|_py| {
+                let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+                apartment.initialize().unwrap();
+                let callback = NativeCallbackGuard::enter();
+                let (sent, received) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    drop(apartment);
+                    sent.send(()).unwrap();
+                });
+                assert!(
+                    received.recv_timeout(Duration::from_secs(3)).is_ok(),
+                    "foreign Drop waited for the owner to release Python's GIL"
+                );
+                worker.join().unwrap();
+                assert!(RoApartment::recover_pending().is_err());
+                drop(callback);
+                let mut recovered = RoApartment::recover_pending().unwrap();
+                recovered.uninitialize("RoApartment.close()").unwrap();
+            });
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn owner_queue_closes_with_unrecovered_foreign_drop() {
+        let (sent, received) = std::sync::mpsc::channel();
+        let (continue_owner, owner_waits) = std::sync::mpsc::channel::<()>();
+        let owner = std::thread::spawn(move || {
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            sent.send(apartment).unwrap();
+            owner_waits.recv().unwrap();
+        });
+        let apartment = received.recv().unwrap();
+        let queue = apartment.foreign_drops.clone();
+        drop(apartment);
+        assert_eq!(lock_foreign_drops(&queue).0.pending.len(), 1);
+        continue_owner.send(()).unwrap();
+        owner.join().unwrap();
+        let (queue, _) = lock_foreign_drops(&queue);
+        assert!(!queue.owner_alive);
+        assert_eq!(queue.pending.len(), 1);
+    }
+
+    #[test]
+    fn owner_drop_after_apartment_tls_teardown_fails_closed() {
+        let state_was_destroyed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let creation_was_rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = state_was_destroyed.clone();
+        let rejected = creation_was_rejected.clone();
+        std::thread::spawn(move || {
+            LATE_APARTMENT_DROP.with(|_| ());
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            LATE_APARTMENT_DROP.with(|slot| {
+                *slot.borrow_mut() = Some(LateDropProbe {
+                    apartment: Some(apartment),
+                    state_was_destroyed: observed,
+                    creation_was_rejected: rejected,
+                });
+            });
+        })
+        .join()
+        .unwrap();
+        assert!(state_was_destroyed.load(Ordering::SeqCst));
+        assert!(creation_was_rejected.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn manual_uninitialize_requires_matching_owner_thread_initialization() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            assert!(ro_uninitialize().is_err());
+            ro_initialize(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            assert!(
+                std::thread::spawn(|| ro_uninitialize().is_err())
+                    .join()
+                    .unwrap()
+            );
+            ro_uninitialize().unwrap();
+
+            let mut apartment = RoApartment::new(Some(RO_INIT_MULTITHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            apartment.uninitialize("RoApartment.close()").unwrap();
+        })
+        .join()
+        .unwrap();
+    }
 
     #[derive(Default)]
     struct QueryCounts {
