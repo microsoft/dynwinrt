@@ -33,6 +33,22 @@ def run_case(generated, mode, scenario):
         mapping.off_map_changed(token)
         dw.release_projected(mapping)
 
+    def foreign_error(action):
+        errors = []
+
+        def on_foreign_thread():
+            try:
+                action()
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=on_foreign_thread)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive() and len(errors) == 1, errors
+        assert type(errors[0]) is RuntimeError, errors[0]
+        return str(errors[0])
+
     if scenario in ('close', 'exit'):
         apartment = dw.RoApartment(mode)
         apartment.__enter__()
@@ -169,9 +185,6 @@ def run_case(generated, mode, scenario):
         outer.__enter__()
         inner = dw.RoApartment(mode)
         inner.__enter__()
-        unraisable = []
-        original_hook = sys.unraisablehook
-        sys.unraisablehook = unraisable.append
 
         def on_changed(sender, args):
             outer.close()
@@ -182,13 +195,7 @@ def run_case(generated, mode, scenario):
         del inner
         mapping = PropertySet()
         token = mapping.on_map_changed(on_changed)
-        try:
-            mapping.insert('dropped', None)
-        finally:
-            sys.unraisablehook = original_hook
-        assert len(unraisable) == 1, unraisable
-        assert 'recover_pending()' in str(unraisable[0].exc_value)
-        unraisable.clear()
+        mapping.insert('dropped', None)
         recovered = dw.RoApartment.recover_pending()
         dispose(mapping, token)
         recovered.close()
@@ -221,6 +228,81 @@ def run_case(generated, mode, scenario):
         assert 'active=false' in repr(outer)
         recovered = dw.RoApartment.recover_pending()
         dispose(mapping, token)
+        recovered.close()
+        switch_models()
+
+    elif scenario == 'foreign_enter':
+        apartment = dw.RoApartment(mode)
+        message = foreign_error(apartment.__enter__)
+        assert 'OS thread where RoApartment was created' in message, message
+        assert 'active=false' in repr(apartment)
+        apartment.__enter__()
+        mapping = PropertySet()
+        dw.release_projected(mapping)
+        apartment.close()
+        switch_models()
+
+    elif scenario in ('foreign_close', 'foreign_exit', 'foreign_manual'):
+        apartment = dw.RoApartment(mode)
+        apartment.__enter__()
+        events = []
+        mapping = PropertySet()
+        token = mapping.on_map_changed(lambda _sender, args: events.append(args.key))
+        if scenario == 'foreign_close':
+            message = foreign_error(apartment.close)
+        elif scenario == 'foreign_exit':
+            message = foreign_error(lambda: apartment.__exit__(None, None, None))
+        else:
+            message = foreign_error(dw.ro_uninitialize)
+            try:
+                dw.ro_uninitialize()
+            except RuntimeError as error:
+                assert 'no matching ro_initialize()' in str(error), error
+            else:
+                raise AssertionError('manual uninitialize consumed a RoApartment context')
+        if scenario == 'foreign_manual':
+            assert 'no matching ro_initialize()' in message, message
+        else:
+            assert 'OS thread where RoApartment was created' in message, message
+        assert 'active=true' in repr(apartment)
+        mapping.insert('owner-still-active', None)
+        assert events == ['owner-still-active'], events
+        dispose(mapping, token)
+        apartment.close()
+        switch_models()
+
+    elif scenario == 'foreign_drop':
+        apartment = dw.RoApartment(mode)
+        apartment.__enter__()
+        events = []
+
+        def on_changed(_sender, args):
+            events.append(args.key)
+            try:
+                dw.RoApartment.recover_pending()
+            except RuntimeError as error:
+                assert 'native callback' in str(error), error
+            else:
+                raise AssertionError('foreign-dropped apartment recovered in a native callback')
+
+        mapping = PropertySet()
+        token = mapping.on_map_changed(on_changed)
+        holder = [apartment]
+        del apartment
+
+        def drop_on_foreign_thread():
+            value = holder.pop()
+            del value
+
+        thread = threading.Thread(target=drop_on_foreign_thread)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive() and not holder, holder
+        mapping.insert('owner-still-active', None)
+        assert events == ['owner-still-active'], events
+        dispose(mapping, token)
+        recovered = dw.RoApartment.recover_pending()
+        assert 'active=true' in repr(recovered)
         recovered.close()
         switch_models()
 
@@ -271,7 +353,8 @@ if __name__ == '__main__':
         '--scenario',
         choices=[
             'close', 'exit', 'nested', 'manual', 'pending', 'drop',
-            'pending_error', 'exception',
+            'pending_error', 'exception', 'foreign_enter', 'foreign_close',
+            'foreign_exit', 'foreign_manual', 'foreign_drop',
         ],
         required=True,
     )

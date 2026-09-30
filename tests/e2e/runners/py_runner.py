@@ -1423,6 +1423,8 @@ async def run_check(
                         for scenario in (
                             'close', 'exit', 'nested', 'manual', 'pending',
                             'drop', 'pending_error', 'exception',
+                            'foreign_enter', 'foreign_close', 'foreign_exit',
+                            'foreign_manual', 'foreign_drop',
                         ):
                             try:
                                 child = subprocess.run(
@@ -1449,6 +1451,26 @@ async def run_check(
                                     f'{scenario} apartment={mode} failed with '
                                     f'0x{child.returncode & 0xffffffff:08X}: '
                                     f'{child.stdout} {child.stderr}'
+                                )
+                                return cr
+                            if (
+                                scenario == 'foreign_drop'
+                                and 'RoApartment was dropped on a different OS thread'
+                                not in child.stderr
+                            ):
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} did not report the '
+                                    f'foreign drop: {child.stderr!r}'
+                                )
+                                return cr
+                            if (
+                                scenario == 'drop'
+                                and 'RoApartment was dropped during a synchronous native callback'
+                                not in child.stderr
+                            ):
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} did not report the '
+                                    f'pending drop: {child.stderr!r}'
                                 )
                                 return cr
                 cr['pass'] = True
