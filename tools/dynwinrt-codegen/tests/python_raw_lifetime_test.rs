@@ -15,6 +15,10 @@ struct Generated {
 
 impl Generated {
     fn new() -> Option<Self> {
+        Self::for_class("Windows.Foundation.PropertyValue", "raw_lifetime")
+    }
+
+    fn for_class(class_name: &str, prefix: &str) -> Option<Self> {
         if !Path::new(WINDOWS_WINMD).is_file() {
             eprintln!("Skipping raw lifetime regression: Windows.winmd not found");
             return None;
@@ -24,7 +28,7 @@ impl Generated {
             .unwrap()
             .parent()
             .unwrap();
-        let package = format!("raw_lifetime_{}", std::process::id());
+        let package = format!("{prefix}_{}", std::process::id());
         let root = repo.join("target").join(&package);
         let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
             .args([
@@ -32,7 +36,7 @@ impl Generated {
                 "--winmd",
                 WINDOWS_WINMD,
                 "--class-name",
-                "Windows.Foundation.PropertyValue",
+                class_name,
                 "--lang",
                 "py",
                 "--output",
@@ -79,6 +83,16 @@ impl Generated {
         );
         assert!(stdout.contains(scenario), "{scenario}:\n{stdout}\n{stderr}");
     }
+
+    fn binding_available(&self) -> bool {
+        Command::new(self.python())
+            .args([
+                "-c",
+                "from dynwinrt import DynWinRTImplementationHandle, RoApartment",
+            ])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
 }
 
 impl Drop for Generated {
@@ -92,13 +106,7 @@ fn generated_raw_outputs_release_before_apartment_exit_even_when_they_escape() {
     let Some(generated) = Generated::new() else {
         return;
     };
-    let available = Command::new(generated.python())
-        .args([
-            "-c",
-            "from dynwinrt import DynWinRTImplementationHandle, RoApartment",
-        ])
-        .output()
-        .is_ok_and(|output| output.status.success());
+    let available = generated.binding_available();
     assert!(
         available || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
         "raw lifetime regression requires the matching Python binding"
@@ -273,6 +281,266 @@ with RoApartment(), projected_lifetime_scope() as scope:
     assert not scope.disposed
 assert scope.disposed
 print('foreign-scope-rejected', flush=True)
+"#,
+    );
+}
+
+#[test]
+fn unscoped_generated_uri_cannot_outlive_its_managed_apartment() {
+    let Some(generated) = Generated::for_class("Windows.Foundation.Uri", "uri_lifetime") else {
+        return;
+    };
+    let available = generated.binding_available();
+    assert!(
+        available || std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1"),
+        "generated Uri lifetime regression requires the matching Python binding"
+    );
+    if !available {
+        eprintln!("Skipping generated Uri lifetime regression: Python binding not installed");
+        return;
+    }
+
+    generated.run(
+        "unscoped-uri-del",
+        r#"
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.foundation import Uri
+with RoApartment(1):
+    live = Uri('https://example.com/c')
+    assert live.host == 'example.com'
+assert live._obj.is_released()
+try:
+    live.host
+except RuntimeError as error:
+    assert 'released' in str(error)
+else:
+    raise AssertionError('unscoped Uri remained callable after apartment exit')
+del live
+print('unscoped-uri-del', flush=True)
+"#,
+    );
+    generated.run(
+        "unscoped-uri-shutdown",
+        r#"
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.foundation import Uri
+with RoApartment(1):
+    live = Uri('https://example.com/c')
+    assert live.host == 'example.com'
+assert live._obj.is_released()
+print('unscoped-uri-shutdown', flush=True)
+# Keep live through interpreter shutdown, without an explicit lifetime scope.
+"#,
+    );
+    generated.run(
+        "sequential-apartment-statics",
+        r#"
+import threading
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.foundation import Uri
+
+errors = []
+def use_uri(index):
+    try:
+        with RoApartment(1):
+            factory = Uri._get_s_IUriEscapeStatics()
+            assert Uri.escape_component('hello world') == 'hello%20world'
+            uri = Uri(f'https://example.com/{index}')
+            assert uri.host == 'example.com'
+        assert factory.is_released() and uri._obj.is_released()
+    except BaseException as error:
+        errors.append(error)
+
+for index in range(3):
+    worker = threading.Thread(target=use_uri, args=(index,))
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive()
+if errors:
+    raise errors[0]
+print('sequential-apartment-statics', flush=True)
+"#,
+    );
+}
+
+#[test]
+fn nonagile_generated_async_completes_before_unscoped_apartment_teardown() {
+    let Some(generated) = Generated::for_class(
+        "Windows.Devices.Enumeration.DeviceInformation",
+        "device_lifetime",
+    ) else {
+        return;
+    };
+    if !generated.binding_available() {
+        assert_ne!(
+            std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref(),
+            Ok("1"),
+            "non-agile async lifetime regression requires the matching Python binding"
+        );
+        return;
+    }
+    generated.run(
+        "nonagile-async-owner-thread",
+        r#"
+import asyncio
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.devices.enumeration import DeviceInformation
+
+async def query():
+    with RoApartment(1):
+        operation = DeviceInformation.find_all_async()
+        devices = await operation
+        assert isinstance(devices.size, int)
+    assert devices._obj.is_released()
+    try:
+        devices.size
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('non-agile result outlived its COM apartment')
+
+asyncio.run(query())
+print('nonagile-async-owner-thread', flush=True)
+"#,
+    );
+}
+
+#[test]
+fn generated_threadpool_async_close_retries_without_cancelling_work() {
+    let Some(generated) =
+        Generated::for_class("Windows.System.Threading.ThreadPool", "threadpool_lifetime")
+    else {
+        return;
+    };
+    if !generated.binding_available() {
+        assert_ne!(
+            std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref(),
+            Ok("1"),
+            "ThreadPool apartment lifetime regression requires the matching Python binding"
+        );
+        return;
+    }
+    generated.run(
+        "pending-async-retry",
+        r#"
+import asyncio
+import threading
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.system.threading import ThreadPool
+
+started = threading.Event()
+release = threading.Event()
+finished = threading.Event()
+
+def work(_action):
+    started.set()
+    try:
+        assert release.wait(8), 'work item was not unblocked'
+    finally:
+        finished.set()
+
+async def run():
+    with RoApartment(1) as apartment:
+        operation = ThreadPool.run_async(work)
+        task = asyncio.create_task(operation)
+        assert await asyncio.to_thread(started.wait, 5)
+        await asyncio.sleep(0)
+        assert not task.done()
+        try:
+            apartment.close()
+        except RuntimeError as error:
+            assert 'future is pending' in str(error)
+        else:
+            raise AssertionError('pending async operation closed its apartment')
+        release.set()
+        await task
+        assert not task.cancelled() and finished.is_set()
+        apartment.close()
+    try:
+        operation.wait()
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('async operation outlived its apartment')
+
+asyncio.run(run())
+print('pending-async-retry', flush=True)
+"#,
+    );
+    generated.run(
+        "agile-pending-work",
+        r#"
+import threading
+from dynwinrt import RoApartment
+from PY_PACKAGE.windows.system.threading import ThreadPool
+
+started = threading.Event()
+release = threading.Event()
+finished = threading.Event()
+
+def work(_action):
+    started.set()
+    try:
+        assert release.wait(8), 'work item was not unblocked'
+    finally:
+        finished.set()
+
+with RoApartment(1):
+    operation = ThreadPool.run_async(work)
+    assert started.wait(5)
+release.set()
+assert finished.wait(5), 'agile work was cancelled when its Python owner exited'
+try:
+    operation.wait()
+except RuntimeError as error:
+    assert 'released' in str(error)
+else:
+    raise AssertionError('async owner outlived its apartment')
+print('agile-pending-work', flush=True)
+"#,
+    );
+    generated.run(
+        "scoped-pending-async-retry",
+        r#"
+import asyncio
+import threading
+from dynwinrt import RoApartment, projected_lifetime_scope
+from PY_PACKAGE.windows.system.threading import ThreadPool
+
+started = threading.Event()
+release = threading.Event()
+
+def work(_action):
+    started.set()
+    assert release.wait(8), 'work item was not unblocked'
+
+async def run():
+    with RoApartment(1), projected_lifetime_scope() as scope:
+        operation = ThreadPool.run_async(work)
+        task = asyncio.create_task(operation)
+        assert await asyncio.to_thread(started.wait, 5)
+        await asyncio.sleep(0)
+        assert not task.done()
+        try:
+            scope.close()
+        except RuntimeError as error:
+            assert 'future is pending' in str(error)
+        else:
+            raise AssertionError('scope disposed a pending async owner')
+        assert not task.cancelled()
+        release.set()
+        await task
+        scope.close()
+    assert scope.disposed and not task.cancelled()
+    try:
+        operation.wait()
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('async owner remained live after its scope')
+
+asyncio.run(run())
+print('scoped-pending-async-retry', flush=True)
 "#,
     );
 }

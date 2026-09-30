@@ -55,6 +55,7 @@ from dynwinrt.dynwinrt import (
     _DynWinRTAsyncWithProgress,
     _dynwinrt_cache_projected,
     _dynwinrt_dispatch_progress,
+    _dynwinrt_link_cancellation,
     _dynwinrt_datetime_to_ticks,
     _dynwinrt_new_vector,
     _dynwinrt_projected_from_native,
@@ -456,6 +457,34 @@ def test_release_before_task_start_preserves_cancellation(tmp_path):
             await task
 
     asyncio.run(run_operation())
+
+
+def test_nonagile_cancellation_bridge_calls_native_on_the_event_loop_thread():
+    owner_thread = threading.get_ident()
+    cancellation_threads = []
+
+    class Native:
+        def is_released(self):
+            return False
+        def cancel(self):
+            cancellation_threads.append(threading.get_ident())
+
+    async def cancel_operation():
+        loop = asyncio.get_running_loop()
+        raw_future = loop.create_future()
+        async def await_raw():
+            return await raw_future
+        task = asyncio.create_task(await_raw())
+        _dynwinrt_link_cancellation(task, raw_future, Native())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert raw_future.cancelled()
+
+    asyncio.run(cancel_operation())
+    assert cancellation_threads == [owner_thread]
 
 
 def test_close_is_idempotent_and_prevents_future_execution(tmp_path):

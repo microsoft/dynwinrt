@@ -20,7 +20,9 @@ use windows::core::{Error, HRESULT};
 use crate::errors::map_windows_error;
 use crate::runtime::{
     DynWinRTMethodSig, DynWinRTType, DynWinRTValue, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION, WinGUID,
-    native_outputs, tracked_native_value, wrap_python_callback_context,
+    callback_native_argument, ensure_python_callbacks_open, log_unsafe_native_owner_drop,
+    native_outputs, python_gil_usable, track_native_owner, tracked_native_value_with_policy,
+    with_python_callback, wrap_python_callback_context,
 };
 
 const RO_E_CLOSED: HRESULT = HRESULT(0x80000013_u32 as i32);
@@ -192,7 +194,7 @@ impl CallbackCell {
         if self.interpreter.stopping.load(Ordering::Acquire) {
             return Err(closed_error());
         }
-        Python::try_attach(|py| {
+        with_python_callback(|py| {
             if self.interpreter.stopping.load(Ordering::Acquire) {
                 return Err(closed_error());
             }
@@ -206,11 +208,11 @@ impl CallbackCell {
             let result = (|| -> PyResult<Vec<dynwinrt::WinRTValue>> {
                 let inputs = args
                     .iter()
-                    .map(|value| Py::new(py, DynWinRTValue::new(value.clone())))
+                    .map(|value| callback_native_argument(py, value.clone()))
                     .collect::<PyResult<Vec<_>>>()?;
                 let inputs = PyList::new(py, inputs)?;
                 let outputs = callback.call1(py, (interface_index, vtable_index, inputs))?;
-                native_outputs("implementation callback", outputs.extract(py)?)
+                native_outputs(py, "implementation callback", outputs.extract(py)?)
             })();
             result.map_err(|error| {
                 let message = format!(
@@ -230,6 +232,23 @@ pub struct DynWinRTImplementation {
     native: Mutex<Option<WinRtImplementation>>,
     callback: Weak<CallbackCell>,
     interpreter: Arc<InterpreterState>,
+    created_with_managed_apartment: bool,
+}
+
+impl Drop for DynWinRTImplementation {
+    fn drop(&mut self) {
+        if self.created_with_managed_apartment && !python_gil_usable() {
+            let native = self
+                .native
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if native.is_some() {
+                std::mem::forget(native);
+                log_unsafe_native_owner_drop();
+            }
+        }
+    }
 }
 
 struct NativeLease<'a> {
@@ -297,7 +316,8 @@ impl DynWinRTImplementation {
         interfaces: Vec<DynWinRTInterfacePlan>,
         callback: Py<PyAny>,
         runtime_class_name: Option<&str>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<Py<Self>> {
+        ensure_python_callbacks_open()?;
         // PyGILState attachment targets the main interpreter. Do not accept a
         // subinterpreter-owned callable and later attach to the wrong one.
         if unsafe { pyo3::ffi::PyInterpreterState_Get() != pyo3::ffi::PyInterpreterState_Main() } {
@@ -338,11 +358,18 @@ impl DynWinRTImplementation {
         let native = WinRtImplementation::new(plan, native_callback, runtime_class_name)
             .map_err(map_windows_error)?;
         interpreter.register(&callback)?;
-        Ok(Self {
-            native: Mutex::new(Some(native)),
-            callback: Arc::downgrade(&callback),
-            interpreter,
-        })
+        ensure_python_callbacks_open()?;
+        let output = Py::new(
+            py,
+            Self {
+                native: Mutex::new(Some(native)),
+                callback: Arc::downgrade(&callback),
+                interpreter,
+                created_with_managed_apartment: crate::runtime::_managed_apartment_depth() > 0,
+            },
+        )?;
+        track_native_owner(py, output.clone_ref(py).into_any())?;
+        Ok(output)
     }
 
     fn to_value(&self, py: Python<'_>) -> PyResult<Py<DynWinRTValue>> {
@@ -350,7 +377,7 @@ impl DynWinRTImplementation {
             native
                 .to_value()
                 .map_err(map_windows_error)
-                .and_then(|value| tracked_native_value(py, value))
+                .and_then(|value| tracked_native_value_with_policy(py, value, true))
         })
     }
 
@@ -471,6 +498,7 @@ pub(crate) fn init(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Barrier, mpsc};
     use std::time::Duration;
 
@@ -510,6 +538,7 @@ mod tests {
                     native: Mutex::new(Some(native)),
                     callback: Weak::new(),
                     interpreter: Arc::new(InterpreterState::default()),
+                    created_with_managed_apartment: false,
                 },
             )
             .unwrap();
@@ -604,6 +633,7 @@ mod tests {
                     native: Mutex::new(Some(native)),
                     callback: Arc::downgrade(&cell),
                     interpreter,
+                    created_with_managed_apartment: false,
                 },
             )
             .unwrap();
@@ -653,5 +683,89 @@ mod tests {
             );
             view.call_method0("release").unwrap();
         });
+    }
+
+    #[test]
+    fn real_finalization_quarantines_the_native_implementation_controller() {
+        if std::env::var("DYNWINRT_IMPLEMENTATION_FINALIZE_CHILD").as_deref() != Ok("1") {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "implementation::tests::real_finalization_quarantines_the_native_implementation_controller",
+                    "--nocapture",
+                ])
+                .env("DYNWINRT_IMPLEMENTATION_FINALIZE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&child.stdout)
+                    .contains("implementation-Py_FinalizeEx-safe")
+            );
+            return;
+        }
+
+        struct CallbackDrop(Arc<AtomicUsize>);
+        impl Drop for CallbackDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        Python::initialize();
+        let table = dynwinrt::MetadataTable::new();
+        let iid = windows::Foundation::IStringable::IID;
+        let signature = dynwinrt::MethodSignature::new(&table).add_out(table.hstring());
+        let plan = WinRtImplementationPlan::new(
+            vec![WinRtInterfaceDefinition {
+                name: "Tests.IStringableFinalizeController".into(),
+                interface_type: table.interface(iid),
+                required_iids: vec![],
+                methods: vec![WinRtMethodDefinition {
+                    name: "ToString".into(),
+                    vtable_index: 6,
+                    signature,
+                }],
+            }],
+            WinRtThreadingPolicy::OwnerThread,
+        )
+        .unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let sentinel = CallbackDrop(dropped.clone());
+        let native = WinRtImplementation::new(
+            plan,
+            Arc::new(move |_, _, _| {
+                let _ = &sentinel;
+                Ok(vec![dynwinrt::WinRTValue::HString("alive".into())])
+            }),
+            None,
+        )
+        .unwrap();
+        let owner = DynWinRTImplementation {
+            native: Mutex::new(Some(native)),
+            callback: Weak::new(),
+            interpreter: Arc::new(InterpreterState::default()),
+            created_with_managed_apartment: true,
+        };
+        let cell = Arc::new(CallbackCell {
+            callback: Mutex::new(Some(Python::attach(|py| {
+                py.eval(c"lambda *_args: []", None, None).unwrap().unbind()
+            }))),
+            interpreter: Arc::new(InterpreterState::default()),
+        });
+
+        unsafe { pyo3::ffi::PyGILState_Ensure() };
+        assert_eq!(unsafe { pyo3::ffi::Py_FinalizeEx() }, 0);
+        assert_eq!(unsafe { pyo3::ffi::Py_IsInitialized() }, 0);
+        assert_eq!(cell.invoke(0, 6, &[]).unwrap_err().code(), RO_E_CLOSED);
+        std::mem::forget(cell);
+        drop(owner);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        println!("implementation-Py_FinalizeEx-safe");
     }
 }

@@ -164,14 +164,16 @@ fn generated_implementation_results_reject_released_references() {
         format!(
             r#"
 import importlib
+import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dynwinrt as dw
 
 ISource = importlib.import_module("pyviews.{source_module}").ISource
 Holder = importlib.import_module("pyviews.{holder_module}").Holder
 PYTHON_EXCEPTION = -1594998779
 RELEASED = (
-    "has been released (its projected_lifetime_scope() exited, or release_projected() / "
+    "has been released (its projected_lifetime_scope() or managed COM apartment exited, or release_projected() / "
     "DynWinRTValue.release() was called) and can no longer be used."
 )
 state = {{"item": None, "pair": (None, None)}}

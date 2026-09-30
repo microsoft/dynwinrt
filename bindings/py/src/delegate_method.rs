@@ -51,18 +51,20 @@ impl DynWinRTDelegateMethod {
     pub(crate) fn invoke(
         &self,
         value: &Bound<'_, DynWinRTValue>,
-        args: Vec<DynWinRTValue>,
+        args: Vec<Py<DynWinRTValue>>,
     ) -> PyResult<Vec<Py<DynWinRTValue>>> {
         // Keep native pins, not a Python value borrow, across reentrant Invoke.
         let py = value.py();
-        let value = value.try_borrow()?.clone();
-        let delegate = value.query(&self.iid, "delegate Invoke()")?;
+        let delegate = {
+            let value = value.try_borrow()?;
+            value.query(&self.iid, "delegate Invoke()")?
+        };
         let dynwinrt::WinRTValue::Object(object) = &delegate else {
             return Err(PyTypeError::new_err(
                 "delegate invocation requires a managed WinRT delegate value",
             ));
         };
-        let args = native_arguments("delegate Invoke()", args)?;
+        let args = native_arguments(py, "delegate Invoke()", args)?;
         (self.call.0)(object, &args)
             .map_err(map_windows_error)?
             .into_iter()
