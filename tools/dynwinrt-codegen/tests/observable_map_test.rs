@@ -224,14 +224,16 @@ fn observable_map_projects_python_mutable_mapping_and_typed_events() {
         py.contains(&format!("class IObservableMap_String_Object({map_base}):")),
         "{py}"
     );
-    assert!(
-        py.contains(&format!("        {map_base}._set_native(self, obj)\n")),
-        "{py}"
-    );
-    assert!(
-        py.contains("self._observable_obj = obj.cast(IID_IObservableMap_String_Object)"),
-        "{py}"
-    );
+    let observable_cast = py
+        .find("_observable_obj = obj.cast(IID_IObservableMap_String_Object)")
+        .expect("observable IID validation");
+    let companion = py
+        .find(&format!("{map_base}._set_native(self, obj)"))
+        .expect("mutable map companion");
+    let saved = py
+        .find("self._observable_obj = _observable_obj")
+        .expect("validated observable pointer");
+    assert!(observable_cast < companion && companion < saved, "{py}");
     assert!(
         py.contains(
             "_dynwinrt_map_dispatch = (_dynwinrt_symbol('i_map_string_object', 'IID_IMap_String_Object'), '_obj')"

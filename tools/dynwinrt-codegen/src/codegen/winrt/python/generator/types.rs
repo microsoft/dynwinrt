@@ -7,8 +7,9 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_identity, observable_collection_identity,
-    observable_map_identity, observable_vector_identity, runtime_mixin,
+    CollectionKind, interface_kind, map_iterable_identity, non_null_json_collection,
+    observable_collection_identity, observable_map_identity, observable_vector_identity,
+    runtime_mixin,
 };
 use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
 use crate::meta::CollectionInputRole;
@@ -309,30 +310,44 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
             "_obj",
         );
     }
+    if let Some(contract) =
+        collection_kind.and_then(|kind| non_null_json_collection(kind, &iface.generic_args))
+    {
+        out.push_str(&format!(
+            "    _dynwinrt_non_null_collection_contract = (WinGUID.parse('{}'), '{}')\n",
+            contract.class_iid, contract.class_name
+        ));
+    }
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
     out.push_str(
         "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n\
+         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native', release_redundant=False)\n\
          \x20       return super().__new__(cls)\n\n",
     );
     out.push_str("    def _set_native(self, obj: DynWinRTValue, *, cache=True):\n");
     if let Some(identity) = &observable_collection {
         let companion_name = context.projected_name(identity);
         out.push_str(&format!(
+            "        _observable_obj = obj.cast(IID_{})\n",
+            iface.name
+        ));
+        out.push_str(&format!(
             "        {}._set_native(self, obj)\n",
             py_runtime_symbol(context, identity, &companion_name)
         ));
-        out.push_str(&format!(
-            "        self._observable_obj = obj.cast(IID_{})\n",
-            iface.name
-        ));
+        out.push_str("        self._observable_obj = _observable_obj\n");
     } else if iface.generic_piid.is_some() {
         out.push_str(&format!(
             "        self._obj = obj.cast(IID_{})\n",
             iface.name
         ));
+    } else if !iface.iid.is_empty() {
+        out.push_str(&format!(
+            "        self._obj = obj.cast(IID_{})\n",
+            iface.name
+        ));
     } else {
-        out.push_str("        self._obj = obj\n");
+        out.push_str("        raise TypeError('Cannot construct an interface without an IID')\n");
     }
     out.push_str("        self._dynwinrt_native_ready = True\n");
     out.push_str(&format!(
@@ -630,6 +645,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                     .iter()
                     .any(|candidate| candidate.name == format!("get_{suffix}"))
             }),
+        stock_json_receiver: false,
     };
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()
@@ -769,6 +785,36 @@ mod tests {
         assert!(code.contains("_dynwinrt_interface_iid = IID_IWidget"));
         assert!(code.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue)"));
         assert!(code.contains("return cls._from_native(obj.cast(IID_IWidget))"));
+        assert!(code.contains(
+            "return _dynwinrt_projected_from_native(cls, args[0], '_set_native', release_redundant=False)"
+        ));
+        let initializer = code
+            .split("def _set_native(self, obj: DynWinRTValue, *, cache=True):\n")
+            .nth(1)
+            .unwrap()
+            .split("    def __init__")
+            .next()
+            .unwrap();
+        let cast = initializer
+            .find("self._obj = obj.cast(IID_IWidget)")
+            .unwrap();
+        let cache = initializer.find("_dynwinrt_cache_projected(self)").unwrap();
+        assert!(cast < cache, "{initializer}");
+        assert!(!initializer.contains("self._obj = obj\n"), "{initializer}");
+    }
+
+    #[test]
+    fn interface_without_an_iid_rejects_direct_native_construction() {
+        let iface = InterfaceMeta {
+            name: "IUnresolved".into(),
+            namespace: "Contoso".into(),
+            ..Default::default()
+        };
+        let context = PythonProjectionContext::standalone([iface.type_identity()]).unwrap();
+        let code = generate_interface(&context, &iface);
+        assert!(code.contains("raise TypeError('Cannot construct an interface without an IID')"));
+        assert!(!code.contains("self._obj = obj\n"));
+        assert!(!code.contains("def from_value(cls, obj: DynWinRTValue)"));
     }
 
     #[test]

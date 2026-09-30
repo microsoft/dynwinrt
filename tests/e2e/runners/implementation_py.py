@@ -1112,7 +1112,8 @@ def nullable_reference_results(g, dw, own):
 
 
 RELEASED = (
-    r"has been released \(its projected_lifetime_scope\(\) exited, or "
+    r"has been released \(its projected_lifetime_scope\(\) or managed COM "
+    r"apartment exited, or "
     r"release_projected\(\) / DynWinRTValue\.release\(\) was called\) and can no "
     r"longer be used\."
 )

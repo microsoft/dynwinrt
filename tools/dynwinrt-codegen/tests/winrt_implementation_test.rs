@@ -815,6 +815,9 @@ class Value:
         self.releases += 1
         if self.kind == 'object' and hasattr(self.value, 'owner'): self.value.owner.references -= 1
         self.kind, self.value = 'null', None
+    def __del__(self):
+        # Native DynWinRTValue drops release an unconsumed COM reference.
+        if getattr(self, 'kind', None) == 'object': self.release()
     def invoke_delegate(self, iid, signature, args):
         if iid == '41c64fe4-5f4d-4cf8-8a39-c8e2a9f396a1':
             assert [kind for kind, typ in signature.parameters] == ['Out']
@@ -888,7 +891,7 @@ class Array:
     def to_i32_list(self): return [value.value for value in self.values]
 runtime = types.ModuleType('generated._runtime')
 runtime.__getattr__ = lambda name: None
-def from_native(cls, obj, setter):
+def from_native(cls, obj, setter, *, release_redundant=True):
     instance = object.__new__(cls)
     getattr(instance, setter)(obj)
     return instance
@@ -1006,6 +1009,10 @@ class LargeInteger(Handlers):
 raises('invalid implementation result', lambda: Contract.implementation(LargeInteger()).dispatch(8,[values,Value.from_u32(1)]))
 handle = Contract.implement(handlers)
 owner = Implementation.last
+probe = Value('object', types.SimpleNamespace(owner=owner))
+assert owner.references == 2
+del probe
+assert owner.references == 1
 assert owner.callback(0,6,[])[0].value == 'changed'
 raises('Unknown implementation interface index', lambda: owner.callback(-1,6,[]))
 view = Contract.from_implementation(owner)

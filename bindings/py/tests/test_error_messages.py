@@ -56,7 +56,8 @@ NOT_INITIALIZED_HINT = (
     "calling WinRT APIs."
 )
 RELEASED_REASON = re.escape(
-    "has been released (its projected_lifetime_scope() exited, or "
+    "has been released (its projected_lifetime_scope() or managed COM "
+    "apartment exited, or "
     "release_projected() / DynWinRTValue.release() was called) and can no longer "
     "be used."
 ) + "$"

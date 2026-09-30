@@ -24,12 +24,18 @@ fn hresult_hint(code: HRESULT) -> Option<&'static str> {
         .find_map(|&(hinted, hint)| (hinted == code).then_some(hint))
 }
 
-const RELEASED_REASON: &str = "has been released (its projected_lifetime_scope() exited, or \
-     release_projected() / DynWinRTValue.release() was called) and can no longer be used.";
+const RELEASED_REASON: &str = "has been released (its projected_lifetime_scope() or managed COM \
+     apartment exited, or release_projected() / DynWinRTValue.release() was called) and can no longer be used.";
 
 /// A call on a value after `release()`, including release by its lifetime scope.
 pub(crate) fn released_receiver_error() -> PyErr {
     PyRuntimeError::new_err(format!("This WinRT object {RELEASED_REASON}"))
+}
+
+pub(crate) fn released_native_container_error(name: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "This {name} has been released (its projected_lifetime_scope() or managed COM apartment exited, or {name}.release() was called) and can no longer be used."
+    ))
 }
 
 /// Where a value was handed to native code, with a 0-based index.

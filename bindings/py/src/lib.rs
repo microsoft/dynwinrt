@@ -18,7 +18,7 @@ mod dynwinrt {
     use pyo3::prelude::*;
 
     #[pymodule_init]
-    fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    pub(super) fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         super::async_runtime::init_async_runtime();
         m.py().run(
             c"
@@ -35,7 +35,7 @@ from datetime import datetime as _datetime, timedelta as _timedelta, timezone as
 from itertools import count as _count
 from contextvars import ContextVar as _ContextVar, copy_context as _copy_context
 from operator import index as _index
-from threading import current_thread as _thread_current_thread, get_ident as _thread_get_ident
+from threading import current_thread as _thread_current_thread, get_ident as _thread_get_ident, local as _thread_local
 from types import TracebackType as _TracebackType
 from typing import Any as _Any, Awaitable as _Awaitable, Callable as _Callable
 from typing import Protocol as _Protocol, TypeVar as _TypeVar
@@ -78,6 +78,37 @@ _active_projected_lifetime_scope = _ContextVar(
 )
 _projected_wrapper_cache = _WeakValueDictionary()
 _projected_scope_serial = _count(1)
+_apartment_owned_values = _thread_local()
+
+def _dynwinrt_apartment_registry():
+    registry = getattr(_apartment_owned_values, 'registry', None)
+    if registry is None:
+        registry = _WeakValueDictionary()
+        _apartment_owned_values.registry = registry
+    return registry
+
+def _dynwinrt_release_owned_native(native):
+    release_owner = getattr(native, '_release_apartment_owner', None)
+    if release_owner is None:
+        native.release()
+    else:
+        release_owner()
+
+def _dynwinrt_drain_apartment_owners():
+    registry = getattr(_apartment_owned_values, 'registry', None)
+    if registry is None:
+        return
+    for _ in range(1024):
+        if not registry:
+            return
+        for native in list(registry.values()):
+            check = getattr(native, '_check_apartment_release', None)
+            if check is not None:
+                check()
+        for key, native in reversed(list(registry.items())):
+            _dynwinrt_release_owned_native(native)
+            registry.pop(key, None)
+    raise RuntimeError('COM apartment cleanup did not settle; retry on the owner thread.')
 
 def _dynwinrt_projected_native_values(value):
     native_values = []
@@ -152,13 +183,17 @@ def _dynwinrt_cache_projected(value):
             pass
     return value
 
-def _dynwinrt_projected_from_native(wrapper_type, native, initializer_name):
+def _dynwinrt_projected_from_native(
+    wrapper_type, native, initializer_name, *, release_redundant=True
+):
     key = _dynwinrt_projected_cache_key(wrapper_type, native)
     if key is not None:
         cached = _projected_wrapper_cache.get(key)
         if cached is not None:
             if _dynwinrt_projected_wrapper_is_live(cached):
-                _dynwinrt_release_redundant_native(native, cached)
+                # A direct interface constructor borrows its source.
+                if release_redundant:
+                    _dynwinrt_release_redundant_native(native, cached)
                 return cached
             _projected_wrapper_cache.pop(key, None)
     wrapper = object.__new__(wrapper_type)
@@ -173,6 +208,7 @@ def _dynwinrt_projected_from_native(wrapper_type, native, initializer_name):
 class ProjectedLifetimeScope:
     def __init__(self):
         self._registry = {}
+        self._native_refs = _WeakValueDictionary()
         self._token = None
         self._owner_thread = None
         self._active = False
@@ -221,7 +257,16 @@ class ProjectedLifetimeScope:
         if not self._active or self._disposed:
             raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
         for native in _dynwinrt_projected_native_values(value):
+            self._native_refs.pop(id(native), None)
             self._registry.setdefault(id(native), (native, type_name))
+        return value
+
+    def track_native(self, value):
+        self._require_owner_thread('track values in')
+        if not self._active or self._disposed:
+            raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
+        if id(value) not in self._registry:
+            self._native_refs[id(value)] = value
         return value
 
     def close(self):
@@ -238,11 +283,30 @@ class ProjectedLifetimeScope:
             self._token = None
             self._active = False
 
+        for native in (
+            [native for native, _ in self._registry.values()]
+            + list(self._native_refs.values())
+        ):
+            check = getattr(native, '_check_apartment_release', None)
+            if check is not None:
+                try:
+                    check()
+                except Exception:
+                    self._retry_pending = True
+                    raise
+
         first_error = None
         for key, (native, _) in reversed(list(self._registry.items())):
             try:
-                native.release()
+                _dynwinrt_release_owned_native(native)
                 del self._registry[key]
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        for key, native in reversed(list(self._native_refs.items())):
+            try:
+                _dynwinrt_release_owned_native(native)
+                del self._native_refs[key]
             except BaseException as error:
                 if first_error is None:
                     first_error = error
@@ -294,6 +358,19 @@ def _dynwinrt_track_projected(value, type_name=None):
         scope.track(value, type_name)
     return value
 
+def _dynwinrt_track_native(value):
+    if _managed_apartment_depth() > 0:
+        _dynwinrt_apartment_registry()[id(value)] = value
+    scope = _active_projected_lifetime_scope.get()
+    if scope is not None and scope._active and not scope._disposed:
+        scope.track_native(value)
+    return value
+
+def _dynwinrt_track_apartment_callback_copy(value):
+    if _managed_apartment_depth() > 0:
+        _dynwinrt_apartment_registry()[id(value)] = value
+    return value
+
 def project_as(value, wrapper_type):
     '''Borrow a projected value and expose it as a generated runtime class.
 
@@ -334,7 +411,7 @@ def release_projected(value):
     if not native_values:
         raise TypeError('release_projected requires a generated projected wrapper.')
     for native in reversed(native_values):
-        native.release()
+        _dynwinrt_release_owned_native(native)
 
 def _dynwinrt_guid(value):
     if isinstance(value, WinGUID):
@@ -422,6 +499,22 @@ def _dynwinrt_normalize_index(value, length):
         raise IndexError('collection index out of range')
     return value
 
+def _dynwinrt_preflight_non_null_collection(self, values):
+    contract = getattr(type(self), '_dynwinrt_non_null_collection_contract', None)
+    if contract is None:
+        return None
+    native = getattr(self, '_collection_obj', self._obj)
+    if not native._matches_runtime_class(*contract):
+        return None
+    items = list(values)
+    for item in items:
+        raw = getattr(item, '_obj', item)
+        if raw is None:
+            raw = DynWinRTValue.null_value()
+        if isinstance(raw, DynWinRTValue):
+            native._validate_non_null_collection_input(raw, *contract)
+    return items
+
 class _WinRTSequenceMixin(_Sequence):
     def __len__(self):
         return self.size
@@ -464,6 +557,10 @@ class _WinRTMutableSequenceMixin(_MutableSequence):
         else:
             index = min(index, length)
         self.insert_at(index, value)
+
+    def extend(self, values):
+        checked = _dynwinrt_preflight_non_null_collection(self, values)
+        return super().extend(values if checked is None else checked)
 
 class _WinRTIterableMixin(_Iterable):
     def __iter__(self):
@@ -514,9 +611,36 @@ class _WinRTMutableMappingMixin(_MutableMapping):
             raise KeyError(key)
         self.remove(key)
 
+    def update(self, other=(), /, **kwargs):
+        contract = getattr(type(self), '_dynwinrt_non_null_collection_contract', None)
+        native = getattr(self, '_collection_obj', self._obj)
+        if contract is None or not native._matches_runtime_class(*contract):
+            return super().update(other, **kwargs)
+        if hasattr(other, 'keys'):
+            entries = [(key, other[key]) for key in other.keys()]
+        else:
+            entries = list(other)
+        entries.extend(kwargs.items())
+        for key, _ in entries:
+            if key is None:
+                raise TypeError('map key cannot be None')
+        _dynwinrt_preflight_non_null_collection(self, (value for _, value in entries))
+        return super().update(entries)
+
+def _dynwinrt_poll_nonagile_async(loop, future, native):
+    if future.done():
+        return
+    try:
+        if native._async_is_started():
+            loop.call_later(0.025, _dynwinrt_poll_nonagile_async, loop, future, native)
+        else:
+            future.set_result(native)
+    except Exception as error:
+        future.set_exception(error)
+
 async def _dynwinrt_convert_future(future, converter):
     try:
-        completed = await future
+        completed = _dynwinrt_track_projected(await future, 'WinRTAsync completion')
         return converter(completed._get_async_results())
     except BaseException:
         if not future.done():
@@ -540,10 +664,15 @@ def _dynwinrt_validate_throw(typ, value, traceback):
     if traceback is not None and not isinstance(traceback, _TracebackType):
         raise TypeError('throw() third argument must be a traceback object')
 
-def _dynwinrt_link_cancellation(task, future):
+def _dynwinrt_link_cancellation(task, future, native=None):
     def cancel_inner(completed):
-        if completed.cancelled() and not future.done():
-            future.cancel()
+        if completed.cancelled():
+            try:
+                if native is not None and not native.is_released():
+                    native.cancel()
+            finally:
+                if not future.done():
+                    future.cancel()
     task.add_done_callback(cancel_inner)
 
 def _dynwinrt_dispatch_progress(dispatch_state, value):
@@ -591,6 +720,25 @@ _Coroutine.register(_DynWinRTAsyncWithProgress)
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::retry_pending_apartment_close,
+            m
+        )?)?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::shutdown_python_callbacks,
+            m
+        )?)?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::_dynwinrt_close_callback_gate,
+            m
+        )?)?;
+        m.py()
+            .import("atexit")?
+            .call_method1("register", (m.getattr("_dynwinrt_close_callback_gate")?,))?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::_managed_apartment_depth,
+            m
+        )?)?;
         m.add_function(wrap_pyfunction!(super::object_value::unbox_object, m)?)?;
         m.add_function(wrap_pyfunction!(super::object_value::to_winrt_object, m)?)?;
         m.add_function(wrap_pyfunction!(
@@ -630,6 +778,8 @@ for _name in (
    'DynWinRTImplementationHandle',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
+   'retry_pending_apartment_close',
+   'shutdown_python_callbacks',
    'project_as',
    'release_projected',
    'unbox_object',
@@ -642,6 +792,7 @@ for _name in (
             None,
         )?;
 
+        super::runtime::init_native_tracking(m)?;
         Ok(())
     }
 }

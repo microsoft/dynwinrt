@@ -54,8 +54,8 @@ the array value itself remains non-null. String, GUID, scalar, enum, and struct
 array elements and keys remain non-null. A view or iterator obtained from a
 mutable collection can expose a null slot, and WinRT collection interfaces do
 not retain enough provenance for the stubs to distinguish that case. For
-example, a `JsonArray` holds
-`IJsonValue | None`, and `get_files_async()` returns
+example, a custom `IVector<IJsonValue>` can hold `IJsonValue | None`, and
+`get_files_async()` returns
 `WinRTCoroutine[Sequence[StorageFile | None]]`. Value-type elements remain
 non-null.
 
@@ -64,6 +64,18 @@ type is a WinRT reference type and store a real null WinRT value. This includes
 `append()`, `insert()`, index and slice assignment, `extend()`, `update()` and
 `setdefault()`. String, GUID, scalar, enum, and struct keys and value-type
 elements reject `None` with `TypeError`.
+
+Stock `Windows.Data.Json.JsonArray` and `JsonObject` are exceptions: their
+native APIs reject a null `IJsonValue` pointer. Generated wrappers check the
+receiver's native class before mutation, including generic `IVector<IJsonValue>`
+and `IMap<String, IJsonValue>` views, raw `DynWinRTArray` inputs, `replace_all`,
+slice assignment, `extend` and `update`. A rejected null leaves the JSON
+collection unchanged. Use `JsonValue.create_null_value()` to store JSON
+**semantic** null; it is a non-null `IJsonValue` object. Their class stubs type
+elements as non-null, and the generated `.py` input annotations agree even
+with `--no-pyi`. Generic interface annotations retain `| None` because custom
+implementations can store a native null and a view's origin is only known at
+runtime.
 
 Other arguments keep accepting `None` where they did before. The stubs are
 optimistic, like the generated TypeScript declarations: the runtime still
@@ -225,6 +237,13 @@ def work(action: DynWinRTValue) -> None:
 
 operation = ThreadPool.run_async(work)
 ```
+
+The low-level `DynWinRTValue.call_0()` and `call_1()` helpers require an
+Object holding the intended interface, not a raw Async value. They reject an
+Async receiver with `RuntimeError` before native dispatch: its `IAsyncInfo`
+identity is not proof of the caller-supplied vtable slot and signature. Cast
+to the specific interface IID first when making a metadata-checked low-level
+call, or use the generated async wrapper and its `wait()`/await API.
 
 `ThreadPool.run_async(handler)` intentionally retains its original single
 argument and exact callback annotation, so mypy can infer the type of an
@@ -429,6 +448,13 @@ wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
 `DynWinRTValue`. `as_interface()` accepts generated interface classes only;
 passing a runtime class raises `TypeError` that points to `project_as()`. Do not
 call the internal `_from_native()` method from application code.
+Legacy direct construction with `InterfaceClass(raw)` also checks the
+interface IID before retaining or caching the pointer. A non-implementing
+object raises `E_NOINTERFACE` before any interface method can dispatch; a
+successful view owns its own QueryInterface reference and does not consume the
+raw source, even when the view is returned from the identity cache. Stubs
+require a `DynWinRTValue` for explicit raw projection, but Python's type system
+cannot prove its runtime IID.
 
 ### Views of `Object`-valued maps
 
@@ -505,7 +531,9 @@ with RoApartment(RO_INIT_SINGLETHREADED):
 model are supported. Requesting a conflicting model raises `OSError` with
 `RPC_E_CHANGED_MODE`. The low-level `ro_initialize()` API remains available, but
 each successful call, including `S_FALSE`, must be paired with one
-`ro_uninitialize()` call on the same thread.
+`ro_uninitialize()` call on the same thread. Only this library's successful
+initializations count toward its managed apartment depth; a third-party COM
+initialization is not counted.
 
 WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
@@ -730,8 +758,8 @@ stay on the caller's native thread but release the Python GIL while WinUI pumps
 messages. WinRT callbacks reacquire the GIL, and worker threads can use
 `DispatcherQueue.try_enqueue()` to return to the UI thread.
 
-Use a projection lifetime scope inside the COM apartment so wrappers release
-their native values before `RoUninitialize`:
+Use a projection lifetime scope for deterministic early cleanup inside the COM
+apartment:
 
 ```python
 from dynwinrt import RO_INIT_SINGLETHREADED, RoApartment, projected_lifetime_scope
@@ -741,24 +769,111 @@ with RoApartment(RO_INIT_SINGLETHREADED), projected_lifetime_scope():
     # Create and use WinUI objects here.
 ```
 
-Scopes nest in LIFO order. Wrappers that survive a closed scope remain Python
-objects, but their native values are released: using one afterwards, as the
-object of a call, as an argument, or inside a sequence, mapping, array, or
-struct input, raises `RuntimeError` explaining that it was released, as it
-does after `release_projected(wrapper)` or `DynWinRTValue.release()`.
+Native factory and method outputs are tracked automatically, even when a
+generated factory returns a bare `DynWinRTValue` (for example,
+`PropertyValue.create_uint32(8080)`). Independently owned COM references made
+inside `RoApartment` or after `ro_initialize()` are also observed weakly
+without an explicit scope: any still-live owners release their own references
+on the creating thread before the final *dynwinrt-managed* `RoUninitialize`.
+The raw value or generated wrapper remains a Python object, but calls after
+that boundary raise `RuntimeError` instead of releasing a native pointer in an
+uninitialized apartment. Earlier `projected_lifetime_scope()` disposal remains
+idempotent with apartment cleanup. It retains projected wrappers strongly,
+but observes raw native outputs weakly, so ordinary temporary casts still drop
+early. Pure scalar results do not own COM references and remain usable after
+either boundary. An object created under an external COM initialization alone
+is not automatically tied to a dynwinrt-managed apartment.
+
+`DynWinRTArray` and `DynWinRTStruct` can independently own COM references,
+including after `DynWinRTValue.as_array()` or `.as_struct()` clones an already
+tracked value. COM-bearing containers created or extracted inside a managed
+apartment are observed weakly and released before its final exit, even without
+an explicit scope. Retained containers report `is_released()` and reject reads, writes and
+`to_value()` with the released-object `RuntimeError`, rather than exposing
+silently emptied storage. Scalar-only containers remain usable. Calling
+`release()` early is repeat-safe and drops only the container's own references.
+Cross-thread access and explicit release require the creating thread unless
+every contained COM reference is agile. This also applies after mutating a
+struct's object or nested-struct fields. An implicit foreign-thread Drop of a
+non-agile container quarantines its own reference with a native diagnostic
+rather than calling COM `Release` from the wrong apartment; agile containers
+release normally on either thread.
+
+`DynWinRTArray.from_values()` and `from_object_values()` validate every
+element against its declared native type before retaining an independent
+reference. Array, vector, map, delegate, and method inputs first validate
+borrowed Python handles, then clone native COM references; a foreign-thread
+non-agile input cannot cause `AddRef` before its thread error. Mismatched
+scalar/object or struct identities and unsupported nested array elements
+raise `OSError` instead of storing a value that cannot be marshaled safely;
+nullable interface elements still accept native null.
+For arrays produced by lower-level native paths, lifetime tracking also checks
+the **actual owned elements**, not only the declared array element type.
+
+Scopes nest in LIFO order. Wrappers and raw native results that survive a
+closed scope or final managed apartment exit remain Python objects, but their
+COM references are released. Using one afterwards as the object of a call, as
+an argument, or inside a sequence, mapping, array, or struct input raises
+`RuntimeError` explaining that it was released, as it does after
+`release_projected(wrapper)` or `DynWinRTValue.release()`.
 Returning one from an interface implementation handler fails the native call
 like any other handler error. `DynWinRTValue.is_released()` tells a released
 value apart from a WinRT null reference: both report `is_null()`, but only the
 null can still be passed. Each scope is thread-affine: enter, use, and close it
 inside that thread's `RoApartment`. Same-thread asyncio tasks inherit the
-active scope, while worker threads must open their own ordered
-`with RoApartment(...), projected_lifetime_scope():`.
-Native callbacks invoked
-on a foreign thread preserve other captured context but do not inherit the
-creator thread's lifetime scope. This includes generated delegates, raw progress
-handlers, and element-factory callbacks. Retained callback values remain
-user-owned; open an explicit callback-local scope for deterministic temporary
-cleanup.
+active scope; worker threads use their own `RoApartment` and optionally their
+own earlier-cleanup scope. Native callbacks invoked on a foreign thread
+preserve other captured context but do not inherit the subscriber's lifetime
+scope. Independently cloned non-agile callback inputs created on a managed
+thread stay usable after an explicit scope, but are released when that thread's
+managed apartment finally closes. Agile callback inputs can be retained and
+released normally; a non-agile progress input cannot cross callback threads
+and reports an error instead.
+
+An unfinished async future prevents the final apartment close without
+silently cancelling work. Settle or explicitly cancel it, then call the
+owner-thread guard's `close()` again. If an unnamed `RoApartment` context's
+close failed, use `retry_pending_apartment_close()` on the same thread. A
+non-agile WinRT async operation awaited from asyncio checks completion on its
+own apartment thread rather than passing its native reference to a worker.
+Explicitly cancelling that asyncio task calls native `IAsyncInfo::Cancel` on
+the owner thread; ordinary apartment cleanup never cancels an external task.
+Calls to `RoApartment.close()` on another OS thread raise without changing the
+apartment state. Only an implicit wrong-thread finalizer or interpreter
+shutdown without a usable GIL can force a diagnostic and retain unsafe native
+references until process exit; normal close never treats a leak as success.
+
+Reentrant apartment teardown is a separate limitation: do not call
+`RoApartment.close()` inside a native event callback that is still dispatching
+on that apartment. Closing inside `PropertySet.MapChanged` has crashed with
+`0xC0000005` on both the original base and this branch. Let the callback
+return before closing its apartment on the owning thread. The owner-after-exit
+protection above does not make teardown during an active callback safe.
+
+### Embedded host callback shutdown
+
+If an embedded host retains native aliases to Python-backed delegates,
+element factories, implementations, or progress handlers, it must close their
+Python callback entry **while Python is still alive**, before `Py_FinalizeEx`:
+
+1. Stop other native threads from invoking those aliases and settle callbacks
+   already in flight (including queued progress delivery).
+2. Call `dynwinrt.shutdown_python_callbacks()` on the live interpreter.
+   This gate is idempotent; if a native callback is still active it raises
+   `RuntimeError` without closing, so settle that callback and retry.
+3. Finalize Python only after the gate succeeds. Release external COM aliases
+   according to their own ownership contract; closing an apartment never
+   disconnects them or cancels external work.
+
+After the gate closes, late native delegate, element-factory, XAML, and
+implementation entrypoints return `RO_E_CLOSED` **without attaching to
+Python**. Python-backed callback creation also fails explicitly. A void
+progress callback cannot return an HRESULT and instead issues a best-effort
+native diagnostic. Hosts that skip the explicit gate have only PyO3's
+best-effort shutdown detection: a foreign callback during the early,
+unobservable part of `Py_FinalizeEx` cannot be guaranteed deadlock-free across
+all supported Python versions. This external-callback limitation is separate
+from the managed-apartment owner-release guarantee for #189.
 
 Normal construction remains unavailable for protected-only composable classes
 and system-returned classes without public activation metadata. Named Python

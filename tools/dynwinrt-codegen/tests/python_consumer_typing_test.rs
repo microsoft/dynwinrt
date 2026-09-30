@@ -1425,8 +1425,8 @@ def json_demo() -> list[str]:
     parsed = JsonObject.parse('{{"tags": ["a", "b"]}}')
     assert_type(JsonObject.try_parse("{{}}"), tuple[JsonObject | None, bool])
     tags = parsed.get_named_array("tags")
-    assert_type(tags[0], IJsonValue | None)
-    return [value.get_string() for value in tags if value is not None]
+    assert_type(tags[0], IJsonValue)
+    return [value.get_string() for value in tags]
 
 def sensor_demo() -> float | None:
     accelerometer = Accelerometer.get_default()
@@ -1631,15 +1631,14 @@ fn mutable_collection_mutators_accept_none() {
     .unwrap();
     assert!(pair_stub.contains("def key(self) -> DynWinRTValue | None: ..."));
     assert!(pair_stub.contains("def value(self) -> DynWinRTValue | None: ..."));
-    // Inherited MutableSequence and MutableMapping mutators take the element
-    // type of the collection base, which keeps `| None` for mutable
-    // collections, like the generated item setters.
+    // Generic mutable collections accept native null. The stock JsonObject
+    // has a validated, non-null JSON value contract instead.
     typecheck(
         &fixture,
         &["sdk"],
         r#"from typing import assert_type
 from dynwinrt import DynWinRTValue
-from sdk.windows.data.json import IJsonValue, JsonObject
+from sdk.windows.data.json import IJsonValue, JsonObject, JsonValue
 from sdk.windows.foundation import IStringable, Uri
 from sdk.windows.foundation.collections import (
     IMap_Object_Object,
@@ -1660,11 +1659,11 @@ def vector(folders: IObservableVector_StorageFolder) -> None:
     folders[0] = None
     assert_type(folders[0], StorageFolder | None)
 
-def mapping(values: JsonObject) -> None:
-    values.update({"k": None})
-    values.setdefault("k", None)
-    values["k"] = None
-    assert_type(values["k"], IJsonValue | None)
+def mapping(values: JsonObject, json_null: JsonValue) -> None:
+    values.update({"k": json_null})
+    values.setdefault("k", json_null)
+    values["k"] = json_null
+    assert_type(values["k"], IJsonValue)
 
 def object_values(values: IMap_String_Object, uri: Uri) -> None:
     values["none"] = None

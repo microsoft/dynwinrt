@@ -52,6 +52,13 @@ with RoApartment(), projected_lifetime_scope():
     print(uri.host)
 ```
 
+The matching Python binding also tracks raw native `DynWinRTValue` results
+from generated factories and methods in an active lifetime scope. For example,
+`PropertyValue.create_uint32(8080)` returns a raw value; if it escapes the
+scope, its owned COM reference has already been released before the apartment
+exits. A raw result retained without a scope must instead be released
+explicitly inside its apartment.
+
 ## CLI options
 
 | Option | Description |
@@ -137,6 +144,12 @@ retain the receiving interface subclass: `TaggedBuffer.from_value(raw)` and
 `value.as_interface(TaggedBuffer)` return `TaggedBuffer`, not `IBuffer`.
 Independent static factories such as `IBuffer.from_bytes` keep their declared
 base-interface result.
+Direct runtime construction such as `IBuffer(raw)` also QueryInterface-checks
+the IID before retaining or caching a native pointer. It raises `E_NOINTERFACE`
+for a mismatched object and does not release the caller's raw value on a cache
+hit; the resulting view owns a separate reference. A `DynWinRTValue` annotation
+alone cannot establish the runtime IID, so prefer `from_value()` or
+`as_interface()` for explicit intent.
 
 WinRT `Object` inputs accept a `DynWinRTValue` or a projected native wrapper
 whose `_obj` is a `DynWinRTValue`, including interface views and runtime-class
@@ -150,9 +163,16 @@ Collection subscripts use the input contract for keys and values: for example,
 `properties["uri"] = uri` accepts a generated `Uri`, while reading the item still
 returns `DynWinRTValue | None`. Sequence item assignment, slice assignment, and
 `insert` likewise accept projected inputs without changing their read types;
-integer indices take one item and slices take an iterable of items. Existing
-nullable `collections.abc` contracts remain unchanged. To pass a native null
-reference, use `DynWinRTValue.null_value()`, not implicit `None` boxing.
+integer indices take one item and slices take an iterable of items. Generic
+nullable `collections.abc` contracts remain unchanged. The stock `JsonArray`
+and `JsonObject` classes instead have non-null `IJsonValue`
+element/value contracts in both stubs and runtime method input annotations
+(including `--no-pyi` output). Their native implementations reject
+`None` (including through generic interface views) before mutation; use
+`JsonValue.create_null_value()` for JSON semantic null. A custom
+`IVector<IJsonValue>` or `IMap<String, IJsonValue>` may still store a native null.
+For other nullable WinRT positions, pass `DynWinRTValue.null_value()` rather
+than implicit `None` boxing.
 
 The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the

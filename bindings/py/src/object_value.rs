@@ -418,11 +418,6 @@ fn with_context(py: Python<'_>, error: PyErr, context: &str) -> PyErr {
     wrapped
 }
 
-/// The one place that creates the Python values these conversions return.
-fn native(value: WinRTValue) -> DynWinRTValue {
-    DynWinRTValue::new(value)
-}
-
 /// Borrow the native value of a `DynWinRTValue`.
 ///
 /// Every native input, including nested elements, is read through here.
@@ -689,7 +684,11 @@ impl Reader<'_> {
                         .map(|(index, element)| match element {
                             None => Ok(py.None()),
                             Some(object) => {
-                                let element = Bound::new(py, native(WinRTValue::Object(object)))?;
+                                let element = crate::runtime::tracked_native_value(
+                                    py,
+                                    WinRTValue::Object(object),
+                                )?
+                                .into_bound(py);
                                 self.unbox(&element, depth + 1, InputSlot::Element(index))
                             }
                         }),
@@ -804,7 +803,7 @@ pub fn to_winrt_object(
     };
     match boxed {
         Boxed::Existing(object) => Ok(object.into_any().unbind()),
-        Boxed::New(value) => Ok(Bound::new(py, native(value))?.into_any().unbind()),
+        Boxed::New(value) => Ok(crate::runtime::tracked_native_value(py, value)?.into_any()),
     }
 }
 
