@@ -1075,6 +1075,178 @@ assert direct.is_released() and nested.is_released()
 print('foreign-nonagile-struct-mutation-rejected', flush=True)
 """
 
+_FAILED_AGILE_STRUCT_SETTER = r"""
+import gc
+import sys
+import threading
+import weakref
+from dynwinrt import (
+    DynWinRTStruct, DynWinRTType, DynWinRtElementFactory, RoApartment, WinGUID,
+)
+
+mode = sys.argv[1]
+disposed = []
+errors = []
+
+class Handler:
+    def get(self, _args):
+        return None
+    def recycle(self, _args):
+        return None
+    def __del__(self):
+        disposed.append(threading.get_ident())
+
+with RoApartment(1):
+    handler = Handler()
+    retained = weakref.ref(handler)
+    owner = DynWinRtElementFactory.create(
+        WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3'),
+        handler.get, handler.recycle,
+    )
+    source = owner.to_value()
+    inner_type = DynWinRTType.struct_type(
+        'Tests.FailedAgileInner', [DynWinRTType.object()]
+    )
+    if mode == 'object':
+        record = DynWinRTStruct.create(inner_type)
+        record.set_object(0, source)
+        def identity():
+            return record.get_object(0).identity_raw()
+        def invalid_setter():
+            record.set_object(100, source)
+    else:
+        inner = DynWinRTStruct.create(inner_type)
+        inner.set_object(0, source)
+        outer_type = DynWinRTType.struct_type(
+            'Tests.FailedAgileOuter', [inner_type]
+        )
+        record = DynWinRTStruct.create(outer_type)
+        record.set_struct(0, inner)
+        def identity():
+            return record.get_struct(0).get_object(0).identity_raw()
+        def invalid_setter():
+            record.set_struct(100, inner)
+
+    original = identity()
+    try:
+        invalid_setter()
+    except IndexError:
+        pass
+    else:
+        raise AssertionError('invalid field index was accepted')
+    assert identity() == original == source.identity_raw()
+    if mode == 'struct':
+        inner.release()
+    owner._release_apartment_owner()
+    source.release()
+    del owner, source, handler
+    assert retained() is not None
+
+    def release_foreign():
+        try:
+            with RoApartment(1):
+                assert identity() == original
+                record.release()
+                assert record.is_released()
+                gc.collect()
+                assert retained() is None, 'agile struct leaked its own COM reference'
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=release_foreign)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive() and not errors, errors
+assert len(disposed) == 1
+print('failed-agile-struct-setter-balanced', mode, flush=True)
+"""
+
+_VALID_NONAGILE_STRUCT_SETTER = r"""
+import gc
+import sys
+import threading
+import weakref
+from dynwinrt import (
+    DynWinRTImplementation, DynWinRTImplementationMethod, DynWinRTInterfacePlan,
+    DynWinRTMethodSig, DynWinRTStruct, DynWinRTType, DynWinRTValue,
+    RoApartment, WinGUID,
+)
+
+mode = sys.argv[1]
+disposed = []
+errors = []
+
+class Handler:
+    def dispatch(self, *_args):
+        return [DynWinRTValue.from_hstring('non-agile')]
+    def __del__(self):
+        disposed.append(threading.get_ident())
+
+with RoApartment(1):
+    handler = Handler()
+    retained = weakref.ref(handler)
+    iid = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
+    signature = DynWinRTMethodSig().add_out(DynWinRTType.hstring())
+    interface = DynWinRTType.register_interface(
+        'Tests.IValidNonAgileSetter', iid
+    ).add_method('ToString', signature)
+    plan = DynWinRTInterfacePlan.create(
+        'Tests.IValidNonAgileSetter', interface,
+        [DynWinRTImplementationMethod('ToString', 6, signature)],
+    )
+    owner = DynWinRTImplementation.create([plan], handler.dispatch)
+    source = owner.to_value()
+    inner_type = DynWinRTType.struct_type(
+        'Tests.ValidNonAgileInner', [DynWinRTType.object()]
+    )
+    if mode == 'object':
+        record = DynWinRTStruct.create(inner_type)
+        record.set_object(0, source)
+        def identity():
+            return record.get_object(0).identity_raw()
+    else:
+        inner = DynWinRTStruct.create(inner_type)
+        inner.set_object(0, source)
+        outer_type = DynWinRTType.struct_type(
+            'Tests.ValidNonAgileOuter', [inner_type]
+        )
+        record = DynWinRTStruct.create(outer_type)
+        record.set_struct(0, inner)
+        def identity():
+            return record.get_struct(0).get_object(0).identity_raw()
+
+    original = identity()
+    assert original == source.identity_raw()
+    def release_foreign():
+        try:
+            with RoApartment(1):
+                try:
+                    record.release()
+                except RuntimeError as error:
+                    assert 'owning COM apartment thread' in str(error), error
+                else:
+                    raise AssertionError('non-agile struct released on foreign thread')
+                assert not record.is_released()
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=release_foreign)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive() and not errors, errors
+    assert identity() == original
+    record.release()
+    if mode == 'struct':
+        inner.release()
+    source.release()
+    owner.release()
+    del handler, source, owner
+    gc.collect()
+    assert retained() is None, 'non-agile owner was not released on its apartment'
+assert len(disposed) == 1
+print('valid-nonagile-struct-setter-guarded', mode, flush=True)
+"""
+
 _UNSCOPED_ASYNC_OWNER = r"""
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1680,6 +1852,42 @@ def test_nonagile_struct_fields_reject_cross_apartment_mutation_before_owning():
         result.stderr,
     )
     assert "foreign-nonagile-struct-mutation-rejected" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["object", "struct"])
+def test_failed_agile_struct_setters_preserve_foreign_release_and_refs(mode):
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _FAILED_AGILE_STRUCT_SETTER, mode],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        mode,
+        hex(result.returncode & 0xFFFFFFFF),
+        result.stdout,
+        result.stderr,
+    )
+    assert f"failed-agile-struct-setter-balanced {mode}" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["object", "struct"])
+def test_valid_nonagile_struct_setters_reject_foreign_release(mode):
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _VALID_NONAGILE_STRUCT_SETTER, mode],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        mode,
+        hex(result.returncode & 0xFFFFFFFF),
+        result.stdout,
+        result.stderr,
+    )
+    assert f"valid-nonagile-struct-setter-guarded {mode}" in result.stdout
 
 
 def test_completed_async_owner_drops_its_reference_without_implicit_cancel():

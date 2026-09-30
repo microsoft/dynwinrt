@@ -843,6 +843,13 @@ apartment state. Only an implicit wrong-thread finalizer or interpreter
 shutdown without a usable GIL can force a diagnostic and retain unsafe native
 references until process exit; normal close never treats a leak as success.
 
+Reentrant apartment teardown is a separate limitation: do not call
+`RoApartment.close()` inside a native event callback that is still dispatching
+on that apartment. Closing inside `PropertySet.MapChanged` has crashed with
+`0xC0000005` on both the original base and this branch. Let the callback
+return before closing its apartment on the owning thread. The owner-after-exit
+protection above does not make teardown during an active callback safe.
+
 ### Embedded host callback shutdown
 
 If an embedded host retains native aliases to Python-backed delegates,

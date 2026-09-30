@@ -2833,6 +2833,27 @@ impl DynWinRTStruct {
             .as_mut()
             .ok_or_else(|| released_native_container_error("DynWinRTStruct"))
     }
+
+    fn complete_field_mutation(&mut self, py: Python<'_>, mutation: PyResult<()>) -> PyResult<()> {
+        let agility = self
+            .0
+            .as_ref()
+            .ok_or_else(|| released_native_container_error("DynWinRTStruct"))
+            .and_then(native_struct_is_agile);
+        // Derive foreign-thread eligibility from the payload even if a setter failed.
+        self.2 = match &agility {
+            Ok(agile) => *agile,
+            Err(_) => false,
+        };
+        match (mutation, agility) {
+            (Ok(()), Ok(_)) => Ok(()),
+            (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(agility_error)) => {
+                error.set_cause(py, Some(agility_error));
+                Err(error)
+            }
+        }
+    }
 }
 
 #[pymethods]
@@ -3045,7 +3066,7 @@ impl DynWinRTStruct {
         tracked_native_struct(py, data)
     }
 
-    fn set_struct(&mut self, index: i64, value: &DynWinRTStruct) -> PyResult<()> {
+    fn set_struct(&mut self, py: Python<'_>, index: i64, value: &DynWinRTStruct) -> PyResult<()> {
         let index = checked_index(index)?;
         self.data()?;
         let nested = value.data()?;
@@ -3056,12 +3077,11 @@ impl DynWinRTStruct {
                 "cannot store non-agile COM fields in a struct from another apartment thread",
             ));
         }
-        self.2 = false;
-        self.data_mut()?
+        let mutation = self
+            .data_mut()?
             .set_field_struct_checked(index, nested)
-            .map_err(map_dynwinrt_error)?;
-        self.2 = native_struct_is_agile(self.data()?)?;
-        Ok(())
+            .map_err(map_dynwinrt_error);
+        self.complete_field_mutation(py, mutation)
     }
 
     fn get_object(&self, py: Python<'_>, index: i64) -> PyResult<Py<DynWinRTValue>> {
@@ -3077,7 +3097,7 @@ impl DynWinRTStruct {
         tracked_native_value(py, value)
     }
 
-    fn set_object(&mut self, index: i64, value: &DynWinRTValue) -> PyResult<()> {
+    fn set_object(&mut self, py: Python<'_>, index: i64, value: &DynWinRTValue) -> PyResult<()> {
         let index = checked_index(index)?;
         self.data()?;
         value.check_input("DynWinRTStruct.set_object()", InputSlot::Field(index))?;
@@ -3098,12 +3118,11 @@ impl DynWinRTStruct {
                 "cannot store a non-agile COM field from another apartment thread",
             ));
         }
-        self.2 = false;
-        self.data_mut()?
+        let mutation = self
+            .data_mut()?
             .set_field_object(index, object)
-            .map_err(map_dynwinrt_error)?;
-        self.2 = native_struct_is_agile(self.data()?)?;
-        Ok(())
+            .map_err(map_dynwinrt_error);
+        self.complete_field_mutation(py, mutation)
     }
 
     /// Wrap as DynWinRTValue::Struct for passing to call().
@@ -3690,6 +3709,90 @@ mod tests {
         let array = DynWinRTArray::scalar_array(TABLE.hresult(), &values);
 
         assert_eq!(array.to_i32_list().unwrap(), vec![0, 0x80004005u32 as i32]);
+    }
+
+    #[test]
+    fn failed_field_mutation_reclassifies_partially_written_com_fields() {
+        Python::initialize();
+        for nested in [false, true] {
+            let (source, counts) = QueryProbe::new();
+            let field_type = TABLE.interface(QueryProbe::SUPPORTED);
+            let mut record = if nested {
+                let inner_type =
+                    TABLE.struct_type("Tests.PartialAgilityInner", &[field_type.clone()]);
+                let outer_type =
+                    TABLE.struct_type("Tests.PartialAgilityOuter", &[inner_type.clone()]);
+                let mut inner = inner_type.default_value();
+                inner.set_field_object(0, Some(&source)).unwrap();
+                let mut outer = DynWinRTStruct(
+                    Some(outer_type.default_value()),
+                    Some(thread::current().id()),
+                    true,
+                );
+                outer
+                    .0
+                    .as_mut()
+                    .unwrap()
+                    .set_field_struct_checked(0, &inner)
+                    .unwrap();
+                outer
+            } else {
+                let struct_type = TABLE.struct_type("Tests.PartialAgilityObject", &[field_type]);
+                let mut direct = DynWinRTStruct(
+                    Some(struct_type.default_value()),
+                    Some(thread::current().id()),
+                    true,
+                );
+                direct
+                    .0
+                    .as_mut()
+                    .unwrap()
+                    .set_field_object(0, Some(&source))
+                    .unwrap();
+                direct
+            };
+
+            Python::attach(|py| {
+                let error = record
+                    .complete_field_mutation(
+                        py,
+                        Err(PyIndexError::new_err("native setter failed after writing")),
+                    )
+                    .unwrap_err();
+                assert!(error.is_instance_of::<PyIndexError>(py));
+                assert!(error.to_string().contains("failed after writing"));
+            });
+            assert!(!record.2, "the partially written COM field is non-agile");
+            let mut record = thread::spawn(move || {
+                assert!(record.release().is_err());
+                assert!(!record.is_released());
+                record
+            })
+            .join()
+            .unwrap();
+            assert_eq!(counts.wrong_thread_addrefs.load(Ordering::SeqCst), 0);
+            assert_eq!(counts.wrong_thread_releases.load(Ordering::SeqCst), 0);
+            let actual = if nested {
+                record
+                    .data()
+                    .unwrap()
+                    .get_field_struct_checked(0)
+                    .unwrap()
+                    .get_field_object(0)
+                    .unwrap()
+                    .unwrap()
+            } else {
+                record.data().unwrap().get_field_object(0).unwrap().unwrap()
+            };
+            assert_eq!(actual.as_raw(), source.as_raw());
+            drop(actual);
+            record.release().unwrap();
+            drop(source);
+            assert_eq!(
+                counts.releases.load(Ordering::SeqCst),
+                counts.addrefs.load(Ordering::SeqCst) + 1
+            );
+        }
     }
 
     #[test]
