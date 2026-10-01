@@ -20,7 +20,11 @@ Other sentences that negate null, that describe null arguments, or that
 describe an object holding a null value are ignored, and so are Boolean
 results, attached properties, constructors and members of generic types.
 Reviewed corrections from api-docs/windows-null-results.overrides.txt are
-applied last.
+applied last. Exact `+documented-api-id => declaring-interface-api-id` entries
+also retain the class fact and add its reviewed metadata declaration alias.
+Aliases must have identical member names and full normalized CLR parameter
+signatures; the documented source must exist at the pinned commit. Real
+Windows.winmd tests validate their declaring interfaces and native signatures.
 
 The documentation is read from git objects, without a working tree:
 
@@ -78,6 +82,12 @@ REQUIRED_NULL_CHECK = re.compile(
     r"[^.]{0,100}\bcheck\b"
     r"[^.]{0,100}\b(?:the|that|return)\s+value\s+is\s+not\s+null\b",
     re.I,
+)
+CLR_NAME = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+"
+CLR_TYPE = rf"{CLR_NAME}(?:\[\])*"
+DECLARATION_ID = re.compile(
+    rf"([MP]):({CLR_NAME})\.([A-Za-z_]\w*)(\((?:{CLR_TYPE}(?:,{CLR_TYPE})*)?\))?",
+    re.ASCII,
 )
 
 
@@ -231,6 +241,8 @@ def extract(repo: Path, commit: str) -> tuple[set[str], set[str], Counter[str]]:
         if classification is None:
             continue
         api_id, source = classification
+        if api_id in documented:
+            sys.exit(f"{commit}: duplicate documented api-id {api_id}")
         documented.add(api_id)
         if source is not None:
             sources[source] += 1
@@ -240,6 +252,8 @@ def extract(repo: Path, commit: str) -> tuple[set[str], set[str], Counter[str]]:
 
 def apply_overrides(documented: set[str], nullable: set[str], sources: Counter[str]) -> set[str]:
     result = set(nullable)
+    aliases: dict[str, str] = {}
+    removals: list[str] = []
     for number, raw in enumerate(OVERRIDES.read_text(encoding="utf-8").splitlines(), 1):
         entry = raw.split("#", 1)[0].strip()
         if not entry:
@@ -247,6 +261,48 @@ def apply_overrides(documented: set[str], nullable: set[str], sources: Counter[s
         sign, pattern = entry[0], entry[1:].strip()
         if sign not in "+-" or not pattern:
             sys.exit(f"{OVERRIDES.name}:{number}: expected '+api-id' or '-api-id'")
+        source, separator, target = pattern.partition("=>")
+        if separator:
+            source, target = source.strip(), target.strip()
+            source_id, target_id = DECLARATION_ID.fullmatch(source), DECLARATION_ID.fullmatch(target)
+            if (
+                sign != "+"
+                or source_id is None
+                or target_id is None
+                or source == target
+                or source_id.group(1, 3, 4) != target_id.group(1, 3, 4)
+                or (source_id[1] == "M") != (source_id[4] is not None)
+            ):
+                sys.exit(
+                    f"{OVERRIDES.name}:{number}: expected exact source => target "
+                    "with the same CLR signature"
+                )
+            if source not in documented:
+                sys.exit(f"{OVERRIDES.name}:{number}: {source} matches no documented member")
+            if target in aliases:
+                sys.exit(
+                    f"{OVERRIDES.name}:{number}: duplicate or conflicting "
+                    f"declaration alias for {target}"
+                )
+            if any(
+                fnmatch.fnmatchcase(api_id, removal)
+                for removal in removals
+                for api_id in (source, target)
+            ):
+                sys.exit(f"{OVERRIDES.name}:{number}: removal conflicts with declaration alias {target}")
+            aliases[target] = source
+            sources["override additions"] += int(source not in result)
+            sources["declaration aliases"] += int(target not in result)
+            result.update((source, target))
+            continue
+        if sign == "-":
+            if any(
+                fnmatch.fnmatchcase(api_id, pattern)
+                for target, source in aliases.items()
+                for api_id in (source, target)
+            ):
+                sys.exit(f"{OVERRIDES.name}:{number}: removal conflicts with a declaration alias")
+            removals.append(pattern)
         matches = {api_id for api_id in documented if fnmatch.fnmatchcase(api_id, pattern)}
         if not matches:
             sys.exit(f"{OVERRIDES.name}:{number}: {pattern} matches no documented member")
