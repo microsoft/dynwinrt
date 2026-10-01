@@ -231,7 +231,12 @@ async function runIssueRegression(
   timedOut: boolean;
 }> {
   const childPath = fileURLToPath(
-    new URL("./ts_issue_regression_child.mjs", import.meta.url),
+    new URL(
+      name === "async_progress_promise" || name === "async_progress_cancel_error"
+        ? "./ts_progress_promise_child.mjs"
+        : "./ts_issue_regression_child.mjs",
+      import.meta.url,
+    ),
   );
   const child = spawn(
     process.execPath,
@@ -959,7 +964,9 @@ async function runCheck(
       if (chainOk) cr.pass = true;
     } else if (
       kind === "device_information_async_collection" ||
-      kind === "bitmap_encoder_async_create"
+      kind === "bitmap_encoder_async_create" ||
+      kind === "async_progress_promise" ||
+      kind === "async_progress_cancel_error"
     ) {
       const child = await runIssueRegression(kind, generatedDir, runtimePath);
       if (child.timedOut) {

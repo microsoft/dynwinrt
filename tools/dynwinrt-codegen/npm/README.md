@@ -73,7 +73,8 @@ For each WinRT class, the codegen emits:
 - **A JavaScript-backed `IElementFactory.create()` helper** for WinUI
   ItemsRepeater realization and recycling
 - **Promise-based async operations**, with `.progress(cb)` on operations that
-  expose WinRT progress
+  expose WinRT progress. Their `.toPromise()` returns the same projected Promise
+  on every call, equivalent to awaiting the operation directly
 - **Generic collections** (`IVector<T>`, `IMap<K,V>`, `IIterable<T>`)
 - **Creatable observable vectors** that expose both `IObservableVector<T>`
   events and `IVector<T>` mutation helpers
