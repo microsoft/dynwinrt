@@ -7,8 +7,9 @@
 //! lists the doc comment IDs (`M:`/`P:` api-ids) of the Windows SDK methods
 //! and properties whose documentation says the result can be null;
 //! `scripts/extract-null-results.py` derives it from MicrosoftDocs/winrt-api.
-//! A member is looked up by the type its documentation lists it under, its
-//! CLR name, and its parameter types.
+//! Reviewed overrides retain native null-result corrections and exact aliases
+//! from documented classes to their metadata-declaring interfaces. A member is
+//! looked up by its exact owner, CLR name, and parameter types.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -37,8 +38,8 @@ pub(crate) fn entries() -> impl Iterator<Item = &'static str> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
-/// Whether the documentation of `method`, listed under the type named
-/// `owner` (`Namespace.Type`), says its result can be null.
+/// Whether the documented or reviewed fact for `method` under the exact
+/// `owner` (`Namespace.Type`) says its result can be null.
 pub(crate) fn documents_null_result(owner: &str, method: &MethodMeta) -> bool {
     DOCUMENTED.owners.contains(owner)
         && member_id(owner, method).is_some_and(|id| DOCUMENTED.members.contains(&id))
@@ -182,6 +183,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
 
+    use windows_metadata::HasAttributes;
+
     use super::*;
     use crate::meta::{ParamDirection, ParamMeta};
 
@@ -263,6 +266,134 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(member_id("N.T", &setter), None);
+    }
+
+    #[test]
+    fn xml_declaration_aliases_resolve_to_exact_exclusive_interface_signatures() {
+        if !Path::new(WINDOWS_WINMD).is_file() {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+        let index = crate::meta::load_index(WINDOWS_WINMD).expect("Windows.winmd index");
+        let mut count = 0;
+        for line in include_str!("../api-docs/windows-null-results.overrides.txt").lines() {
+            let Some((source, target)) = line
+                .strip_prefix('+')
+                .and_then(|line| line.split_once("=>"))
+            else {
+                continue;
+            };
+            count += 1;
+            let (source, target) = (source.trim(), target.trim());
+            assert_eq!(normalize_api_id(source), source);
+            assert_eq!(normalize_api_id(target), target);
+            let source_owner = owner_of(source).unwrap();
+            let target_owner = owner_of(target).unwrap();
+            let (namespace, name) = target_owner.rsplit_once('.').unwrap();
+            let definitions = index.get(namespace, name).collect::<Vec<_>>();
+            assert_eq!(definitions.len(), 1, "{target}");
+            let definition = &definitions[0];
+            assert!(definition.extends().is_none(), "{target}");
+            let exclusive_owners = definition
+                .attributes()
+                .filter(|attribute| {
+                    attribute.ctor().parent().namespace() == "Windows.Foundation.Metadata"
+                        && attribute.ctor().parent().name() == "ExclusiveToAttribute"
+                })
+                .flat_map(|attribute| attribute.value())
+                .filter_map(|(_, value)| match value {
+                    windows_metadata::Value::Utf8(owner) => Some(owner),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(exclusive_owners, vec![source_owner.clone()], "{target}");
+
+            let find = |owner: &str, id: &str| {
+                let (namespace, name) = owner.rsplit_once('.').unwrap();
+                let methods = crate::meta::documented_owner_methods(&index, namespace, name);
+                let mut matches = methods
+                    .into_iter()
+                    .filter(|method| member_id(owner, method).as_deref() == Some(id));
+                let method = matches.next().unwrap_or_else(|| panic!("missing {id}"));
+                assert!(matches.next().is_none(), "ambiguous {id}");
+                assert!(method.documented_null_result, "unflagged {id}");
+                method
+            };
+            let source_method = find(&source_owner, source);
+            let target_method = find(&target_owner, target);
+            assert_eq!(source_method.raw_name, target_method.raw_name, "{target}");
+            assert_eq!(
+                source_method.vtable_index, target_method.vtable_index,
+                "{target}"
+            );
+            assert_eq!(
+                source_method.return_type, target_method.return_type,
+                "{target}"
+            );
+            let parameters = |method: &MethodMeta| {
+                method
+                    .params
+                    .iter()
+                    .map(|parameter| {
+                        (
+                            parameter.name.clone(),
+                            parameter.typ.clone(),
+                            parameter.direction.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                parameters(&source_method),
+                parameters(&target_method),
+                "{target}"
+            );
+            assert_eq!(
+                source_method.raw_signature_key, target_method.raw_signature_key,
+                "{target}"
+            );
+        }
+        assert_eq!(count, 7);
+    }
+
+    #[test]
+    fn xml_null_facts_do_not_match_other_owners_or_parameter_types() {
+        let getter = MethodMeta {
+            name: "get_ParentNode".into(),
+            raw_name: "get_ParentNode".into(),
+            is_property_getter: true,
+            ..Default::default()
+        };
+        assert!(documents_null_result(
+            "Windows.Data.Xml.Dom.IXmlNode",
+            &getter
+        ));
+        assert!(!documents_null_result("Contoso.IXmlNode", &getter));
+        assert!(!documents_null_result(
+            "Windows.Data.Xml.Dom.IXmlElement",
+            &getter
+        ));
+        let mut method = MethodMeta {
+            name: "GetAttributeNode".into(),
+            raw_name: "GetAttributeNode".into(),
+            params: vec![ParamMeta {
+                name: "attributeName".into(),
+                typ: TypeMeta::String,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        };
+        for owner in [
+            "Windows.Data.Xml.Dom.XmlElement",
+            "Windows.Data.Xml.Dom.IXmlElement",
+        ] {
+            assert!(documents_null_result(owner, &method));
+        }
+        method.params[0].typ = TypeMeta::Object;
+        assert!(!documents_null_result(
+            "Windows.Data.Xml.Dom.IXmlElement",
+            &method
+        ));
     }
 
     /// Every entry names a member of the Windows SDK metadata whose parsed

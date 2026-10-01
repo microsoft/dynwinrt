@@ -44,6 +44,25 @@ These values keep `| None`:
 - `Object`/`IInspectable` values (`DynWinRTValue | None`) and delegate-typed
   values, which are often null.
 
+`Windows.Data.Xml.Dom` also keeps `| None` for an absent document root or DTD,
+a node's owner document, parent and previous/next sibling, missing attribute
+lookups (including namespace-aware lookups), and the previous attribute
+returned by `set_attribute_node()`/`set_attribute_node_ns()`. Cache the result
+and guard it before reading a member:
+
+```python
+root = document.document_element
+if root is not None:
+    print(root.tag_name)
+```
+
+These are exact reviewed null-result facts, not a blanket rule for WinRT
+references. They tighten the static declarations; native/runtime null
+conversion and the broader inline `.py`/`--no-pyi` annotations are unchanged.
+Class documentation facts also have exact declaring-interface aliases for
+standalone rendering; this does not enable exclusive interfaces such as
+`IXmlDocument` or `IXmlElement` as public CLI roots.
+
 Reference-type elements read from WinRT collection interfaces are always typed
 `T | None`, including vectors, views, iterables, iterators, map keys and values,
 and key-value-pair keys and values. Here reference means the projection's

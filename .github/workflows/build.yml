@@ -543,6 +543,18 @@ jobs:
           .\eng\release\python\test_generated_python_long_paths.ps1 `
             -Python .\bindings\py\.venv\Scripts\python.exe `
             -Codegen $env:DYNWINRT_CODEGEN
+      - name: Test generated Python XML null results
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm install --prefix target\pyright --no-save --ignore-scripts --no-package-lock `
+            --registry https://packagefeedproxy.microsoft.io/npm/ pyright@1.1.408
+          $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
+          $env:DYNWINRT_PYRIGHT = (Resolve-Path target\pyright\node_modules\.bin\pyright.cmd).Path
+          $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
+          $env:DYNWINRT_REQUIRE_MYPY = '1'
+          $env:DYNWINRT_REQUIRE_XML_NULLABILITY = '1'
+          cargo test -p dynwinrt-codegen --test python_xml_nullability_test
       - name: Test generated implementation and overload identities
         shell: pwsh
         run: |
