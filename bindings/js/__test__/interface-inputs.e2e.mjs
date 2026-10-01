@@ -3,7 +3,17 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -74,7 +84,7 @@ async function exercise(generated, directory) {
       ['copyAsync', [copies, 'canonical-full.txt', option, signal], join(copyDirectory, 'canonical-full.txt')],
     ]) {
       const copied = keep(await file[method](...args))
-      assert.equal(copied.path, destination)
+      assert.equal(realpathSync.native(copied.path), realpathSync.native(destination))
       assert.equal(await FileIO.readTextAsync(copied), text)
     }
     const moveCases = [
@@ -91,7 +101,10 @@ async function exercise(generated, directory) {
       const moving = keep(await StorageFile.getFileFromPathAsync(source))
       await moving[method](copies, ...args, signal)
       assert.equal(existsSync(source), false)
-      assert.equal(moving.path, join(copyDirectory, args[0] ?? `move-${index}.txt`))
+      assert.equal(
+        realpathSync.native(moving.path),
+        realpathSync.native(join(copyDirectory, args[0] ?? `move-${index}.txt`)),
+      )
       assert.equal(await FileIO.readTextAsync(moving), text)
     }
 
@@ -144,7 +157,7 @@ for (const [selection, generations] of [
   ['interface-first', [interfaces, classes]],
 ]) {
   test(`interface inputs: ${selection}, strict TS and native CJS/ESM`, async (t) => {
-    const directory = mkdtempSync(join(tmpdir(), 'dynwinrt-interface-inputs-'))
+    const directory = realpathSync.native(mkdtempSync(join(tmpdir(), 'dynwinrt-interface-inputs-')))
     try {
       const output = join(directory, 'generated')
       for (const roots of generations) {
