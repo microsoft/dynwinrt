@@ -84,10 +84,11 @@ fn delegate_overloads_emit_local_delegate_values() {
     assert_eq!(
         js.matches("const _callback_d = DynWinRtDelegate.create(")
             .count(),
-        2,
-        "Each tryEnqueue overload must declare its callback delegate:\n{js}"
+        3,
+        "Each tryEnqueue overload and its interface alias must declare its callback delegate:\n{js}"
     );
     assert!(js.contains("_tryEnqueue_1(callback)"));
     assert!(js.contains("_tryEnqueue_2(priority, callback)"));
+    assert!(js.contains("tryEnqueueWithPriority(priority, callback)"));
     assert!(js.contains("(callback == null ? DynWinRtValue.nullValue() : _callback_d)"));
 }
