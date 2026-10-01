@@ -652,15 +652,30 @@ unsafe extern "system" fn result_u32(this: *mut c_void, output: *mut u32) -> HRE
 }
 
 macro_rules! stub {
-  ($name:ident($($arg:ident: $typ:ty),*)) => {
+  ($name:ident($($arg:ident: $typ:ty),* $(,)?)) => {
     unsafe extern "system" fn $name(_this: *mut c_void, $($arg: $typ),*) -> HRESULT {
       E_NOTIMPL
     }
   };
 }
-stub!(audio_initialize(_mode: AUDCLNT_SHAREMODE, _flags: u32, _duration: i64, _period: i64, _format: *const WAVEFORMATEX, _session: *const GUID));
+stub!(
+  audio_initialize(
+    _mode: AUDCLNT_SHAREMODE,
+    _flags: u32,
+    _duration: i64,
+    _period: i64,
+    _format: *const WAVEFORMATEX,
+    _session: *const GUID,
+  )
+);
 stub!(audio_i64(_value: *mut i64));
-stub!(audio_format_supported(_mode: AUDCLNT_SHAREMODE, _format: *const WAVEFORMATEX, _closest: *mut *mut WAVEFORMATEX));
+stub!(
+  audio_format_supported(
+    _mode: AUDCLNT_SHAREMODE,
+    _format: *const WAVEFORMATEX,
+    _closest: *mut *mut WAVEFORMATEX,
+  )
+);
 stub!(audio_mix_format(_format: *mut *mut WAVEFORMATEX));
 stub!(audio_period(_default: *mut i64, _minimum: *mut i64));
 stub!(audio_noargs());
