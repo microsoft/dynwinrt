@@ -626,6 +626,126 @@ fn parse_public_interface_from_def(
     parse_interface(index, def.namespace(), def.name())
 }
 
+/// Parse a non-generic WinRT delegate root through the interface dependency pipeline.
+/// Invalid delegate definitions must not fall back to runtime-class projection.
+pub fn parse_delegate(
+    winmd_paths: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<Option<InterfaceMeta>, String> {
+    let index = load_index(winmd_paths)
+        .ok_or_else(|| "Failed to load WinRT delegate metadata".to_string())?;
+    let Some(def) = index.get(namespace, name).next() else {
+        return Ok(None);
+    };
+    if !is_delegate_definition(&def) {
+        return Ok(None);
+    }
+    parse_delegate_from_def(&index, &def).map(Some)
+}
+
+/// Parse public, non-generic WinRT delegates selected by a namespace root.
+pub fn parse_delegates(winmd_paths: &str, namespace: &str) -> Result<Vec<InterfaceMeta>, String> {
+    let index = load_index(winmd_paths)
+        .ok_or_else(|| "Failed to load WinRT delegate metadata".to_string())?;
+    index
+        .all()
+        .filter(|def| {
+            def.namespace() == namespace
+                && is_delegate_definition(def)
+                && def
+                    .flags()
+                    .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+                && def
+                    .flags()
+                    .contains(windows_metadata::TypeAttributes::Public)
+                && !def.flags().is_nested()
+                && !def.name().starts_with('<')
+                && def.generic_params().next().is_none()
+        })
+        .map(|def| parse_delegate_from_def(&index, &def))
+        .collect()
+}
+
+fn is_delegate_definition(def: &reader::TypeDef) -> bool {
+    def.extends().is_some_and(|base| {
+        base.namespace() == "System" && matches!(base.name(), "Delegate" | "MulticastDelegate")
+    })
+}
+
+fn parse_delegate_from_def(
+    index: &reader::Index,
+    def: &reader::TypeDef,
+) -> Result<InterfaceMeta, String> {
+    use windows_metadata::{Type, TypeAttributes, Value};
+
+    let invalid = |reason: &str| {
+        format!(
+            "Cannot generate WinRT delegate {}.{}: {reason}",
+            def.namespace(),
+            def.name()
+        )
+    };
+    if !def.flags().contains(TypeAttributes::WindowsRuntime)
+        || !def.flags().contains(TypeAttributes::Public)
+        || def.flags().is_nested()
+        || def.flags().contains(TypeAttributes::Interface)
+        || def.name().starts_with('<')
+        || def.has_attribute("ExclusiveToAttribute")
+    {
+        return Err(invalid("not a public Windows Runtime delegate"));
+    }
+    if def.generic_params().next().is_some() {
+        return Err(invalid(
+            "open generic delegate roots require closed type arguments and are not supported",
+        ));
+    }
+    let Some(attribute) = def.find_attribute("GuidAttribute") else {
+        return Err(invalid("missing GuidAttribute"));
+    };
+    if !matches!(
+        attribute.value().as_slice(),
+        [
+            (_, Value::U32(_)),
+            (_, Value::U16(_)),
+            (_, Value::U16(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_)),
+            (_, Value::U8(_))
+        ]
+    ) {
+        return Err(invalid("malformed GuidAttribute"));
+    }
+    if !def.methods().any(|method| method.name() == ".ctor")
+        || def
+            .methods()
+            .filter(|method| method.name() == "Invoke")
+            .count()
+            != 1
+    {
+        return Err(invalid("requires .ctor and exactly one Invoke contract"));
+    }
+
+    let mut contract = InterfaceImplementationMetadata::default();
+    collect_implementation_delegates(
+        &Type::named(def.namespace(), def.name()),
+        index,
+        &[],
+        &mut contract,
+    );
+    if !contract.diagnostics.is_empty() {
+        return Err(invalid(&contract.diagnostics.join("; ")));
+    }
+    parse_interface(index, def.namespace(), def.name())
+        .filter(InterfaceMeta::is_delegate)
+        .ok_or_else(|| invalid("could not parse delegate metadata"))
+}
+
 /// Parse enums in a namespace.
 pub fn parse_enums(winmd_paths: &str, namespace: &str) -> Vec<TypeMeta> {
     let index = match load_index(winmd_paths) {
