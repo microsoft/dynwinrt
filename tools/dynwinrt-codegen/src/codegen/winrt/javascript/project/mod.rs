@@ -1020,7 +1020,7 @@ pub fn project_class(
     }
 
     // Merge overload names in default interface members
-    merge_overload_names(&mut members);
+    let mut interface_aliases = merge_overload_names(&mut members);
 
     // IClosable → close()  (import already registered pre-emptively above)
     if let Some(interface_name) = iclosable_name {
@@ -1204,7 +1204,7 @@ pub fn project_class(
         }
 
         // Merge overload names within the required interface members before flatten
-        merge_overload_names(&mut ri_members);
+        interface_aliases.extend(merge_overload_names(&mut ri_members));
 
         // Flatten: copy members onto the main class.
         // Always flatten, even when the interface is shared/imported — the
@@ -1253,7 +1253,26 @@ pub fn project_class(
 
     // Merge overloaded method names: rename `foo2`, `foo3` to `foo` when `foo` exists.
     // Must happen after flatten so required-interface methods are included.
-    merge_overload_names(&mut members);
+    interface_aliases.extend(merge_overload_names(&mut members));
+
+    // Append only after every merge, so numeric aliases are not renamed again.
+    // Existing public members and their dispatchers must remain unchanged.
+    let merged_method_names = members
+        .iter()
+        .filter_map(|member| match member {
+            ProjectedMember::Method(method) => Some(method.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut alias_signatures = HashSet::new();
+    for alias in interface_aliases {
+        if !main_member_names.contains(&alias.name)
+            && !merged_method_names.contains(&alias.name)
+            && alias_signatures.insert(method_signature(&alias))
+        {
+            members.push(ProjectedMember::Method(alias));
+        }
+    }
 
     // Check if _unwrap is used
     let needs_unwrap = check_needs_unwrap(&members, &required_ifaces);
@@ -2172,7 +2191,18 @@ fn rewrite_delegate_args_in_expr(expr: &str, params: &[ProjectedParam]) -> Strin
 /// and a base-name sibling exists, to use the base name.
 /// E.g. `generateResponseAsync2` becomes `generateResponseAsync` when
 /// `generateResponseAsync` already exists in the same member list.
-fn merge_overload_names(members: &mut [ProjectedMember]) {
+/// Return the original instance methods as interface-compatible aliases.
+fn merge_overload_names(members: &mut [ProjectedMember]) -> Vec<ProjectedMethod> {
+    let interface_names = members
+        .iter()
+        .map(|member| match member {
+            ProjectedMember::Method(method) if !method.is_static && !method.js_only => {
+                Some(method.name.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
     // First pass: apply explicit overload_of
     for member in members.iter_mut() {
         if let ProjectedMember::Method(method) = member {
@@ -2208,4 +2238,22 @@ fn merge_overload_names(members: &mut [ProjectedMember]) {
             }
         }
     }
+
+    members
+        .iter()
+        .zip(interface_names)
+        .filter_map(|(member, interface_name)| {
+            let ProjectedMember::Method(method) = member else {
+                return None;
+            };
+            let interface_name = interface_name?;
+            if method.name == interface_name {
+                return None;
+            }
+            let mut alias = method.clone();
+            alias.name = interface_name;
+            alias.overload_of = None;
+            Some(alias)
+        })
+        .collect()
 }

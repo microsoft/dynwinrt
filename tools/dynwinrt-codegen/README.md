@@ -144,6 +144,16 @@ ESM consumers, and need no TypeScript compilation step. Python output uses
 snake_case names and includes type information by default. Documentation from
 sibling XML files is included when available.
 
+WinRT JavaScript runtime classes retain the explicit instance-method aliases
+declared by their interfaces, alongside their existing class overload names.
+For example, `StorageFile.copyAsync(...)` remains unchanged, and the class also
+exposes `IStorageFile`'s `copyOverloadDefaultOptions(...)` alias with the same
+native signature. These are real JavaScript methods, not declaration-only
+members, so a `StorageFile` can be passed directly to `FileIO.readTextAsync(...)`
+and a `StorageFolder` to `StorageFile.copyAsync(...)` in strict TypeScript.
+Standalone interface aliases and explicit `.as(IStorageFile)` views remain
+supported. Existing public class members take precedence when names collide.
+
 Classic COM generation is available only with `--lang js`. It is isolated in a
 `com` subpackage and fails closed when metadata does not provide enough ABI,
 layout, ownership, or cleanup information. See the
