@@ -213,7 +213,8 @@ that file, measures its path without the extended prefix, and states how much
 shorter the output root needs to be. Relative `--output` paths are resolved
 from the current directory; temporary transactional staging paths are not
 counted. `--dry-run` checks the requested projection's planned source paths,
-and `--no-pyi` excludes stubs. This is a **compatibility risk diagnostic**:
+aggregating all selected namespaces into one warning; `--no-pyi` excludes
+stubs. This is a **compatibility risk diagnostic**:
 generation still succeeds, and module names, imports, layout, and bytes are
 unchanged.
 

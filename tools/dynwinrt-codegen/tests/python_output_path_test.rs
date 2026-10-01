@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use windows_metadata::{FieldAttributes, Type, TypeAttributes, Value, writer};
+
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 const WARNING: &str = "warning: longest Python output path";
@@ -53,16 +55,15 @@ fn path_length(path: &Path) -> usize {
 }
 
 fn command(output: &Path) -> Command {
+    command_with_metadata(output, Path::new(WINDOWS_WINMD))
+}
+
+fn command_with_metadata(output: &Path, metadata: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
     command
-        .args([
-            "generate",
-            "--winmd",
-            WINDOWS_WINMD,
-            "--lang",
-            "py",
-            "--output",
-        ])
+        .args(["generate", "--winmd"])
+        .arg(metadata)
+        .args(["--lang", "py", "--output"])
         .arg(output)
         .env_remove("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT");
     command
@@ -107,6 +108,68 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut result = BTreeMap::new();
     visit(root, root, &mut result);
     result
+}
+
+#[test]
+fn python_dry_run_aggregates_multiple_namespaces_into_one_warning_without_writes() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+    let fixture = Fixture::new();
+    let metadata = fixture.0.join("MultipleNamespaces.winmd");
+    let mut file = writer::File::new("PythonOutputPaths");
+    let base = file.TypeRef("System", "Enum");
+    for namespace in ["Contoso.OutputPaths.First", "Contoso.OutputPaths.Second"] {
+        for index in 0..4 {
+            let name = format!("Options{index}");
+            file.TypeDef(
+                namespace,
+                &name,
+                writer::TypeDefOrRef::TypeRef(base),
+                TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+            );
+            file.Field(
+                "value__",
+                &Type::I32,
+                FieldAttributes::Public
+                    | FieldAttributes::SpecialName
+                    | FieldAttributes::RTSpecialName,
+            );
+            let member = file.Field(
+                "One",
+                &Type::named(namespace, &name),
+                FieldAttributes::Public
+                    | FieldAttributes::Static
+                    | FieldAttributes::Literal
+                    | FieldAttributes::HasDefault,
+            );
+            file.Constant(writer::HasConstant::Field(member), &Value::I32(1));
+        }
+    }
+    fs::write(&metadata, file.into_stream()).unwrap();
+    let output = fixture.output("multiple-namespaces", 220);
+    let before = files(&fixture.0);
+    let dry_run = command_with_metadata(&output, &metadata)
+        .args(["--ref", WINDOWS_WINMD, "--dry-run"])
+        .output()
+        .unwrap();
+    successful(&dry_run);
+    let message = stderr(&dry_run);
+    assert!(
+        message.contains("Discovered 2 namespace(s) to generate:"),
+        "{message}"
+    );
+    assert!(message.contains("Contoso.OutputPaths.First"), "{message}");
+    assert!(message.contains("Contoso.OutputPaths.Second"), "{message}");
+    assert_eq!(message.matches(WARNING).count(), 1, "{message}");
+    assert!(
+        String::from_utf8_lossy(&dry_run.stdout).contains("8 enum(s) validated (dry run)"),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stdout),
+    );
+    assert!(!output.exists());
+    assert_eq!(files(&fixture.0), before);
 }
 
 #[test]
