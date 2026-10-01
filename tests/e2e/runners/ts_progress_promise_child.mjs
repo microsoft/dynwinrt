@@ -127,6 +127,34 @@ async function httpCancellation() {
     op.cancel()
     assert.equal(await op.toPromise(), payload)
 
+    const headers = client.getAsync(uri('/progress'), g.HttpCompletionOption.ResponseHeadersRead)
+    const [response, sameResponse] = await Promise.all([headers, headers.toPromise(), headers.toPromise()])
+    assert.equal(response, sameResponse, 'overload consumers share one projected response')
+    try {
+      const content = response.content
+      try {
+        const body = content.readAsStringAsync()
+        const bodyPromise = body.progress((value) => assert.equal(typeof value, 'bigint')).toPromise()
+        assert.equal(bodyPromise, body)
+        assert.deepEqual(await Promise.all([body, bodyPromise, body.toPromise()]), Array(3).fill(payload))
+        await setImmediate()
+      } finally {
+        g.releaseProjected(content)
+      }
+    } finally {
+      response.close()
+      g.releaseProjected(response)
+    }
+
+    const download = client.getBufferAsync(uri('/progress'))
+    const [buffer, sameBuffer] = await Promise.all([download, download.toPromise(), download.toPromise()])
+    try {
+      assert.equal(buffer, sameBuffer, 'buffer consumers share one projected result')
+      assert.equal(buffer.toBuffer().toString('utf8'), payload)
+    } finally {
+      g.releaseProjected(buffer)
+    }
+
     for (const mode of ['cancel', 'abort']) {
       const path = `/${mode}`
       const accepted = new Promise((resolve) => waiting.set(path, resolve))
