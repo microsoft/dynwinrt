@@ -131,9 +131,9 @@ fn python_available(arguments: &[&str], required: &str) -> bool {
 
 impl Fixture {
     fn new() -> Option<Self> {
-        let winmd = std::env::var_os("DYNWINRT_WINDOWS_WINMD")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(WINDOWS_WINMD));
+        // The TSC job's metadata override can name the CLR Facade, which has
+        // no native default-interface contract. Use the same SDK as the facts.
+        let winmd = PathBuf::from(WINDOWS_WINMD);
         if !winmd.is_file() {
             assert_ne!(
                 std::env::var("DYNWINRT_REQUIRE_XML_NULLABILITY").as_deref(),
@@ -143,6 +143,7 @@ impl Fixture {
             eprintln!("Skipping XML nullability tests: Windows.winmd not found");
             return None;
         }
+        let winmd_paths = meta::expand_winmd_paths(winmd.to_str().unwrap());
         let fixture = Self(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -161,7 +162,7 @@ impl Fixture {
         success(
             Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
                 .args(["generate", "--winmd"])
-                .arg(&winmd)
+                .arg(&winmd_paths)
                 .args([
                     "--class-name",
                     "Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlElement,\
@@ -178,12 +179,11 @@ impl Fixture {
 
         // Exclusive interfaces are not public CLI roots. Resolve their actual
         // declarations independently, then exercise the standalone renderer.
-        let winmd = winmd.to_str().unwrap();
         let declarations = ["XmlDocument", "XmlElement"].map(|name| {
-            meta::parse_class(winmd, "Windows.Data.Xml.Dom", name)
-                .unwrap()
+            meta::parse_class(&winmd_paths, "Windows.Data.Xml.Dom", name)
+                .expect("XML class in native SDK metadata")
                 .default_interface
-                .unwrap()
+                .expect("native XML default interface")
         });
         let seed = InterfaceMeta {
             namespace: "Test".into(),
@@ -202,7 +202,7 @@ impl Fixture {
                 .collect(),
             ..Default::default()
         };
-        let resolved = meta::resolve_python_dependencies(winmd, &[], &[seed], &[]);
+        let resolved = meta::resolve_python_dependencies(&winmd_paths, &[], &[seed], &[]);
         let context = python::PythonProjectionContext::new(
             resolved
                 .classes
@@ -249,6 +249,23 @@ fn guarded_xml_reads_pass_and_unguarded_reads_fail_strict_typechecking() {
     let Some(fixture) = Fixture::new() else {
         return;
     };
+    let installed_runtime = python_available(
+        &["-c", "import dynwinrt"],
+        "DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME",
+    );
+    let source_stubs = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("bindings")
+        .join("py");
+    assert!(source_stubs.join("dynwinrt.pyi").is_file());
+    let mut stub_paths = vec![source_stubs];
+    if let Some(paths) = std::env::var_os("MYPYPATH") {
+        stub_paths.extend(std::env::split_paths(&paths));
+    }
+    let source_stub_path = std::env::join_paths(stub_paths).unwrap();
     let expected_lines = INVALID
         .lines()
         .enumerate()
@@ -257,40 +274,49 @@ fn guarded_xml_reads_pass_and_unguarded_reads_fail_strict_typechecking() {
     assert_eq!(expected_lines.len(), 20);
     for (name, consumer) in [("valid.py", VALID), ("invalid.py", INVALID)] {
         fs::write(fixture.0.join(name), consumer).unwrap();
-        let output = Command::new(python())
-            .args([
-                "-B",
-                "-m",
-                "mypy",
-                "--strict",
-                "--no-incremental",
-                "--no-pretty",
-                "--show-error-codes",
-            ])
-            .arg(name)
-            .current_dir(&fixture.0)
-            .env_remove("MYPYPATH")
-            .output()
-            .unwrap();
-        let text = diagnostics(&output);
-        if name == "valid.py" {
-            success(output);
+        for use_source_stubs in if installed_runtime {
+            &[true, false][..]
         } else {
-            assert_eq!(output.status.code(), Some(1), "{text}");
-            let errors = text
-                .lines()
-                .filter(|line| line.contains(": error:"))
-                .collect::<Vec<_>>();
-            assert_eq!(errors.len(), expected_lines.len(), "{text}");
-            let lines = errors
-                .iter()
-                .map(|line| {
-                    assert!(line.starts_with("invalid.py:"), "{text}");
-                    assert!(line.ends_with("[union-attr]"), "{text}");
-                    line.split(':').nth(1).unwrap().parse().unwrap()
-                })
-                .collect::<BTreeSet<usize>>();
-            assert_eq!(lines, expected_lines, "{text}");
+            &[true][..]
+        } {
+            let mut command = Command::new(python());
+            command
+                .args([
+                    "-B",
+                    "-m",
+                    "mypy",
+                    "--strict",
+                    "--no-incremental",
+                    "--no-pretty",
+                    "--show-error-codes",
+                ])
+                .arg(name)
+                .current_dir(&fixture.0)
+                .env_remove("MYPYPATH");
+            if *use_source_stubs {
+                command.env("MYPYPATH", &source_stub_path);
+            }
+            let output = command.output().unwrap();
+            let text = diagnostics(&output);
+            if name == "valid.py" {
+                success(output);
+            } else {
+                assert_eq!(output.status.code(), Some(1), "{text}");
+                let errors = text
+                    .lines()
+                    .filter(|line| line.contains(": error:"))
+                    .collect::<Vec<_>>();
+                assert_eq!(errors.len(), expected_lines.len(), "{text}");
+                let lines = errors
+                    .iter()
+                    .map(|line| {
+                        assert!(line.starts_with("invalid.py:"), "{text}");
+                        assert!(line.ends_with("[union-attr]"), "{text}");
+                        line.split(':').nth(1).unwrap().parse().unwrap()
+                    })
+                    .collect::<BTreeSet<usize>>();
+                assert_eq!(lines, expected_lines, "{text}");
+            }
         }
 
         if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
