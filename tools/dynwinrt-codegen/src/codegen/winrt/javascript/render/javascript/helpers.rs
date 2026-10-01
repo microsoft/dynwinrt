@@ -47,7 +47,7 @@ pub(super) fn emit_with_progress_body(
     out.push_str("            _rej.catch(() => {});\n");
     out.push_str("            return Object.assign(_rej, {\n");
     out.push_str("                progress(_cb) { return this; },\n");
-    out.push_str("                toPromise() { const _p = Promise.reject(signal.reason); _p.catch(() => {}); return _p; },\n");
+    out.push_str("                toPromise() { return _rej; },\n");
     out.push_str("                cancel() {},\n");
     out.push_str("            });\n");
     out.push_str("        }\n");
@@ -74,7 +74,7 @@ pub(super) fn emit_with_progress_body(
     } else {
         out.push_str("            progress(cb) { _op.onProgress(cb); return this; },\n");
     }
-    out.push_str("            toPromise() { return _wrap(_op.toPromise()); },\n");
+    out.push_str("            toPromise() { return _promise; },\n");
     out.push_str("            cancel() { try { _op.cancel(); } catch (_ce) { /* cancel after completion is a no-op per WinRT spec */ } },\n");
     out.push_str("        });\n");
 }
