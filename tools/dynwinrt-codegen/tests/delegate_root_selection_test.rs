@@ -66,27 +66,63 @@ fn windows_winmd() -> Option<PathBuf> {
 
 fn stock_metadata_paths(winmd: &Path) -> String {
     let mut inputs = vec![winmd.to_str().unwrap().to_owned()];
-    if let Some(facade) = winmd.parent().filter(|parent| {
-        parent
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("Facade"))
-    }) {
-        // The SDK CLR facade forwards types instead of declaring WinRT contracts.
-        // Retain the override and pin its same-version native SDK before expansion.
-        let native = facade.parent().unwrap().join("Windows.winmd");
-        assert!(
-            native.is_file(),
-            "SDK Facade input requires native contracts at {}",
-            native.display()
-        );
+    if !meta::list_namespaces(&inputs[0])
+        .iter()
+        .any(|namespace| namespace == "Windows" || namespace.starts_with("Windows."))
+    {
+        // Keep a versioned Facade's matching contract; an unversioned Facade needs
+        // the CLI's versioned-SDK discovery. Both retain the original input.
+        let matching_native = winmd
+            .parent()
+            .filter(|parent| {
+                parent
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("Facade"))
+            })
+            .and_then(Path::parent)
+            .filter(|parent| {
+                parent
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("10."))
+            })
+            .map(|version| version.join("Windows.winmd"))
+            .filter(|path| path.is_file());
+        let (native, selection) = if let Some(native) = matching_native {
+            (native, "matching versioned SDK")
+        } else {
+            (native_sdk_winmd(), "CLI versioned-SDK fallback")
+        };
         eprintln!(
-            "Supplementing {} with native SDK contracts from {}",
+            "Supplementing {} with native SDK contracts from {} ({selection})",
             winmd.display(),
             native.display()
         );
         inputs.push(native.to_str().unwrap().to_owned());
     }
     meta::expand_winmd_paths(&inputs.join(";"))
+}
+
+fn native_sdk_winmd() -> PathBuf {
+    // Same version discovery as main.rs::find_windows_sdk_winmd, not CLR Facade sorting.
+    let base = Path::new(DEFAULT_WINDOWS_WINMD)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let mut versions = fs::read_dir(base)
+        .expect("discover installed native SDK metadata")
+        .map(|entry| entry.expect("read SDK metadata directory").path())
+        .filter(|path| path.is_dir())
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("10."))
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions
+        .into_iter()
+        .rev()
+        .map(|version| base.join(version).join("Windows.winmd"))
+        .find(|path| path.is_file())
+        .expect("installed native Windows.winmd required for delegate contracts")
 }
 
 fn metadata_index(paths: &str) -> reader::Index {
@@ -379,75 +415,69 @@ fn assert_stock_delegate_contracts(path: &str) {
 
 #[test]
 fn sdk_facade_and_native_contract_graphs_match_generated_delegates() {
-    let Some(winmd) = windows_winmd() else {
+    let Some(_) = windows_winmd() else {
         return;
     };
-    let native = if winmd
-        .parent()
-        .and_then(Path::file_name)
-        .is_some_and(|name| name.eq_ignore_ascii_case("Facade"))
-    {
-        winmd
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("Windows.winmd")
-    } else {
-        winmd
-    };
-    let facade = native
-        .parent()
-        .unwrap()
-        .join("Facade")
-        .join("Windows.winmd");
-    assert!(
-        facade.is_file(),
-        "SDK Facade control at {}",
-        facade.display()
-    );
-    let raw = reader::Index::read(&facade).expect("read SDK CLR Facade control");
-    assert!(
-        raw.get(NAMESPACE, "WorkItemHandler").next().is_none(),
-        "CLR Facade control must require native metadata supplementation"
-    );
+    let native = native_sdk_winmd();
     let native_paths = stock_metadata_paths(&native);
-    let facade_paths = stock_metadata_paths(&facade);
-    assert_eq!(facade_paths.split(';').next(), facade.to_str());
     assert_stock_delegate_contracts(&native_paths);
-    assert_stock_delegate_contracts(&facade_paths);
-
     let fixture = Fixture::new();
-    for language in ["js", "py"] {
-        let native_output = fixture.0.join(format!("{language}-native"));
-        let facade_output = fixture.0.join(format!("{language}-facade"));
-        let raw_facade_output = fixture.0.join(format!("{language}-raw-facade"));
-        for (input, output) in [
-            (Path::new(&native_paths), &native_output),
-            (Path::new(&facade_paths), &facade_output),
-            (facade.as_path(), &raw_facade_output),
-        ] {
-            generate_ok(
-                input,
-                output,
-                Some("ThreadPool,WorkItemHandler,ThreadPoolTimer,TimerElapsedHandler"),
-                language,
-                false,
-            );
-            assert_delegate(output, "WorkItemHandler", language, false);
-            assert_delegate(output, "TimerElapsedHandler", language, false);
-            assert_same_modules(
-                &native_output,
-                output,
-                &[
-                    "ThreadPool",
-                    "WorkItemHandler",
-                    "ThreadPoolTimer",
-                    "TimerElapsedHandler",
-                ],
-                language,
-                false,
-            );
+    let version = native.parent().unwrap();
+    for (index, facade) in [
+        version.join("Facade").join("Windows.winmd"),
+        version
+            .parent()
+            .unwrap()
+            .join("Facade")
+            .join("Windows.winmd"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            facade.is_file(),
+            "SDK Facade control at {}",
+            facade.display()
+        );
+        let raw = reader::Index::read(facade).expect("read SDK CLR Facade control");
+        assert!(
+            raw.get(NAMESPACE, "WorkItemHandler").next().is_none(),
+            "CLR Facade control must require native metadata supplementation"
+        );
+        let facade_paths = stock_metadata_paths(facade);
+        assert_eq!(facade_paths.split(';').next(), facade.to_str());
+        assert_stock_delegate_contracts(&facade_paths);
+        for language in ["js", "py"] {
+            let native_output = fixture.0.join(format!("{language}-native"));
+            let facade_output = fixture.0.join(format!("{language}-facade-{index}"));
+            let raw_facade_output = fixture.0.join(format!("{language}-raw-facade-{index}"));
+            for (input, output) in [
+                (Path::new(&native_paths), &native_output),
+                (Path::new(&facade_paths), &facade_output),
+                (facade.as_path(), &raw_facade_output),
+            ] {
+                generate_ok(
+                    input,
+                    output,
+                    Some("ThreadPool,WorkItemHandler,ThreadPoolTimer,TimerElapsedHandler"),
+                    language,
+                    false,
+                );
+                assert_delegate(output, "WorkItemHandler", language, false);
+                assert_delegate(output, "TimerElapsedHandler", language, false);
+                assert_same_modules(
+                    &native_output,
+                    output,
+                    &[
+                        "ThreadPool",
+                        "WorkItemHandler",
+                        "ThreadPoolTimer",
+                        "TimerElapsedHandler",
+                    ],
+                    language,
+                    false,
+                );
+            }
         }
     }
 }
