@@ -64,6 +64,40 @@ fn windows_winmd() -> Option<PathBuf> {
     None
 }
 
+fn stock_metadata_paths(winmd: &Path) -> String {
+    let mut inputs = vec![winmd.to_str().unwrap().to_owned()];
+    if let Some(facade) = winmd.parent().filter(|parent| {
+        parent
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Facade"))
+    }) {
+        // The SDK CLR facade forwards types instead of declaring WinRT contracts.
+        // Retain the override and pin its same-version native SDK before expansion.
+        let native = facade.parent().unwrap().join("Windows.winmd");
+        assert!(
+            native.is_file(),
+            "SDK Facade input requires native contracts at {}",
+            native.display()
+        );
+        eprintln!(
+            "Supplementing {} with native SDK contracts from {}",
+            winmd.display(),
+            native.display()
+        );
+        inputs.push(native.to_str().unwrap().to_owned());
+    }
+    meta::expand_winmd_paths(&inputs.join(";"))
+}
+
+fn metadata_index(paths: &str) -> reader::Index {
+    reader::Index::new(
+        paths
+            .split(';')
+            .map(|path| reader::File::read(path).expect("read expanded metadata input"))
+            .collect(),
+    )
+}
+
 fn diagnostics(output: &Output) -> String {
     format!(
         "{}\n{}",
@@ -244,8 +278,29 @@ fn stock_delegate_classification_preserves_winmd_identity_and_invoke_contracts()
     let Some(winmd) = windows_winmd() else {
         return;
     };
-    let path = winmd.to_str().unwrap();
-    let index = reader::Index::read(path).unwrap();
+    let paths = stock_metadata_paths(&winmd);
+    assert_stock_delegate_contracts(&paths);
+    let error = meta::parse_delegate(&paths, "Windows.Foundation", "EventHandler").unwrap_err();
+    assert!(error.contains("open generic delegate roots"), "{error}");
+    let fixture = Fixture::new();
+    for language in ["js", "py"] {
+        let output = fixture.0.join(language);
+        let result = generate(
+            Path::new(&paths),
+            &output,
+            "Windows.Foundation",
+            Some("EventHandler"),
+            language,
+            false,
+        );
+        assert!(!result.status.success(), "{}", diagnostics(&result));
+        assert!(diagnostics(&result).contains("open generic delegate roots"));
+        assert!(!output.exists());
+    }
+}
+
+fn assert_stock_delegate_contracts(path: &str) {
+    let index = metadata_index(path);
     for (class, name) in [
         ("ThreadPool", "WorkItemHandler"),
         ("ThreadPoolTimer", "TimerElapsedHandler"),
@@ -320,22 +375,80 @@ fn stock_delegate_classification_preserves_winmd_identity_and_invoke_contracts()
                 .is_none()
         );
     }
-    let error = meta::parse_delegate(path, "Windows.Foundation", "EventHandler").unwrap_err();
-    assert!(error.contains("open generic delegate roots"), "{error}");
+}
+
+#[test]
+fn sdk_facade_and_native_contract_graphs_match_generated_delegates() {
+    let Some(winmd) = windows_winmd() else {
+        return;
+    };
+    let native = if winmd
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.eq_ignore_ascii_case("Facade"))
+    {
+        winmd
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Windows.winmd")
+    } else {
+        winmd
+    };
+    let facade = native
+        .parent()
+        .unwrap()
+        .join("Facade")
+        .join("Windows.winmd");
+    assert!(
+        facade.is_file(),
+        "SDK Facade control at {}",
+        facade.display()
+    );
+    let raw = reader::Index::read(&facade).expect("read SDK CLR Facade control");
+    assert!(
+        raw.get(NAMESPACE, "WorkItemHandler").next().is_none(),
+        "CLR Facade control must require native metadata supplementation"
+    );
+    let native_paths = stock_metadata_paths(&native);
+    let facade_paths = stock_metadata_paths(&facade);
+    assert_eq!(facade_paths.split(';').next(), facade.to_str());
+    assert_stock_delegate_contracts(&native_paths);
+    assert_stock_delegate_contracts(&facade_paths);
+
     let fixture = Fixture::new();
     for language in ["js", "py"] {
-        let output = fixture.0.join(language);
-        let result = generate(
-            &winmd,
-            &output,
-            "Windows.Foundation",
-            Some("EventHandler"),
-            language,
-            false,
-        );
-        assert!(!result.status.success(), "{}", diagnostics(&result));
-        assert!(diagnostics(&result).contains("open generic delegate roots"));
-        assert!(!output.exists());
+        let native_output = fixture.0.join(format!("{language}-native"));
+        let facade_output = fixture.0.join(format!("{language}-facade"));
+        let raw_facade_output = fixture.0.join(format!("{language}-raw-facade"));
+        for (input, output) in [
+            (Path::new(&native_paths), &native_output),
+            (Path::new(&facade_paths), &facade_output),
+            (facade.as_path(), &raw_facade_output),
+        ] {
+            generate_ok(
+                input,
+                output,
+                Some("ThreadPool,WorkItemHandler,ThreadPoolTimer,TimerElapsedHandler"),
+                language,
+                false,
+            );
+            assert_delegate(output, "WorkItemHandler", language, false);
+            assert_delegate(output, "TimerElapsedHandler", language, false);
+            assert_same_modules(
+                &native_output,
+                output,
+                &[
+                    "ThreadPool",
+                    "WorkItemHandler",
+                    "ThreadPoolTimer",
+                    "TimerElapsedHandler",
+                ],
+                language,
+                false,
+            );
+        }
     }
 }
 
@@ -841,8 +954,47 @@ fn explicitly_selected_delegate_callables_pass_strict_mypy_and_pyright() {
         eprintln!("Skipping strict delegate consumers: mypy unavailable");
         return;
     }
+    let installed_runtime = Command::new(python())
+        .args([
+            "-I",
+            "-c",
+            "from dynwinrt import DynWinRTValue, WinRTCoroutine",
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        installed_runtime
+            || (std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() != Ok("1")
+                && std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref() != Ok("1")),
+        "The requested installed-runtime typing lane requires the matching wheel"
+    );
+    let source_stubs = repo().join("bindings").join("py");
+    assert!(source_stubs.join("dynwinrt.pyi").is_file());
+    let inherited_paths = std::env::var_os("MYPYPATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
     for no_pyi in [false, true] {
         let fixture = Fixture::new();
+        let incomplete_source = fixture.0.join("binding-source");
+        let source_package = incomplete_source.join("dynwinrt");
+        fs::create_dir_all(&source_package).unwrap();
+        for name in ["__init__.py", "py.typed"] {
+            fs::copy(
+                source_stubs.join("python").join("dynwinrt").join(name),
+                source_package.join(name),
+            )
+            .unwrap();
+        }
+        assert!(!source_package.join("__init__.pyi").exists());
+        let extra_stubs = fixture.0.join("extra-stubs");
+        fs::create_dir_all(&extra_stubs).unwrap();
+        fs::write(
+            extra_stubs.join("delegate_fixture_extra.pyi"),
+            "marker: str\n",
+        )
+        .unwrap();
+        let mut paths = vec![incomplete_source.clone(), extra_stubs.clone()];
+        paths.extend(inherited_paths.iter().cloned());
         let output = fixture.0.join("generated");
         generate_ok(
             &winmd,
@@ -859,8 +1011,10 @@ fn explicitly_selected_delegate_callables_pass_strict_mypy_and_pyright() {
                     "# pyright: strict\n\
                  from typing import assert_type\n\
                  from dynwinrt import DynWinRTValue, WinRTCoroutine\n\
+                 from delegate_fixture_extra import marker\n\
                  from generated.windows__system__threading__thread_pool import ThreadPool\n\
                  def handler(operation: DynWinRTValue) -> None:\n    operation.release()\n\
+                 assert_type(marker, str)\n\
                  assert_type(ThreadPool.run_async(handler), WinRTCoroutine[None])\n{}",
                     if negative {
                         "ThreadPool.run_async(42)\n"
@@ -870,55 +1024,125 @@ fn explicitly_selected_delegate_callables_pass_strict_mypy_and_pyright() {
                 ),
             )
             .unwrap();
-            let result = Command::new(python())
-                .args([
-                    "-B",
-                    "-m",
-                    "mypy",
-                    "--strict",
-                    "--no-incremental",
-                    "--follow-imports=silent",
-                    "--no-pretty",
-                    "--show-error-codes",
-                ])
-                .arg(&consumer)
-                .env(
-                    "MYPYPATH",
-                    repo().join("bindings").join("py").join("python"),
-                )
-                .current_dir(&fixture.0)
-                .output()
-                .unwrap();
-            let text = diagnostics(&result);
-            assert_eq!(
-                text.lines()
-                    .filter(|line| line.contains(": error:"))
-                    .count(),
-                expected_errors,
-                "{text}"
-            );
-            assert_eq!(result.status.success(), expected_errors == 0, "{text}");
-            if negative {
-                assert!(text.contains("[arg-type]"), "{text}");
-            }
-            if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
-                let result = Command::new(pyright)
-                    .arg("--pythonpath")
-                    .arg(python())
-                    .arg(&consumer)
-                    .current_dir(&fixture.0)
-                    .output()
-                    .unwrap();
-                let text = diagnostics(&result);
-                assert_eq!(
-                    text.lines()
-                        .filter(|line| line.contains(" - error: "))
-                        .count(),
-                    expected_errors,
+            if !negative {
+                let legacy =
+                    mypy_consumer(&fixture, &[incomplete_source.clone(), extra_stubs.clone()]);
+                let text = diagnostics(&legacy);
+                assert_eq!(legacy.status.code(), Some(1), "{text}");
+                assert!(
+                    text.contains("Module \"dynwinrt\" has no attribute"),
                     "{text}"
                 );
+            }
+            for use_source in if installed_runtime {
+                &[true, false][..]
+            } else {
+                &[true][..]
+            } {
+                let stub_paths =
+                    consumer_stub_paths(use_source.then_some(source_stubs.as_path()), &paths);
+                assert!(stub_paths.contains(&extra_stubs));
+                assert!(!stub_paths.contains(&incomplete_source));
+                eprintln!(
+                    "Strict delegate consumer: {}, no_pyi={no_pyi}, negative={negative}",
+                    if *use_source {
+                        "tracked dynwinrt.pyi"
+                    } else {
+                        "installed wheel"
+                    }
+                );
+                let result = mypy_consumer(&fixture, &stub_paths);
+                let text = diagnostics(&result);
+                let errors = text
+                    .lines()
+                    .filter(|line| line.contains(": error:"))
+                    .collect::<Vec<_>>();
+                assert_eq!(errors.len(), expected_errors, "{text}");
                 assert_eq!(result.status.success(), expected_errors == 0, "{text}");
+                for error in errors {
+                    assert!(
+                        error.starts_with("consumer.py:") && error.ends_with("[arg-type]"),
+                        "{text}"
+                    );
+                }
+                if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
+                    fs::write(
+                        fixture.0.join("pyrightconfig.json"),
+                        serde_json::to_vec(&serde_json::json!({ "extraPaths": stub_paths }))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    let result = Command::new(pyright)
+                        .arg("--pythonpath")
+                        .arg(python())
+                        .arg("consumer.py")
+                        .env_remove("PYTHONPATH")
+                        .current_dir(&fixture.0)
+                        .output()
+                        .unwrap();
+                    let text = diagnostics(&result);
+                    let errors = text
+                        .lines()
+                        .filter(|line| line.contains(" - error: "))
+                        .collect::<Vec<_>>();
+                    assert_eq!(errors.len(), expected_errors, "{text}");
+                    assert_eq!(result.status.success(), expected_errors == 0, "{text}");
+                    for error in errors {
+                        assert!(error.contains("consumer.py:"), "{text}");
+                    }
+                    assert_eq!(
+                        text.matches("(reportArgumentType)").count(),
+                        expected_errors,
+                        "{text}"
+                    );
+                }
             }
         }
     }
+}
+
+fn consumer_stub_paths(source_stubs: Option<&Path>, inherited: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = source_stubs
+        .map(Path::to_path_buf)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let cwd = std::env::current_dir().unwrap();
+    for path in inherited {
+        let path = if path.is_absolute() {
+            path.clone()
+        } else {
+            cwd.join(path)
+        };
+        // Retain other stub roots, but never let a source package mask wheel typing.
+        if !path.join("dynwinrt").is_dir()
+            && !path.join("dynwinrt.pyi").is_file()
+            && !path.join("dynwinrt.py").is_file()
+        {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+fn mypy_consumer(fixture: &Fixture, stub_paths: &[PathBuf]) -> Output {
+    let mut command = Command::new(python());
+    command
+        .args([
+            "-B",
+            "-m",
+            "mypy",
+            "--strict",
+            "--no-incremental",
+            "--follow-imports=silent",
+            "--no-pretty",
+            "--show-error-codes",
+        ])
+        .arg("consumer.py")
+        .env_remove("PYTHONPATH")
+        .env_remove("MYPYPATH")
+        .current_dir(&fixture.0);
+    if !stub_paths.is_empty() {
+        command.env("MYPYPATH", std::env::join_paths(stub_paths).unwrap());
+    }
+    command.output().unwrap()
 }
