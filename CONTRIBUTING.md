@@ -94,6 +94,14 @@ percentage gates; hits in another source or language cannot replace them.
 Run `.\eng\coverage\coverage.threshold.tests.ps1` for the source-guard and
 threshold boundary regression tests without building native modules.
 
+JavaScript coverage includes the runtime and the complete generated WinRT,
+implementation, and Classic COM E2E fixture trees, including unexecuted files.
+Tests that generate bindings in unrelated temporary directories do not cover
+these measured fixtures. Extend the existing E2E runner checks when adding
+projected paths: the temp-folder storage case compares collection interface
+aliases with canonical calls and checks native query pagination and cancellation
+without requiring indexing, network access, or UI.
+
 ### Code Style
 
 - Run `cargo clippy` before submitting PRs
