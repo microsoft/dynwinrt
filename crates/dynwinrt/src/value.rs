@@ -217,6 +217,17 @@ impl WinRTValue {
         matches!(self, WinRTValue::Null)
     }
 
+    /// Whether this owned value contains a COM reference, including nested
+    /// array elements or struct fields.
+    pub fn contains_com_references(&self) -> bool {
+        match self {
+            Self::Object(_) | Self::Async(_) | Self::ArrayOfIUnknown(_) => true,
+            Self::Struct(data) => data.type_handle().contains_com_references(),
+            Self::Array(data) => data.contains_com_references(),
+            _ => false,
+        }
+    }
+
     /// If this is an Object wrapping a null IUnknown, replace with Null to prevent
     /// crash on clone/drop (IUnknown::from_raw(null) is invalid).
     pub fn sanitize_null_object(&mut self) {

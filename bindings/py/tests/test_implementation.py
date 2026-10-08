@@ -1265,7 +1265,10 @@ def test_interpreter_shutdown_closes_retained_native_callbacks(during_callback):
             try:
                 state["factory"]()
             except RuntimeError as error:
-                assert "shutting down" in str(error)
+                assert str(error) == (
+                    "Python WinRT callbacks have been shut down; register them "
+                    "before shutdown_python_callbacks()"
+                )
             else:
                 raise AssertionError("created implementation during shutdown")
             owner.dispose()

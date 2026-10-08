@@ -26,7 +26,7 @@ use crate::codegen::winrt::shared::structs::{
 
 use super::collections::{
     CollectionKind, class_interface, interface_kind, observable_vector_identity,
-    projected_interface_kind,
+    projected_interface_kind, stock_json_class_contract,
 };
 use super::member_plan::{
     ClassMemberPlan, MethodGroup, PlannedMember, ScopePlan, class_instance_interfaces,
@@ -488,7 +488,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
-    out.push_str(&collection_protocol_stubs(iface, context, 4));
+    out.push_str(&collection_protocol_stubs(iface, context, 4, false));
     if has_projection {
         out.push('\n');
         if !is_protocol {
@@ -595,6 +595,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                     event_has_remove,
                     property_has_getter,
                     collection_kind == Some(CollectionKind::MutableSequence),
+                    false,
                 )
             }
             PlannedMember::Group(group) => emit_instance_stub_group(
@@ -602,6 +603,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                 context,
                 4,
                 collection_kind == Some(CollectionKind::MutableSequence),
+                false,
             ),
         });
     }
@@ -610,6 +612,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         context,
         4,
         collection_kind == Some(CollectionKind::MutableSequence),
+        false,
     ));
 
     out
@@ -626,6 +629,7 @@ pub fn generate_class_stub<'a>(
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let stock_json_receiver = stock_json_class_contract(class).is_some();
     let known_full_names = context.known_full_names();
     let winui_bootstrap = winui::resolve_application_bootstrap(class, &known_full_names);
     let has_public_composition = class
@@ -841,18 +845,35 @@ pub fn generate_class_stub<'a>(
     let collection_base = collection_iface
         .zip(collection_kind)
         .and_then(|(iface, kind)| {
-            super::type_helpers::py_collection_base_type(
+            let base = super::type_helpers::py_collection_base_type(
                 kind,
                 &iface.generic_args,
                 AnnotationSurface::Stub,
                 context,
-            )
+            );
+            if stock_json_receiver {
+                match (kind, iface.generic_args.as_slice()) {
+                    (CollectionKind::MutableSequence, [value]) => Some(format!(
+                        "MutableSequence[{}]",
+                        super::type_helpers::py_param_type_safe(value, context)
+                    )),
+                    (CollectionKind::MutableMapping, [key, value]) => Some(format!(
+                        "MutableMapping[{}, {}]",
+                        super::type_helpers::py_param_type_safe(key, context),
+                        super::type_helpers::py_param_type_safe(value, context)
+                    )),
+                    _ => base,
+                }
+            } else {
+                base
+            }
         });
     let mut instance_stub_body = emit_class_instance_stubs(
         class,
         context,
         &plan.instance,
         collection_iface,
+        stock_json_receiver,
         false,
         has_closable,
     );
@@ -928,6 +949,7 @@ pub fn generate_class_stub<'a>(
             context,
             &plan.instance,
             collection_iface,
+            stock_json_receiver,
             collection_kind == Some(CollectionKind::MutableSequence),
             has_closable,
         ));
@@ -1051,7 +1073,7 @@ pub fn generate_class_stub<'a>(
         }
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
         out.push_str(NATIVE_OBJECT_STUB);
-        out.push_str(&collection_protocol_stubs(req_iface, context, 4));
+        out.push_str(&collection_protocol_stubs(req_iface, context, 4, false));
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
@@ -1086,6 +1108,7 @@ pub fn generate_class_stub<'a>(
                         event_has_remove,
                         property_has_getter,
                         interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+                        false,
                     )
                 }
                 PlannedMember::Group(group) => emit_instance_stub_group(
@@ -1093,6 +1116,7 @@ pub fn generate_class_stub<'a>(
                     context,
                     4,
                     interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+                    false,
                 ),
             });
         }
@@ -1101,6 +1125,7 @@ pub fn generate_class_stub<'a>(
             context,
             4,
             interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+            false,
         ));
     }
 
@@ -1113,6 +1138,7 @@ fn emit_class_instance_stubs<'a>(
     context: &PythonProjectionContext,
     plan: &ScopePlan<'a>,
     collection_iface: Option<&InterfaceMeta>,
+    stock_json_receiver: bool,
     mutable_sequence_override: bool,
     has_closable: bool,
 ) -> String {
@@ -1121,7 +1147,12 @@ fn emit_class_instance_stubs<'a>(
         out.push_str(NATIVE_OBJECT_STUB);
     }
     if let Some(collection_iface) = collection_iface {
-        out.push_str(&collection_protocol_stubs(collection_iface, context, 4));
+        out.push_str(&collection_protocol_stubs(
+            collection_iface,
+            context,
+            4,
+            stock_json_receiver,
+        ));
     }
 
     let instance_ifaces = class_instance_interfaces(class).collect::<Vec<_>>();
@@ -1207,11 +1238,16 @@ fn emit_class_instance_stubs<'a>(
                     event_has_remove,
                     property_has_getter,
                     mutable_sequence_override,
+                    stock_json_receiver,
                 )
             }
-            PlannedMember::Group(group) => {
-                emit_instance_stub_group(group, context, 4, mutable_sequence_override)
-            }
+            PlannedMember::Group(group) => emit_instance_stub_group(
+                group,
+                context,
+                4,
+                mutable_sequence_override,
+                stock_json_receiver,
+            ),
         });
     }
     out.push_str(&emit_instance_compatibility_alias_stubs(
@@ -1219,6 +1255,7 @@ fn emit_class_instance_stubs<'a>(
         context,
         4,
         mutable_sequence_override,
+        stock_json_receiver,
     ));
     if has_closable {
         out.push('\n');
@@ -1268,6 +1305,7 @@ fn collection_protocol_stubs(
     iface: &InterfaceMeta,
     context: &PythonProjectionContext,
     indent_spaces: usize,
+    stock_json_receiver: bool,
 ) -> String {
     let Some(kind) = projected_interface_kind(iface) else {
         return String::new();
@@ -1279,7 +1317,9 @@ fn collection_protocol_stubs(
         .generic_args
         .first()
         .map(|typ| {
-            if matches!(
+            if stock_json_receiver && kind == super::collections::CollectionKind::MutableSequence {
+                super::type_helpers::py_param_type_safe(typ, context)
+            } else if matches!(
                 kind,
                 super::collections::CollectionKind::Mapping
                     | super::collections::CollectionKind::MutableMapping
@@ -1298,7 +1338,13 @@ fn collection_protocol_stubs(
     let item_input = iface
         .generic_args
         .first()
-        .map(|typ| super::type_helpers::py_collection_input_type(typ, context))
+        .map(|typ| {
+            if stock_json_receiver && kind == super::collections::CollectionKind::MutableSequence {
+                super::type_helpers::py_param_type_safe(typ, context)
+            } else {
+                super::type_helpers::py_collection_input_type(typ, context)
+            }
+        })
         .unwrap_or_else(|| "object".to_string());
     match kind {
         super::collections::CollectionKind::Iterable => {
@@ -1327,6 +1373,12 @@ fn collection_protocol_stubs(
                      {indent}def __delitem__(self, index: int | slice) -> None: ...\n\
                      {indent}def insert(self, index: int, value: {item_input}) -> None: ...\n"
                 ));
+                if stock_json_receiver {
+                    result.push_str(&format!(
+                        "{indent}def extend(self, values: Iterable[{item_input}]) -> None: ...\n\
+                         {indent}def __iadd__(self, values: Iterable[{item_input}]) -> Self: ...\n"
+                    ));
+                }
             }
             result
         }
@@ -1337,12 +1389,16 @@ fn collection_protocol_stubs(
                 .generic_args
                 .get(1)
                 .map(|typ| {
-                    super::type_helpers::py_collection_item_type(
-                        typ,
-                        container,
-                        AnnotationSurface::Stub,
-                        context,
-                    )
+                    if stock_json_receiver {
+                        super::type_helpers::py_param_type_safe(typ, context)
+                    } else {
+                        super::type_helpers::py_collection_item_type(
+                            typ,
+                            container,
+                            AnnotationSurface::Stub,
+                            context,
+                        )
+                    }
                 })
                 .unwrap_or_else(|| "object".to_string());
             let mut result = format!(
@@ -1354,12 +1410,23 @@ fn collection_protocol_stubs(
                 let value_input = iface
                     .generic_args
                     .get(1)
-                    .map(|typ| super::type_helpers::py_collection_input_type(typ, context))
+                    .map(|typ| {
+                        if stock_json_receiver {
+                            super::type_helpers::py_param_type_safe(typ, context)
+                        } else {
+                            super::type_helpers::py_collection_input_type(typ, context)
+                        }
+                    })
                     .unwrap_or_else(|| "object".to_string());
                 result.push_str(&format!(
                     "{indent}def __setitem__(self, key: {item_input}, value: {value_input}) -> None: ...\n\
                      {indent}def __delitem__(self, key: {item_input}) -> None: ...\n"
                 ));
+                if stock_json_receiver {
+                    result.push_str(&format!(
+                        "{indent}def setdefault(self, key: {item_input}, default: {value_input}) -> {value_type}: ...\n"
+                    ));
+                }
             }
             result
         }
@@ -1584,6 +1651,7 @@ fn emit_instance_stub_group(
     context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
+    stock_json_receiver: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let methods = typed_signatures(
@@ -1605,6 +1673,7 @@ fn emit_instance_stub_group(
                 false,
                 true,
                 overrides_mutable_sequence,
+                stock_json_receiver,
             );
             if duplicate {
                 stub = ignore_unreachable_overload(stub);
@@ -1623,6 +1692,7 @@ fn emit_instance_compatibility_alias_stubs(
     context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
+    stock_json_receiver: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
@@ -1646,6 +1716,7 @@ fn emit_instance_compatibility_alias_stubs(
                 false,
                 true,
                 overrides_mutable_sequence,
+                stock_json_receiver,
             );
             if *duplicate {
                 stub = ignore_unreachable_overload(stub);

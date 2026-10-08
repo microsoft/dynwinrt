@@ -23,7 +23,15 @@ def blocked_close(action):
 def run_case(generated, mode, scenario):
     sys.path.insert(0, os.path.dirname(os.path.abspath(generated)))
     import dynwinrt as dw
+    from dynwinrt.dynwinrt import _dynwinrt_track_native
     from python_bindings import PropertySet
+
+    class TrackedOwner:
+        def __init__(self):
+            self.releases = 0
+
+        def release(self):
+            self.releases += 1
 
     def switch_models():
         with dw.RoApartment(1 - mode) as opposite:
@@ -32,6 +40,18 @@ def run_case(generated, mode, scenario):
     def dispose(mapping, token):
         mapping.off_map_changed(token)
         dw.release_projected(mapping)
+
+    def callback_pending_only():
+        from dynwinrt.dynwinrt import _managed_apartment_depth
+
+        assert _managed_apartment_depth() == 1
+        try:
+            dw.retry_pending_apartment_close()
+        except RuntimeError as error:
+            assert 'no failed RoApartment close' in str(error), error
+        else:
+            raise AssertionError('cleanup retry consumed a callback-deferred apartment')
+        assert _managed_apartment_depth() == 1
 
     def foreign_error(action):
         errors = []
@@ -54,6 +74,7 @@ def run_case(generated, mode, scenario):
         apartment.__enter__()
         events = []
         retained = []
+        tracked = _dynwinrt_track_native(TrackedOwner())
 
         def on_changed(sender, args):
             events.append(args.key)
@@ -65,6 +86,7 @@ def run_case(generated, mode, scenario):
             else:
                 blocked_close(lambda: apartment.__exit__(None, None, None))
             assert 'active=true' in repr(apartment)
+            assert tracked.releases == 0 and not mapping._obj.is_released()
             assert args.key in sender
 
         mapping = PropertySet()
@@ -72,6 +94,7 @@ def run_case(generated, mode, scenario):
         mapping.insert('first', None)
         mapping.insert('second', None)
         assert events == ['first', 'second'], events
+        assert tracked.releases == 0
         sender, args = retained
         assert args.key == 'first' and sender['first'] is None
         dispose(mapping, token)
@@ -83,6 +106,7 @@ def run_case(generated, mode, scenario):
         else:
             assert apartment.__exit__(None, None, None) is False
         assert 'active=false' in repr(apartment)
+        assert tracked.releases == 1
         switch_models()
 
     elif scenario == 'nested':
@@ -91,12 +115,14 @@ def run_case(generated, mode, scenario):
         outer.__enter__()
         inner.__enter__()
         events = []
+        tracked = _dynwinrt_track_native(TrackedOwner())
 
         def on_changed(sender, args):
             events.append(args.key)
             inner.close()
             assert 'active=false' in repr(inner)
             blocked_close(outer.close)
+            assert tracked.releases == 0
             assert 'active=true' in repr(outer)
             assert sender[args.key] is None
 
@@ -106,17 +132,20 @@ def run_case(generated, mode, scenario):
         assert events == ['nested'], events
         dispose(mapping, token)
         outer.close()
+        assert tracked.releases == 1
         switch_models()
 
     elif scenario == 'manual':
         dw.ro_initialize(mode)
         dw.ro_initialize(mode)
         events = []
+        tracked = _dynwinrt_track_native(TrackedOwner())
 
         def on_changed(sender, args):
             events.append(args.key)
             dw.ro_uninitialize()
             blocked_close(dw.ro_uninitialize)
+            assert tracked.releases == 0
             assert sender[args.key] is None
 
         mapping = PropertySet()
@@ -125,6 +154,7 @@ def run_case(generated, mode, scenario):
         assert events == ['manual'], events
         dispose(mapping, token)
         dw.ro_uninitialize()
+        assert tracked.releases == 1
         switch_models()
 
     elif scenario == 'pending':
@@ -153,6 +183,7 @@ def run_case(generated, mode, scenario):
         token = mapping.on_map_changed(on_changed)
         mapping.insert('pending', None)
         assert events == ['pending'], events
+        callback_pending_only()
 
         wrong_thread = []
 
@@ -196,6 +227,7 @@ def run_case(generated, mode, scenario):
         mapping = PropertySet()
         token = mapping.on_map_changed(on_changed)
         mapping.insert('dropped', None)
+        callback_pending_only()
         recovered = dw.RoApartment.recover_pending()
         dispose(mapping, token)
         recovered.close()
@@ -226,6 +258,7 @@ def run_case(generated, mode, scenario):
         assert 'synchronous native callback' in str(unraisable[0].exc_value)
         unraisable.clear()
         assert 'active=false' in repr(outer)
+        callback_pending_only()
         recovered = dw.RoApartment.recover_pending()
         dispose(mapping, token)
         recovered.close()
@@ -257,11 +290,11 @@ def run_case(generated, mode, scenario):
             try:
                 dw.ro_uninitialize()
             except RuntimeError as error:
-                assert 'no matching ro_initialize()' in str(error), error
+                assert 'requires a successful ro_initialize()' in str(error), error
             else:
                 raise AssertionError('manual uninitialize consumed a RoApartment context')
         if scenario == 'foreign_manual':
-            assert 'no matching ro_initialize()' in message, message
+            assert 'requires a successful ro_initialize()' in message, message
         else:
             assert 'OS thread where RoApartment was created' in message, message
         assert 'active=true' in repr(apartment)
@@ -300,10 +333,64 @@ def run_case(generated, mode, scenario):
         assert not thread.is_alive() and not holder, holder
         mapping.insert('owner-still-active', None)
         assert events == ['owner-still-active'], events
+        callback_pending_only()
         dispose(mapping, token)
         recovered = dw.RoApartment.recover_pending()
         assert 'active=true' in repr(recovered)
         recovered.close()
+        switch_models()
+
+    elif scenario in ('cleanup_retry', 'cleanup_recover'):
+        from dynwinrt.dynwinrt import _dynwinrt_track_native, _managed_apartment_depth
+
+        class FailingOwner:
+            def __init__(self):
+                self.attempts = 0
+
+            def release(self):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError('owner release failed')
+                if scenario == 'cleanup_retry':
+                    for action in (dw.retry_pending_apartment_close, dw.RoApartment.recover_pending):
+                        try:
+                            action()
+                        except RuntimeError as error:
+                            assert 'already in progress' in str(error), error
+                        else:
+                            raise AssertionError('a reentrant pending helper double-consumed the lease')
+
+        try:
+            with dw.RoApartment(mode):
+                mapping = PropertySet()
+                dw.release_projected(mapping)
+                owner = _dynwinrt_track_native(FailingOwner())
+        except RuntimeError as error:
+            assert str(error) == 'owner release failed', error
+        else:
+            raise AssertionError('an unnamed context hid its owner-drain failure')
+        assert owner.attempts == 1 and _managed_apartment_depth() == 1
+        if scenario == 'cleanup_retry':
+            dw.retry_pending_apartment_close()
+        else:
+            recovered = dw.RoApartment.recover_pending()
+            assert f'apartment_type={mode}, active=true' in repr(recovered)
+            try:
+                dw.retry_pending_apartment_close()
+            except RuntimeError as error:
+                assert 'no failed RoApartment close' in str(error), error
+            else:
+                raise AssertionError('cleanup retry consumed an already recovered lease')
+            assert _managed_apartment_depth() == 1 and owner.attempts == 1
+            recovered.close()
+        assert owner.attempts == 2 and _managed_apartment_depth() == 0
+        for action in (dw.retry_pending_apartment_close, dw.RoApartment.recover_pending):
+            try:
+                action()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('a completed apartment lease was consumed twice')
         switch_models()
 
     elif scenario == 'exception':
@@ -355,6 +442,7 @@ if __name__ == '__main__':
             'close', 'exit', 'nested', 'manual', 'pending', 'drop',
             'pending_error', 'exception', 'foreign_enter', 'foreign_close',
             'foreign_exit', 'foreign_manual', 'foreign_drop',
+            'cleanup_retry', 'cleanup_recover',
         ],
         required=True,
     )

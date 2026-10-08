@@ -18,7 +18,8 @@
         { "kind": "property_equals", "member": "query", "expected": "?q=1" },
         { "kind": "property_equals", "member": "fragment", "expected": "#frag" },
         { "kind": "property_equals", "member": "port", "expected": 443 },
-        { "kind": "method_result_contains", "member": "combine_uri", "args": ["sub/page"], "contains": "sub/page" }
+        { "kind": "method_result_contains", "member": "combine_uri", "args": ["sub/page"], "contains": "sub/page" },
+        { "kind": "unscoped_uri_apartment_exit", "member": "__init__", "langs": ["py"] }
       ]
     },
     {
@@ -396,7 +397,8 @@
       "langs": ["py"],
       "instantiate": { "kind": "none" },
       "checks": [
-        { "kind": "work_item_callback_passthrough", "member": "run_async" }
+        { "kind": "work_item_callback_passthrough", "member": "run_async" },
+        { "kind": "threadpool_async_apartment_owner", "member": "run_async" }
       ]
     },
     {
@@ -622,6 +624,11 @@
         {
           "kind": "device_information_async_collection",
           "member": "find_all_async"
+        },
+        {
+          "kind": "nonagile_async_apartment_exit",
+          "member": "find_all_async",
+          "langs": ["py"]
         },
         {
           "kind": "object_value_device_properties",

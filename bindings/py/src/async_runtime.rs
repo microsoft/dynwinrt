@@ -4,11 +4,17 @@
 use std::cell::Cell;
 use std::future::IntoFuture;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, ThreadId};
 
 use crate::errors::{
     map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
 };
-use crate::runtime::{DynWinRTValue, NativeCallbackGuard};
+use crate::runtime::{
+    DynWinRTValue, callback_native_argument, current_native_owner_thread,
+    ensure_native_owner_thread, ensure_python_callbacks_open, log_unsafe_native_owner_drop,
+    must_quarantine_owner, native_value_is_agile, track_native_owner, tracked_native_value,
+    with_python_callback,
+};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
@@ -18,6 +24,7 @@ use windows::Win32::System::Com::{
     CoGetApartmentType,
 };
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
+use windows::core::Interface;
 
 thread_local! {
     static TOKIO_RO_INITIALIZED: Cell<bool> = const { Cell::new(false) };
@@ -176,6 +183,17 @@ impl CoroutineProtocol {
         Self {
             state: Mutex::new(CoroutineExecutionState::New),
         }
+    }
+
+    fn can_drop_on_foreign_thread(&self) -> bool {
+        self.state.try_lock().is_ok_and(|state| {
+            matches!(
+                &*state,
+                CoroutineExecutionState::New
+                    | CoroutineExecutionState::Finished
+                    | CoroutineExecutionState::Closed
+            )
+        })
     }
 
     fn lock_state(&self) -> PyResult<MutexGuard<'_, CoroutineExecutionState>> {
@@ -458,6 +476,7 @@ struct AsyncOperation {
 
 struct ProgressDispatcher {
     event_loop: Py<PyAny>,
+    owner_thread: ThreadId,
     // Loop handles retain this list, which is cleared to release captures and disable queued work.
     dispatch_state: Py<PyAny>,
     dispatch_progress: Py<PyAny>,
@@ -474,7 +493,19 @@ impl ProgressDispatcher {
             return Ok(());
         }
 
-        let raw = Py::new(py, DynWinRTValue::new(value))?;
+        if thread::current().id() != self.owner_thread
+            && value.contains_com_references()
+            && !native_value_is_agile(&value)?
+        {
+            return Err(PyRuntimeError::new_err(
+                "non-agile WinRT progress arguments cannot cross an apartment thread",
+            ));
+        }
+        let raw = if thread::current().id() == self.owner_thread {
+            callback_native_argument(py, value)?
+        } else {
+            Py::new(py, DynWinRTValue::new(value))?
+        };
         let context = self.callback_context.call_method0(py, "copy")?;
         let context_run = context.getattr(py, "run")?;
         self.event_loop.call_method1(
@@ -506,6 +537,16 @@ impl AsyncOperation {
         self.state
             .lock()
             .map_err(|_| PyRuntimeError::new_err("async operation state lock was poisoned"))
+    }
+
+    fn can_drop_on_foreign_thread(&self) -> bool {
+        self.state
+            .try_lock()
+            .is_ok_and(|state| matches!(&*state, ExecutionState::Idle))
+            && self
+                .progress_dispatcher
+                .try_lock()
+                .is_ok_and(|dispatcher| dispatcher.is_none())
     }
 
     fn stop(&self, py: Python<'_>) -> PyResult<()> {
@@ -568,7 +609,50 @@ impl AsyncOperation {
         }
     }
 
+    fn ensure_apartment_release_safe(&self, py: Python<'_>) -> PyResult<()> {
+        let future = {
+            let state = self.lock_state()?;
+            match &*state {
+                ExecutionState::Blocking => {
+                    return Err(PyRuntimeError::new_err(
+                        "cannot close the COM apartment while wait() is running; retry on the owner thread",
+                    ));
+                }
+                ExecutionState::Future(future) => Some(future.clone_ref(py)),
+                ExecutionState::Idle => None,
+            }
+        };
+        if let Some(future) = &future
+            && !future.call_method0(py, "done")?.extract::<bool>(py)?
+        {
+            return Err(PyRuntimeError::new_err(
+                "cannot close the COM apartment while a WinRT async future is pending; await or explicitly cancel it, then retry on the owner thread",
+            ));
+        }
+        let dynwinrt::WinRTValue::Async(info) = &self.value else {
+            return Err(PyRuntimeError::new_err(
+                "cannot close the COM apartment: the async owner has no native operation",
+            ));
+        };
+        let started = info.is_started().map_err(map_dynwinrt_error)?;
+        if started {
+            let agile = info.info.cast::<windows::core::imp::IAgileObject>().is_ok();
+            if !agile {
+                return Err(PyRuntimeError::new_err(
+                    "cannot close the COM apartment while a non-agile WinRT async reference may outlive it; release it on this thread or retry after completion",
+                ));
+            }
+            if started && self.lock_progress_dispatcher()?.is_some() {
+                return Err(PyRuntimeError::new_err(
+                    "cannot close the COM apartment while a WinRT progress callback is pending; settle the operation and retry on the owner thread",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn future<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        ensure_python_callbacks_open()?;
         let mut state = self.lock_state()?;
         match &*state {
             ExecutionState::Future(future) => return Ok(future.clone_ref(py).into_bound(py)),
@@ -580,13 +664,38 @@ impl AsyncOperation {
             ExecutionState::Idle => {}
         }
 
-        let value = self.value.clone();
-        let winrt_future = value.into_future().defer_get_results().cancel_on_drop();
-        let raw_future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = winrt_future.await;
-            let result = result.map_err(map_dynwinrt_error)?;
-            Ok(DynWinRTValue::new(result))
-        })?;
+        let agile = matches!(
+            &self.value,
+            dynwinrt::WinRTValue::Async(info)
+                if info.info.cast::<windows::core::imp::IAgileObject>().is_ok()
+        );
+        let (raw_future, cancellation_owner) = if agile {
+            let value = self.value.clone();
+            let winrt_future = value.into_future().defer_get_results().cancel_on_drop();
+            let raw_future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                let result = winrt_future.await;
+                let result = result.map_err(map_dynwinrt_error)?;
+                Ok(DynWinRTValue::new(result))
+            })?;
+            (raw_future, None)
+        } else {
+            let loop_ = py.import("asyncio")?.call_method0("get_running_loop")?;
+            let raw_future = loop_.call_method0("create_future")?;
+            let native = tracked_native_value(py, self.value.clone())?;
+            let poll = py
+                .import("dynwinrt.dynwinrt")?
+                .getattr("_dynwinrt_poll_nonagile_async")?;
+            loop_.call_method1(
+                "call_soon",
+                (
+                    poll,
+                    loop_.clone(),
+                    raw_future.clone(),
+                    native.clone_ref(py),
+                ),
+            )?;
+            (raw_future, Some(native))
+        };
 
         let converter = self.converter.clone_ref(py);
         let convert_future = py
@@ -599,7 +708,7 @@ impl AsyncOperation {
             .call_method1("create_task", (coroutine,))?;
         py.import("dynwinrt.dynwinrt")?
             .getattr("_dynwinrt_link_cancellation")?
-            .call1((future.clone(), raw_future))?;
+            .call1((future.clone(), raw_future, cancellation_owner))?;
         let future = future.unbind();
         let result = future.clone_ref(py).into_bound(py);
         *state = ExecutionState::Future(future);
@@ -632,7 +741,7 @@ impl AsyncOperation {
             *state = ExecutionState::Idle;
         }
 
-        let raw = Py::new(py, DynWinRTValue::new(result?))?;
+        let raw = tracked_native_value(py, result?)?;
         self.converter.call1(py, (raw,))
     }
 
@@ -664,10 +773,31 @@ pub(crate) fn finish_progress_registration(
     }
 }
 
-#[pyclass(name = "_DynWinRTAsync")]
+#[pyclass(name = "_DynWinRTAsync", weakref)]
 pub struct DynWinRTAsync {
     operation: Option<Arc<AsyncOperation>>,
     coroutine: CoroutineProtocol,
+    owner_thread: Option<ThreadId>,
+    release_any_thread: bool,
+}
+
+impl Drop for DynWinRTAsync {
+    fn drop(&mut self) {
+        let safe_foreign = self.release_any_thread
+            && self.coroutine.can_drop_on_foreign_thread()
+            && self
+                .operation
+                .as_ref()
+                .is_none_or(|operation| operation.can_drop_on_foreign_thread());
+        if must_quarantine_owner(self.owner_thread, safe_foreign) {
+            std::mem::forget(self.operation.take());
+            std::mem::forget(std::mem::replace(
+                &mut self.coroutine,
+                CoroutineProtocol::new(),
+            ));
+            log_unsafe_native_owner_drop();
+        }
+    }
 }
 
 impl DynWinRTAsync {
@@ -676,16 +806,42 @@ impl DynWinRTAsync {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("the WinRT async operation has been released"))
     }
+
+    fn release_apartment_owner(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsync")?;
+            operation.ensure_apartment_release_safe(py)?;
+        }
+        drop(self.operation.take());
+        Ok(())
+    }
 }
 
 #[pymethods]
 impl DynWinRTAsync {
     #[new]
-    fn new(value: &DynWinRTValue, result_converter: Py<PyAny>) -> PyResult<Self> {
-        Ok(Self {
-            operation: Some(Arc::new(AsyncOperation::new(value, result_converter)?)),
-            coroutine: CoroutineProtocol::new(),
-        })
+    fn new(
+        py: Python<'_>,
+        value: &DynWinRTValue,
+        result_converter: Py<PyAny>,
+    ) -> PyResult<Py<Self>> {
+        let operation = Arc::new(AsyncOperation::new(value, result_converter)?);
+        let release_any_thread = matches!(
+            &operation.value,
+            dynwinrt::WinRTValue::Async(info)
+                if info.info.cast::<windows::core::imp::IAgileObject>().is_ok()
+        );
+        let output = Py::new(
+            py,
+            Self {
+                operation: Some(operation),
+                coroutine: CoroutineProtocol::new(),
+                owner_thread: current_native_owner_thread(true),
+                release_any_thread,
+            },
+        )?;
+        track_native_owner(py, output.clone_ref(py).into_any())?;
+        Ok(output)
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -725,6 +881,7 @@ impl DynWinRTAsync {
     }
 
     fn release(&mut self, py: Python<'_>) -> PyResult<()> {
+        ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsync")?;
         if let Some(operation) = &self.operation {
             operation.stop(py)?;
         }
@@ -732,16 +889,50 @@ impl DynWinRTAsync {
         Ok(())
     }
 
+    fn _check_apartment_release(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsync")?;
+            operation.ensure_apartment_release_safe(py)?;
+        }
+        Ok(())
+    }
+
+    fn _release_apartment_owner(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.release_apartment_owner(py)
+    }
+
     fn __repr__(&self) -> &'static str {
         "_DynWinRTAsync(...)"
     }
 }
 
-#[pyclass(name = "_DynWinRTAsyncWithProgress")]
+#[pyclass(name = "_DynWinRTAsyncWithProgress", weakref)]
 pub struct DynWinRTAsyncWithProgress {
     operation: Option<Arc<AsyncOperation>>,
     coroutine: CoroutineProtocol,
-    progress_converter: Py<PyAny>,
+    progress_converter: Option<Py<PyAny>>,
+    owner_thread: Option<ThreadId>,
+    release_any_thread: bool,
+}
+
+impl Drop for DynWinRTAsyncWithProgress {
+    fn drop(&mut self) {
+        let safe_foreign = self.release_any_thread
+            && self.coroutine.can_drop_on_foreign_thread()
+            && self
+                .operation
+                .as_ref()
+                .is_none_or(|operation| operation.can_drop_on_foreign_thread());
+        if must_quarantine_owner(self.owner_thread, safe_foreign) {
+            std::mem::forget(self.operation.take());
+            std::mem::forget(self.progress_converter.take());
+            std::mem::forget(std::mem::replace(
+                &mut self.coroutine,
+                CoroutineProtocol::new(),
+            ));
+            log_unsafe_native_owner_drop();
+        }
+    }
 }
 
 impl DynWinRTAsyncWithProgress {
@@ -750,16 +941,26 @@ impl DynWinRTAsyncWithProgress {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("the WinRT async operation has been released"))
     }
+
+    fn release_apartment_owner(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsyncWithProgress")?;
+            operation.ensure_apartment_release_safe(py)?;
+        }
+        drop(self.operation.take());
+        Ok(())
+    }
 }
 
 #[pymethods]
 impl DynWinRTAsyncWithProgress {
     #[new]
     fn new(
+        py: Python<'_>,
         value: &DynWinRTValue,
         result_converter: Py<PyAny>,
         progress_converter: Py<PyAny>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<Py<Self>> {
         let operation = Arc::new(AsyncOperation::new(value, result_converter)?);
         let has_progress = match &operation.value {
             dynwinrt::WinRTValue::Async(info) => info.progress_type().is_some(),
@@ -770,11 +971,23 @@ impl DynWinRTAsyncWithProgress {
                 "value is not a WinRT async operation with progress",
             ));
         }
-        Ok(Self {
-            operation: Some(operation),
-            coroutine: CoroutineProtocol::new(),
-            progress_converter,
-        })
+        let release_any_thread = matches!(
+            &operation.value,
+            dynwinrt::WinRTValue::Async(info)
+                if info.info.cast::<windows::core::imp::IAgileObject>().is_ok()
+        );
+        let output = Py::new(
+            py,
+            Self {
+                operation: Some(operation),
+                coroutine: CoroutineProtocol::new(),
+                progress_converter: Some(progress_converter),
+                owner_thread: current_native_owner_thread(true),
+                release_any_thread,
+            },
+        )?;
+        track_native_owner(py, output.clone_ref(py).into_any())?;
+        Ok(output)
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -814,6 +1027,7 @@ impl DynWinRTAsyncWithProgress {
     }
 
     fn release(&mut self, py: Python<'_>) -> PyResult<()> {
+        ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsyncWithProgress")?;
         if let Some(operation) = &self.operation {
             operation.stop(py)?;
         }
@@ -821,7 +1035,20 @@ impl DynWinRTAsyncWithProgress {
         Ok(())
     }
 
+    fn _check_apartment_release(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            ensure_native_owner_thread(self.owner_thread, false, "_DynWinRTAsyncWithProgress")?;
+            operation.ensure_apartment_release_safe(py)?;
+        }
+        Ok(())
+    }
+
+    fn _release_apartment_owner(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.release_apartment_owner(py)
+    }
+
     fn progress(&self, py: Python<'_>, callback: Py<PyAny>) -> PyResult<()> {
+        ensure_python_callbacks_open()?;
         let loop_ = py
             .import("asyncio")?
             .call_method0("get_running_loop")
@@ -853,9 +1080,21 @@ impl DynWinRTAsyncWithProgress {
         })?;
         let dispatcher = Arc::new(ProgressDispatcher {
             event_loop: loop_,
-            dispatch_state: PyList::new(py, [callback, self.progress_converter.clone_ref(py)])?
-                .into_any()
-                .unbind(),
+            owner_thread: std::thread::current().id(),
+            dispatch_state: PyList::new(
+                py,
+                [
+                    callback,
+                    self.progress_converter
+                        .as_ref()
+                        .ok_or_else(|| {
+                            PyRuntimeError::new_err("the WinRT async operation has been released")
+                        })?
+                        .clone_ref(py),
+                ],
+            )?
+            .into_any()
+            .unbind(),
             dispatch_progress: py
                 .import("dynwinrt.dynwinrt")?
                 .getattr("_dynwinrt_dispatch_progress")?
@@ -870,8 +1109,7 @@ impl DynWinRTAsyncWithProgress {
         let weak_dispatcher = Arc::downgrade(&dispatcher);
 
         let progress_callback: dynwinrt::ProgressCallback = Box::new(move |value| {
-            let _callback_guard = NativeCallbackGuard::enter();
-            Python::attach(|py| {
+            let _ = with_python_callback(|py| {
                 let Some(dispatcher) = weak_dispatcher.upgrade() else {
                     return;
                 };
@@ -968,5 +1206,61 @@ mod tests {
         ] {
             assert!(ensure_progress_type_supported(&unsupported).is_err());
         }
+    }
+
+    #[test]
+    fn real_python_finalization_quarantines_an_async_arc_without_cancelling() {
+        if std::env::var("DYNWINRT_ASYNC_FINALIZE_CHILD").as_deref() != Ok("1") {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "async_runtime::tests::real_python_finalization_quarantines_an_async_arc_without_cancelling",
+                    "--nocapture",
+                ])
+                .env("DYNWINRT_ASYNC_FINALIZE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
+            assert!(String::from_utf8_lossy(&child.stdout).contains("async-Py_FinalizeEx-safe"));
+            return;
+        }
+
+        use windows::System::Threading::{ThreadPool, WorkItemHandler};
+
+        Python::initialize();
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.unwrap();
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let native_operation = ThreadPool::RunAsync(&handler).unwrap();
+        let value = DynWinRTValue::new(dynwinrt::WinRTValue::Async(dynwinrt::AsyncInfo {
+            info: native_operation.cast().unwrap(),
+            async_type: dynwinrt::MetadataTable::new().async_action(),
+        }));
+        let converter = Python::attach(|py| {
+            py.eval(c"lambda value: value", None, None)
+                .unwrap()
+                .unbind()
+        });
+        let shared = Arc::new(AsyncOperation::new(&value, converter).unwrap());
+        let observed = Arc::downgrade(&shared);
+        let owner = DynWinRTAsync {
+            operation: Some(shared),
+            coroutine: CoroutineProtocol::new(),
+            owner_thread: Some(thread::current().id()),
+            release_any_thread: true,
+        };
+        drop((value, handler));
+        std::mem::forget(native_operation);
+
+        unsafe { pyo3::ffi::PyGILState_Ensure() };
+        assert_eq!(unsafe { pyo3::ffi::Py_FinalizeEx() }, 0);
+        assert_eq!(unsafe { pyo3::ffi::Py_IsInitialized() }, 0);
+        drop(owner);
+        assert_eq!(observed.strong_count(), 1);
+        println!("async-Py_FinalizeEx-safe");
     }
 }
