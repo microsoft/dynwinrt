@@ -554,6 +554,15 @@ each successful call, including `S_FALSE`, must be paired with one
 initializations count toward its managed apartment depth; a third-party COM
 initialization is not counted.
 
+If releasing an apartment-owned native callback runs a captured object's
+finalizer, a successful same-model `ro_initialize()` in that finalizer remains
+active after the outer close and must still be paired with `ro_uninitialize()`.
+The outer close consumes only its own initialization, not the newly acquired
+one. Manual closes and pending-close retries reserve their in-progress lease
+before owner cleanup; if cleanup fails, that lease remains retryable without
+discarding any initialization acquired during cleanup. Owners already released
+by the drain stay released.
+
 WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
 explains how to open one.

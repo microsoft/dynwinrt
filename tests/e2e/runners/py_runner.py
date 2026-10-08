@@ -3152,6 +3152,31 @@ async def run_check(
                     return cr
             cr['pass'] = True
 
+        elif kind == 'apartment_owner_reinitialization':
+            from py_apartment_owner_reinitialization import SCENARIOS
+
+            runner = os.path.join(
+                os.path.dirname(__file__), 'py_apartment_owner_reinitialization.py'
+            )
+            for mode in (dw.RO_INIT_SINGLETHREADED, dw.RO_INIT_MULTITHREADED):
+                for scenario in SCENARIOS:
+                    child = subprocess.run(
+                        [
+                            sys.executable, '-I', runner, '--generated', generated_dir,
+                            '--mode', str(mode), '--scenario', scenario,
+                        ],
+                        capture_output=True, text=True, timeout=45, check=False,
+                    )
+                    marker = f'PASS owner-reinitialization {scenario} apartment={mode}'
+                    if child.returncode or marker not in child.stdout:
+                        cr['error'] = (
+                            f'{marker}: isolated Python exited '
+                            f'{hex(child.returncode & 0xFFFFFFFF)}: '
+                            f'{child.stdout} {child.stderr}'
+                        )
+                        return cr
+            cr['pass'] = True
+
         elif kind == 'threadpool_async_apartment_owner':
             for mode, marker in (
                 ('pending', 'pending-async-retry'),

@@ -332,7 +332,7 @@ fn enter_managed_apartment(apartment_type: i32) -> PyResult<()> {
     Ok(())
 }
 
-fn leave_managed_apartment(py: Python<'_>) -> PyResult<()> {
+fn leave_managed_apartment_with_drain(drain: impl FnOnce() -> PyResult<()>) -> PyResult<()> {
     let depth = managed_apartment_depth();
     if depth == 0 {
         return Err(PyRuntimeError::new_err(
@@ -340,13 +340,21 @@ fn leave_managed_apartment(py: Python<'_>) -> PyResult<()> {
         ));
     }
     if depth == 1 {
+        drain()?;
+    }
+    // Releasing an owner can run Python finalizers that successfully initialize again.
+    MANAGED_APARTMENT_DEPTH.with(|state| state.set(state.get() - 1));
+    unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+    Ok(())
+}
+
+fn leave_managed_apartment(py: Python<'_>) -> PyResult<()> {
+    leave_managed_apartment_with_drain(|| {
         py.import("dynwinrt.dynwinrt")?
             .getattr("_dynwinrt_drain_apartment_owners")?
             .call0()?;
-    }
-    MANAGED_APARTMENT_DEPTH.with(|state| state.set(depth - 1));
-    unsafe { windows::Win32::System::WinRT::RoUninitialize() };
-    Ok(())
+        Ok(())
+    })
 }
 
 /// `apartment_type` used when Python omits it: the multithreaded apartment.
@@ -503,9 +511,13 @@ pub fn ro_uninitialize(py: Python<'_>) -> PyResult<()> {
             "ro_uninitialize() requires a successful ro_initialize() on this thread",
         ));
     }
-    leave_managed_apartment(py)?;
+    // Reserve the closing manual lease so cleanup cannot consume it a second time.
     MANUAL_APARTMENT_DEPTH.with(|state| state.set(depth - 1));
-    Ok(())
+    let result = leave_managed_apartment(py);
+    if result.is_err() {
+        MANUAL_APARTMENT_DEPTH.with(|state| state.set(state.get() + 1));
+    }
+    result
 }
 
 #[pyfunction]
@@ -516,9 +528,12 @@ pub fn retry_pending_apartment_close(py: Python<'_>) -> PyResult<()> {
             "no failed RoApartment close is pending on this thread",
         ));
     }
-    leave_managed_apartment(py)?;
     PENDING_APARTMENT_CLOSES.with(|state| state.set(pending - 1));
-    Ok(())
+    let result = leave_managed_apartment(py);
+    if result.is_err() {
+        PENDING_APARTMENT_CLOSES.with(|state| state.set(state.get() + 1));
+    }
+    result
 }
 
 #[pyfunction]
@@ -4054,6 +4069,44 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn owner_drain_preserves_reentrant_initializations_and_failed_close() {
+        Python::initialize();
+        for apartment_type in [0, 1] {
+            for fail_drain in [false, true] {
+                thread::spawn(move || {
+                    assert_eq!(managed_apartment_depth(), 0);
+                    enter_managed_apartment(apartment_type).unwrap();
+                    let result = leave_managed_apartment_with_drain(|| {
+                        enter_managed_apartment(apartment_type)?;
+                        if fail_drain {
+                            Err(PyRuntimeError::new_err(
+                                "owner drain failed after initialization",
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    assert_eq!(result.is_err(), fail_drain);
+                    assert_eq!(managed_apartment_depth(), if fail_drain { 2 } else { 1 });
+                    if fail_drain {
+                        leave_managed_apartment_with_drain(|| {
+                            panic!("a non-final close must not drain owners")
+                        })
+                        .unwrap();
+                        assert_eq!(managed_apartment_depth(), 1);
+                    }
+                    leave_managed_apartment_with_drain(|| Ok(())).unwrap();
+                    assert_eq!(managed_apartment_depth(), 0);
+                    unsafe { RoInitialize(ro_init_type(1 - apartment_type)) }.unwrap();
+                    unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+                })
+                .join()
+                .unwrap();
+            }
+        }
     }
 
     #[test]
