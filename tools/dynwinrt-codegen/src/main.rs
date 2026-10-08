@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod python_output_paths;
 mod win32_census;
 mod win32_output;
 
@@ -536,6 +537,7 @@ fn run() -> Result<(), String> {
                 remove_all_generated_python_stubs(output_dir)?;
             }
 
+            let mut python_namespace_summary = None;
             if let Some(ref cls_arg) = class_name {
                 let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
 
@@ -967,6 +969,7 @@ fn run() -> Result<(), String> {
                 let (_, _, _, shared_interfaces) = generate_for_types(
                     &winmd,
                     output_dir,
+                    final_output_dir,
                     classes.clone(),
                     implicit_interfaces.clone(),
                     Vec::new(),
@@ -1122,6 +1125,7 @@ fn run() -> Result<(), String> {
                     generate_for_types(
                         &winmd,
                         output_dir,
+                        final_output_dir,
                         selected_classes,
                         selected_interfaces,
                         selected_enums,
@@ -1217,6 +1221,8 @@ fn run() -> Result<(), String> {
                         "Done. {} class(es) + {} interface(s) + {} enum(s) validated (dry run)",
                         total_classes, total_interfaces, total_enums,
                     );
+                } else if lang == "py" {
+                    python_namespace_summary = Some((total_classes, total_interfaces, total_enums));
                 } else {
                     println!(
                         "Done. {} class(es) + {} interface(s) + {} enum(s) generated in {}",
@@ -1230,10 +1236,17 @@ fn run() -> Result<(), String> {
 
             if lang == "py" && !dry_run {
                 write_python_package_manifest(output_dir, final_output_dir)?;
-                write_python_generated_inventory(output_dir, pyi)?;
+                let files = write_python_generated_inventory(output_dir, pyi)?;
+                python_output_paths::warn(final_output_dir, &files)?;
             }
             if let Some(transaction) = output_transaction.take() {
                 transaction.commit()?;
+            }
+            if let Some((classes, interfaces, enums)) = python_namespace_summary {
+                println!(
+                    "Done. {classes} class(es) + {interfaces} interface(s) + {enums} enum(s) generated in {}",
+                    final_output_dir.display()
+                );
             }
         }
     }
@@ -1245,6 +1258,7 @@ fn run() -> Result<(), String> {
 fn generate_for_types(
     winmd: &str,
     output_dir: &Path,
+    final_output_dir: &Path,
     classes: Vec<meta::ClassMeta>,
     interfaces: Vec<meta::InterfaceMeta>,
     enums: Vec<TypeMeta>,
@@ -1509,6 +1523,27 @@ fn generate_for_types(
     } else {
         None
     };
+    if dry_run && let Some(context) = python_context.as_ref() {
+        let mut struct_interfaces = emittable_interfaces.clone();
+        struct_interfaces.extend_from_slice(&shared_interfaces);
+        let mut implementations =
+            python_type_identities(&all_classes, &struct_interfaces, &all_enums);
+        let mut public_types =
+            python_type_identities(&all_classes, &emittable_interfaces, &all_enums);
+        implementations
+            .retain(|identity| !python_type_shadowed_by_class(identity, &class_identities_all));
+        public_types
+            .retain(|identity| !python_type_shadowed_by_class(identity, &class_identities_all));
+        python_output_paths::warn(
+            final_output_dir,
+            &python_output_paths::dry_run_source_files(
+                context,
+                &implementations,
+                &public_types,
+                pyi,
+            ),
+        )?;
+    }
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
         if let Some(context) = javascript_context.as_ref() {
             project::build_delegate_signatures(
@@ -6902,7 +6937,7 @@ fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_python_generated_inventory(output_dir: &Path, pyi: bool) -> Result<(), String> {
+fn write_python_generated_inventory(output_dir: &Path, pyi: bool) -> Result<Vec<PathBuf>, String> {
     let files = collect_generated_python_files(output_dir, true, pyi)?;
     let content = files
         .iter()
@@ -6912,7 +6947,8 @@ fn write_python_generated_inventory(output_dir: &Path, pyi: bool) -> Result<(), 
     write_file(
         &output_dir.join(PYTHON_GENERATED_INVENTORY),
         &format!("{content}\n"),
-    )
+    )?;
+    Ok(files)
 }
 
 fn collect_generated_python_files(
@@ -10610,9 +10646,11 @@ mod tests {
             ..Default::default()
         };
 
+        let output_dir = test_directory("python-struct-symbol-collision");
         let error = generate_for_types(
             "",
-            &test_directory("python-struct-symbol-collision"),
+            &output_dir,
+            &output_dir,
             vec![class],
             Vec::new(),
             Vec::new(),
