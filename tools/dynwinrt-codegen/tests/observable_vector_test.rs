@@ -117,10 +117,16 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
     assert!(py.contains(
         "class IObservableVector_Object(_dynwinrt_symbol('i_vector_object', 'IVector_Object')):"
     ));
-    assert!(
-        py.contains("_dynwinrt_symbol('i_vector_object', 'IVector_Object')._set_native(self, obj)")
-    );
-    assert!(py.contains("self._observable_obj = obj.cast(IID_IObservableVector_Object)"));
+    let observable_cast = py
+        .find("_observable_obj = obj.cast(IID_IObservableVector_Object)")
+        .expect("observable IID validation");
+    let companion = py
+        .find("_dynwinrt_symbol('i_vector_object', 'IVector_Object')._set_native(self, obj)")
+        .expect("mutable vector companion");
+    let saved = py
+        .find("self._observable_obj = _observable_obj")
+        .expect("validated observable pointer");
+    assert!(observable_cast < companion && companion < saved, "{py}");
     let create_signature = "def create(items: Iterable[DynWinRTValue | _DynWinRTObject | None]) -> 'IObservableVector_Object':";
     assert!(py.contains(create_signature), "{py}");
     assert!(

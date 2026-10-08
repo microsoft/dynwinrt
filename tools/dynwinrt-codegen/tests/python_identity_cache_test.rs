@@ -174,6 +174,10 @@ fn interface_generation_uses_projected_identity_cache() {
         py.contains("return cls._from_native(obj.cast(IID_IWidget))"),
         "from_value should reuse the cached wrapper path:\n{py}"
     );
+    assert!(
+        py.contains("self._obj = obj.cast(IID_IWidget)") && py.contains("release_redundant=False"),
+        "direct interface projection must validate IID without consuming its source:\n{py}"
+    );
     let pyi = common::generate_interface_stub(
         &iface,
         &HashSet::from(["IWidget".to_string()]),
@@ -235,6 +239,11 @@ fn embedded_interface_projection_preserves_subclasses_and_qi_helpers() {
     );
     assert!(
         inline.contains("return cls._from_native(obj.cast(IID_IExtra))"),
+        "{inline}"
+    );
+    assert!(
+        inline.contains("self._obj = obj.cast(IID_IExtra)")
+            && inline.contains("release_redundant=False"),
         "{inline}"
     );
     assert!(

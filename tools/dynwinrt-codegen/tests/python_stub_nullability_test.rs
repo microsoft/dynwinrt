@@ -443,19 +443,20 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
         "def lookup(self, key: str) -> NamedResource | None: ...",
     );
 
-    // Mutable collection elements, item positions and element-reading
-    // members keep None for the same reason.
+    // The stock JSON runtime classes have a validated non-null element
+    // contract; a generic collection interface can still expose native null.
     assert_contains(
         &array,
-        "class JsonArray(_JsonArrayIdentity, MutableSequence[IJsonValue | None], _DynWinRTRuntimeClass):",
+        "class JsonArray(_JsonArrayIdentity, MutableSequence['IJsonValue'], _DynWinRTRuntimeClass):",
+    );
+    assert_contains(&array, "def get_at(self, index: int) -> 'IJsonValue': ...");
+    assert_contains(
+        &array,
+        "def __getitem__(self, index: int) -> 'IJsonValue': ...",
     );
     assert_contains(
         &array,
-        "def get_at(self, index: int) -> IJsonValue | None: ...",
-    );
-    assert_contains(
-        &array,
-        "def __getitem__(self, index: int) -> IJsonValue | None: ...",
+        "class IVector_IJsonValue(MutableSequence[IJsonValue | None]):",
     );
     assert_contains(
         &array,
@@ -463,12 +464,13 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
     );
     assert_contains(
         &object,
-        "class JsonObject(_JsonObjectIdentity, MutableMapping[str, IJsonValue | None], _DynWinRTRuntimeClass):",
+        "class JsonObject(_JsonObjectIdentity, MutableMapping[str, 'IJsonValue'], _DynWinRTRuntimeClass):",
     );
     assert_contains(
         &object,
-        "def lookup(self, key: str) -> IJsonValue | None: ...",
+        "class IMap_String_IJsonValue(MutableMapping[str, IJsonValue | None]):",
     );
+    assert_contains(&object, "def lookup(self, key: str) -> 'IJsonValue': ...");
     assert_contains(
         &object,
         "def get_named_array(self, name: str) -> JsonArray: ...",

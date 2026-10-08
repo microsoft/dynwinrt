@@ -123,6 +123,9 @@ fn collection_input_roles(
     definition: &str,
     member: &str,
 ) -> Vec<(usize, CollectionInputRole)> {
+    if (namespace, definition, member) == ("Windows.Data.Json", "IJsonObject", "SetNamedValue") {
+        return vec![(1, CollectionInputRole::Value)];
+    }
     if namespace != WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE {
         return Vec::new();
     }

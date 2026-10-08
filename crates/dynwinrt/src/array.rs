@@ -164,6 +164,67 @@ impl ArrayData {
         }
     }
 
+    /// Validate a Python-facing WinRT array before taking independent
+    /// ownership of its elements. Nested arrays have no supported element ABI.
+    pub fn try_from_values(
+        element_type: TypeHandle,
+        values: &[WinRTValue],
+    ) -> windows_core::Result<Self> {
+        if matches!(
+            element_type.kind(),
+            TypeKind::Array(_)
+                | TypeKind::ArrayOfIUnknown
+                | TypeKind::Generic { .. }
+                | TypeKind::OutValue(_)
+        ) {
+            return Err(windows_core::Error::new(
+                windows_core::HRESULT(0x80070057u32 as i32),
+                "nested WinRT arrays or ABI-only element types have no supported array element contract",
+            ));
+        }
+        for (index, value) in values.iter().enumerate() {
+            if matches!(
+                value,
+                WinRTValue::Array(_)
+                    | WinRTValue::ArrayOfIUnknown(_)
+                    | WinRTValue::RawPtr(_)
+                    | WinRTValue::OutValue(..)
+            ) {
+                return Err(windows_core::Error::new(
+                    windows_core::HRESULT(0x80070057u32 as i32),
+                    &format!(
+                        "Array element {index}: nested WinRT arrays or raw ABI values are unsupported"
+                    ),
+                ));
+            }
+            crate::native_call::validate_array_element(&element_type, value, index)?;
+        }
+        let mut prepared = Vec::with_capacity(values.len());
+        for (index, value) in values.iter().enumerate() {
+            let coerced =
+                crate::native_call::coerce_input_object(&element_type, value).map_err(|error| {
+                    windows_core::Error::new(
+                        error.code(),
+                        &format!("Array element {index}: {}", error.message()),
+                    )
+                })?;
+            prepared.push(coerced.unwrap_or_else(|| value.clone()));
+        }
+        Ok(Self::from_owned_values(element_type, prepared))
+    }
+
+    /// Inspect the owned values as well as the declared element type: internal
+    /// arrays may carry a mismatched payload even if metadata claims a scalar.
+    pub fn contains_com_references(&self) -> bool {
+        self.element_type.contains_com_references()
+            || match &self.buffer {
+                ArrayBuffer::Values(values) => {
+                    values.iter().any(WinRTValue::contains_com_references)
+                }
+                ArrayBuffer::CoTaskMem { .. } => false,
+            }
+    }
+
     pub(crate) fn from_owned_values(element_type: TypeHandle, values: Vec<WinRTValue>) -> Self {
         Self {
             element_type,
@@ -616,6 +677,132 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;
+    use crate::{
+        MethodSignature, WinRtImplementation, WinRtImplementationPlan, WinRtInterfaceDefinition,
+        WinRtMethodDefinition, WinRtThreadingPolicy,
+    };
+    use std::sync::Arc;
+    use windows::Foundation::IStringable;
+
+    fn stringable_owner(table: &Arc<MetadataTable>) -> windows_core::Result<WinRtImplementation> {
+        let signature = MethodSignature::new(table).add_out(table.hstring());
+        let plan = WinRtImplementationPlan::new(
+            vec![WinRtInterfaceDefinition {
+                name: "Windows.Foundation.IStringable".into(),
+                interface_type: table.interface(IStringable::IID),
+                required_iids: vec![],
+                methods: vec![WinRtMethodDefinition {
+                    name: "ToString".into(),
+                    vtable_index: 6,
+                    signature,
+                }],
+            }],
+            WinRtThreadingPolicy::OwnerThread,
+        )?;
+        WinRtImplementation::new(
+            plan,
+            Arc::new(|_, _, _| Ok(vec![WinRTValue::HString("array".into())])),
+            Some("DynWinRt.Tests.Array"),
+        )
+    }
+
+    #[test]
+    fn checked_elements_reject_mismatched_and_nested_payloads_before_ownership()
+    -> windows_core::Result<()> {
+        let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
+        let wrong = ArrayData::try_from_values(table.i32_type(), &[source.clone()])
+            .expect_err("COM input cannot be stored as I32");
+        assert_eq!(wrong.code().0, 0x80070057u32 as i32);
+        assert!(wrong.message().contains("Array element 0"));
+
+        let inner = WinRTValue::Array(ArrayData::from_values(
+            table.object(),
+            std::slice::from_ref(&source),
+        ));
+        for (element, values) in [
+            (table.array(&table.object()), vec![]),
+            (table.array(&table.object()), vec![inner.clone()]),
+            (table.i32_type(), vec![inner]),
+        ] {
+            let error = ArrayData::try_from_values(element, &values)
+                .expect_err("nested arrays have no WinRT element ABI");
+            assert_eq!(error.code().0, 0x80070057u32 as i32);
+            assert!(error.message().contains("nested WinRT arrays"));
+        }
+        assert!(
+            ArrayData::try_from_values(
+                table.object(),
+                &[WinRTValue::RawPtr(1usize as *mut c_void)]
+            )
+            .is_err()
+        );
+        assert!(source.as_object().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn checked_elements_preserve_typed_qi_null_enum_char16_and_structs() -> windows_core::Result<()>
+    {
+        let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
+        let expected: IStringable = source.as_object().unwrap().cast()?;
+        assert_ne!(source.as_object().unwrap().as_raw(), expected.as_raw());
+
+        let typed = ArrayData::try_from_values(
+            table.interface(IStringable::IID),
+            &[source.clone(), WinRTValue::Null],
+        )?;
+        assert_eq!(typed.len(), 2);
+        assert_eq!(
+            typed.get(0).as_object().unwrap().as_raw(),
+            expected.as_raw()
+        );
+        assert!(typed.get(1).is_null_object());
+        assert!(typed.contains_com_references());
+
+        let signed = table.enum_type("Tests.ArrayEnum", vec![("One".to_string(), 1)]);
+        let enumeration = ArrayData::try_from_values(signed, &[WinRTValue::I32(1)])?;
+        assert_eq!(enumeration.get(0).as_i32(), Some(1));
+        let char16 =
+            ArrayData::try_from_values(table.char16_type(), &[WinRTValue::U16('x' as u16)])?;
+        assert_eq!(char16.get(0).as_i32(), Some('x' as i32));
+        let hresult = ArrayData::try_from_values(table.hresult(), &[WinRTValue::I32(-1)])?;
+        assert_eq!(hresult.get_i32(0).unwrap(), -1);
+
+        let struct_type = table.struct_type("Tests.ArrayObjectField", &[table.object()]);
+        let mut struct_value = struct_type.default_value();
+        struct_value
+            .set_field_object(0, source.as_object().as_ref())
+            .expect("matching Object field");
+        let structs = ArrayData::try_from_values(struct_type, &[WinRTValue::Struct(struct_value)])?;
+        assert!(structs.contains_com_references());
+        Ok(())
+    }
+
+    #[test]
+    fn actual_payloads_keep_mislabeled_arrays_visible_to_scope_tracking() -> windows_core::Result<()>
+    {
+        let table = MetadataTable::new();
+        let owner = stringable_owner(&table)?;
+        let source = owner.to_value()?;
+        let mislabeled = ArrayData::from_values(table.i32_type(), &[source.clone()]);
+        assert!(mislabeled.contains_com_references());
+        assert!(WinRTValue::Array(mislabeled).contains_com_references());
+
+        let inner = WinRTValue::Array(ArrayData::from_values(table.object(), &[source]));
+        let nested = ArrayData::from_values(table.i32_type(), &[inner]);
+        assert!(nested.contains_com_references());
+        assert!(WinRTValue::Array(nested).contains_com_references());
+        assert!(!ArrayData::empty(table.i32_type()).contains_com_references());
+        assert!(
+            ArrayData::empty(table.array(&table.object())).contains_com_references(),
+            "CoTaskMem-backed arrays still rely on their declared ABI layout"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_null_com_element_returns_null_variant() {

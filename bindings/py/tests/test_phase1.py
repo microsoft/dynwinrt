@@ -55,6 +55,7 @@ from dynwinrt.dynwinrt import (
     _DynWinRTAsyncWithProgress,
     _dynwinrt_cache_projected,
     _dynwinrt_dispatch_progress,
+    _dynwinrt_link_cancellation,
     _dynwinrt_datetime_to_ticks,
     _dynwinrt_new_vector,
     _dynwinrt_projected_from_native,
@@ -456,6 +457,34 @@ def test_release_before_task_start_preserves_cancellation(tmp_path):
             await task
 
     asyncio.run(run_operation())
+
+
+def test_nonagile_cancellation_bridge_calls_native_on_the_event_loop_thread():
+    owner_thread = threading.get_ident()
+    cancellation_threads = []
+
+    class Native:
+        def is_released(self):
+            return False
+        def cancel(self):
+            cancellation_threads.append(threading.get_ident())
+
+    async def cancel_operation():
+        loop = asyncio.get_running_loop()
+        raw_future = loop.create_future()
+        async def await_raw():
+            return await raw_future
+        task = asyncio.create_task(await_raw())
+        _dynwinrt_link_cancellation(task, raw_future, Native())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert raw_future.cancelled()
+
+    asyncio.run(cancel_operation())
+    assert cancellation_threads == [owner_thread]
 
 
 def test_close_is_idempotent_and_prevents_future_execution(tmp_path):
@@ -1232,6 +1261,9 @@ def test_projected_lifetime_scope_releases_native_values_before_apartment_exit()
             _dynwinrt_track_projected(SimpleNamespace(_obj=second), "UriFactory")
             assert not first.is_null()
             assert not second.is_null()
+            assert id(first) in scope._registry
+            assert id(second) in scope._registry
+            assert not scope._native_refs
 
         assert scope.disposed
         assert first.is_null()
@@ -1239,6 +1271,43 @@ def test_projected_lifetime_scope_releases_native_values_before_apartment_exit()
 
         release_projected(SimpleNamespace(_obj=first))
         release_projected(SimpleNamespace(_obj=second))
+
+
+def test_projected_lifetime_scope_tracks_raw_native_outputs_automatically():
+    with RoApartment(1), projected_lifetime_scope() as scope:
+        factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        cast = factory.cast(WinGUID.parse(IID_IURI_FACTORY))
+        scalar = DynWinRTValue.from_u32(8080)
+        assert not factory.is_released()
+        assert not cast.is_released()
+        assert not scope._registry
+        assert id(factory) in scope._native_refs
+        assert id(cast) in scope._native_refs
+
+    assert factory.is_released()
+    assert cast.is_released()
+    assert not scope._native_refs
+    assert scalar.to_u32() == 8080
+    assert not scalar.is_released()
+    with pytest.raises(RuntimeError, match="released"):
+        cast.identity_raw()
+
+
+def test_projected_lifetime_scope_does_not_root_temporary_native_results():
+    with RoApartment(1), projected_lifetime_scope() as scope:
+        temporary = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        reference = weakref.ref(temporary)
+        assert id(temporary) in scope._native_refs
+        del temporary
+        gc.collect()
+        assert reference() is None
+        assert not scope._native_refs
+
+        retained = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        assert id(retained) in scope._native_refs
+        assert not retained.is_released()
+    assert retained.is_released()
+    assert not scope._native_refs
 
 
 def test_projected_lifetime_scope_enforces_lifo_order():

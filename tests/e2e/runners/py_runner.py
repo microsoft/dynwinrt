@@ -17,6 +17,7 @@ import importlib
 import inspect
 import json
 import re
+import subprocess
 import sys
 import os
 import threading
@@ -24,7 +25,8 @@ import threading
 
 _WINRT_UINT_SUFFIXES = {'int8', 'int16', 'int32', 'int64'}
 _RELEASED_REASON = (
-    'has been released (its projected_lifetime_scope() exited, or '
+    'has been released (its projected_lifetime_scope() or managed COM '
+    'apartment exited, or '
     'release_projected() / DynWinRTValue.release() was called) and '
     'can no longer be used.'
 )
@@ -121,6 +123,149 @@ def wrap_arg(val):
     if hasattr(val, '_obj'):
         return val._obj
     return val
+
+
+def run_isolated_apartment_check(generated_dir, package, script, marker, *args):
+    env = os.environ.copy()
+    parent = os.path.dirname(os.path.abspath(generated_dir))
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, (parent, env.get('PYTHONPATH'))))
+    env['DYNWINRT_E2E_PACKAGE_PARENT'] = parent
+    child = subprocess.run(
+        [
+            sys.executable, '-B', '-c',
+            'import os, sys\n'
+            'sys.path.insert(0, os.environ["DYNWINRT_E2E_PACKAGE_PARENT"])\n'
+            + script,
+            package, *args,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=50,
+        env=env,
+        check=False,
+    )
+    if child.returncode:
+        return (
+            f'{marker}: isolated Python exited {hex(child.returncode & 0xFFFFFFFF)}: '
+            f'{child.stdout} {child.stderr}'
+        )
+    if marker not in child.stdout:
+        return f'{marker}: isolated Python omitted its success marker: {child.stdout}'
+    return None
+
+
+_UNSCOPED_URI_APARTMENT = r"""
+import importlib
+import sys
+from dynwinrt import RoApartment
+
+Uri = importlib.import_module(f'{sys.argv[1]}.windows.foundation').Uri
+mode = sys.argv[2]
+with RoApartment(1):
+    live = Uri('https://example.com/c')
+    assert live.host == 'example.com'
+assert live._obj.is_released()
+try:
+    live.host
+except RuntimeError as error:
+    assert 'released' in str(error)
+else:
+    raise AssertionError('unscoped Uri remained callable after apartment exit')
+if mode == 'del':
+    del live
+    print('unscoped-uri-del', flush=True)
+else:
+    print('unscoped-uri-shutdown', flush=True)
+"""
+
+_NONAGILE_ASYNC_APARTMENT = r"""
+import asyncio
+import importlib
+import sys
+from dynwinrt import RoApartment
+
+DeviceInformation = importlib.import_module(
+    f'{sys.argv[1]}.windows.devices.enumeration'
+).DeviceInformation
+
+async def query():
+    with RoApartment(1):
+        operation = DeviceInformation.find_all_async()
+        devices = await operation
+        assert isinstance(devices.size, int)
+    assert devices._obj.is_released()
+    try:
+        devices.size
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('non-agile async result outlived its apartment')
+
+asyncio.run(query())
+print('nonagile-async-owner-thread', flush=True)
+"""
+
+_THREADPOOL_ASYNC_APARTMENT = r"""
+import asyncio
+import importlib
+import sys
+import threading
+from dynwinrt import RoApartment
+
+ThreadPool = importlib.import_module(f'{sys.argv[1]}.windows.system.threading').ThreadPool
+mode = sys.argv[2]
+started = threading.Event()
+release = threading.Event()
+finished = threading.Event()
+
+def work(_action):
+    started.set()
+    try:
+        assert release.wait(8), 'work item was not unblocked'
+    finally:
+        finished.set()
+
+async def pending():
+    with RoApartment(1) as apartment:
+        operation = ThreadPool.run_async(work)
+        task = asyncio.create_task(operation)
+        assert await asyncio.to_thread(started.wait, 5)
+        await asyncio.sleep(0)
+        assert not task.done()
+        try:
+            apartment.close()
+        except RuntimeError as error:
+            assert 'future is pending' in str(error)
+        else:
+            raise AssertionError('a pending async operation closed its apartment')
+        release.set()
+        await task
+        assert not task.cancelled() and finished.is_set()
+        apartment.close()
+    try:
+        operation.wait()
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('async owner outlived its apartment')
+
+if mode == 'pending':
+    asyncio.run(pending())
+    print('pending-async-retry', flush=True)
+else:
+    with RoApartment(1):
+        operation = ThreadPool.run_async(work)
+        assert started.wait(5)
+    release.set()
+    assert finished.wait(5), 'agile work was cancelled on apartment exit'
+    try:
+        operation.wait()
+    except RuntimeError as error:
+        assert 'released' in str(error)
+    else:
+        raise AssertionError('async owner outlived its apartment')
+    print('agile-pending-work', flush=True)
+"""
 
 
 async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
@@ -2995,6 +3140,42 @@ async def run_check(
                 cr['error'] = 'IAsyncInfo.Cancel was not observed by the work item'
             else:
                 cr['pass'] = True
+
+        elif kind == 'unscoped_uri_apartment_exit':
+            for mode in ('del', 'shutdown'):
+                marker = f'unscoped-uri-{mode}'
+                error = run_isolated_apartment_check(
+                    generated_dir, pkg_name, _UNSCOPED_URI_APARTMENT, marker, mode
+                )
+                if error is not None:
+                    cr['error'] = error
+                    return cr
+            cr['pass'] = True
+
+        elif kind == 'threadpool_async_apartment_owner':
+            for mode, marker in (
+                ('pending', 'pending-async-retry'),
+                ('agile', 'agile-pending-work'),
+            ):
+                error = run_isolated_apartment_check(
+                    generated_dir, pkg_name, _THREADPOOL_ASYNC_APARTMENT, marker, mode
+                )
+                if error is not None:
+                    cr['error'] = error
+                    return cr
+            cr['pass'] = True
+
+        elif kind == 'nonagile_async_apartment_exit':
+            error = run_isolated_apartment_check(
+                generated_dir,
+                pkg_name,
+                _NONAGILE_ASYNC_APARTMENT,
+                'nonagile-async-owner-thread',
+            )
+            if error is None:
+                cr['pass'] = True
+            else:
+                cr['error'] = error
 
         elif kind == 'device_information_async_collection':
             devices = await getattr(cls, member)()

@@ -55,7 +55,8 @@ IURI_FACTORY = WinGUID.parse("44a9796f-723e-4fdf-a218-033e75b0c084")
 E_NOTIMPL = -2147467263
 UTC = timezone.utc
 RELEASED_REASON = (
-    "has been released (its projected_lifetime_scope() exited, or "
+    "has been released (its projected_lifetime_scope() or managed COM "
+    "apartment exited, or "
     "release_projected() / DynWinRTValue.release() was called) and can no longer "
     "be used."
 )

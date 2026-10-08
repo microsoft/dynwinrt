@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::meta::{ClassMeta, InterfaceMeta, WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE};
+use crate::meta::{
+    ClassMeta, CollectionInputRole, InterfaceMeta, WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+};
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 pub(crate) const IITERABLE_PIID: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
@@ -13,6 +15,71 @@ pub(crate) const IMAP_PIID: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
 pub(crate) const IOBSERVABLE_MAP_PIID: &str = "65df2bf5-bf39-41b5-aebc-5a9d865e472b";
 pub(crate) const IMAP_VIEW_PIID: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
 pub(crate) const IKEY_VALUE_PAIR_PIID: &str = "02b51929-c1c4-4a7e-8940-0312b5c18500";
+
+#[derive(Clone, Copy)]
+pub(crate) struct NonNullJsonCollection {
+    pub(crate) class_name: &'static str,
+    pub(crate) class_iid: &'static str,
+}
+
+const JSON_ARRAY: NonNullJsonCollection = NonNullJsonCollection {
+    class_name: "Windows.Data.Json.JsonArray",
+    class_iid: "08c1ddb6-0cbd-4a9a-b5d3-2f852dc37e81",
+};
+const JSON_OBJECT: NonNullJsonCollection = NonNullJsonCollection {
+    class_name: "Windows.Data.Json.JsonObject",
+    class_iid: "064e24dd-29c2-4f83-9ac1-9ee11578beb3",
+};
+
+fn is_json_value(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Interface {
+            namespace,
+            name,
+            iid,
+        } if namespace == "Windows.Data.Json"
+            && name == "IJsonValue"
+            && iid.eq_ignore_ascii_case("a3219ecb-f0b3-4dcd-beee-19d48cd3ed1e")
+    )
+}
+
+pub(crate) fn non_null_json_input(
+    role: CollectionInputRole,
+    typ: &TypeMeta,
+) -> Option<NonNullJsonCollection> {
+    let element = match typ {
+        TypeMeta::Array(element) => element.as_ref(),
+        element => element,
+    };
+    if !is_json_value(element) {
+        return None;
+    }
+    match role {
+        CollectionInputRole::Element => Some(JSON_ARRAY),
+        CollectionInputRole::Value => Some(JSON_OBJECT),
+        CollectionInputRole::Key => None,
+    }
+}
+
+pub(crate) fn non_null_json_collection(
+    kind: CollectionKind,
+    args: &[TypeMeta],
+) -> Option<NonNullJsonCollection> {
+    match (kind, args) {
+        (CollectionKind::MutableSequence, [value]) if is_json_value(value) => Some(JSON_ARRAY),
+        (CollectionKind::MutableMapping, [TypeMeta::String, value]) if is_json_value(value) => {
+            Some(JSON_OBJECT)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn stock_json_class_contract(class: &ClassMeta) -> Option<NonNullJsonCollection> {
+    let iface = class_interface(class)?;
+    let contract = non_null_json_collection(interface_kind(iface)?, &iface.generic_args)?;
+    (class.full_name == contract.class_name).then_some(contract)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CollectionKind {
@@ -168,6 +235,75 @@ pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_null_contract_needs_the_exact_element_iid_and_native_class() {
+        let json_value = TypeMeta::Interface {
+            namespace: "Windows.Data.Json".into(),
+            name: "IJsonValue".into(),
+            iid: "a3219ecb-f0b3-4dcd-beee-19d48cd3ed1e".into(),
+        };
+        assert_eq!(
+            non_null_json_input(CollectionInputRole::Element, &json_value)
+                .unwrap()
+                .class_name,
+            "Windows.Data.Json.JsonArray"
+        );
+        assert_eq!(
+            non_null_json_input(
+                CollectionInputRole::Value,
+                &TypeMeta::Array(Box::new(json_value.clone()))
+            )
+            .unwrap()
+            .class_name,
+            "Windows.Data.Json.JsonObject"
+        );
+        assert!(non_null_json_input(CollectionInputRole::Key, &json_value).is_none());
+        assert!(
+            non_null_json_collection(
+                CollectionKind::MutableMapping,
+                &[TypeMeta::String, json_value.clone()]
+            )
+            .is_some()
+        );
+
+        let iface = InterfaceMeta {
+            generic_piid: Some(IVECTOR_PIID.into()),
+            generic_args: vec![json_value.clone()],
+            ..Default::default()
+        };
+        let custom = ClassMeta {
+            full_name: "Contoso.CustomJsonVector".into(),
+            default_interface: Some(iface.clone()),
+            ..Default::default()
+        };
+        assert!(stock_json_class_contract(&custom).is_none());
+        assert!(
+            stock_json_class_contract(&ClassMeta {
+                full_name: JSON_ARRAY.class_name.into(),
+                default_interface: Some(iface),
+                ..Default::default()
+            })
+            .is_some()
+        );
+
+        let TypeMeta::Interface {
+            namespace,
+            name,
+            iid: _,
+        } = json_value
+        else {
+            unreachable!()
+        };
+        let wrong_iid = TypeMeta::Interface {
+            namespace,
+            name,
+            iid: "00000000-0000-0000-0000-000000000000".into(),
+        };
+        assert!(non_null_json_input(CollectionInputRole::Element, &wrong_iid).is_none());
+        assert!(non_null_json_collection(CollectionKind::MutableSequence, &[wrong_iid]).is_none());
+        assert!(non_null_json_input(CollectionInputRole::Value, &TypeMeta::Object).is_none());
+    }
 
     #[test]
     fn map_piids_project_to_python_mapping_protocols() {
