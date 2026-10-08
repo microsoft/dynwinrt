@@ -9,6 +9,7 @@ import gc
 import importlib
 import os
 import sys
+import threading
 import traceback
 import weakref
 
@@ -17,6 +18,9 @@ SCENARIOS = (
     "close", "exit", "drop", "manual", "retry",
     "close_failure", "manual_failure", "retry_failure",
     "manual_nested_pair", "retry_nested_pair",
+    "recover", "recover_failure",
+    "foreign_retry", "foreign_retry_failure", "foreign_retry_nested_pair",
+    "foreign_recover", "foreign_recover_failure",
 )
 
 
@@ -46,7 +50,10 @@ def run_case(generated, mode, scenario):
     combase.RoUninitialize.argtypes = ()
     combase.RoUninitialize.restype = None
     manual = scenario.startswith("manual")
-    retry = scenario.startswith("retry")
+    foreign = scenario.startswith("foreign_")
+    retry = scenario.startswith("retry") or scenario.startswith("foreign_retry")
+    recover = "recover" in scenario
+    pending = retry or recover
     nested_pair = scenario.endswith("nested_pair")
     fail_after = scenario.endswith("failure")
     finalized = []
@@ -69,6 +76,10 @@ def run_case(generated, mode, scenario):
         unavailable(
             dw.retry_pending_apartment_close,
             ("no failed RoApartment close", "already in progress"),
+        )
+        unavailable(
+            dw.RoApartment.recover_pending,
+            ("no dropped RoApartment", "already in progress"),
         )
 
     class Captured:
@@ -116,7 +127,7 @@ def run_case(generated, mode, scenario):
 
         def _check_apartment_release(self):
             self.checks += 1
-            if retry and self.checks == 1:
+            if pending and self.checks == 1:
                 raise RuntimeError("initial owner drain failed")
 
         def release(self):
@@ -153,7 +164,7 @@ def run_case(generated, mode, scenario):
     else:
         apartment = dw.RoApartment(mode)
         apartment.__enter__()
-    failure = native._dynwinrt_track_native(FailingOwner()) if retry or fail_after else None
+    failure = native._dynwinrt_track_native(FailingOwner()) if pending or fail_after else None
     delegate = make_delegate()
     alias = delegate.to_value().cast(iid)
     assert alias.invoke_delegate(iid, dw.DynWinRTMethodSig(), []) == []
@@ -165,7 +176,7 @@ def run_case(generated, mode, scenario):
     gc.collect()
     assert observed[0]() is not None and not finalized and not destructor_errors
 
-    if retry:
+    if pending:
         try:
             apartment.close()
         except RuntimeError as error:
@@ -174,9 +185,21 @@ def run_case(generated, mode, scenario):
             raise AssertionError("owner-drain preflight failure was hidden")
         assert "active=true" in repr(apartment) and not alias.is_released()
         assert native._managed_apartment_depth() == 1 and not finalized
-        apartment = None
+        if foreign:
+            holder = [apartment]
+            apartment = None
+            worker = threading.Thread(target=holder.clear)
+            worker.start()
+            worker.join(5)
+            assert not worker.is_alive() and not holder, "foreign guard Drop did not complete"
+        else:
+            apartment = None
         gc.collect()
         assert failure.releases == 0, "guard Drop retried an already failed close"
+        if recover:
+            apartment = dw.RoApartment.recover_pending()
+            assert f"apartment_type={mode}, active=true" in repr(apartment)
+            check_pending_unavailable()
 
     def close():
         nonlocal apartment

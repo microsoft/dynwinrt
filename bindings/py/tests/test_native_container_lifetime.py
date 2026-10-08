@@ -1709,6 +1709,9 @@ def test_managed_apartment_drain_is_reentrant_and_unbalanced_calls_fail(script, 
         "close", "exit", "drop", "manual", "retry",
         "close_failure", "manual_failure", "retry_failure",
         "manual_nested_pair", "retry_nested_pair",
+        "recover", "recover_failure",
+        "foreign_retry", "foreign_retry_failure", "foreign_retry_nested_pair",
+        "foreign_recover", "foreign_recover_failure",
     ],
 )
 def test_owner_drain_preserves_reentrant_initialization_leases(apartment_type, scenario):

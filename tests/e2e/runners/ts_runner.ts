@@ -734,43 +734,178 @@ async function runCheck(
         cr.pass = true;
       }
     } else if (kind === "storage_query_temp_folder") {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "dynwinrt-query-"));
+      const mod = generatedRoot(generatedDir);
+      const tempDir = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(os.tmpdir(), "dynwinrt-query-")),
+      );
+      const retained = new Set<unknown>();
+      const keep = <T>(value: T | null | undefined): T => {
+        assert.ok(value != null, "Storage API returned null");
+        retained.add(value);
+        return value;
+      };
+      const names = (
+        view: { toArray(): { name: string }[] } | null | undefined,
+      ): string[] =>
+        keep(view)
+          .toArray()
+          .map((item) => keep(item).name)
+          .sort();
       try {
         fs.writeFileSync(path.join(tempDir, "alpha.txt"), "alpha");
         fs.writeFileSync(path.join(tempDir, "beta.txt"), "beta");
-        const folder = await cls.getFolderFromPathAsync(tempDir);
-        if (folder == null)
-          throw new Error("StorageFolder path lookup returned null");
-        const directView = await folder.getFilesAsync();
-        const directFiles = directView?.toArray() ?? [];
-        const query = folder.createFileQuery();
-        if (query == null) throw new Error("createFileQuery returned null");
+        const folder = keep(await cls.getFolderFromPathAsync(tempDir));
+        const directNames = names(await folder.getFilesAsync());
+        const query = keep(folder.createFileQuery());
         const count = await query.getItemCountAsync();
-        const queryView = await query.getFilesAsync();
-        const queryFiles = queryView?.toArray() ?? [];
+        const queryNames = names(await query.getFilesAsync());
         const missing = await folder.tryGetItemAsync("missing.file");
-        const alpha = await folder.getFileAsync("alpha.txt");
-        const directNames = (directFiles || [])
-          .map((file: any) => file.name)
-          .sort();
-        const queryNames = (queryFiles || [])
-          .map((file: any) => file.name)
-          .sort();
-        if (
-          JSON.stringify(directNames) !==
-            JSON.stringify(["alpha.txt", "beta.txt"]) ||
-          JSON.stringify(queryNames) !== JSON.stringify(directNames) ||
-          count !== 2 ||
-          missing != null ||
-          alpha?.name !== "alpha.txt" ||
-          !query.folder?.isEqual(folder)
-        ) {
-          cr.error = `Storage query failed: direct=${JSON.stringify(directNames)}, query=${JSON.stringify(queryNames)}, count=${count}`;
-        } else {
-          cr.pass = true;
-        }
+        const alpha = keep(await folder.getFileAsync("alpha.txt"));
+        assert.deepEqual(directNames, ["alpha.txt", "beta.txt"]);
+        assert.deepEqual(queryNames, directNames);
+        assert.equal(count, 2);
+        assert.equal(missing, null);
+        assert.equal(alpha.name, "alpha.txt");
+        assert.equal(keep(query.folder).isEqual(folder), true);
+
+        const signal = new AbortController().signal;
+        const child = keep(
+          await folder.createFolderAsyncOverloadDefaultOptions("child", signal),
+        );
+        assert.equal(
+          fs.realpathSync.native(child.path),
+          fs.realpathSync.native(path.join(tempDir, "child")),
+        );
+        assert.equal(
+          keep(await folder.getFolderAsync("child")).isEqual(child),
+          true,
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFilesAsyncOverloadDefaultOptionsStartAndCount(signal),
+          ),
+          directNames,
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFilesAsyncOverloadDefaultStartAndCount(
+              mod.CommonFileQuery.DefaultQuery,
+              signal,
+            ),
+          ),
+          directNames,
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFilesAsync(mod.CommonFileQuery.DefaultQuery, signal),
+          ),
+          directNames,
+        );
+        assert.deepEqual(names(await folder.getFoldersAsync(signal)), ["child"]);
+        assert.deepEqual(
+          names(
+            await folder.getFoldersAsyncOverloadDefaultOptionsStartAndCount(
+              signal,
+            ),
+          ),
+          ["child"],
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFoldersAsyncOverloadDefaultStartAndCount(
+              mod.CommonFolderQuery.DefaultQuery,
+              signal,
+            ),
+          ),
+          ["child"],
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFoldersAsync(
+              mod.CommonFolderQuery.DefaultQuery,
+              signal,
+            ),
+          ),
+          ["child"],
+        );
+        const itemNames = [...directNames, "child"].sort();
+        assert.deepEqual(names(await folder.getItemsAsync(signal)), itemNames);
+        assert.deepEqual(
+          names(await folder.getItemsAsyncOverloadDefaultStartAndCount(signal)),
+          itemNames,
+        );
+
+        const aliasQuery = keep(folder.createFileQueryOverloadDefault());
+        assert.equal(await aliasQuery.getItemCountAsync(signal), count);
+        assert.equal(keep(aliasQuery.folder).isEqual(folder), true);
+        assert.deepEqual(
+          names(await aliasQuery.getFilesAsyncDefaultStartAndCount(signal)),
+          directNames,
+        );
+        const first = names(await query.getFilesAsync(0, 1, signal));
+        const second = names(await query.getFilesAsync(1, 1, signal));
+        assert.equal(first.length, 1);
+        assert.equal(second.length, 1);
+        assert.deepEqual([...first, ...second].sort(), directNames);
+        assert.deepEqual(names(await query.getFilesAsync(2, 1, signal)), []);
+        assert.deepEqual(
+          names(
+            await folder.getFilesAsync(
+              mod.CommonFileQuery.DefaultQuery,
+              0,
+              2,
+              signal,
+            ),
+          ),
+          directNames,
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFilesAsync(
+              mod.CommonFileQuery.DefaultQuery,
+              2,
+              1,
+              signal,
+            ),
+          ),
+          [],
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFoldersAsync(
+              mod.CommonFolderQuery.DefaultQuery,
+              0,
+              1,
+              signal,
+            ),
+          ),
+          ["child"],
+        );
+        assert.deepEqual(
+          names(
+            await folder.getFoldersAsync(
+              mod.CommonFolderQuery.DefaultQuery,
+              1,
+              1,
+              signal,
+            ),
+          ),
+          [],
+        );
+        const aborted = new AbortController();
+        const reason = new Error("storage enumeration aborted before dispatch");
+        aborted.abort(reason);
+        await assert.rejects(
+          folder.getFilesAsyncOverloadDefaultOptionsStartAndCount(aborted.signal),
+          (error) => error === reason,
+        );
+        cr.pass = true;
       } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        try {
+          for (const value of [...retained].reverse()) mod.releaseProjected(value);
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
       }
     } else if (kind === "struct_roundtrip") {
       const structClass = check.struct_class as string;

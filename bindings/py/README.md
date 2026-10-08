@@ -550,18 +550,60 @@ with RoApartment(RO_INIT_SINGLETHREADED):
 model are supported. Requesting a conflicting model raises `OSError` with
 `RPC_E_CHANGED_MODE`. The low-level `ro_initialize()` API remains available, but
 each successful call, including `S_FALSE`, must be paired with one
-`ro_uninitialize()` call on the same thread. Only this library's successful
-initializations count toward its managed apartment depth; a third-party COM
-initialization is not counted.
+`ro_uninitialize()` call on the same thread. `ro_uninitialize()` rejects calls
+without a matching `dynwinrt.ro_initialize()` on that thread, including calls
+intended to balance an initialization made by another library. Only this
+library's successful initializations count toward its managed apartment depth.
+
+Do not close the final managed apartment from a synchronous native-to-Python
+callback (for example, a `PropertySet.map_changed` handler). `close()`,
+`__exit__()`, and `ro_uninitialize()` raise `RuntimeError` **before**
+`RoUninitialize` in that situation. A named `RoApartment` remains active; wait
+for both the callback and its outer native call to return, release any retained
+native callback values, then retry `apartment.close()` on the owner thread.
+Non-final nested initializations may still be balanced inside the callback.
+`ro_uninitialize()` cannot consume a `RoApartment` initialization.
+
+If a final `RoApartment` is dropped during a callback (including an unnamed
+`with RoApartment():` whose `__exit__` failed), its initialization stays in a
+same-thread pending lease rather than being uninitialized inside the native
+stack. After the native call returns, recover the lease explicitly:
+
+```python
+apartment = RoApartment.recover_pending()  # on the original OS thread
+# Release any remaining native PropertySet / callback references first.
+apartment.close()
+```
+
+`recover_pending()` raises if called inside a callback or if no lease is
+pending on that thread; calling it from another thread cannot consume the
+owner's lease. It does not close or release anything automatically. Retain a
+named apartment when possible so `.close()` can simply be retried. A failed
+owner cleanup is a different pending lease: use
+`retry_pending_apartment_close()` (or recover and close the guard) after fixing
+the release failure. Each pending lease may be claimed only once; the retry
+helper cannot consume a callback-deferred lease. An implicit drop without an
+earlier failed close emits a native stderr diagnostic.
+
+An apartment is bound to the OS thread on which `RoApartment()` was created.
+Calling `__enter__()`, `close()`, or `__exit__()` on another thread raises
+`RuntimeError` without changing its state; retry on the creating thread.
+If its last Python reference is instead dropped on a different thread, native
+uninitialization is **not** attempted there: a native stderr diagnostic
+identifies the pending lease, which the creating thread can explicitly retrieve
+using `RoApartment.recover_pending()` and close after native references are
+released.
+Do not depend on Python garbage collection to close an apartment.
 
 If releasing an apartment-owned native callback runs a captured object's
 finalizer, a successful same-model `ro_initialize()` in that finalizer remains
 active after the outer close and must still be paired with `ro_uninitialize()`.
 The outer close consumes only its own initialization, not the newly acquired
 one. Manual closes and pending-close retries reserve their in-progress lease
-before owner cleanup; if cleanup fails, that lease remains retryable without
-discarding any initialization acquired during cleanup. Owners already released
-by the drain stay released.
+before owner cleanup, including cleanup-failure leases queued by a foreign-thread
+guard drop. If cleanup fails, that exact lease remains retryable without
+discarding any initialization or pending lease acquired during cleanup. Owners
+already released by the drain stay released.
 
 WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
@@ -861,22 +903,21 @@ and reports an error instead.
 An unfinished async future prevents the final apartment close without
 silently cancelling work. Settle or explicitly cancel it, then call the
 owner-thread guard's `close()` again. If an unnamed `RoApartment` context's
-close failed, use `retry_pending_apartment_close()` on the same thread. A
+owner cleanup failed, use `retry_pending_apartment_close()` on the same thread;
+if it was rejected during a native callback, use `RoApartment.recover_pending()`
+after the outer native call returns. A
 non-agile WinRT async operation awaited from asyncio checks completion on its
 own apartment thread rather than passing its native reference to a worker.
 Explicitly cancelling that asyncio task calls native `IAsyncInfo::Cancel` on
 the owner thread; ordinary apartment cleanup never cancels an external task.
 Calls to `RoApartment.close()` on another OS thread raise without changing the
-apartment state. Only an implicit wrong-thread finalizer or interpreter
-shutdown without a usable GIL can force a diagnostic and retain unsafe native
-references until process exit; normal close never treats a leak as success.
-
-Reentrant apartment teardown is a separate limitation: do not call
-`RoApartment.close()` inside a native event callback that is still dispatching
-on that apartment. Closing inside `PropertySet.MapChanged` has crashed with
-`0xC0000005` on both the original base and this branch. Let the callback
-return before closing its apartment on the owning thread. The owner-after-exit
-protection above does not make teardown during an active callback safe.
+apartment state. An implicit wrong-thread finalizer preserves its pending
+native initialization for explicit recovery on the owner OS thread. If that
+thread has exited, or interpreter shutdown makes the Python GIL unavailable,
+native cleanup fails closed with a diagnostic instead of releasing COM after
+teardown; normal close never treats a leak as success. A final close attempted
+from a synchronous native callback is rejected before the owner drain and
+`RoUninitialize`, then can be retried once the callback and native call return.
 
 ### Embedded host callback shutdown
 

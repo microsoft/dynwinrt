@@ -1560,6 +1560,65 @@ async def run_check(
                     dw.release_projected(null_events[0][1])
                     dw.release_projected(null_events[0][0])
                     del obj['null-element']
+                if cls.__name__ == 'PropertySet':
+                    runner = os.path.join(
+                        os.path.dirname(__file__), 'py_apartment_reentrancy.py'
+                    )
+                    for mode in (dw.RO_INIT_SINGLETHREADED, dw.RO_INIT_MULTITHREADED):
+                        for scenario in (
+                            'close', 'exit', 'nested', 'manual', 'pending',
+                            'drop', 'pending_error', 'exception',
+                            'foreign_enter', 'foreign_close', 'foreign_exit',
+                            'foreign_manual', 'foreign_drop',
+                            'cleanup_retry', 'cleanup_recover',
+                        ):
+                            try:
+                                child = subprocess.run(
+                                    [
+                                        sys.executable, '-I', runner,
+                                        '--generated', generated_dir,
+                                        '--mode', str(mode),
+                                        '--scenario', scenario,
+                                    ],
+                                    capture_output=True, text=True,
+                                    timeout=30, check=False,
+                                )
+                            except subprocess.TimeoutExpired as error:
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} timed out in '
+                                    f'a native callback: {error}'
+                                )
+                                return cr
+                            if (
+                                child.returncode
+                                or f'PASS {scenario} apartment={mode}' not in child.stdout
+                            ):
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} failed with '
+                                    f'0x{child.returncode & 0xffffffff:08X}: '
+                                    f'{child.stdout} {child.stderr}'
+                                )
+                                return cr
+                            if (
+                                scenario == 'foreign_drop'
+                                and 'RoApartment was dropped on a different OS thread'
+                                not in child.stderr
+                            ):
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} did not report the '
+                                    f'foreign drop: {child.stderr!r}'
+                                )
+                                return cr
+                            if (
+                                scenario == 'drop'
+                                and 'RoApartment was dropped during a synchronous native callback'
+                                not in child.stderr
+                            ):
+                                cr['error'] = (
+                                    f'{scenario} apartment={mode} did not report the '
+                                    f'pending drop: {child.stderr!r}'
+                                )
+                                return cr
                 cr['pass'] = True
 
         elif kind == 'work_item_callback_passthrough':
