@@ -520,9 +520,20 @@
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 },
+        { "kind": "async_progress_promise", "member": "write_async", "langs": ["ts"] },
         { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] },
         { "kind": "data_stream_constructor_roundtrip", "member": "__init__", "langs": ["py"] },
         { "kind": "can_cast_non_object", "member": "_dynwinrt_can_cast", "langs": ["py"] }
+      ]
+    },
+    {
+      "id": "async_progress_http_cancellation",
+      "namespace": "Windows.Web.Http",
+      "class": "HttpClient",
+      "langs": ["ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "async_progress_cancel_error", "member": "get_string_async" }
       ]
     },
     {
