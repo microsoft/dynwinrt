@@ -670,8 +670,12 @@ impl Drop for RoApartment {
                 return;
             }
         } else if CALLBACK_PENDING_APARTMENTS
-            .try_with(|pending| pending.borrow_mut().push(self.apartment_type))
-            .is_ok()
+            .try_with(|pending| {
+                pending
+                    .try_borrow_mut()
+                    .map(|mut pending| pending.push(self.apartment_type))
+            })
+            .is_ok_and(|result| result.is_ok())
         {
             if !self.close_rejected {
                 native_apartment_diagnostic(
@@ -4152,6 +4156,28 @@ mod tests {
         let (queue, _) = lock_foreign_drops(&queue);
         assert!(!queue.owner_alive);
         assert_eq!(queue.pending.len(), 1);
+    }
+
+    #[test]
+    fn owner_drop_while_pending_state_is_borrowed_remains_recoverable() {
+        Python::initialize();
+        std::thread::spawn(|| {
+            let mut apartment = RoApartment::new(Some(RO_INIT_SINGLETHREADED.0)).unwrap();
+            apartment.initialize().unwrap();
+            CALLBACK_PENDING_APARTMENTS.with(|pending| {
+                let borrowed = pending.borrow();
+                drop(apartment);
+                assert!(borrowed.is_empty());
+            });
+            let mut recovered = RoApartment::recover_pending().unwrap();
+            assert_eq!(recovered.apartment_type, RO_INIT_SINGLETHREADED.0);
+            recovered.uninitialize("RoApartment.close()").unwrap();
+            let mut other_model = RoApartment::new(Some(RO_INIT_MULTITHREADED.0)).unwrap();
+            other_model.initialize().unwrap();
+            other_model.uninitialize("RoApartment.close()").unwrap();
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
