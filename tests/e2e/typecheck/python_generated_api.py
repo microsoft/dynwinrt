@@ -17,6 +17,7 @@ from dynwinrt import (
     DynWinRTMethodSig,
     DynWinRTType,
     DynWinRTValue,
+    RoApartment,
     WinGUID,
 )
 from dynwinrt.values import (
@@ -92,6 +93,7 @@ def check_structural_async_compatibility() -> None:
 
 
 def check_runtime_stubs() -> None:
+    assert_type(RoApartment.recover_pending(), RoApartment)
     iid: WinGUID = WinGUID.parse("00000000-0000-0000-c000-000000000046")
     interface: DynWinRTType = DynWinRTType.register_interface("IUnknown", iid)
     signature: DynWinRTMethodSig = DynWinRTMethodSig().add_out(
