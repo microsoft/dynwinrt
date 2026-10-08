@@ -17,6 +17,7 @@ import importlib
 import inspect
 import json
 import re
+import runpy
 import subprocess
 import sys
 import os
@@ -3153,13 +3154,12 @@ async def run_check(
             cr['pass'] = True
 
         elif kind == 'apartment_owner_reinitialization':
-            from py_apartment_owner_reinitialization import SCENARIOS
-
             runner = os.path.join(
                 os.path.dirname(__file__), 'py_apartment_owner_reinitialization.py'
             )
+            scenarios = runpy.run_path(runner)['SCENARIOS']
             for mode in (dw.RO_INIT_SINGLETHREADED, dw.RO_INIT_MULTITHREADED):
-                for scenario in SCENARIOS:
+                for scenario in scenarios:
                     child = subprocess.run(
                         [
                             sys.executable, '-I', runner, '--generated', generated_dir,
