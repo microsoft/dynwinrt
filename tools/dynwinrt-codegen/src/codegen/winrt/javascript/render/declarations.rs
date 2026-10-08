@@ -48,7 +48,7 @@ pub fn render(file: &ProjectedFile) -> String {
             "    /** Register a callback for progress updates. Returns `this` for chaining. */\n",
         );
         body.push_str("    progress(cb: (value: P) => void): WinRTAsyncWithProgress<T, P>;\n");
-        body.push_str("    /** Get the underlying Promise (equivalent to awaiting directly). */\n");
+        body.push_str("    /** Get the same underlying Promise on every call (equivalent to awaiting directly). */\n");
         body.push_str("    toPromise(): Promise<T>;\n");
         body.push_str("    /** Cancel the underlying WinRT async operation. */\n");
         body.push_str("    cancel(): void;\n");

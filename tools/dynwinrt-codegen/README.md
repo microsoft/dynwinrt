@@ -52,7 +52,7 @@ package.
 | `--winmd-list FILE` | Newline-separated metadata paths to emit; blank lines and `#` comments are ignored. |
 | `--folder DIR` | Load every `.winmd` file directly inside a directory. |
 | `--namespace NS` | Generate one namespace. Without it, generate all non-`Windows.*` namespaces in the input. |
-| `--class-name NAME[,NAME...]` | Generate specific classes, public interfaces, or native `Apis` containers. Use fully qualified names, or unqualified names together with `--namespace`. |
+| `--class-name NAME[,NAME...]` | Generate specific classes, public interfaces, non-generic WinRT delegates, or native `Apis` containers. Use fully qualified names, or unqualified names together with `--namespace`. |
 | `--ref PATH[;PATH...]` | Metadata used only for type resolution. Sibling discovery is disabled for references. |
 | `--ref-list FILE` | Newline-separated reference metadata paths; blank lines and `#` comments are ignored. |
 | `--lang js\|py` | `js` emits CommonJS `.js`, an ESM facade, and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
@@ -81,6 +81,20 @@ dynwinrt-codegen generate `
   --lang py `
   --output .\generated-python
 ```
+
+Explicitly select a WinRT class and its delegate (also supported with `--lang py`):
+
+```powershell
+dynwinrt-codegen generate `
+  --namespace Windows.System.Threading `
+  --class-name ThreadPool,WorkItemHandler `
+  --output .\generated
+```
+
+Delegates can also be selected alone or emitted through their namespace. Their
+IID and callback parameter types come from the same metadata pipeline used for
+automatic dependencies. Open generic delegate definitions are not supported as
+explicit roots; closed instantiations continue to be resolved as dependencies.
 
 Load emitted metadata and reference metadata from list files:
 
@@ -144,6 +158,16 @@ ESM consumers, and need no TypeScript compilation step. Python output uses
 snake_case names and includes type information by default. Documentation from
 sibling XML files is included when available.
 
+WinRT JavaScript runtime classes retain the explicit instance-method aliases
+declared by their interfaces, alongside their existing class overload names.
+For example, `StorageFile.copyAsync(...)` remains unchanged, and the class also
+exposes `IStorageFile`'s `copyOverloadDefaultOptions(...)` alias with the same
+native signature. These are real JavaScript methods, not declaration-only
+members, so a `StorageFile` can be passed directly to `FileIO.readTextAsync(...)`
+and a `StorageFolder` to `StorageFile.copyAsync(...)` in strict TypeScript.
+Standalone interface aliases and explicit `.as(IStorageFile)` views remain
+supported. Existing public class members take precedence when names collide.
+
 Classic COM generation is available only with `--lang js`. It is isolated in a
 `com` subpackage and fails closed when metadata does not provide enough ABI,
 layout, ownership, or cleanup information. See the
@@ -187,6 +211,13 @@ From the repository root:
 cargo build -p dynwinrt-codegen --release
 cargo test -p dynwinrt-codegen
 ```
+
+`delegate_root_selection_test` covers explicit, incremental, namespace, and
+automatic delegate selection. Its native callback cases use a built JavaScript
+binding and `DYNWINRT_TEST_PYTHON` pointing to a Python environment with the
+matching wheel installed. `DYNWINRT_TEST_JS_RUNTIME` (binding package directory)
+and `DYNWINRT_TEST_NODE` can select a matching JavaScript runtime/architecture;
+`DYNWINRT_PYRIGHT` enables the additional strict Python consumer checks.
 
 Official npm and PyPI packages are built and published by the repository release
 pipelines.

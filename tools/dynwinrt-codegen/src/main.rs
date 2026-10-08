@@ -143,7 +143,8 @@ enum Commands {
         #[arg(long, value_name = "NS")]
         namespace: Option<String>,
 
-        /// Generate bindings for specific class(es), comma-separated.
+        /// Generate specific classes, public interfaces, or non-generic WinRT delegates,
+        /// comma-separated.
         /// Names may be qualified, or unqualified when --namespace is supplied.
         /// E.g. --class-name Uri or --class-name Windows.Foundation.Uri
         #[arg(long, name = "class", value_name = "NAME")]
@@ -593,6 +594,10 @@ fn run() -> Result<(), String> {
                     }
                     if let Some(coclass) = com_metadata::parse_com_coclass(&winmd, ns, cls)? {
                         com_coclasses.push(coclass);
+                        continue;
+                    }
+                    if let Some(delegate) = meta::parse_delegate(&winmd, ns, cls)? {
+                        requested_winrt_interfaces.push(delegate);
                         continue;
                     }
                     if let Some(interface) = meta::parse_public_interface(&winmd, ns, cls) {
@@ -1108,6 +1113,7 @@ fn run() -> Result<(), String> {
                     }
                     selected_classes.extend(meta::parse_namespace(&winmd, ns));
                     selected_interfaces.extend(meta::parse_interfaces(&winmd, ns));
+                    selected_interfaces.extend(meta::parse_delegates(&winmd, ns)?);
                     selected_enums.extend(meta::parse_enums(&winmd, ns));
                 }
                 winui::add_implicit_classes(&winmd, &mut selected_classes);
@@ -1138,6 +1144,7 @@ fn run() -> Result<(), String> {
                     for ns in &namespaces {
                         all_classes.extend(meta::parse_namespace(&winmd, ns));
                         all_interfaces.extend(meta::parse_interfaces(&winmd, ns));
+                        all_interfaces.extend(meta::parse_delegates(&winmd, ns)?);
                         all_enums.extend(meta::parse_enums(&winmd, ns));
                     }
                     winui::add_implicit_classes(&winmd, &mut all_classes);

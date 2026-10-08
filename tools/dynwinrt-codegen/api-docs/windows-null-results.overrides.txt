@@ -2,6 +2,32 @@
 # scripts/extract-null-results.py. "+pattern" adds and "-pattern" removes
 # members. A pattern is an api-id that may use fnmatch wildcards; it must match
 # a member documented at the pinned winrt-api commit.
+# Exact "+source => target" declaration aliases also retain the source fact.
+# Both IDs use the same member and full normalized CLR parameter signature.
+# The source must be documented at the pin; Windows.winmd tests validate the
+# target's declaring interface, ExclusiveTo owner and native signature.
+
+# Stock Windows XML native evidence: an empty document has no root or DTD.
+# The pinned reference documents these properties under the runtime class.
++P:Windows.Data.Xml.Dom.XmlDocument.DocumentElement => P:Windows.Data.Xml.Dom.IXmlDocument.DocumentElement
++P:Windows.Data.Xml.Dom.XmlDocument.Doctype => P:Windows.Data.Xml.Dom.IXmlDocument.Doctype
++M:Windows.Data.Xml.Dom.XmlDocument.GetElementById(System.String) => M:Windows.Data.Xml.Dom.IXmlDocument.GetElementById(System.String)
+
+# A document has no owner document, detached nodes have no parent or siblings,
+# and the first/last child has no previous/next sibling. These are contracts
+# of the declaring IXmlNode interface, inherited by its runtime classes.
++P:Windows.Data.Xml.Dom.IXmlNode.OwnerDocument
++P:Windows.Data.Xml.Dom.IXmlNode.ParentNode
++P:Windows.Data.Xml.Dom.IXmlNode.PreviousSibling
++P:Windows.Data.Xml.Dom.IXmlNode.NextSibling
+
+# Missing attributes return null; setting the first attribute returns no
+# previous attribute, while replacement returns the prior object. The native
+# regression also checks NS lookup/replacement with an explicitly boxed URI.
++M:Windows.Data.Xml.Dom.XmlElement.GetAttributeNode(System.String) => M:Windows.Data.Xml.Dom.IXmlElement.GetAttributeNode(System.String)
++M:Windows.Data.Xml.Dom.XmlElement.GetAttributeNodeNS(System.Object,System.String) => M:Windows.Data.Xml.Dom.IXmlElement.GetAttributeNodeNS(System.Object,System.String)
++M:Windows.Data.Xml.Dom.XmlElement.SetAttributeNode(Windows.Data.Xml.Dom.XmlAttribute) => M:Windows.Data.Xml.Dom.IXmlElement.SetAttributeNode(Windows.Data.Xml.Dom.XmlAttribute)
++M:Windows.Data.Xml.Dom.XmlElement.SetAttributeNodeNS(Windows.Data.Xml.Dom.XmlAttribute) => M:Windows.Data.Xml.Dom.IXmlElement.SetAttributeNodeNS(Windows.Data.Xml.Dom.XmlAttribute)
 
 # Sensors report a missing device through null across the whole family, as
 # most of their pages state ("or null if no integrated ... are found").
