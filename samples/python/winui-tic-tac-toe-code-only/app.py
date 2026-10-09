@@ -218,11 +218,12 @@ def run() -> None:
                         status.text = f"Player {current_player[0]}'s turn"
 
                     for index, button in enumerate(cells):
-                        event_tokens.append(
-                            button.on_click(
-                                lambda _sender, _args, index=index: play(index)
-                            )
-                        )
+                        def clicked(
+                            _sender: object, _args: object, index: int = index
+                        ) -> None:
+                            play(index)
+
+                        event_tokens.append(button.on_click(clicked))
                     event_tokens.append(reset_button.on_click(reset_game))
 
                     window = Window()
