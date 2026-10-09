@@ -10900,7 +10900,7 @@ mod tests {
         assert!(
             fs::read_to_string(output.join("setup.cfg"))
                 .unwrap()
-                .contains(&format!("build-base = .b/{initial}"))
+                .contains(&format!("build_base = .b/{initial}"))
         );
         let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
         assert!(inventory.lines().any(|line| line == "setup.cfg"));

@@ -64,7 +64,7 @@ try {
 
     $buildBaseMatch = Select-String `
         -LiteralPath (Join-Path $source "setup.cfg") `
-        -Pattern "^build-base\s*=\s*(.+)$"
+        -Pattern "^build_base\s*=\s*(.+)$"
     if (-not $buildBaseMatch) {
         throw "Generated setup.cfg does not define a scoped build cache"
     }
@@ -121,7 +121,7 @@ try {
     }
     $newBuildBaseMatch = Select-String `
         -LiteralPath (Join-Path $source "setup.cfg") `
-        -Pattern "^build-base\s*=\s*(.+)$"
+        -Pattern "^build_base\s*=\s*(.+)$"
     $newBuildBase = $newBuildBaseMatch.Matches[0].Groups[1].Value.Trim()
     if ($newBuildBase -eq $initialBuildBase) {
         throw "Generated file layout change did not rotate the scoped build cache"
@@ -154,7 +154,7 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $renamedBuildBaseMatch = Select-String `
         -LiteralPath (Join-Path $source "setup.cfg") `
-        -Pattern "^build-base\s*=\s*(.+)$"
+        -Pattern "^build_base\s*=\s*(.+)$"
     $renamedBuildBase = $renamedBuildBaseMatch.Matches[0].Groups[1].Value.Trim()
     if ($renamedBuildBase -eq $preRenameBuildBase) {
         throw "Output package rename did not rotate the scoped build cache"
