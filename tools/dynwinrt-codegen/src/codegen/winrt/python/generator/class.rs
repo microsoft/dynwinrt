@@ -90,6 +90,11 @@ pub fn generate_class<'a>(
         needs_legacy_helper,
         needs_legacy_int_guard,
     ));
+    out.push_str(&super::super::collections::protocol_helper_imports(
+        class.all_interfaces(),
+        context,
+        super::super::nullability::AnnotationSurface::Runtime,
+    ));
     out.push_str(&collection_item_import(
         context,
         class

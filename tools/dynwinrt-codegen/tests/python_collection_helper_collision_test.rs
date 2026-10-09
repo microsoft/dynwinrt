@@ -421,28 +421,6 @@ def maps(mapping: Map, value: DynWinRTValue) -> None:
         .join("py")
         .canonicalize()
         .unwrap();
-    let mut command = Command::new(python());
-    command
-        .args([
-            "-B",
-            "-m",
-            "mypy",
-            "--strict",
-            "--follow-imports=silent",
-            "--no-incremental",
-            "--cache-dir",
-            "mypy-cache",
-        ])
-        .current_dir(root);
-    if no_pyi {
-        command.env_remove("MYPYPATH");
-    } else {
-        command.env(
-            "MYPYPATH",
-            std::env::join_paths([binding_stubs, root.to_path_buf()]).unwrap(),
-        );
-    }
-    success(command.arg("typing_probe.py").output().unwrap());
     fs::write(
         root.join("invalid_probe.py"),
         format!(
@@ -465,25 +443,54 @@ def invalid(vector: Vector, mapping: Map, value: DynWinRTValue) -> None:
         ),
     )
     .unwrap();
-    let output = command.arg("invalid_probe.py").output().unwrap();
-    let text = String::from_utf8_lossy(&output.stdout);
-    let errors = text
-        .lines()
-        .filter(|line| line.contains(": error:"))
-        .collect::<Vec<_>>();
-    assert_eq!(output.status.code(), Some(1), "{text}");
-    assert_eq!(errors.len(), 5, "{text}");
-    for (line, code) in errors.iter().zip([
-        "[list-item]",
-        "[list-item]",
-        "[dict-item]",
-        "[type-var]",
-        "[arg-type]",
-    ]) {
-        assert!(
-            line.starts_with("invalid_probe.py:") && line.ends_with(code),
-            "{text}"
-        );
+    let installed = std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() == Ok("1");
+    for source_stubs in if installed {
+        &[true, false][..]
+    } else {
+        &[true][..]
+    } {
+        let mut command = Command::new(python());
+        command
+            .args([
+                "-B",
+                "-m",
+                "mypy",
+                "--strict",
+                "--follow-imports=silent",
+                "--no-incremental",
+                "--cache-dir",
+                "mypy-cache",
+            ])
+            .current_dir(root);
+        if *source_stubs {
+            command.env(
+                "MYPYPATH",
+                std::env::join_paths([binding_stubs.clone(), root.to_path_buf()]).unwrap(),
+            );
+        } else {
+            command.env_remove("MYPYPATH");
+        }
+        success(command.arg("typing_probe.py").output().unwrap());
+        let output = command.arg("invalid_probe.py").output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        let errors = text
+            .lines()
+            .filter(|line| line.contains(": error:"))
+            .collect::<Vec<_>>();
+        assert_eq!(output.status.code(), Some(1), "{text}");
+        assert_eq!(errors.len(), 5, "{text}");
+        for (line, code) in errors.iter().zip([
+            "[list-item]",
+            "[list-item]",
+            "[dict-item]",
+            "[type-var]",
+            "[arg-type]",
+        ]) {
+            assert!(
+                line.starts_with("invalid_probe.py:") && line.ends_with(code),
+                "{text}"
+            );
+        }
     }
     if !no_pyi && let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
         fs::write(

@@ -54,7 +54,6 @@ fn import_line(
     needs_legacy_int_guard: bool,
 ) -> String {
     let object_input = context.support_symbol_import(PythonSupportSymbol::ObjectInput);
-    let mapping_input = context.support_symbol_import(PythonSupportSymbol::MappingInput);
     let can_cast = context.support_symbol_import(PythonSupportSymbol::CanCast);
     let mut legacy_helpers = String::new();
     if needs_legacy_helper {
@@ -74,10 +73,10 @@ fn import_line(
         "\
 from ._runtime import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
-    TYPE_CHECKING, Self, TypeVar, UUID, WinGUID, datetime, overload, timedelta,
+    TYPE_CHECKING, UUID, WinGUID, datetime, timedelta,
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
-    {object_input}, {mapping_input}, _property, _weakref_ref,
+    {object_input}, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, {can_cast}, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
 {legacy_helpers}    _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,

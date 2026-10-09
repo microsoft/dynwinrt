@@ -238,6 +238,47 @@ pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool 
         ))
 }
 
+/// Keep helper-only imports out of unrelated collection and value projections.
+pub(super) fn protocol_helper_imports<'a>(
+    interfaces: impl IntoIterator<Item = &'a InterfaceMeta>,
+    context: &PythonProjectionContext,
+    surface: AnnotationSurface,
+) -> String {
+    let mut sequence = false;
+    let mut mapping = false;
+    for iface in interfaces {
+        match (
+            projected_interface_kind(iface),
+            iface.generic_args.as_slice(),
+        ) {
+            (Some(CollectionKind::MutableSequence), [_]) => sequence = true,
+            (Some(CollectionKind::MutableMapping), [_, _]) => mapping = true,
+            _ => {}
+        }
+    }
+    let mut names = Vec::new();
+    if surface == AnnotationSurface::Runtime {
+        if sequence {
+            names.push("Self".to_string());
+        }
+        if mapping {
+            names.extend(["TypeVar".to_string(), "overload".to_string()]);
+        }
+    }
+    if mapping {
+        names.push(context.support_symbol_import(PythonSupportSymbol::MappingInput));
+    }
+    if names.is_empty() {
+        String::new()
+    } else {
+        let support = match surface {
+            AnnotationSurface::Runtime => "_runtime",
+            AnnotationSurface::Stub => "_typing",
+        };
+        format!("from .{support} import {}\n", names.join(", "))
+    }
+}
+
 /// Bulk helpers write the same inputs as item assignment, but return only the
 /// read projection (or Self), never the caller's unconverted input.
 pub(super) fn protocol_helper_methods(

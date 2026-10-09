@@ -101,6 +101,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         plan.has_legacy_fallback(),
         plan.has_legacy_int_guard(),
     ));
+    out.push_str(&super::super::collections::protocol_helper_imports(
+        std::iter::once(iface),
+        context,
+        super::super::nullability::AnnotationSurface::Runtime,
+    ));
     out.push_str(&collection_item_import(
         context,
         iface.methods.iter(),
