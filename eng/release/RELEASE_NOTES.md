@@ -1,9 +1,10 @@
-## Prerelease v0.1.0-preview.22
+## Prerelease v0.1.0-preview.23
 
-This preview adds standalone WinRT interface implementations, improves Python
-asyncio and Classic COM support, and introduces experimental flat Win32 bindings.
-It also includes projection, collection, ownership, and native-boundary fixes
-since preview.21.
+This preview improves Python apartment lifetime safety, Object value conversion,
+callback projection, overload dispatch, and type declarations. It also fixes
+generated JavaScript/TypeScript interface inputs and async-with-progress
+Promises, and adds Windows Python output-path diagnostics. These changes are
+relative to preview.22.
 
 ## Packages and requirements
 
@@ -12,140 +13,152 @@ since preview.21.
 - `dynwinrt` - Native Python runtime.
 - `dynwinrt-codegen` - Standalone Python code generator.
 
-Runtime packages target Windows x64 and ARM64. JavaScript requires Node.js 18
-or later; the Python runtime and generated bindings require CPython 3.11-3.14.
-Available APIs also depend on the installed Windows version, SDK components,
-package identity, and hardware.
+The npm version and release tag use `0.1.0-preview.23`; Python packages use the
+equivalent PEP 440 version `0.1.0rc23`. Runtime packages target Windows x64 and
+ARM64. JavaScript requires Node.js 18 or later; the Python runtime and generated
+bindings require CPython 3.11-3.14. The standalone Python codegen supports
+Python 3.8-3.14. Available APIs also depend on Windows components, metadata,
+package identity, framework bootstrap, and hardware.
 
 ```powershell
-npm install @microsoft/dynwinrt
-npm install -D @microsoft/dynwinrt-codegen
-python -m pip install --pre dynwinrt dynwinrt-codegen
+npm install @microsoft/dynwinrt@0.1.0-preview.23
+npm install -D @microsoft/dynwinrt-codegen@0.1.0-preview.23
+python -m pip install --pre "dynwinrt==0.1.0rc23" "dynwinrt-codegen==0.1.0rc23"
 ```
 
 ## Highlights
 
-### WinRT interface implementations
+### Python apartment and native-owner safety
 
-Implement supported WinRT interfaces in JavaScript or Python with
-`.implement(...)` and `.implementation(...)`. Synchronous, owner-thread handlers
-support methods, properties, events, supported structs/arrays, and named multiple
-outputs, with typed interface views, multi-interface composition, and explicit
-release/disposal. This does not register an OS class or create a COM server.
-See the supported contracts and lifetime rules in the
-[interface implementation guide](https://github.com/microsoft/dynwinrt/blob/main/docs/guides/windows/winrt-interface-implementations.md).
+- Release library-owned raw values, generated wrappers, and COM-bearing arrays
+  and structs before the final library-managed apartment close, including
+  independently owned nested and cloned values. This protects ordinary
+  `RoApartment` exits even without `projected_lifetime_scope()`. Retained Python
+  owners report that they are released and reject further native access;
+  scalar-only values and containers remain usable.
+- Reject a final apartment close inside a synchronous native-to-Python callback
+  before owner cleanup or `RoUninitialize`. Named guards remain active for
+  retry after both the callback and outer native call return.
+- Preserve successful nested and manual initialization counts, including
+  `S_FALSE` and new initializations acquired by Python finalizers during owner
+  cleanup. A close consumes only its own initialization. Failed cleanup retains
+  that lease for retry without discarding newly acquired leases.
+- Reject explicit apartment operations on the wrong OS thread without changing
+  state. An implicit foreign-thread guard drop retains an owner-thread
+  recovery token and emits a native diagnostic instead of calling COM there.
+- Keep unsafe pending async owners from being released by apartment cleanup.
+  Settle or explicitly cancel blocked work before retrying close; cleanup does
+  not silently cancel it or consume externally owned COM aliases.
 
-### Python asyncio and value conversion
+Use `RoApartment.recover_pending()` on the owner thread for a guard deferred
+during a callback or dropped on another thread. For an unnamed guard whose
+owner cleanup failed, use `retry_pending_apartment_close()` or recover and
+explicitly close it after fixing the failure. The retry helper does not consume
+a callback-deferred lease.
 
-- Use generated operations with `asyncio.create_task()` and `TaskGroup`, retaining
-  cancellation and progress. Task scheduling is one-shot; direct awaits remain repeatable.
-- Copy between `IBuffer` and JavaScript `Buffer`/`Uint8Array` or Python `bytes`/`bytearray`.
-- Explicitly unbox supported `IPropertyValue` scalars and arrays with
-  `unboxObject()` / `unbox_object()`; generated `Object` results remain unchanged.
+### Explicit Python Object values
 
-### Expanded Classic COM projections
+- Add `to_winrt_object(value, property_type=None)` for explicit boxing. Generated
+  `Object`/`IInspectable` positions remain native by default; they do not
+  implicitly box arbitrary Python values.
+- Extend `unbox_object()` with DateTime, TimeSpan, Point/Size/Rect, their arrays,
+  and recursively unboxed InspectableArray values. `preserve_type=True`,
+  numeric tags, typed arrays, and `PropertyType` retain exact WinRT type
+  information through `dynwinrt.values`.
+- Add the opt-in live `dynwinrt.values.object_value_view()` for supported
+  `IMap`/`IMapView<String or Guid, Object>` projections. Reads unbox and writes
+  box explicitly; `.raw` retains access to the native map.
 
-- Expand contract-validated JS/TS projections, including HGLOBAL transfer and
-  variable-length audio formats.
-- Add non-consuming `projectAs(...)` interface views, bounded typed activation,
-  and native completion-to-Promise support for `ActivateAudioInterfaceAsync`.
-- Add bounded copy helpers for supported audio, WIC, and linear Media Foundation operations.
-- Generate canonical namespace output under `generated/com/`, with separate
-  unsafe companions and `@microsoft/dynwinrt/com/unsafe/raw`.
-- Give previously ambiguous ordinary overloads explicit slot-qualified names
-  and centralize metadata, ownership, and cleanup contract evidence.
+### Python projection contracts
 
-Safe support remains contract-specific; unsafe entrypoints retain caller-owned
-ABI, ownership, and lifetime obligations.
+- Project supported delegate callback arguments from their actual `Invoke`
+  signatures, including typed `MapChanged` senders and event arguments.
+- Unify method names, overloads, aliases, and collision handling across `.py`
+  and `.pyi`. Preserve existing explicit ABI aliases and successful native
+  dispatch targets, and use QueryInterface for compatible interface-typed
+  overload inputs rather than requiring a particular wrapper class.
+- Type `.pyi` outputs as non-null by default while preserving supported nullable
+  positions, including `IReference<T>`, `Try*` results, Object/delegate values,
+  documented Windows SDK null results, and reference collection elements.
+  Correct exact XML DOM declarations for absent roots, DTDs, node navigation,
+  owner documents, and attribute lookup/replacement results. Runtime null
+  conversion and the broader inline `.py` output annotations are unchanged.
+- Reject native null before mutating stock `JsonArray`/`JsonObject`, including
+  bulk writes and generic interface views. Rejected null input leaves the
+  collection unchanged; custom generic collections retain their valid
+  native-null behavior.
+- QueryInterface-check direct generated interface construction before retaining
+  a pointer. Validate array element contracts before taking independent native
+  references, and reject Async receivers in low-level `call_0()`/`call_1()`
+  before vtable dispatch.
+- Improve Python runtime errors and expose named `RO_INIT_SINGLETHREADED` and
+  `RO_INIT_MULTITHREADED` constants.
 
-### Experimental flat Win32 bindings
+### JavaScript/TypeScript and shared code generation
 
-Generate JS/TS bindings for a validated subset of DLL exports through
-`@microsoft/dynwinrt/win32`, with CJS/ESM namespace modules, status and `LastError`
-handling, managed resource cleanup, and explicit Winsock, GDI+, and Media
-Foundation contexts. File I/O includes cancellable IOCP-backed
-`ReadFile`/`WriteFile` Promises with bounded buffers. Support is partial and does
-not yet provide a backward-compatibility guarantee. See the
-[Win32 support guide](https://github.com/microsoft/dynwinrt/blob/main/docs/architecture/flat-win32-contracts.md).
-
-## Correctness and reliability
-
-- Preserve signed and unsigned WinRT enum backing types in signatures, generic
-  IIDs, and value conversion, including high-bit constants, arrays, struct
-  fields, boxed references, and callbacks.
-- Normalize signed 32-bit patterns from JavaScript bitwise operations for
-  generated WinRT and Classic COM UInt32 flags inputs, without relaxing
-  ordinary UInt32 validation.
-- Reject mismatched native-wrapper types in JavaScript calls, including nested
-  collection inputs and callback results.
-- Fix WinRT collection bulk-operation element strides and reject unsupported
-  collection layouts or ownership shapes before native use.
-- Accept explicit `null` for generated JavaScript WinRT collection inputs;
-  omitted or `undefined` arguments do not silently become null.
-- Fix JavaScript collection factories and automatic `IReference<T>` element
-  boxing, including native array parameters. Convert JavaScript `Map` inputs
-  to independently owned `IMapView` snapshots through the native `GetView` operation.
-- Make duplicate map-constructor keys follow `Insert`: the last value wins,
-  while the first key and its iteration position are retained. Compare admitted
-  struct elements and keys by their fields rather than padding, using numerical
-  floating-point equality.
-- Register WinRT interfaces by IID rather than short name, avoiding collisions
-  between independently generated packages.
-- Fix ownership cycles in runtime metadata registration.
-- Preserve Win32 resource ownership when explicit cleanup fails, allowing cleanup
-  to be retried.
-- Fix TypeScript union-element array declarations and align nullable collection
-  output types with runtime values.
-- Fix generated COM identifier escaping and architecture-specific aggregate keys.
-- Fix Python annotation and helper-name collisions, including standalone nested
-  struct defaults, and distinguish closed generic interfaces by complete
-  semantic identity. Improve instance/interface input typing and preserve
-  subclass types in projected factories.
-- Return Python `Char16[]` values as characters, matching their `list[str]`
-  declarations. Code that relied on integer elements can use `ord()` explicitly.
-- Enforce Python projection-scope thread affinity and improve WinUI teardown
-  through explicit process-level module ownership. Activated WinUI implementation
-  modules remain loaded until process exit; in-process hot replacement is not supported.
-- Resolve CoreMessaging for DispatcherQueue creation and GDI/USER32 helpers
-  lazily, avoiding their unconditional direct production DLL dependencies.
+- Reuse the existing projected Promise from generated async-with-progress
+  `.toPromise()`. Repeated calls no longer register native completion twice;
+  direct await and `.toPromise()` share the converted result or rejection.
+  Pre-aborted signals also reuse their existing rejected Promise.
+- Retain explicit interface-method aliases as real JavaScript class methods
+  with matching declarations. For example, `StorageFile` can satisfy
+  `IStorageFile` inputs in strict TypeScript while keeping `copyAsync(...)`
+  and adding the interface's `copyOverloadDefaultOptions(...)` alias. Existing
+  overload dispatchers and `.as(...)` views remain supported.
+- Classify explicitly selected non-generic WinRT delegates correctly in both
+  JavaScript and Python. Delegate-only, combined class/delegate, namespace, and
+  incremental selections reuse the existing automatic-dependency projection;
+  malformed or open-generic delegate roots fail explicitly.
+- Warn before publishing generated Python output when a final `.py`/`.pyi`
+  path reaches the legacy Windows 260-UTF-16-unit boundary. The diagnostic
+  identifies the longest final path and how much shorter the output root must
+  be, without changing generated names, layout, or bytes.
 
 ## Upgrade notes
 
-Upgrade runtime and codegen together, then regenerate affected bindings.
-Regenerate all packages sharing unsigned WinRT enum declarations together;
-do not mix old signed declarations with corrected unsigned declarations.
+Upgrade runtime and codegen together, then fully regenerate and rebuild/reinstall
+affected bindings. Generated Python manifests pin the matching runtime version;
+do not mix old generated packages or stubs with a different runtime.
 
-- **Python:** fully regenerate and rebuild/reinstall all packages exchanging
-  closed generic interfaces together. Do not mix old and new stubs. Prefer public
-  namespace exports over hard-coded internal or long generated module paths.
-  Worker threads need their own `RoApartment` and `projected_lifetime_scope()`.
-- **JavaScript/TypeScript collections:** guard nullable collection outputs.
-  A present `null` differs from the `undefined` returned for a missing map key
-  or out-of-range `at()` index. Map `get()` now propagates conversion and native
-  errors; its `HasKey`/`Lookup` sequence is not atomic against native mutation.
-- **Low-level JavaScript UInt32 inputs:** factories, array constructors, and fast
-  setters reject negative, fractional, non-finite, and out-of-range values
-  instead of silently wrapping them. Generated UInt32 flags projections handle
-  ordinary JavaScript bitwise combinations.
-- **Classic COM (JS/TS):** regenerate all selected roots into a fresh output directory
-  and update imports for the namespace layout.
-- **Node.js / Electron:** use runtime entrypoints from the same installed package;
-  do not mix native objects from different builds.
+- **Python lifecycle:** initialize and balance each worker thread's own
+  apartment. `projected_lifetime_scope()` remains an optional earlier-cleanup
+  tool; do not rely on garbage collection to close apartments or on a close to
+  revoke external COM references.
+- **Python typing:** regenerate `.pyi` files together with their runtime
+  modules. Cache potentially absent results and guard them before reading
+  members. The Windows SDK nullable-result facts are not a universal
+  nullability guarantee for custom or Windows App SDK metadata.
+- **Python JSON:** use `JsonValue.create_null_value()` for JSON semantic null.
+  It is a non-null native `IJsonValue`; Python `None` is not a substitute in
+  stock JSON collections.
+- **Python Object conversion:** a plain `int` boxes as Int32 only. Use explicit
+  tags or `PropertyType` for other widths, enums, empty/mixed arrays, and
+  InspectableArray. Re-boxing preserves type and value, not box identity.
+- **JavaScript/TypeScript:** regenerate wrappers to obtain interface aliases
+  and the progress Promise fix; upgrading the native runtime alone does not
+  repair previously generated JavaScript.
+- **Rust source compatibility:** exhaustive matches on public
+  `PropertyValueData` and `PropertyValueUnboxResult` must handle the new payload
+  variants and `PropertyValueUnboxResult::Unsupported(PropertyType)`. Keep
+  `Null` and `NotPropertyValue` distinct and handle unsupported boxes explicitly.
 
-## Samples and notes
+## Known boundaries
 
-New and updated samples cover standalone interface implementations, XAML and
-code-only WinUI apps, OCR, asynchronous file I/O, Aion Electron chat, and flat
-Win32 system/registry/file operations. Setup guidance adopts WinApp CLI and
-clarifies metadata, packaging, Windows component, and hardware prerequisites.
-See each sample's README before running it.
+Classic COM, flat Win32, and WinUI hosting remain experimental. This preview does
+not expand their support guarantees or remove the documented architecture-specific
+WinRT collection-producer limits. Native ARM64 live WinUI coverage remains
+incomplete; ordinary runtime-wheel checks do not establish full UI support.
 
-Build and release workflows gain parallel validation, expanded projection and
-native-boundary regression coverage, and file-based release notes. Native
-dependency inspection no longer requires Visual Studio. Guides, JavaScript
-binding internals, and benchmark dependencies are also updated.
+Embedded hosts retaining native aliases to Python-backed callbacks must stop new
+calls, settle in-flight callbacks, and call `shutdown_python_callbacks()` while
+Python is alive, before `Py_FinalizeEx`. Hosts skipping that protocol have only
+best-effort protection against callbacks during early interpreter finalization;
+no universal deadlock-free guarantee is claimed.
 
-Classic COM, flat Win32, and WinUI hosting remain experimental.
+Python path warnings are diagnostic only. Use short output and venv paths,
+leaving headroom for pip staging and installation. No warning is not a guarantee
+that every downstream tool can open arbitrary long paths.
 
-For installation and usage, see the
-[README](https://github.com/microsoft/dynwinrt#readme).
+For details, see the [Python runtime guide](https://github.com/microsoft/dynwinrt/blob/main/bindings/py/README.md),
+[Python codegen path guidance](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#windows-path-length),
+and the [project README](https://github.com/microsoft/dynwinrt#readme).
