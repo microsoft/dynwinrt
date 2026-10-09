@@ -516,10 +516,20 @@ fn run() -> Result<(), String> {
             }
             let mut output_transaction =
                 if matches!(lang.as_str(), "js" | "py") && !dry_run && !output_contains_cwd {
-                    Some(OutputTransaction::begin(final_output_dir)?)
+                    Some(if lang == "py" {
+                        OutputTransaction::begin_with_preflight(
+                            final_output_dir,
+                            validate_python_generator_version,
+                        )?
+                    } else {
+                        OutputTransaction::begin(final_output_dir)?
+                    })
                 } else {
                     None
                 };
+            if lang == "py" && dry_run {
+                validate_python_generator_version(final_output_dir)?;
+            }
             let effective_output_dir = output_transaction
                 .as_ref()
                 .map(|transaction| transaction.stage_dir().to_path_buf())
@@ -1236,6 +1246,7 @@ fn run() -> Result<(), String> {
 
             if lang == "py" && !dry_run {
                 write_python_package_manifest(output_dir, final_output_dir)?;
+                write_python_generator_metadata(output_dir)?;
                 let files = write_python_generated_inventory(output_dir, pyi)?;
                 python_output_paths::warn(final_output_dir, &files)?;
             }
@@ -5763,6 +5774,7 @@ fn recover_interrupted_output_transaction(
     parent: &Path,
     leaf: &str,
     final_dir: &Path,
+    preflight: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let stage_prefix = format!(".{leaf}.dynwinrt-stage-");
     let backup_prefix = format!(".{leaf}.dynwinrt-backup-");
@@ -5794,7 +5806,7 @@ fn recover_interrupted_output_transaction(
         }
     }
     if residues.is_empty() {
-        return Ok(());
+        return preflight(final_dir);
     }
     if residues.len() != 1 {
         return Err(format!(
@@ -5815,6 +5827,11 @@ fn recover_interrupted_output_transaction(
     if final_owned {
         validate_transaction_owner(final_dir, &nonce)?;
     }
+    preflight(if final_exists {
+        final_dir
+    } else {
+        residue.backup.as_deref().unwrap_or(final_dir)
+    })?;
 
     match (
         final_exists,
@@ -5903,6 +5920,13 @@ impl OutputTransaction {
     const LOCK_TIMEOUT: Duration = Duration::from_secs(120);
 
     fn begin(requested_final_dir: &Path) -> Result<Self, String> {
+        Self::begin_with_preflight(requested_final_dir, |_| Ok(()))
+    }
+
+    fn begin_with_preflight(
+        requested_final_dir: &Path,
+        preflight: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let absolute = if requested_final_dir.is_absolute() {
             requested_final_dir.to_path_buf()
         } else {
@@ -6004,7 +6028,7 @@ impl OutputTransaction {
             std::thread::sleep(Duration::from_millis(delay));
         }
 
-        recover_interrupted_output_transaction(parent, leaf, &final_dir)?;
+        recover_interrupted_output_transaction(parent, leaf, &final_dir, preflight)?;
         ensure_no_orphaned_transaction_artifacts(parent, leaf)?;
         let nonce = transaction_nonce(&final_dir);
         let stage_dir = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
@@ -6788,6 +6812,105 @@ fn python_build_cache_key(output_dir: &Path, import_name: &str) -> Result<String
 
 const PYTHON_GENERATED_INVENTORY: &str = ".dynwinrt-generated-files";
 const PYTHON_TYPE_INVENTORY: &str = ".dynwinrt-generated-types";
+const PYTHON_GENERATOR_METADATA: &str = ".dynwinrt-generator.json";
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PythonGeneratorMetadata {
+    generator_version: String,
+}
+
+fn python_regeneration_error(output_dir: &Path, reason: &str) -> String {
+    format!(
+        "{reason} in '{}'. Manually clean the dedicated codegen output directory \
+         and regenerate the entire bindings selection with dynwinrt-codegen {}. \
+         Existing output has not been changed.",
+        output_dir.display(),
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+fn validate_python_generator_version(output_dir: &Path) -> Result<(), String> {
+    validate_python_generator_version_against(output_dir, env!("CARGO_PKG_VERSION"))
+}
+
+fn validate_python_generator_version_against(
+    output_dir: &Path,
+    generator_version: &str,
+) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(output_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect {}: {error}",
+                output_dir.display()
+            ));
+        }
+    };
+    if is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "Python generated output '{}' must be a non-linked directory",
+            output_dir.display()
+        ));
+    }
+    let path = output_dir.join(PYTHON_GENERATOR_METADATA);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+                return Err(python_regeneration_error(
+                    output_dir,
+                    "Invalid Python generator metadata",
+                ));
+            }
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+            let metadata: PythonGeneratorMetadata =
+                serde_json::from_str(&content).map_err(|error| {
+                    python_regeneration_error(
+                        output_dir,
+                        &format!("Invalid Python generator metadata: {error}"),
+                    )
+                })?;
+            if metadata.generator_version != generator_version {
+                return Err(python_regeneration_error(
+                    output_dir,
+                    &format!(
+                        "Python generator_version {:?} does not match current producer {:?}",
+                        metadata.generator_version, generator_version,
+                    ),
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if path_entry_exists(&output_dir.join(PYTHON_GENERATED_INVENTORY))
+                || path_entry_exists(&output_dir.join(PYTHON_TYPE_INVENTORY))
+                || !collect_generated_python_files(output_dir, false, false)?.is_empty()
+            {
+                return Err(python_regeneration_error(
+                    output_dir,
+                    "Existing generated Python artifacts have no recorded generator_version",
+                ));
+            }
+        }
+        Err(error) => {
+            return Err(format!("Failed to inspect {}: {error}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn write_python_generator_metadata(output_dir: &Path) -> Result<(), String> {
+    let metadata = PythonGeneratorMetadata {
+        generator_version: env!("CARGO_PKG_VERSION").into(),
+    };
+    let content = serde_json::to_string_pretty(&metadata)
+        .map_err(|error| format!("Failed to serialize Python generator metadata: {error}"))?;
+    write_file(
+        &output_dir.join(PYTHON_GENERATOR_METADATA),
+        &format!("{content}\n"),
+    )
+}
 
 fn python_inventory_contains(output_dir: &Path, relative_path: &Path) -> Result<bool, String> {
     let inventory_path = output_dir.join(PYTHON_GENERATED_INVENTORY);
@@ -6991,6 +7114,7 @@ fn collect_generated_python_files(
             let generated = match entry.file_name().to_str() {
                 Some("py.typed") => include_root_marker && current == root,
                 Some("pyproject.toml" | "setup.cfg") => include_root_manifest && current == root,
+                Some(PYTHON_GENERATOR_METADATA) => include_root_manifest && current == root,
                 Some(name) if name.ends_with(".py") || name.ends_with(".pyi") => {
                     fs::read_to_string(&path)
                         .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?
@@ -7052,7 +7176,7 @@ fn is_generator_owned_python_source_file(
         && relative.file_name().is_some_and(|name| {
             matches!(
                 name.to_str(),
-                Some("pyproject.toml" | "setup.cfg" | "py.typed")
+                Some("pyproject.toml" | "setup.cfg" | "py.typed" | PYTHON_GENERATOR_METADATA)
             )
         })
     {
@@ -10679,7 +10803,7 @@ mod tests {
 
         assert_eq!(
             context.implementation_module(&existing[0]),
-            "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
+            "windows__foundation__collections__i_ite_a890e3f1d2aa4c5f"
         );
     }
 
@@ -10696,7 +10820,7 @@ mod tests {
         let context = python_generation_context("", &[], &[], &[], &shared, &[]).unwrap();
         assert_eq!(
             context.implementation_module_for_interface(&shared[0]),
-            "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
+            "windows__foundation__collections__i_ite_a890e3f1d2aa4c5f"
         );
 
         write_python_type_inventory(&output, &[]).unwrap();
@@ -10776,12 +10900,69 @@ mod tests {
         assert!(
             fs::read_to_string(output.join("setup.cfg"))
                 .unwrap()
-                .contains(&format!("build-base = .dynwinrt-build/{initial}"))
+                .contains(&format!("build_base = .b/{initial}"))
         );
         let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
         assert!(inventory.lines().any(|line| line == "setup.cfg"));
         assert!(!inventory.contains(".venv"));
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_producer_version_compares_complete_preview_versions() {
+        let output = test_directory("python-preview-producer");
+        fs::create_dir_all(&output).unwrap();
+        let preview = "0.1.0-preview.21";
+        fs::write(
+            output.join(PYTHON_GENERATOR_METADATA),
+            format!(r#"{{"generator_version":"{preview}"}}"#),
+        )
+        .unwrap();
+        validate_python_generator_version_against(&output, preview).unwrap();
+        for other in ["0.1.0", "0.1.0-preview.20", "0.1.0-preview.22"] {
+            let error = validate_python_generator_version_against(&output, other).unwrap_err();
+            assert!(error.contains(preview), "{error}");
+            assert!(error.contains(other), "{error}");
+            assert!(
+                error.contains("regenerate the entire bindings selection"),
+                "{error}"
+            );
+        }
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_producer_preflight_preserves_incompatible_interrupted_output() {
+        let output = test_directory("python-incompatible-interrupted");
+        let leaf = output.file_name().unwrap().to_str().unwrap();
+        let parent = output.parent().unwrap();
+        let nonce = "incompatible-producer";
+        let backup = parent.join(format!(".{leaf}.dynwinrt-backup-{nonce}"));
+        let stage = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
+        for directory in [&backup, &stage] {
+            fs::create_dir_all(directory).unwrap();
+            write_transaction_owner(directory, nonce).unwrap();
+        }
+        fs::write(
+            backup.join(PYTHON_GENERATOR_METADATA),
+            r#"{"generator_version":"0.0.1"}"#,
+        )
+        .unwrap();
+        fs::write(backup.join("old.py"), GENERATED_PYTHON_HEADER).unwrap();
+        let error = match OutputTransaction::begin_with_preflight(
+            &output,
+            validate_python_generator_version,
+        ) {
+            Ok(_) => panic!("incompatible backup must not be restored or changed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("does not match current producer"), "{error}");
+        assert!(!output.exists());
+        assert!(backup.join("old.py").exists());
+        validate_transaction_owner(&backup, nonce).unwrap();
+        validate_transaction_owner(&stage, nonce).unwrap();
+        remove_owned_transaction_dir(&backup, nonce).unwrap();
+        remove_owned_transaction_dir(&stage, nonce).unwrap();
     }
 
     #[test]

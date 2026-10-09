@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use dynwinrt_codegen::codegen::python::PythonProjectionContext;
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
-use dynwinrt_codegen::types::TypeMeta;
+use dynwinrt_codegen::types::{TypeIdentityKind, TypeMeta};
 
 const COLLECTIONS: &str = "Windows.Foundation.Collections";
 const WINDOWS_WINMD: &str =
@@ -23,6 +24,11 @@ fn collections_type(name: &str, piid: &str, args: Vec<TypeMeta>) -> TypeMeta {
         piid: piid.into(),
         args,
     }
+}
+
+fn packaged_collection_module(name: &str, args: Vec<TypeMeta>) -> String {
+    let typ = collections_type(name, "", args);
+    common::python_module(typ.type_identity())
 }
 
 fn map_changed_handler(key: TypeMeta, value: TypeMeta) -> TypeMeta {
@@ -454,10 +460,15 @@ fn runtime_class_vector_changed_events_import_observable_sender_and_arguments() 
         ),
         "{py}"
     );
+    let arguments_module = PythonProjectionContext::default().implementation_module_for_named(
+        TypeIdentityKind::Interface,
+        COLLECTIONS,
+        "IVectorChangedEventArgs",
+    );
     assert!(
-        py.contains(
-            "_dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__p1__)"
-        ),
+        py.contains(&format!(
+            "_dynwinrt_symbol('{arguments_module}', 'IVectorChangedEventArgs')(value))(__p1__)"
+        )),
         "{py}"
     );
     for imported in [
@@ -543,30 +554,36 @@ fn windows_observable_maps_type_and_project_map_changed_handlers() {
         let callback = format!(
             "Callable[['IObservableMap_String_{value}', 'IMapChangedEventArgs_String'], object]"
         );
-        let observable_module = format!(
-            "windows__foundation__collections__i_observable_map_string_{}",
-            value.to_lowercase()
+        let value_type = if value == "Object" {
+            TypeMeta::Object
+        } else {
+            TypeMeta::String
+        };
+        let observable_module = packaged_collection_module(
+            "IObservableMap`2",
+            vec![TypeMeta::String, value_type.clone()],
         );
+        let map_module =
+            packaged_collection_module("IMap`2", vec![TypeMeta::String, value_type.clone()]);
+        let map_view_module =
+            packaged_collection_module("IMapView`2", vec![TypeMeta::String, value_type]);
+        let arguments_module =
+            packaged_collection_module("IMapChangedEventArgs`1", vec![TypeMeta::String]);
         let sender = format!(
             "(lambda value: None if value.is_null() else _dynwinrt_symbol('{observable_module}', 'IObservableMap_String_{value}')(value))(__p0__)"
         );
-        let args = "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__collections__i_map_changed_event_args_string', 'IMapChangedEventArgs_String')(value))(__p1__)";
+        let args = format!(
+            "(lambda value: None if value.is_null() else _dynwinrt_symbol('{arguments_module}', 'IMapChangedEventArgs_String')(value))(__p1__)"
+        );
         let projection = format!("lambda __p0__, __p1__: ({sender}, {args})");
 
         let class_py = output.read(&format!("windows__foundation__collections__{class}.py"));
         let interface_py = output.read(&format!("{observable_module}.py"));
-        let map_py = output.read(&format!(
-            "windows__foundation__collections__i_map_string_{}.py",
-            value.to_lowercase()
-        ));
-        let map_view_py = output.read(&format!(
-            "windows__foundation__collections__i_map_view_string_{}.py",
-            value.to_lowercase()
-        ));
+        let map_py = output.read(&format!("{map_module}.py"));
+        let map_view_py = output.read(&format!("{map_view_module}.py"));
         assert!(
             interface_py.contains(&format!(
-                "_dynwinrt_map_dispatch = (_dynwinrt_symbol('windows__foundation__collections__i_map_string_{}', 'IID_IMap_String_{value}'), '_obj')",
-                value.to_lowercase()
+                "_dynwinrt_map_dispatch = (_dynwinrt_symbol('{map_module}', 'IID_IMap_String_{value}'), '_obj')",
             )),
             "{interface_py}"
         );
@@ -607,8 +624,7 @@ fn windows_observable_maps_type_and_project_map_changed_handlers() {
         }
         assert!(
             interface_py.contains(&format!(
-                "class IObservableMap_String_{value}(_dynwinrt_symbol('windows__foundation__collections__i_map_string_{}', 'IMap_String_{value}')):",
-                value.to_lowercase()
+                "class IObservableMap_String_{value}(_dynwinrt_symbol('{map_module}', 'IMap_String_{value}')):",
             )),
             "{interface_py}"
         );
@@ -653,8 +669,9 @@ fn windows_observable_map_returns_emit_their_mutable_map_base() {
     else {
         return;
     };
-    let observable =
-        output.read("windows__foundation__collections__i_observable_map_string_string.py");
+    let observable_module =
+        packaged_collection_module("IObservableMap`2", vec![TypeMeta::String, TypeMeta::String]);
+    let observable = output.read(&format!("{observable_module}.py"));
     assert!(
         observable.contains(
             "class IObservableMap_String_String(_dynwinrt_symbol('windows__foundation__collections__i_map_string_string', 'IMap_String_String')):"

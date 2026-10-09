@@ -179,8 +179,8 @@ fn python_path_diagnostic_uses_actual_final_files_not_transactional_paths() {
         return;
     }
     let fixture = Fixture::new();
-    let deep = fixture.output("deep", 137);
-    let shallow = fixture.output("short", 130);
+    let deep = fixture.output("deep", 201);
+    let shallow = fixture.output("short", 194);
     let output = device_command(&deep).output().unwrap();
     successful(&output);
     let generated = files(&deep);
@@ -220,7 +220,7 @@ fn python_path_diagnostic_uses_actual_final_files_not_transactional_paths() {
         "the no-warning control must exercise over-budget staging paths"
     );
 
-    let unpublished = fixture.output("failure", 137);
+    let unpublished = fixture.output("failure", 201);
     let failure = device_command(&unpublished)
         .env("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT", "before_publish")
         .output()
@@ -242,7 +242,7 @@ fn python_path_diagnostic_respects_relative_dry_run_and_no_pyi_boundary() {
         return;
     }
     let fixture = Fixture::new();
-    let output = fixture.output("boundary-\u{1f642}", 135);
+    let output = fixture.output("boundary-\u{1f642}", 199);
     let relative = output.strip_prefix(&fixture.0).unwrap();
     let dry_run = device_command(relative)
         .current_dir(&fixture.0)
@@ -312,4 +312,183 @@ fn python_path_diagnostic_precedes_namespace_completion() {
         "{log}"
     );
     assert!(!files(&output).is_empty());
+}
+
+#[test]
+fn same_version_incremental_output_matches_fresh_typed_and_untyped_union() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+    let fixture = Fixture::new();
+    let roots = [
+        "Windows.Foundation.Uri",
+        "Windows.Devices.Enumeration.DeviceInformation",
+    ];
+    for pyi in [true, false] {
+        let generate = |output: &Path, roots: &[&str]| {
+            let mut command = command(output);
+            command.args(["--class-name", &roots.join(",")]);
+            if !pyi {
+                command.arg("--no-pyi");
+            }
+            let output = command.output().unwrap();
+            successful(&output);
+            assert!(!stderr(&output).contains(WARNING));
+        };
+        let fresh = fixture.output(&format!("fresh-{pyi}"), 120);
+        generate(&fresh, &roots);
+        let expected = files(&fresh);
+        for reverse in [false, true] {
+            let phased = fixture.output(&format!("phased-{pyi}-{reverse}"), 120);
+            let order = if reverse { [roots[1], roots[0]] } else { roots };
+            for root in order {
+                generate(&phased, &[root]);
+            }
+            assert_eq!(files(&phased), expected);
+        }
+        assert!(
+            expected
+                .keys()
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "py" || extension == "pyi")
+                })
+                .all(|path| path_length(path) <= 60)
+        );
+        let stamp: serde_json::Value =
+            serde_json::from_slice(&expected[Path::new(".dynwinrt-generator.json")]).unwrap();
+        assert_eq!(stamp["generator_version"], env!("CARGO_PKG_VERSION"));
+    }
+}
+
+#[test]
+fn synthetic_long_metadata_installs_through_a_utf16_output_root() {
+    let fixture = Fixture::new();
+    let metadata = fixture.0.join("UnicodePaths.winmd");
+    let namespace = "Windows.OutputPaths.UnicodeRoot";
+    let names = ["First", "Second"]
+        .map(|suffix| format!("Options{}{suffix}", "LongMetadataName".repeat(8)));
+    let mut file = writer::File::new("PythonUnicodePaths");
+    let base = file.TypeRef("System", "Enum");
+    for name in &names {
+        file.TypeDef(
+            namespace,
+            name,
+            writer::TypeDefOrRef::TypeRef(base),
+            TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+        );
+        file.Field(
+            "value__",
+            &Type::I32,
+            FieldAttributes::Public | FieldAttributes::SpecialName | FieldAttributes::RTSpecialName,
+        );
+        let member = file.Field(
+            "One",
+            &Type::named(namespace, name),
+            FieldAttributes::Public
+                | FieldAttributes::Static
+                | FieldAttributes::Literal
+                | FieldAttributes::HasDefault,
+        );
+        file.Constant(writer::HasConstant::Field(member), &Value::I32(1));
+    }
+    fs::write(&metadata, file.into_stream()).unwrap();
+    let output = fixture.output("unicode-\u{1f642}", 150);
+    successful(
+        &command_with_metadata(&output, &metadata)
+            .args(["--namespace", namespace])
+            .output()
+            .unwrap(),
+    );
+    let context = dynwinrt_codegen::codegen::python::PythonProjectionContext::packaged(
+        names.iter().map(|name| {
+            dynwinrt_codegen::types::TypeIdentity::named(
+                dynwinrt_codegen::types::TypeIdentityKind::Enum,
+                namespace,
+                name,
+            )
+        }),
+    )
+    .unwrap();
+    let generated = files(&output);
+    assert!(
+        generated
+            .keys()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "py" || extension == "pyi")
+            })
+            .all(|path| path_length(path) <= 60)
+    );
+    for name in &names {
+        let identity = dynwinrt_codegen::types::TypeIdentity::named(
+            dynwinrt_codegen::types::TypeIdentityKind::Enum,
+            namespace,
+            name,
+        );
+        let implementation = context.implementation_module(&identity);
+        let source = fs::read_to_string(output.join(format!("{implementation}.py"))).unwrap();
+        assert!(source.contains(&format!("class {name}(")), "{source}");
+    }
+
+    let Some(python) = std::env::var_os("DYNWINRT_TEST_PYTHON") else {
+        return;
+    };
+    let installed = fixture.0.join("installed");
+    successful(
+        &Command::new(&python)
+            .args([
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--no-cache-dir",
+                "--target",
+            ])
+            .arg(&installed)
+            .arg(&output)
+            .env(
+                "PIP_INDEX_URL",
+                "https://packagefeedproxy.microsoft.io/pypi/simple/",
+            )
+            .env_remove("PIP_EXTRA_INDEX_URL")
+            .output()
+            .unwrap(),
+    );
+    let public_namespace =
+        dynwinrt_codegen::codegen::python::python_namespace_segments(namespace).join(".");
+    let code = format!(
+        "import importlib,sys; sys.path.insert(0, sys.argv[1]); \
+         package=importlib.import_module('generated_bindings.{public_namespace}'); \
+         first=getattr(package, {:?}); second=getattr(package, {:?}); \
+         assert first is not second; assert first(1).value == second(1).value == 1",
+        names[0], names[1],
+    );
+    successful(
+        &Command::new(&python)
+            .args(["-I", "-c", &code])
+            .arg(&installed)
+            .output()
+            .unwrap(),
+    );
+    let consumer = fixture.0.join("consumer.py");
+    fs::write(
+        &consumer,
+        format!(
+            "from generated_bindings.{public_namespace} import {} as Options\n\
+         value: Options = Options(1)\n",
+            names[0],
+        ),
+    )
+    .unwrap();
+    successful(
+        &Command::new(&python)
+            .args(["-m", "mypy", "--strict", "--no-incremental", "--cache-dir"])
+            .arg(fixture.0.join("m"))
+            .arg(&consumer)
+            .env("MYPYPATH", &installed)
+            .output()
+            .unwrap(),
+    );
 }

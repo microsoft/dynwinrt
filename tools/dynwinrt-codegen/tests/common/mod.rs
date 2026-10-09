@@ -9,6 +9,12 @@ use dynwinrt_codegen::meta::{
 };
 use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
+pub fn python_module(identity: TypeIdentity) -> String {
+    PythonProjectionContext::packaged([identity.clone()])
+        .unwrap()
+        .implementation_module(&identity)
+}
+
 /// Generated `on_`, `subscribe_` and `once_` signatures for an event. `on_` and
 /// `subscribe_` also accept native delegates.
 pub fn event_signatures(event: &str, _callback: &str) -> [String; 3] {

@@ -18,6 +18,11 @@ Generated package manifests pin `dynwinrt` to the exact version of
 Do not mix generated bindings with an older runtime wheel. Upgrade to the
 matching runtime version and regenerate all Python bindings together; generated
 interface overloads fail explicitly when a required native guard is missing.
+Generated Python packages record the full producer version separately.
+Upgrades, downgrades, and legacy unstamped output require manually cleaning
+the dedicated codegen output and regenerating the complete bindings selection;
+incompatible generation fails without changing existing output.
+See the [producer-version and path contracts](../../tools/dynwinrt-codegen/python/README.md#producer-version-and-regeneration).
 
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.

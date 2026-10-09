@@ -175,9 +175,20 @@ layout, ownership, or cleanup information. See the
 
 The output directory belongs to codegen; do not store handwritten files in it.
 After changing metadata files, SDK versions, or reference inputs, regenerate the
-complete output. Python module components longer than 120 characters are
-shortened with a stable readable prefix and hash suffix while public type names
-remain unchanged.
+complete output. Python module stems are selectively shortened to a 56-unit
+UTF-16 relative-path budget, including namespace directories for public facades.
+Public type names, namespace exports, and ordinary short module imports remain
+unchanged; direct imports of shortened long modules must migrate. Compact,
+layout-scoped setuptools build and wheel staging paths leave additional room
+for source installation and bytecode caches.
+
+Python output records the complete producer `generator_version` in
+`.dynwinrt-generator.json`. A different version, an unstamped generated package,
+or corrupt producer metadata fails before changing existing output: manually
+clean the dedicated output and regenerate the entire selection, or use fresh
+output. Equal versions retain incremental behavior. This includes preview
+versions and downgrades, but cannot detect unversioned same-version development
+changes. See the [regeneration contract](python/README.md#producer-version-and-regeneration).
 
 That component budget does not constrain an arbitrary output root. On Windows,
 Python generation warns once about final `.py`/`.pyi` paths of 260 or more
@@ -190,12 +201,8 @@ their owning interfaces through incremental renames. Python's package-level
 root exports drop an interface and its helpers when its short name becomes
 ambiguous, while namespace imports remain available. Python's
 heterogeneous interface-pair union is generated from validated inventory
-records, not inferred from `.pyi` text. The first typed incremental generation
-over an older inventory needs the original WinMD/`--ref` inputs for interfaces
-whose implementation records are missing. If those inputs are unavailable,
-generation fails atomically and leaves the previous output usable: supply the
-listed metadata and retry, or fully regenerate the package. New inventories
-retain these records, and `--no-pyi` does not require this typing migration.
+records, not inferred from `.pyi` text. New inventories retain these records;
+older producer versions require full regeneration as described above.
 After `--no-pyi`, include the earlier types when regenerating with stubs enabled
 (or fully regenerate the package). A typed append fails rather than publishing
 imports of missing retained declarations or dropping interfaces from the union.

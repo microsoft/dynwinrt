@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -461,6 +463,13 @@ fn strict_consumers_separate_instances_factories_and_native_object_inputs() {
     let fixture = Fixture::new();
     generate_fixture(&fixture, "first");
     generate_fixture(&fixture, "second");
+    let resource = TypeIdentity::named(TypeIdentityKind::Class, "Contoso", "Resource");
+    let resource_map_module = common::python_module(TypeIdentity::closed_generic(
+        TypeIdentityKind::Interface,
+        "Windows.Foundation.Collections",
+        "IMap`2",
+        [resource.clone(), resource],
+    ));
     typecheck(
         &fixture,
         &["first", "second"],
@@ -601,11 +610,11 @@ def invalid_collections(resource: Resource, unrelated: Unrelated,
     typecheck(
         &fixture,
         &["first"],
-        r#"from typing import assert_type
+        &r#"from typing import assert_type
 from dynwinrt import DynWinRTValue
 from first.contoso__resource import Resource
 from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
-from first.windows__foundation__collections__i_map_resource_resource import IMap_Resource_Resource
+from first.__RESOURCE_MAP_MODULE__ import IMap_Resource_Resource
 
 def nullable_reference_keys(
     objects: IMap_Object_Object, resources: IMap_Resource_Resource
@@ -616,16 +625,17 @@ def nullable_reference_keys(
     resources.update({None: None})
     assert_type(resources.setdefault(None, None), Resource | None)
     assert_type(resources[None], Resource | None)
-"#,
+"#
+        .replace("__RESOURCE_MAP_MODULE__", &resource_map_module),
         &[],
     );
     pyright_typecheck(
         &fixture,
-        r#"from typing import assert_type
+        &r#"from typing import assert_type
 from dynwinrt import DynWinRTValue
 from first.contoso__resource import Resource
 from first.windows__foundation__collections__i_map_object_object import IMap_Object_Object
-from first.windows__foundation__collections__i_map_resource_resource import IMap_Resource_Resource
+from first.__RESOURCE_MAP_MODULE__ import IMap_Resource_Resource
 
 def nullable_reference_keys(
     objects: IMap_Object_Object, resources: IMap_Resource_Resource
@@ -636,7 +646,8 @@ def nullable_reference_keys(
     resources.update({None: None})
     assert_type(resources.setdefault(None, None), Resource | None)
     assert_type(resources[None], Resource | None)
-"#,
+"#
+        .replace("__RESOURCE_MAP_MODULE__", &resource_map_module),
         0,
     );
     typecheck(
@@ -1622,12 +1633,18 @@ fn mutable_collection_mutators_accept_none() {
     )
     .unwrap();
     assert!(object_map_stub.contains("MutableMapping[DynWinRTValue | None, DynWinRTValue | None]"));
-    let pair_stub = fs::read_to_string(
-        fixture
-            .0
-            .join("sdk")
-            .join("windows__foundation__collections__i_key_value_pair_object_object.pyi"),
-    )
+    let pair_stub = fs::read_to_string(fixture.0.join("sdk").join(format!(
+        "{}.pyi",
+        common::python_module(TypeIdentity::closed_generic(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IKeyValuePair`2",
+            [
+                TypeMeta::Object.type_identity(),
+                TypeMeta::Object.type_identity()
+            ],
+        ))
+    )))
     .unwrap();
     assert!(pair_stub.contains("def key(self) -> DynWinRTValue | None: ..."));
     assert!(pair_stub.contains("def value(self) -> DynWinRTValue | None: ..."));
@@ -1636,7 +1653,7 @@ fn mutable_collection_mutators_accept_none() {
     typecheck(
         &fixture,
         &["sdk"],
-        r#"from typing import assert_type
+        &r#"from typing import assert_type
 from dynwinrt import DynWinRTValue
 from sdk.windows.data.json import IJsonValue, JsonObject, JsonValue
 from sdk.windows.foundation import IStringable, Uri
@@ -1647,7 +1664,7 @@ from sdk.windows.foundation.collections import (
 )
 from sdk.windows.storage import StorageFolder
 from sdk.windows__foundation__collections__property_set import IMap_String_Object
-from sdk.windows__foundation__collections__i_map_i_stringable_i_stringable import (
+from sdk.__STRINGABLE_MODULE__ import (
     IMap_IStringable_IStringable,
 )
 
@@ -1681,7 +1698,8 @@ def reference_keys(
 def string_keys(values: IMap_String_String) -> None:
     values["key"] = "value"
     values.get("key")
-"#,
+"#
+        .replace("__STRINGABLE_MODULE__", &stringable_module),
         &[],
     );
 
@@ -1780,7 +1798,7 @@ from sdk.windows.foundation.collections import (
     IVector_String,
     IVector_StorageFolder,
 )
-from sdk.windows__foundation__collections__i_map_i_stringable_i_stringable import (
+from sdk.__STRINGABLE_MODULE__ import (
     IMap_IStringable_IStringable,
 )
 from sdk.windows__data__json__json_object import IID_IJsonValue, IMap_String_IJsonValue
@@ -1914,7 +1932,8 @@ with RoApartment(1), projected_lifetime_scope():
             raise AssertionError(f"{expected!r} was not raised")
 print("nullable-collection-native-ok", flush=True)
 "#
-        .replace("__NESTED_MODULE__", &nested_module);
+        .replace("__NESTED_MODULE__", &nested_module)
+        .replace("__STRINGABLE_MODULE__", &stringable_module);
         fs::write(fixture.0.join("nullable_collections.py"), script).unwrap();
         let output = Command::new(python())
             .args(["-B", "nullable_collections.py"])
