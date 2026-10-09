@@ -162,6 +162,20 @@ and iterators work with `iter()` and `next()`. Mutable vectors support indexing,
 slicing, assignment, insertion, and deletion; mutable maps support standard
 mapping assignment and deletion.
 
+Sequence containment, `index()`, `count()`, and `remove()`, mapping equality,
+and value/item-view membership compare WinRT references by canonical COM
+identity, including different generated class/interface views and raw
+`DynWinRTValue` carriers of the same object. This is reference identity, not a
+runtime class's `equals()` or content comparison. Python scalars and generated
+structs retain their normal equality, and released or wrong-thread native
+access still raises. Wrapper/value `==` and hashing outside these collection
+operations are unchanged.
+
+Raw `Object` collections do not implicitly box or unbox for comparison:
+different boxes remain different references. An opt-in `object_value_view()`
+compares its converted Python values normally and any remaining native
+references by COM identity.
+
 Method inputs accept normal Python sequences and mappings in place of compatible
 WinRT collection interfaces, subject to the producer limits below.
 Byte arrays accept `bytes` and `bytearray`; GUID,

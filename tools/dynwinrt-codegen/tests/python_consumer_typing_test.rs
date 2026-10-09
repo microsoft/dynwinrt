@@ -1103,6 +1103,280 @@ print("collection-subscript-native-ok", flush=True)
 }
 
 #[test]
+fn collection_comparisons_preserve_native_identity_and_python_value_semantics() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    if !winmd.is_file() || !has_mypy() || !has_implementation_runtime() {
+        eprintln!("Skipping SDK collection comparisons: metadata, mypy or runtime unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--winmd"])
+        .arg(winmd)
+        .args([
+            "--class-name",
+            "Windows.Data.Json.JsonArray,Windows.Data.Json.JsonObject,Windows.Data.Json.JsonValue,\
+             Windows.Foundation.Collections.PropertySet,Windows.Foundation.Collections.StringMap,\
+             Windows.Foundation.Uri,Windows.Devices.Geolocation.Geopoint,\
+             Windows.UI.Xaml.ResourceDictionary",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(fixture.0.join("sdk"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    let imports = r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from dynwinrt.values import object_value_view
+from sdk.windows.data.json import IJsonValue, JsonArray, JsonObject, JsonValue
+from sdk.windows.foundation import Uri
+from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
+"#;
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+def valid(value: JsonValue, interface: IJsonValue, array: JsonArray,
+          mapping: JsonObject, properties: PropertySet, uri: Uri) -> None:
+    array.append(value)
+    assert_type(value in array, bool)
+    assert_type(array.index(value, -3, 3), int)
+    assert_type(array.count(interface), int)
+    array.remove(value)
+    view = array.get_view()
+    if view is not None:
+        assert_type(view.index(value), int)
+        assert_type(view.count(value), int)
+    assert_type(mapping == {{"value": value}}, bool)
+    assert_type(value in mapping.values(), bool)
+    assert_type(("value", value) in mapping.items(), bool)
+    assert_type(properties == {{"uri": uri}}, bool)
+    assert_type(properties == properties, bool)
+    assert_type(properties == properties.as_interface(IMap_String_Object), bool)
+    assert_type(properties.get_view() == properties.get_view(), bool)
+    assert_type(object_value_view(properties) == {{"uri": uri}}, bool)
+    assert_type(properties["uri"], DynWinRTValue | None)
+"#
+        ),
+        &[],
+    );
+    typecheck(
+        &fixture,
+        &["sdk"],
+        &format!(
+            r#"{imports}
+def invalid(array: JsonArray, properties: PropertySet, uri: Uri) -> None:
+    array.append(None)
+    array.append(uri)
+    properties["implicit"] = 1
+    raw: DynWinRTValue = properties["nullable"]
+"#
+        ),
+        &["[arg-type]", "[arg-type]", "[assignment]", "[assignment]"],
+    );
+    fs::write(
+        fixture.0.join("comparison_runtime.py"),
+        r#"from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
+import math
+from dynwinrt import DynWinRTType, DynWinRTValue, RoApartment, release_projected, to_winrt_object
+from dynwinrt.values import object_value_view
+from sdk.windows.data.json import IJsonValue, JsonArray, JsonObject, JsonValue
+from sdk.windows.devices.geolocation import BasicGeoposition, Geopoint
+from sdk.windows.foundation import IStringable, Uri
+from sdk.windows.foundation.collections import (
+    IMap_Object_Object, IMap_String_Object, IMapView_String_Object, PropertySet, StringMap,
+)
+from sdk.windows__data__json__json_array import IID_IJsonValue, IVector_IJsonValue
+
+class Index:
+    def __init__(self, value):
+        self.value = value
+    def __index__(self):
+        return self.value
+
+def raises(error_type, operation):
+    try:
+        operation()
+    except error_type:
+        return
+    raise AssertionError(f"{error_type.__name__} was not raised")
+
+with RoApartment():
+    value = JsonValue.create_string_value("same")
+    different = JsonValue.create_string_value("same")
+    other = JsonValue.create_string_value("other")
+    array = JsonArray()
+    array.extend([other, value, value, other])
+    mutable = IVector_IJsonValue.from_value(array._obj)
+    readonly = array.get_view()
+    assert isinstance(array, MutableSequence) and isinstance(readonly, Sequence)
+    interface = value.as_interface(IJsonValue)
+    assert interface._obj.identity_raw() == value._obj.identity_raw()
+    assert value._obj.identity_raw() != different._obj.identity_raw()
+    assert value._obj != interface._obj and value != interface
+    for sequence in (array, mutable, readonly):
+        assert sequence.index_of(value) == (1, True)
+        for candidate in (value, interface, value._obj):
+            assert candidate in sequence and sequence.count(candidate) == 2
+            assert sequence.index(candidate) == 1
+            assert sequence.index(candidate, 2) == 2
+            assert sequence.index(candidate, Index(-3), Index(-1)) == 1
+            raises(ValueError, lambda: sequence.index(candidate, 2, 2))
+            raises(ValueError, lambda: sequence.index(candidate, 3, 20))
+        assert different not in sequence and sequence.count(different) == 0
+        raises(ValueError, lambda: sequence.index(different))
+        assert None not in sequence
+    array.remove(value)
+    assert array.index(value) == 1 and len(array) == 3
+    mutable.remove(value._obj)
+    assert value not in array and len(array) == 2
+    raises(ValueError, lambda: array.remove(different))
+    assert not value._obj.is_released() and value.get_string() == "same"
+    try:
+        value in readonly
+    except OSError as error:
+        assert error.winerror == -2147483636  # RO_E_CHANGED_STATE
+    else:
+        raise AssertionError("mutating JsonArray did not invalidate its native view")
+    readonly = array.get_view()
+    released_json = value.as_interface(IJsonValue)
+    release_projected(released_json)
+    for sequence in (array, mutable, readonly):
+        raises(RuntimeError, lambda: released_json in sequence)
+        raises(RuntimeError, lambda: sequence.index(released_json))
+        raises(RuntimeError, lambda: sequence.count(released_json))
+    raises(RuntimeError, lambda: array.remove(released_json))
+    assert value.get_string() == "same"
+    interface = value.as_interface(IJsonValue)
+
+    nullable = IVector_IJsonValue.from_value(DynWinRTValue.create_vector(
+        [DynWinRTValue.null_value(), value._obj, DynWinRTValue.null_value()],
+        DynWinRTType.interface(IID_IJsonValue),
+    ))
+    assert None in nullable and DynWinRTValue.null_value() in nullable
+    assert nullable.index(DynWinRTValue.null_value(), 1) == 2
+    assert nullable.count(None) == 2
+    nullable.remove(DynWinRTValue.null_value())
+    assert nullable[0].get_string() == "same" and nullable[1] is None
+    json_null = JsonValue.create_null_value()
+    array.append(json_null)
+    assert json_null in array and None not in array
+    before = array.stringify()
+    raises(TypeError, lambda: array.extend([value, None]))
+    raises(TypeError, lambda: mutable.append(DynWinRTValue.null_value()))
+    assert array.stringify() == before
+
+    json_map = JsonObject()
+    json_map["value"] = value
+    for mapping in (json_map, json_map.get_view()):
+        assert mapping == mapping and mapping == {"value": value}
+        assert mapping == {"value": interface} and mapping == {"value": value._obj}
+        assert mapping != {"value": different}
+        assert value in mapping.values() and ("value", value) in mapping.items()
+    before = json_map.stringify()
+    raises(TypeError, lambda: json_map.__setitem__("bad", None))
+    assert json_map.stringify() == before
+
+    uri = Uri("https://example.com/same")
+    other_uri = Uri("https://example.com/same")
+    stringable = uri.as_interface(IStringable)
+    assert uri.equals(other_uri)
+    assert uri._obj.identity_raw() != other_uri._obj.identity_raw()
+    object_keys = IMap_Object_Object.create({uri: uri, None: None})
+    for mapping in (object_keys, object_keys.get_view()):
+        assert mapping == {stringable: uri._obj, None: None}
+        assert mapping == mapping and mapping != {other_uri: uri, None: None}
+        assert uri in mapping and stringable in mapping
+        assert (stringable, uri) in mapping.items()
+    box = to_winrt_object(1)
+    properties = PropertySet()
+    properties["uri"] = uri
+    properties["box"] = box
+    properties["null"] = None
+    mutable_map = properties.as_interface(IMap_String_Object)
+    readonly_map = properties.get_view()
+    typed_readonly = IMapView_String_Object.from_value(readonly_map._obj)
+    expected = {"uri": stringable, "box": box, "null": DynWinRTValue.null_value()}
+    for mapping in (properties, mutable_map, readonly_map, typed_readonly):
+        assert isinstance(mapping, Mapping)
+        assert mapping == mapping and mapping == expected and expected == mapping
+        assert mapping == properties and properties == mapping
+        assert uri in mapping.values() and ("uri", stringable) in mapping.items()
+        assert other_uri not in mapping.values() and ("uri", other_uri) not in mapping.items()
+        assert ("missing", uri) not in mapping.items()
+        assert mapping != {"uri": other_uri, "box": box, "null": None}
+        assert mapping != {"uri": uri, "box": to_winrt_object(1), "null": None}
+        assert mapping != {"uri": uri, "box": 1, "null": None}
+        assert mapping != {"uri": uri} and mapping != list(expected.items())
+        raises(TypeError, lambda: hash(mapping))
+    assert isinstance(mutable_map, MutableMapping)
+    assert not isinstance(readonly_map, MutableMapping)
+    assert properties["box"] != properties["box"]
+
+    converted = object_value_view(properties)
+    converted_readonly = object_value_view(readonly_map)
+    for view in (converted, converted_readonly):
+        assert view == view and view == converted
+        assert view == {"uri": uri, "box": 1, "null": None}
+        assert view != {"uri": other_uri, "box": 1, "null": None}
+        assert uri in view.values() and ("uri", stringable) in view.items()
+        assert 1 in view.values() and ("box", 1) in view.items()
+    converted["nan"] = float("nan")
+    assert math.isnan(converted["nan"]) and converted != converted
+    del converted["nan"]
+    readonly_map = properties.get_view()
+    converted_readonly = object_value_view(readonly_map)
+    assert converted == converted_readonly
+    assert uri.absolute_uri == other_uri.absolute_uri
+    assert not uri._obj.is_released() and not box.is_released()
+
+    strings = StringMap()
+    strings["key"] = "text"
+    assert strings == {"key": "text"} and {"key": "text"} == strings
+    assert strings.get_view() == strings
+    assert "text" in strings.values() and ("key", "text") in strings.items()
+    position = BasicGeoposition(latitude=1, longitude=2, altitude=3)
+    point = Geopoint(position)
+    assert point.position == position and position != BasicGeoposition()
+
+    expected["uri"] = uri._obj
+    released = uri.as_interface(IStringable)
+    release_projected(released)
+    for operation in (
+        lambda: properties == {"uri": released, "box": box, "null": None},
+        lambda: released in properties.values(),
+        lambda: ("uri", released) in properties.items(),
+        lambda: converted == {"uri": released, "box": 1, "null": None},
+    ):
+        raises(RuntimeError, operation)
+    assert uri.absolute_uri == "https://example.com/same"
+    release_projected(properties)
+    raises(RuntimeError, lambda: properties == properties)
+    raises(RuntimeError, lambda: converted == converted)
+    assert readonly_map == expected and uri.absolute_uri == "https://example.com/same"
+print("collection-comparison-native-ok", flush=True)
+"#,
+    )
+    .unwrap();
+    let output = Command::new(python())
+        .args(["-B", "comparison_runtime.py"])
+        .current_dir(&fixture.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("collection-comparison-native-ok"),
+        "{}",
+        diagnostics(&output)
+    );
+}
+
+#[test]
 fn thread_pool_abi_names_keep_precise_callable_and_native_inputs() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
