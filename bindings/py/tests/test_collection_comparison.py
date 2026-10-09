@@ -251,6 +251,16 @@ def test_canonical_identity_does_not_call_content_methods_or_consume_source():
             mapping = projection({alias: raw})
             assert mapping == {raw: alias}
             assert projected in mapping.values() and (alias, projected) in mapping.items()
+            for aliased_keys in (
+                {raw: raw, alias: raw},
+                {raw: None, alias: raw},
+                {raw: raw, alias: None},
+            ):
+                assert len(mapping) == 1 and len(aliased_keys) == 2
+                assert mapping != aliased_keys and aliased_keys != mapping
+            same_size = projection({alias: raw, None: None})
+            assert len(same_size) == len(aliased_keys)
+            assert same_size != {raw: raw, alias: None}
         assert not raw.is_released() and not alias.is_released()
         assert handler.calls == 0
         alias.release()

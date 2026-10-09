@@ -1287,12 +1287,28 @@ with RoApartment():
     stringable = uri.as_interface(IStringable)
     assert uri.equals(other_uri)
     assert uri._obj.identity_raw() != other_uri._obj.identity_raw()
+    single_key = IMap_Object_Object.create({uri: uri})
+    for mapping in (single_key, single_key.get_view()):
+        single_alias = {stringable: uri}
+        assert len(mapping) == 1
+        assert mapping == single_alias and single_alias == mapping
+        for aliased_keys in (
+            {uri: uri, stringable: uri},
+            {uri: other_uri, stringable: uri},
+            {uri: uri, stringable: other_uri},
+            {uri._obj: uri, stringable._obj: uri},
+        ):
+            assert len(aliased_keys) == 2
+            assert mapping != aliased_keys and aliased_keys != mapping
+        assert mapping[uri].identity_raw() == uri._obj.identity_raw()
     object_keys = IMap_Object_Object.create({uri: uri, None: None})
     for mapping in (object_keys, object_keys.get_view()):
         assert mapping == {stringable: uri._obj, None: None}
         assert mapping == mapping and mapping != {other_uri: uri, None: None}
         assert uri in mapping and stringable in mapping
         assert (stringable, uri) in mapping.items()
+        assert mapping != {uri: uri, stringable: None}
+        assert {uri: uri, stringable: None} != mapping
     box = to_winrt_object(1)
     properties = PropertySet()
     properties["uri"] = uri

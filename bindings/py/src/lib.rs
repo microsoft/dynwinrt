@@ -564,16 +564,18 @@ def _dynwinrt_mapping_equal(left, right):
     # Retain native keys while their canonical identities are dictionary keys.
     left_pairs = list(left.items())
     right_pairs = list(right.items())
-    left_items = {
-        _dynwinrt_collection_key(key): value for key, value in left_pairs
-    }
-    right_items = {
-        _dynwinrt_collection_key(key): value for key, value in right_pairs
-    }
-    return left_items.keys() == right_items.keys() and all(
-        _dynwinrt_collection_equal(value, right_items[key])
-        for key, value in left_items.items()
-    )
+    left_keys = [_dynwinrt_collection_key(key) for key, _ in left_pairs]
+    right_values = {}
+    for key, value in right_pairs:
+        right_values.setdefault(_dynwinrt_collection_key(key), []).append(value)
+    if len(left_pairs) != len(right_pairs):
+        return False
+    # Identity normalization must match entries one-to-one, not collapse aliases.
+    for key, (_, value) in zip(left_keys, left_pairs):
+        candidates = right_values.pop(key, ())
+        if len(candidates) != 1 or not _dynwinrt_collection_equal(value, candidates[0]):
+            return False
+    return not right_values
 
 class _WinRTSequenceMixin(_Sequence):
     def __len__(self):

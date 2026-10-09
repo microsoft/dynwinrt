@@ -170,6 +170,8 @@ runtime class's `equals()` or content comparison. Python scalars and generated
 structs retain their normal equality, and released or wrong-thread native
 access still raises. Wrapper/value `==` and hashing outside these collection
 operations are unchanged.
+Mapping equality also preserves entry counts: distinct Python keys are not
+collapsed into one entry just because they alias the same native reference.
 
 Raw `Object` collections do not implicitly box or unbox for comparison:
 different boxes remain different references. An opt-in `object_value_view()`
