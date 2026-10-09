@@ -2970,10 +2970,8 @@ async def run_check(
             )
 
             formatter_module = importlib.import_module(
-                implementation_module_name(
-                    pkg_name,
-                    'Windows.Globalization.NumberFormatting',
-                    'DecimalFormatter',
+                namespace_module_name(
+                    pkg_name, 'Windows.Globalization.NumberFormatting'
                 )
             )
             interface_values = []
@@ -3761,13 +3759,12 @@ async def run_check(
         elif kind == 'nested_struct_runtime':
             from typing import get_type_hints
 
-            module = importlib.import_module(
-                implementation_module_name(
-                    pkg_name, namespace, 'Direct3DSurfaceDescription'
-                )
+            namespace_module = importlib.import_module(
+                namespace_module_name(pkg_name, namespace)
             )
-            descriptor_type = getattr(module, 'Direct3DSurfaceDescription')
-            nested_type = getattr(module, 'Direct3DMultisampleDescription')
+            descriptor_type = getattr(namespace_module, 'Direct3DSurfaceDescription')
+            nested_type = getattr(namespace_module, 'Direct3DMultisampleDescription')
+            module = importlib.import_module(descriptor_type.__module__)
             pixel_format = generated_type(pkg_name, 'DirectXPixelFormat')
             pack = getattr(module, 'pack_direct3_d_surface_description')
             unpack = getattr(module, 'unpack_direct3_d_surface_description')
@@ -3776,6 +3773,7 @@ async def run_check(
                 globalns={
                     **vars(module),
                     'DirectXPixelFormat': pixel_format,
+                    'Direct3DMultisampleDescription': nested_type,
                 },
             )
             if (
@@ -3837,11 +3835,7 @@ async def run_check(
                 'TypedEventHandler_IMemoryBufferReference_Object'
             )
             delegate_module = importlib.import_module(
-                implementation_module_name(
-                    pkg_name,
-                    'Windows.Foundation',
-                    delegate_name,
-                )
+                namespace_module_name(pkg_name, 'Windows.Foundation')
             )
             delegate_iid = getattr(
                 delegate_module,
