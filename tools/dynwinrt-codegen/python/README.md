@@ -180,6 +180,28 @@ complete output. Regenerate with the updated generator to pick up these
 consumer typing contracts, and use the matching runtime package and its stubs.
 No runtime API change or consumer cast is required.
 
+### Producer version and regeneration
+
+`.dynwinrt-generator.json` records `generator_version`, the complete generator
+package version, including any prerelease/preview suffix. This is a producer
+stamp, not the generated distribution version, runtime dependency version, or
+the type inventory's `schema_version`.
+
+New/empty output and non-generated user content need no stamp. Existing generated
+output must have a valid stamp matching the running generator exactly.
+Same-version generation retains the existing incremental behavior.
+A different version (including a downgrade), missing stamp on generated
+artifacts, or corrupt stamp causes an unsuccessful exit **before existing output
+is changed**, also in `--dry-run`. Manually clean the dedicated output directory
+and regenerate the **entire bindings selection**, or use a fresh output directory;
+do not remove or edit only the stamp. The generator never automatically deletes
+or migrates incompatible output.
+
+Every generator upgrade therefore requires full regeneration, followed by
+rebuilding/reinstalling the affected packages with the matching runtime.
+Unversioned development changes with the same package version are not detected
+by this check; use fresh output for those changes too.
+
 ### Closed-generic stub migration
 
 Python stubs now identify closed generic interfaces by their complete semantic
@@ -212,10 +234,25 @@ closed identity, even when their local projection names differ.
 - Some APIs require their Windows component, package identity, or framework
   bootstrap to be present at runtime.
 
-Python module components longer than 120 characters are shortened with a stable
-readable prefix and hash suffix while public type names remain unchanged.
+Python implementation module stems use a 56 UTF-16-code-unit budget. Public
+per-type module stems use the remaining budget after their namespace directories.
+Only over-budget names are shortened with a readable prefix and stable hash of
+the complete type identity. Public type names, namespace exports, and ordinary
+short per-type and flat-module imports remain unchanged. Direct imports of
+shortened long modules must migrate; no unsafe long-filename shims are emitted.
 
 ### Windows path length
+
+The relative stem budget allows up to 60 UTF-16 code units for `.pyi` source paths
+and reserves space for optimized CPython 3.11–3.14 `__pycache__` filenames and
+their atomic-write temporary suffixes. For example, it fits the legacy 259-unit
+limit with a 130-unit site-packages prefix and a 16-unit package name, including
+a maximum-width 64-bit temporary identifier. Deep metadata namespaces may exceed this
+budget even with a minimal basename; their namespace hierarchy is not flattened.
+Generated `setup.cfg` also shortens the isolated setuptools build cache to
+`.b/<layout-and-package-hash>` and wheel staging to `.b/<same-hash>/w`, avoiding
+the extra default `bdist.<platform>/wheel` nesting. Cache isolation still tracks
+the source layout and import package name.
 
 A short module name does not guarantee a short **absolute** path. In deep
 checkouts, codegen can successfully write files that ordinary Python imports,
@@ -234,9 +271,10 @@ shorter the output root needs to be. Relative `--output` paths are resolved
 from the current directory; temporary transactional staging paths are not
 counted. `--dry-run` checks the requested projection's planned source paths,
 aggregating all selected namespaces into one warning; `--no-pyi` excludes
-stubs. This is a **compatibility risk diagnostic**:
-generation still succeeds, and module names, imports, layout, and bytes are
-unchanged.
+stubs. This remains a **compatibility risk diagnostic**: generation still
+succeeds without a further root-dependent naming change. The deterministic
+module budget and compact staging do not guarantee arbitrary checkout,
+package-name, build-temporary-directory, or venv depths.
 
 Prefer a shorter checkout such as `C:\src\dynwinrt`, or generate directly into
 a short root and run consumers there:

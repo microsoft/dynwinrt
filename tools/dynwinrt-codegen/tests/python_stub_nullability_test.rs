@@ -8,13 +8,15 @@
 //! native nullable-reference contract. Inputs, implementation protocols and
 //! the runtime `.py` annotations are unchanged.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{InterfaceMeta, MethodMeta};
-use dynwinrt_codegen::types::TypeMeta;
+use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -64,6 +66,10 @@ impl Generated {
 
     fn module(&self, name: &str) -> String {
         fs::read_to_string(self.0.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
+
+    fn identity_module(&self, identity: TypeIdentity, extension: &str) -> String {
+        self.module(&format!("{}.{extension}", common::python_module(identity)))
     }
 }
 
@@ -192,8 +198,14 @@ fn stub_outputs_follow_the_nullability_policy() {
     let folder = generated.module("windows__storage__storage_folder.pyi");
     let folder_py = generated.module("windows__storage__storage_folder.py");
     let folder_view = generated.module("windows__storage__i_storage_folder.pyi");
-    let headers =
-        generated.module("windows__web__http__headers__http_content_header_collection.pyi");
+    let headers = generated.identity_module(
+        TypeIdentity::named(
+            TypeIdentityKind::Class,
+            "Windows.Web.Http.Headers",
+            "HttpContentHeaderCollection",
+        ),
+        "pyi",
+    );
     let properties = generated.module("windows__foundation__collections__property_set.pyi");
     let json = generated.module("windows__data__json__json_object.pyi");
     let accelerometer = generated.module("windows__devices__sensors__accelerometer.pyi");
@@ -409,19 +421,54 @@ fn reference_collection_elements_are_nullable_regardless_of_provenance() {
     ) else {
         return;
     };
-    let files =
-        generated.module("windows__foundation__collections__i_vector_view_storage_file.pyi");
+    let files = generated.identity_module(
+        TypeIdentity::closed_generic(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IVectorView`1",
+            [TypeIdentity::named(
+                TypeIdentityKind::Class,
+                "Windows.Storage",
+                "StorageFile",
+            )],
+        ),
+        "pyi",
+    );
     let array = generated.module("windows__data__json__json_array.pyi");
     let object = generated.module("windows__data__json__json_object.pyi");
-    let resources =
-        generated.module("windows__application_model__resources__core__resource_map.pyi");
+    let resources = generated.identity_module(
+        TypeIdentity::named(
+            TypeIdentityKind::Class,
+            "Windows.ApplicationModel.Resources.Core",
+            "ResourceMap",
+        ),
+        "pyi",
+    );
     let playlist = generated.module("windows__media__playback__media_playback_list.pyi");
-    let observable = generated
-        .module("windows__foundation__collections__i_observable_vector_media_playback_item.pyi");
-    let string_map_view =
-        generated.module("windows__foundation__collections__i_map_view_string_string.pyi");
-    let string_map_view_py =
-        generated.module("windows__foundation__collections__i_map_view_string_string.py");
+    let observable = generated.identity_module(
+        TypeIdentity::closed_generic(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IObservableVector`1",
+            [TypeIdentity::named(
+                TypeIdentityKind::Class,
+                "Windows.Media.Playback",
+                "MediaPlaybackItem",
+            )],
+        ),
+        "pyi",
+    );
+    let map_view = TypeIdentity::closed_generic(
+        TypeIdentityKind::Interface,
+        "Windows.Foundation.Collections",
+        "IMapView`2",
+        [
+            TypeMeta::String.type_identity(),
+            TypeMeta::String.type_identity(),
+        ],
+    );
+    let string_map_view = generated.identity_module(map_view.clone(), "pyi");
+    let string_map_view_py = generated.identity_module(map_view, "py");
 
     // Collection interfaces carry no provenance. A view or iterator obtained
     // from a mutable collection can expose a null slot, so view item

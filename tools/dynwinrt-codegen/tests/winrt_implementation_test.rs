@@ -13,7 +13,7 @@ use dynwinrt_codegen::meta::{
     self, ImplementationDelegateMeta, InterfaceImplementationMetadata, InterfaceMeta, MethodMeta,
     ParamDirection, ParamMeta,
 };
-use dynwinrt_codegen::types::{FieldMeta, TypeMeta};
+use dynwinrt_codegen::types::{FieldMeta, TypeIdentity, TypeIdentityKind, TypeMeta};
 
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -1138,9 +1138,13 @@ fn implementation_cli_emits_background_instance_public_views() {
             output
         };
         let stem = if language == "js" {
-            "IBackgroundTaskInstance"
+            "IBackgroundTaskInstance".to_string()
         } else {
-            "windows__application_model__background__i_background_task_instance"
+            common::python_module(TypeIdentity::named(
+                TypeIdentityKind::Interface,
+                "Windows.ApplicationModel.Background",
+                "IBackgroundTaskInstance",
+            ))
         };
         let declarations = if language == "js" { "d.ts" } else { "pyi" };
         artifacts.push((
@@ -1220,11 +1224,9 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
         .map(|entry| entry.unwrap().path())
         .find(|path| {
             path.extension().is_some_and(|extension| extension == "pyi")
-                && path
-                    .file_name()
+                && std::fs::read_to_string(path)
                     .unwrap()
-                    .to_string_lossy()
-                    .starts_with("typed_event_handler_background_task_registration_group")
+                    .contains("TypedEventHandler_BackgroundTaskRegistrationGroup")
         })
         .expect("transitive BackgroundTaskRegistrationGroup delegate facade");
     let public_name = delegate_facade
@@ -1237,7 +1239,7 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
         .unwrap()
         .with_extension("");
     assert!(
-        relative.to_string_lossy().len() <= 120,
+        relative.to_string_lossy().encode_utf16().count() <= 56,
         "public namespace path exceeded the flat-module budget: {}",
         relative.display()
     );
@@ -1251,8 +1253,8 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
         })
         .expect("facade import of its canonical implementation");
     assert_eq!(
-        implementation.strip_prefix("windows__foundation__"),
-        Some(public_name.as_str())
+        implementation.rsplit('_').next(),
+        public_name.rsplit('_').next()
     );
     assert!(package.join(format!("{implementation}.pyi")).is_file());
     assert!(

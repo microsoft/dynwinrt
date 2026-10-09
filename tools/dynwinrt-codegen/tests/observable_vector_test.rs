@@ -139,16 +139,19 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
     for signature in common::event_signatures("vector_changed", callback) {
         assert!(py.contains(&signature), "{signature}\n{py}");
     }
-    assert!(
-        py.contains(
-            "lambda __p0__, __p1__: (\
-             (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('i_observable_vector_object', 'IObservableVector_Object')(value))(__p0__), \
-             (lambda value: None if value.is_null() else \
-             _dynwinrt_symbol('windows__foundation__collections__i_vector_changed_event_args', 'IVectorChangedEventArgs')(value))(__p1__))"
-        ),
-        "{py}"
-    );
+    let arguments_module = dynwinrt_codegen::codegen::python::PythonProjectionContext::default()
+        .implementation_module_for_named(
+            dynwinrt_codegen::types::TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IVectorChangedEventArgs",
+        );
+    assert!(py.contains(&format!(
+        "lambda __p0__, __p1__: (\
+         (lambda value: None if value.is_null() else \
+         _dynwinrt_symbol('i_observable_vector_object', 'IObservableVector_Object')(value))(__p0__), \
+         (lambda value: None if value.is_null() else \
+         _dynwinrt_symbol('{arguments_module}', 'IVectorChangedEventArgs')(value))(__p1__))"
+    )), "{py}");
     assert!(py.contains("_dynwinrt_delegate(callback,"));
     assert!(py.contains("_IObservableVector_Object.method(6).invoke(self._observable_obj"));
 
@@ -159,9 +162,12 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         ),
         "{pyi}"
     );
-    assert!(pyi.contains(
-        "from .windows__foundation__collections__i_vector_changed_event_args import IID_IVectorChangedEventArgs, IVectorChangedEventArgs"
-    ), "{pyi}");
+    assert!(
+        pyi.contains(&format!(
+            "from .{arguments_module} import IID_IVectorChangedEventArgs, IVectorChangedEventArgs"
+        )),
+        "{pyi}"
+    );
     assert!(pyi.contains(&format!("{create_signature} ...")), "{pyi}");
     assert!(
         pyi.contains("def __getitem__(self, index: int) -> DynWinRTValue | None: ..."),

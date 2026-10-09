@@ -153,8 +153,13 @@ struct PythonProjection {
     reference_name: String,
 }
 
-const MAX_PYTHON_MODULE_COMPONENT_LENGTH: usize = 120;
+// Reserve __pycache__ (12), the optimized CPython 3.11-3.14 suffix (22), and
+// _write_atomic's "." + a 64-bit decimal id (21). A 130-unit site-packages root,
+// 16-unit package name and two separators then fit within 259 UTF-16 units.
+const PYTHON_MODULE_PATH_BUDGET: usize = 56;
+const MAX_PYTHON_NAMESPACE_COMPONENT_LENGTH: usize = 120;
 const MODULE_HASH_HEX_LENGTH: usize = 16;
+const MIN_HASHED_MODULE_BUDGET: usize = 19; // _t_ + hash
 
 fn stable_module_hash(value: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
@@ -165,22 +170,32 @@ fn stable_module_hash(value: &str) -> u64 {
     hash
 }
 
-fn shorten_module_component_with_hash_input(value: &str, hash_input: &str) -> String {
-    if value.chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH {
+fn shorten_module_component_with_hash_input(
+    value: &str,
+    hash_input: &str,
+    budget: usize,
+) -> String {
+    let budget = budget.max(MIN_HASHED_MODULE_BUDGET);
+    if value.encode_utf16().count() <= budget {
         return value.to_string();
     }
-    let prefix_length = MAX_PYTHON_MODULE_COMPONENT_LENGTH - MODULE_HASH_HEX_LENGTH - 1;
+    let prefix_length = budget - MODULE_HASH_HEX_LENGTH - 1;
+    let mut length = 0;
     let prefix = value
         .chars()
-        .take(prefix_length)
+        .take_while(|character| {
+            length += character.len_utf16();
+            length <= prefix_length
+        })
         .collect::<String>()
         .trim_end_matches('_')
         .to_string();
+    let prefix = if prefix.is_empty() { "_t" } else { &prefix };
     format!("{prefix}_{:016x}", stable_module_hash(hash_input))
 }
 
 fn shorten_module_component(value: &str) -> String {
-    shorten_module_component_with_hash_input(value, value)
+    shorten_module_component_with_hash_input(value, value, PYTHON_MODULE_PATH_BUDGET)
 }
 
 fn identity_kind_name(kind: TypeIdentityKind) -> &'static str {
@@ -503,28 +518,43 @@ fn qualified_module_name(
     } else {
         format!("{namespace}__{}", to_snake_case(projected_name))
     };
-    shorten_module_component_with_hash_input(&candidate, &identity.canonical_key())
+    shorten_module_component_with_hash_input(
+        &candidate,
+        &identity.canonical_key(),
+        PYTHON_MODULE_PATH_BUDGET,
+    )
+}
+
+fn unqualified_module_name(identity: &PythonTypeIdentity, projected_name: &str) -> String {
+    shorten_module_component_with_hash_input(
+        &to_snake_case(projected_name),
+        &identity.canonical_key(),
+        PYTHON_MODULE_PATH_BUDGET,
+    )
 }
 
 fn public_module_name(identity: &PythonTypeIdentity, projected_name: &str) -> String {
-    let namespace = identity.namespace().unwrap_or_default();
-    let qualified = qualified_module_name(identity, namespace, projected_name);
-    let prefix = python_namespace_segments(namespace).join("__");
-    if prefix.is_empty() {
-        return qualified;
-    }
-    // Budget the namespace as well as the basename. Otherwise a readable flat
-    // module can have a facade path that Windows Python cannot open.
-    qualified
-        .strip_prefix(&format!("{prefix}__"))
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            format!(
-                "type_{:016x}",
-                stable_module_hash(&identity.canonical_key())
-            )
-        })
+    public_module_name_with_hash_input(
+        identity.namespace().unwrap_or_default(),
+        projected_name,
+        &identity.canonical_key(),
+    )
+}
+
+fn public_module_name_with_hash_input(
+    namespace: &str,
+    projected_name: &str,
+    hash_input: &str,
+) -> String {
+    let namespace = python_namespace_segments(namespace).join("\\");
+    let namespace_length = namespace.encode_utf16().count() + usize::from(!namespace.is_empty());
+    // Very deep metadata namespaces can exceed the budget even with a minimal
+    // basename. Keep their hierarchy intact; the final-path diagnostic still applies.
+    shorten_module_component_with_hash_input(
+        &to_snake_case(projected_name),
+        hash_input,
+        PYTHON_MODULE_PATH_BUDGET.saturating_sub(namespace_length),
+    )
 }
 
 /// Explicit, immutable naming and lookup state for one Python projection.
@@ -615,7 +645,7 @@ impl PythonProjectionContext {
                 ) {
                 qualified_module_name(&identity, namespace, &projected_name)
             } else {
-                public_module.clone()
+                unqualified_module_name(&identity, &projected_name)
             };
 
             if let Some(existing) =
@@ -1358,7 +1388,7 @@ impl PythonProjectionContext {
                         &projected_name,
                     )
                 } else {
-                    public_module_name(&identity, &projected_name)
+                    unqualified_module_name(&identity, &projected_name)
                 }
             })
     }
@@ -1424,7 +1454,14 @@ pub fn python_namespace_segments(namespace: &str) -> Vec<String> {
     namespace
         .split('.')
         .filter(|segment| !segment.is_empty())
-        .map(|segment| shorten_module_component(&to_snake_case(segment)))
+        .map(|segment| {
+            let name = to_snake_case(segment);
+            shorten_module_component_with_hash_input(
+                &name,
+                &name,
+                MAX_PYTHON_NAMESPACE_COMPONENT_LENGTH,
+            )
+        })
         .collect()
 }
 
@@ -1434,7 +1471,11 @@ pub fn python_public_module_name(name: &str) -> String {
 
 pub fn python_public_qualified_module_name(namespace: &str, name: &str) -> String {
     let mut segments = python_namespace_segments(namespace);
-    segments.push(python_public_module_name(name));
+    segments.push(public_module_name_with_hash_input(
+        namespace,
+        name,
+        &format!("{namespace}.{name}"),
+    ));
     segments.join(".")
 }
 
@@ -1998,13 +2039,10 @@ mod tests {
         let name = "TypedEventHandler_MediaPlaybackCommandManager_MediaPlaybackCommandManagerAutoRepeatModeReceivedEventArgsAdditionalCompatibilitySuffix";
         let other = format!("{name}2");
         let shortened = python_public_module_name(name);
-        assert_eq!(
-            shortened.chars().count(),
-            MAX_PYTHON_MODULE_COMPONENT_LENGTH
-        );
+        assert_eq!(shortened.encode_utf16().count(), PYTHON_MODULE_PATH_BUDGET);
         assert_eq!(shortened, python_public_module_name(name));
         assert_ne!(shortened, python_public_module_name(&other));
-        assert!(shortened.starts_with("typed_event_handler_media_playback_command_manager"));
+        assert!(shortened.starts_with("typed_event_handler_media_playback"));
     }
 
     #[test]
@@ -2013,20 +2051,18 @@ mod tests {
         let identity = TypeIdentity::named(TypeIdentityKind::Delegate, "Windows.Foundation", name);
         let context = PythonProjectionContext::packaged([identity.clone()]).unwrap();
         let implementation = context.implementation_module(&identity);
-        assert!(implementation.chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH);
+        assert!(implementation.encode_utf16().count() <= PYTHON_MODULE_PATH_BUDGET);
         assert_eq!(implementation, context.implementation_module(&identity));
         assert!(
-            context.public_module(&identity).chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
+            context
+                .public_qualified_module(&identity)
+                .encode_utf16()
+                .count()
+                <= PYTHON_MODULE_PATH_BUDGET
         );
         assert_eq!(
-            context.public_module(&identity),
-            implementation
-                .strip_prefix("windows__foundation__")
-                .unwrap()
-        );
-        assert!(
-            context.public_qualified_module(&identity).chars().count()
-                <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
+            context.public_module(&identity).rsplit('_').next(),
+            implementation.rsplit('_').next(),
         );
     }
 
@@ -2056,16 +2092,15 @@ mod tests {
         .unwrap();
         let implementation = context.implementation_module(&identity);
         let public = context.public_module(&identity);
-        assert_eq!(
-            public,
-            implementation
-                .strip_prefix("windows__foundation__")
-                .unwrap()
-        );
+        assert_eq!(public.rsplit('_').next(), implementation.rsplit('_').next(),);
         assert!(
-            context.public_qualified_module(&identity).len() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
+            context
+                .public_qualified_module(&identity)
+                .encode_utf16()
+                .count()
+                <= PYTHON_MODULE_PATH_BUDGET
         );
-        assert!(public.starts_with("typed_event_handler_background_task_registration_group"));
+        assert!(public.starts_with("typed_event_handler"));
         assert_eq!(public, context.public_module(&identity));
         assert_ne!(
             public,
@@ -2086,6 +2121,109 @@ mod tests {
     }
 
     #[test]
+    fn module_budgets_count_utf16_without_splitting_characters() {
+        let unicode = "\u{10428}".repeat(40);
+        assert_eq!(unicode.chars().count(), 40);
+        assert_eq!(unicode.encode_utf16().count(), 80);
+        let shortened = python_public_module_name(&unicode);
+        assert!(shortened.encode_utf16().count() <= PYTHON_MODULE_PATH_BUDGET);
+        assert!(shortened.starts_with("\u{10428}"));
+        assert!(shortened.ends_with(&format!("{:016x}", stable_module_hash(&unicode))));
+
+        let namespace = "\u{10428}".repeat(70);
+        let segments = python_namespace_segments(&namespace);
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].encode_utf16().count() <= MAX_PYTHON_NAMESPACE_COMPONENT_LENGTH);
+    }
+
+    #[test]
+    fn module_budget_reserves_the_complete_atomic_bytecode_path() {
+        let site_packages = format!(r"C:\{}", "x".repeat(127));
+        let package = "p".repeat(16);
+        let module = "m".repeat(PYTHON_MODULE_PATH_BUDGET);
+        let temporary = format!(
+            r"{site_packages}\{package}\__pycache__\{module}.cpython-314.opt-2.pyc.{}",
+            u64::MAX,
+        );
+        assert_eq!(site_packages.encode_utf16().count(), 130);
+        assert_eq!(temporary.encode_utf16().count(), 259);
+    }
+
+    #[test]
+    fn only_over_budget_modules_change_and_public_paths_include_namespaces() {
+        let short = TypeIdentity::named(TypeIdentityKind::Class, "Windows.Foundation", "Uri");
+        let long = TypeIdentity::named(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "I".repeat(PYTHON_MODULE_PATH_BUDGET),
+        );
+        let context = PythonProjectionContext::packaged([short.clone(), long.clone()]).unwrap();
+        assert_eq!(
+            context.implementation_module(&short),
+            "windows__foundation__uri"
+        );
+        assert_eq!(
+            context.public_qualified_module(&short),
+            "windows.foundation.uri"
+        );
+        assert_eq!(
+            context.projected_name(&long),
+            "I".repeat(PYTHON_MODULE_PATH_BUDGET)
+        );
+        for module in [
+            context.implementation_module(&long),
+            context.public_qualified_module(&long),
+        ] {
+            assert!(module.encode_utf16().count() <= PYTHON_MODULE_PATH_BUDGET);
+        }
+        assert_eq!(
+            python_public_module_name(&"x".repeat(PYTHON_MODULE_PATH_BUDGET)),
+            "x".repeat(PYTHON_MODULE_PATH_BUDGET),
+        );
+        assert_ne!(
+            python_public_module_name(&"x".repeat(PYTHON_MODULE_PATH_BUDGET + 1)),
+            "x".repeat(PYTHON_MODULE_PATH_BUDGET + 1),
+        );
+    }
+
+    #[test]
+    fn shortened_modules_fail_on_collisions_with_readable_names() {
+        let identity = TypeIdentity::named(TypeIdentityKind::Class, "", "x".repeat(80));
+        let context = PythonProjectionContext::packaged([identity.clone()]).unwrap();
+        let collision = TypeIdentity::named(
+            TypeIdentityKind::Class,
+            "",
+            context.implementation_module(&identity),
+        );
+        let error = PythonProjectionContext::packaged([identity, collision]).unwrap_err();
+        assert!(
+            error.contains("Python implementation module collision"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn standalone_generics_keep_short_module_names_without_a_facade_budget() {
+        let identity = TypeIdentity::closed_generic(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IIterator",
+            [TypeIdentity::named(
+                TypeIdentityKind::Interface,
+                "Windows.Foundation",
+                "IWwwFormUrlDecoderEntry",
+            )],
+        );
+        let context = PythonProjectionContext::new([identity.clone()], false).unwrap();
+        for module in [
+            context.implementation_module(&identity),
+            PythonProjectionContext::default().implementation_module(&identity),
+        ] {
+            assert_eq!(module, "i_iterator_i_www_form_url_decoder_entry");
+        }
+    }
+
+    #[test]
     fn facade_shortening_keeps_a_valid_name_when_namespace_uses_the_budget() {
         let identity = TypeIdentity::named(
             TypeIdentityKind::Interface,
@@ -2094,8 +2232,15 @@ mod tests {
         );
         let context = PythonProjectionContext::packaged([identity.clone()]).unwrap();
         let public = context.public_module(&identity);
-        assert!(public.starts_with("type_"), "{public}");
-        assert_eq!(public.len(), 5 + MODULE_HASH_HEX_LENGTH);
+        assert_eq!(public, "i_value");
+        let long = TypeIdentity::named(
+            TypeIdentityKind::Interface,
+            "VeryLongNamespace".repeat(12),
+            "IValue".repeat(20),
+        );
+        let public = context.public_module(&long);
+        assert!(public.encode_utf16().count() <= MIN_HASHED_MODULE_BUDGET);
+        assert!(public.as_bytes()[0].is_ascii_alphabetic() || public.starts_with('_'));
     }
 
     #[test]

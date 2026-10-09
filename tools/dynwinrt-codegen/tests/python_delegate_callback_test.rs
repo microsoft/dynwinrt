@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
-use dynwinrt_codegen::types::{FieldMeta, TypeMeta};
+use dynwinrt_codegen::types::{FieldMeta, TypeIdentity, TypeIdentityKind, TypeMeta};
 use windows_metadata::{
     MethodAttributes, MethodCallAttributes, MethodImplAttributes, ParamAttributes, Signature, Type,
     TypeAttributes, Value, writer,
@@ -500,10 +500,14 @@ fn bespoke_event_delegates_are_typed_and_projected() {
     else {
         return;
     };
-    let module = "windows__application_model__background__background_task_registration";
+    let module = common::python_module(TypeIdentity::named(
+        TypeIdentityKind::Class,
+        "Windows.ApplicationModel.Background",
+        "BackgroundTaskRegistration",
+    ));
     let callback =
         "Callable[['BackgroundTaskRegistration', 'BackgroundTaskCompletedEventArgs'], object]";
-    let py = output.read(module, "py");
+    let py = output.read(&module, "py");
     assert!(
         py.contains(
             "def on_completed(self, callback: Callable[..., object] | DynWinRTValue | DynWinRtDelegate):"
@@ -517,16 +521,20 @@ fn bespoke_event_delegates_are_typed_and_projected() {
     assert!(
         py.contains(&format!(
             "'BackgroundTaskCompletedEventHandler_PARAM_TYPES'), lambda __p0__, __p1__: ({}, {}))",
-            class_wrapper(module, "BackgroundTaskRegistration", "__p0__"),
+            class_wrapper(&module, "BackgroundTaskRegistration", "__p0__"),
             class_wrapper(
-                "windows__application_model__background__background_task_completed_event_args",
+                &common::python_module(TypeIdentity::named(
+                    TypeIdentityKind::Class,
+                    "Windows.ApplicationModel.Background",
+                    "BackgroundTaskCompletedEventArgs",
+                )),
                 "BackgroundTaskCompletedEventArgs",
                 "__p1__"
             )
         )),
         "{py}"
     );
-    let pyi = output.read(module, "pyi");
+    let pyi = output.read(&module, "pyi");
     assert!(
         pyi.contains(&format!(
             "def subscribe_completed(self, callback: {callback} | 'DynWinRTValue | DynWinRtDelegate') -> Callable[[], None]: ..."
@@ -553,14 +561,14 @@ fn runtime_delegate_annotations_resolve_and_stubs_remain_precise() {
     let property_runtime = output
         .0
         .join("windows__foundation__collections__property_set.py");
-    let bespoke_runtime = output
-        .0
-        .join("windows__application_model__background__background_task_registration.py");
+    let bespoke_module = common::python_module(TypeIdentity::named(
+        TypeIdentityKind::Class,
+        "Windows.ApplicationModel.Background",
+        "BackgroundTaskRegistration",
+    ));
+    let bespoke_runtime = output.0.join(format!("{bespoke_module}.py"));
     let property_stub = output.read("windows__foundation__collections__property_set", "pyi");
-    let bespoke_stub = output.read(
-        "windows__application_model__background__background_task_registration",
-        "pyi",
-    );
+    let bespoke_stub = output.read(&bespoke_module, "pyi");
     assert!(
         property_stub.contains(
             "def on_map_changed(self, callback: Callable[['IObservableMap_String_Object', \

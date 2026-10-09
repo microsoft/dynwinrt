@@ -20,7 +20,8 @@ if ($root.Length -ne 104) {
 }
 $source = Join-Path $root "source\generated_bindings"
 $wheelDirectory = Join-Path $root "wheels"
-$install = Join-Path $root "installed"
+$sourceInstall = Join-Path $root "from-source"
+$install = Join-Path $root ("i" * (135 - $root.Length - 1))
 
 try {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
@@ -33,9 +34,17 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     $modules = Get-ChildItem -LiteralPath $source -File -Filter *.py
-    $tooLong = $modules | Where-Object { $_.BaseName.Length -gt 120 }
+    $tooLong = $modules | Where-Object { $_.BaseName.Length -gt 56 }
     if ($tooLong) {
-        throw "Generated Python module exceeds 120 characters: $($tooLong[0].Name)"
+        throw "Generated Python module exceeds 56 UTF-16 code units: $($tooLong[0].Name)"
+    }
+    $tooLong = Get-ChildItem -LiteralPath $source -File -Recurse |
+        Where-Object {
+            $_.Extension -in @(".py", ".pyi") -and
+            $_.FullName.Substring($source.Length + 1).Length -gt 60
+        }
+    if ($tooLong) {
+        throw "Generated Python relative source path exceeds 60 UTF-16 code units: $($tooLong[0].Name)"
     }
     if (-not ($modules | Where-Object { $_.BaseName -match "_[0-9a-f]{16}$" })) {
         throw "Long-path fixture did not generate a hashed Python module"
@@ -154,6 +163,15 @@ try {
         throw "Output package rename deleted the old build cache"
     }
 
+    & $Python -m pip install $source --no-deps --target $sourceInstall
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python (Join-Path $PSScriptRoot "verify_generated_python_install.py") `
+        --source $source `
+        --install $sourceInstall `
+        --package renamed_bindings `
+        --check-uri
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & $Python -m pip wheel $source --no-deps --wheel-dir $wheelDirectory
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $wheel = Get-ChildItem -LiteralPath $wheelDirectory -Filter *.whl -File |
@@ -165,10 +183,39 @@ try {
     & $Python (Join-Path $PSScriptRoot "verify_generated_python_install.py") `
         --source $source `
         --install $install `
-        --package renamed_bindings
+        --package renamed_bindings `
+        --check-uri
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python -m compileall -q -o 0 -o 1 -o 2 (Join-Path $install "renamed_bindings")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $tooLong = Get-ChildItem -LiteralPath (Join-Path $install "renamed_bindings") -File -Recurse |
+        Where-Object { $_.FullName.Length -gt 259 }
+    if ($tooLong) {
+        throw "Installed Python source/stub/cache exceeds 259 UTF-16 code units: $($tooLong[0].FullName)"
+    }
     if (Test-Path -LiteralPath (Join-Path $install "generated_bindings")) {
         throw "Renamed wheel retained the old generated_bindings package"
+    }
+
+    $untypedSource = Join-Path $root "untyped_bindings"
+    $untypedWheels = Join-Path $root "untyped-wheels"
+    & $Codegen generate `
+        --class-name Windows.Foundation.Uri,Windows.Devices.Enumeration.DeviceInformationCustomPairing `
+        --lang py --no-pyi --output $untypedSource
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python -m pip wheel $untypedSource --no-deps --wheel-dir $untypedWheels
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $untypedWheel = Get-ChildItem -LiteralPath $untypedWheels -Filter *.whl -File |
+        Select-Object -First 1
+    if (-not $untypedWheel) { throw "Untyped generated bindings wheel was not created" }
+    & $Python -m pip install $untypedWheel.FullName --no-deps --target $install
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python (Join-Path $PSScriptRoot "verify_generated_python_install.py") `
+        --source $untypedSource --install $install --package untyped_bindings --check-uri
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ((Get-ChildItem (Join-Path $install "untyped_bindings") -Filter *.pyi -File -Recurse) -or
+        (Test-Path (Join-Path $install "untyped_bindings\py.typed"))) {
+        throw "Untyped wheel retained stubs or a py.typed marker"
     }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
