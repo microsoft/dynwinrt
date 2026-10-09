@@ -13,6 +13,16 @@ class _DynWinRTObject(Protocol):
     def _obj(self) -> DynWinRTValue: ...
 ";
 
+pub(super) const MAPPING_INPUT_PROTOCOL: &str = "
+_MapKeyT = TypeVar('_MapKeyT')
+_MapValueT_co = TypeVar('_MapValueT_co', covariant=True)
+
+
+class _SupportsKeysAndGetItem(Protocol[_MapKeyT, _MapValueT_co]):
+    def keys(self) -> Iterable[_MapKeyT]: ...
+    def __getitem__(self, key: _MapKeyT, /) -> _MapValueT_co: ...
+";
+
 /// Reorder methods so that property getters always come before their matching setters.
 /// Python requires `@property` to appear before `@prop.setter`.
 pub(crate) fn reorder_getters_before_setters(methods: &[MethodMeta]) -> Vec<&MethodMeta> {

@@ -611,6 +611,13 @@ class _WinRTMutableMappingMixin(_MutableMapping):
             raise KeyError(key)
         self.remove(key)
 
+    def setdefault(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+        return self[key]
+
     def update(self, other=(), /, **kwargs):
         contract = getattr(type(self), '_dynwinrt_non_null_collection_contract', None)
         native = getattr(self, '_collection_obj', self._obj)

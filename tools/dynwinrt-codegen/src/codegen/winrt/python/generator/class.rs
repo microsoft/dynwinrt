@@ -701,6 +701,17 @@ pub fn generate_class<'a>(
         ));
     }
 
+    if let Some(iface) = collection_iface {
+        out.push_str(&super::super::collections::protocol_helper_methods(
+            iface,
+            &context.class_name(class),
+            context,
+            super::super::nullability::AnnotationSurface::Runtime,
+            stock_json_receiver,
+            4,
+        ));
+    }
+
     // Auto-generate close() if class implements IClosable
     const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
     if class
@@ -949,6 +960,14 @@ pub fn generate_class<'a>(
                 py_runtime_symbol(context, &iterable_identity, &iterable_name)
             ));
         }
+        out.push_str(&super::super::collections::protocol_helper_methods(
+            req_iface,
+            &symbol,
+            context,
+            super::super::nullability::AnnotationSurface::Runtime,
+            false,
+            4,
+        ));
     }
     out
 }

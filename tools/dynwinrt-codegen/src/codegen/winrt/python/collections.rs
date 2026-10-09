@@ -6,6 +6,12 @@ use crate::meta::{
 };
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
+use super::naming::{PythonProjectionContext, PythonSupportSymbol};
+use super::nullability::{AnnotationSurface, ElementContainer, may_project_none};
+use super::type_helpers::{
+    py_collection_input_type, py_collection_item_type, py_optional_type, py_param_type_safe,
+};
+
 pub(crate) const IITERABLE_PIID: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
 pub(crate) const IITERATOR_PIID: &str = "6a79e863-4300-459a-9966-cbb660963ee1";
 pub(crate) const IVECTOR_PIID: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
@@ -230,6 +236,114 @@ pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool 
             &args[0],
             TypeMeta::Parameterized { piid, .. } if piid == IKEY_VALUE_PAIR_PIID
         ))
+}
+
+/// Bulk helpers write the same inputs as item assignment, but return only the
+/// read projection (or Self), never the caller's unconverted input.
+pub(super) fn protocol_helper_methods(
+    iface: &InterfaceMeta,
+    owner_name: &str,
+    context: &PythonProjectionContext,
+    surface: AnnotationSurface,
+    stock_json_receiver: bool,
+    indent_spaces: usize,
+) -> String {
+    let indent = " ".repeat(indent_spaces);
+    let input = |typ| {
+        if stock_json_receiver {
+            py_param_type_safe(typ, context)
+        } else {
+            py_collection_input_type(typ, context)
+        }
+    };
+    let is_stub = surface == AnnotationSurface::Stub;
+    match (
+        projected_interface_kind(iface),
+        iface.generic_args.as_slice(),
+    ) {
+        (Some(CollectionKind::MutableSequence), [element]) => {
+            let element = input(element);
+            if is_stub {
+                format!(
+                    "{indent}def extend(self, values: Iterable[{element}]) -> None: ...\n\
+                         {indent}def __iadd__(self, values: Iterable[{element}]) -> Self: ...\n"
+                )
+            } else {
+                format!(
+                    "\n{indent}def extend(self, values: Iterable[{element}]) -> None:\n\
+                         {indent}    super().extend(values)\n\
+                         \n{indent}def __iadd__(self, values: Iterable[{element}]) -> Self:\n\
+                         {indent}    self.extend(values)\n\
+                         {indent}    return self\n"
+                )
+            }
+        }
+        (Some(CollectionKind::MutableMapping), [key, value]) => {
+            let key_input = py_collection_input_type(key, context);
+            let value_input = input(value);
+            let value_read = if stock_json_receiver {
+                py_param_type_safe(value, context)
+            } else {
+                py_collection_item_type(value, ElementContainer::Mutable, surface, context)
+            };
+            let supports = context.support_symbol_reference(PythonSupportSymbol::MappingInput);
+            let key_variable = context.support_symbol_reference(PythonSupportSymbol::MappingKey);
+            let key_reference = if is_stub {
+                key_variable.to_string()
+            } else {
+                format!("{owner_name}.{key_variable}")
+            };
+            let key_bound = serde_json::to_string(super::type_helpers::unquoted(&key_input))
+                .expect("serialize a Python type annotation");
+            let mapping = format!("{supports}[{key_reference}, {value_input}]");
+            let pairs = format!("Iterable[tuple[{key_input}, {value_input}]]");
+            let keywords = if matches!(key, TypeMeta::String | TypeMeta::Char16) {
+                format!(", **kwargs: {value_input}")
+            } else {
+                String::new()
+            };
+            let mut result = format!(
+                "\n{indent}{key_variable} = TypeVar('{key_variable}', bound={key_bound})\n\
+                     \n{indent}@overload\n\
+                     {indent}def update(self, other: {mapping}, /{keywords}) -> None: ...\n\
+                     {indent}@overload\n\
+                     {indent}def update(self, other: {pairs} = (), /{keywords}) -> None: ...\n"
+            );
+            if !is_stub {
+                // Keep runtime kwargs handling, including partial updates, in
+                // the existing checked mixin even for non-string key types.
+                result.push_str(&format!(
+                        "{indent}def update(self, other: {mapping} | {pairs} = (), /, **kwargs: {value_input}) -> None:\n\
+                         {indent}    super().update(other, **kwargs)\n"
+                    ));
+            }
+            let nullable = may_project_none(value) && !stock_json_receiver;
+            if is_stub {
+                let default = if nullable { " = None" } else { "" };
+                result.push_str(&format!(
+                        "\n{indent}def setdefault(self, key: {key_input}, default: {value_input}{default}) -> {value_read}: ...\n"
+                    ));
+            } else {
+                if !nullable {
+                    result.push_str(&format!(
+                            "\n{indent}@overload\n\
+                             {indent}def setdefault(self, key: {key_input}, default: {value_input}, /) -> {value_read}: ...\n\
+                             {indent}@overload\n\
+                             {indent}def setdefault(self, key: {key_input}, *, default: {value_input}) -> {value_read}: ...\n"
+                        ));
+                }
+                let default_input = py_optional_type(value_input);
+                // An omitted/invalid default is still ignored for an existing
+                // key. The overloads constrain values that may be inserted.
+                result.push_str(&format!(
+                        "\n{indent}def setdefault(self, key: {key_input}, default: {default_input} = None) -> {value_read}:\n\
+                         {indent}    return super().setdefault(key, default)\n"
+                    ));
+            }
+            result
+        }
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]

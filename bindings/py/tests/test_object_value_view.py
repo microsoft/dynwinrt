@@ -10,6 +10,7 @@ registered with the method names and vtable order codegen uses.
 """
 
 import gc
+import sys
 from collections.abc import Mapping, MutableMapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -685,6 +686,56 @@ def test_setdefault_returns_the_value_as_a_read_returns_it():
     with pytest.raises(TypeError, match="empty list or tuple"):
         view.setdefault("empty", [])
     assert "empty" not in view
+
+
+@pytest.mark.parametrize("failure_slot", [8, 10, 6], ids=["lookup", "insert", "read-after-insert"])
+def test_raw_setdefault_propagates_native_failure_without_consuming_default(
+    failure_slot, monkeypatch
+):
+    plan = map_implementation_plan("Tests.IMap_DefaultFailure", OBJECT)
+    calls = []
+    reports = []
+    inserted = False
+    failure = RuntimeError(f"expected native map failure at slot {failure_slot}")
+    monkeypatch.setattr(sys, "unraisablehook", reports.append)
+
+    def dispatch(_interface, slot, args):
+        nonlocal inserted
+        calls.append(slot)
+        if slot == failure_slot:
+            raise failure
+        if slot == 8:
+            return [DynWinRTValue.from_bool(inserted)]
+        if slot == 10:
+            assert args[0].to_string() == "default"
+            inserted = True
+            return [DynWinRTValue.from_bool(False)]
+        raise AssertionError(f"unexpected native map slot {slot}")
+
+    owner = DynWinRTImplementation.create([plan], dispatch)
+    raw = owner.to_value()
+    mapping = GeneratedStyleMap(raw)
+    default = uri()
+    identity = default.identity_raw()
+    try:
+        with pytest.raises(OSError) as caught:
+            mapping.setdefault("default", SimpleNamespace(_obj=default))
+        assert caught.value.winerror == 0xA0EE4005 - 2**32
+        assert inserted is (failure_slot == 6)
+        assert calls == {
+            8: [8],
+            10: [8, 10],
+            6: [8, 10, 8, 6],
+        }[failure_slot]
+        assert len(reports) == 1 and reports[0].exc_value is failure
+        assert str(failure) in owner.take_error()
+        assert not default.is_released() and default.identity_raw() == identity
+    finally:
+        release_projected(mapping)
+        raw.release()
+        default.release()
+        owner.release()
+    assert owner.is_closed
 
 
 def test_contains_len_and_iteration_do_not_unbox(monkeypatch):

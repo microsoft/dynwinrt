@@ -523,11 +523,18 @@ def collections(resource: Resource, derived: OtherDerived, raw: DynWinRTValue,
     vector[1:2] = [resource, derived, raw]
     vector.insert(0, derived)
     vector.append(derived)
+    assert_type(vector.extend([resource, derived, raw, None]), None)
+    assert_type(vector.__iadd__([resource, derived, raw, None]), IVector_Object)
     resources[0] = derived
     resources[1:2] = [resource, derived]
     resources.insert(0, derived)
     resources.append(derived)
+    assert_type(resources.extend([resource, derived, None]), None)
+    assert_type(resources.__iadd__([resource, derived, None]), IVector_Resource)
     mapping[resource] = derived
+    mapping.update({resource: derived, raw: raw, None: None})
+    mapping.update([(resource, derived), (raw, raw), (None, None)])
+    assert_type(mapping.setdefault(resource, derived), DynWinRTValue | None)
     assert_type(vector[0], DynWinRTValue | None)
     assert_type(vector[:], list[DynWinRTValue | None])
     assert_type(resources[0], Resource | None)
@@ -580,8 +587,12 @@ def invalid_collections(resource: Resource, unrelated: Unrelated,
     vector[0] = [resource]
     vector[:] = resource
     vector[:] = [42]
+    vector.extend([object()])
+    vector += [WrongObject()]
     resources[0] = unrelated
     resources.append(unrelated)
+    resources.extend([unrelated])
+    resources += [unrelated]
     mapping[WrongObject()] = resource
     mapping[resource] = object()
 "#,
@@ -601,8 +612,12 @@ def invalid_collections(resource: Resource, unrelated: Unrelated,
             "[call-overload]",
             "[call-overload]",
             "[list-item]",
+            "[list-item]",
+            "[list-item]",
             "[call-overload]",
             "[arg-type]",
+            "[list-item]",
+            "[list-item]",
             "[index]",
             "[assignment]",
         ],
@@ -617,12 +632,16 @@ from first.windows__foundation__collections__i_map_object_object import IMap_Obj
 from first.__RESOURCE_MAP_MODULE__ import IMap_Resource_Resource
 
 def nullable_reference_keys(
-    objects: IMap_Object_Object, resources: IMap_Resource_Resource
+    objects: IMap_Object_Object, resources: IMap_Resource_Resource,
+    resource: Resource
 ) -> None:
     objects[None] = None
     assert_type(objects[None], DynWinRTValue | None)
     resources[None] = None
     resources.update({None: None})
+    resources.update({resource: resource})
+    resources.update([(None, resource), (resource, None)])
+    assert_type(resources.setdefault(resource, resource), Resource | None)
     assert_type(resources.setdefault(None, None), Resource | None)
     assert_type(resources[None], Resource | None)
 "#
@@ -670,12 +689,12 @@ def invalid_key(guid: IMap_Guid_Object, string: IMap_String_Object) -> None:
         &[
             "[index]",
             "[call-overload]",
-            "[dict-item]",
-            "[call-overload]",
+            "[type-var]",
+            "[arg-type]",
             "[index]",
             "[call-overload]",
-            "[dict-item]",
-            "[call-overload]",
+            "[type-var]",
+            "[arg-type]",
         ],
     );
     pyright_typecheck(
@@ -693,7 +712,7 @@ def invalid_key(guid: IMap_Guid_Object, string: IMap_String_Object) -> None:
     string.update({None: None})
     string.setdefault(None, None)
 "#,
-        12,
+        10,
     );
 }
 
@@ -1006,6 +1025,18 @@ from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
 from sdk.windows__foundation__collections__property_set import (
     IMap_String_Object as EmbeddedMap, PropertySetLike,
 )
+
+class NativeCarrier:
+    def __init__(self, raw: DynWinRTValue) -> None:
+        self._obj = raw
+
+class KeyedValues:
+    def __init__(self, uri: Uri) -> None:
+        self.uri = uri
+    def keys(self) -> list[str]:
+        return ["uri"]
+    def __getitem__(self, key: str) -> Uri:
+        return self.uri
 "#;
     typecheck(
         &fixture,
@@ -1015,11 +1046,36 @@ from sdk.windows__foundation__collections__property_set import (
 def valid(uri: Uri, raw: DynWinRTValue, properties: PropertySet,
           like: PropertySetLike, mapping: IMap_String_Object,
           embedded: EmbeddedMap) -> None:
+    like = properties
     properties["uri"] = uri
     properties["raw"] = raw
     like["uri"] = uri
     mapping["uri"] = uri
     embedded["uri"] = uri
+    properties.update({{"uri": uri, "raw": raw, "null": None}})
+    properties.update([("uri", uri), ("raw", raw), ("null", None)])
+    properties.update(uri=uri, raw=raw, null=None)
+    properties.update({{"uri": uri}}, keyword=raw)
+    properties.update(KeyedValues(uri))
+    properties.update({{"carrier": NativeCarrier(raw)}})
+    like.update({{"uri": uri}})
+    like.update([("uri", uri)], keyword=uri)
+    like.update(keyword=uri)
+    mapping.update({{"uri": uri}})
+    mapping.update([("uri", uri)], keyword=uri)
+    mapping.update(keyword=uri)
+    embedded.update({{"uri": uri}})
+    embedded.update([("uri", uri)], keyword=uri)
+    embedded.update(keyword=uri)
+    assert_type(properties.setdefault("uri", uri), DynWinRTValue | None)
+    assert_type(properties.setdefault("raw", raw), DynWinRTValue | None)
+    assert_type(properties.setdefault("null"), DynWinRTValue | None)
+    assert_type(properties.setdefault(key="uri", default=uri), DynWinRTValue | None)
+    assert_type(like.setdefault("uri", uri), DynWinRTValue | None)
+    assert_type(mapping.setdefault("uri", uri), DynWinRTValue | None)
+    assert_type(embedded.setdefault("uri", uri), DynWinRTValue | None)
+    assert_type(properties.get("missing", uri), DynWinRTValue | Uri | None)
+    assert_type(properties.pop("missing", uri), DynWinRTValue | Uri | None)
     assert_type(properties["uri"], DynWinRTValue | None)
     assert_type(like["uri"], DynWinRTValue | None)
     assert_type(mapping["uri"], DynWinRTValue | None)
@@ -1046,6 +1102,14 @@ def invalid(uri: Uri, properties: PropertySet, mapping: IMap_String_Object) -> N
     mapping["class"] = Uri
     mapping[42] = uri
     result: Uri = properties["uri"]
+    properties.update({{"wrong": WrongObject()}})
+    properties.update([("unboxed", object())])
+    properties.update(unboxed="string")
+    properties.update({{42: uri}})
+    mapping.update({{"class": Uri}})
+    properties.setdefault("unboxed", 42)
+    properties.setdefault("wrong", WrongObject())
+    properties.setdefault(42, uri)
 "#
         ),
         &[
@@ -1056,20 +1120,43 @@ def invalid(uri: Uri, properties: PropertySet, mapping: IMap_String_Object) -> N
             "[assignment]",
             "[index]",
             "[assignment]",
+            "[dict-item]",
+            "[list-item]",
+            "[call-overload]",
+            "[type-var]",
+            "[dict-item]",
+            "[arg-type]",
+            "[arg-type]",
+            "[arg-type]",
         ],
     );
     if has_implementation_runtime() {
         fs::write(
             fixture.0.join("collections_runtime.py"),
-            r#"from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
+            r#"from dynwinrt import (
+    DynWinRTImplementation, DynWinRTImplementationMethod, DynWinRTInterfacePlan,
+    DynWinRTMethodSig, DynWinRTType, DynWinRTValue, RoApartment, WinGUID,
+    projected_lifetime_scope, release_projected,
+)
+import threading
 from sdk.windows.foundation import Uri
 from sdk.windows.foundation.collections import IMap_String_Object, PropertySet
+from sdk.windows__foundation__collections__property_set import IMap_String_Object as EmbeddedMap
+
+class NativeCarrier:
+    def __init__(self, obj):
+        self._obj = obj
+
+class IgnoredDefault:
+    @property
+    def _obj(self):
+        raise AssertionError("an existing key evaluated its unused default")
 
 with RoApartment(1), projected_lifetime_scope():
     uri = Uri("https://example.com/collection-input")
     properties = PropertySet()
     mapping = IMap_String_Object.create({"uri": uri})
-    for collection in (properties, mapping):
+    for index, collection in enumerate((properties, mapping, EmbeddedMap.from_value(properties._obj))):
         collection["uri"] = uri
         value = collection["uri"]
         assert isinstance(value, DynWinRTValue)
@@ -1082,8 +1169,127 @@ with RoApartment(1), projected_lifetime_scope():
         assert isinstance(value, DynWinRTValue)
         assert value.identity_raw() == uri._obj.identity_raw()
         value.release()
+        carrier = NativeCarrier(uri._obj)
+        collection.update({"bulk": uri, "carrier": carrier}, keyword=uri)
+        collection.update((entry for entry in [("pair", uri), ("raw", uri._obj)]))
+        key = f"default_{index}"
+        missing = collection.setdefault(key, carrier)
+        existing = collection.setdefault(key, IgnoredDefault())
+        for result in (missing, existing, collection[key]):
+            assert isinstance(result, DynWinRTValue) and result is not uri._obj
+            assert result.identity_raw() == uri._obj.identity_raw()
+            result.release()
+        assert not uri._obj.is_released()
+        assert uri.absolute_uri == "https://example.com/collection-input"
+        assert collection.get("absent", uri) is uri
+        assert collection.pop("absent", uri) is uri
+        assert not collection.has_key("absent")
+        assert collection.setdefault("null-default") is None
+        assert collection.setdefault("null-default", IgnoredDefault()) is None
         del collection["uri"]
         assert not collection.has_key("uri")
+
+    class WrongObject:
+        _obj = 42
+
+    for invalid in (object(), 42, "unboxed", WrongObject(), Uri):
+        for operation in (
+            lambda: properties.update({"invalid": invalid}),
+            lambda: properties.update([("invalid", invalid)]),
+            lambda: properties.update(invalid=invalid),
+            lambda: properties.setdefault("invalid", invalid),
+        ):
+            try:
+                operation()
+            except TypeError:
+                pass
+            else:
+                raise AssertionError(f"accepted invalid input {type(invalid).__name__}")
+            assert not properties.has_key("invalid")
+        assert properties.setdefault("null-default", invalid) is None
+    for operation in (
+        lambda: properties.update({42: uri}),
+        lambda: properties.setdefault(42, uri),
+    ):
+        try:
+            operation()
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("accepted a non-string key")
+    try:
+        properties.update((entry for entry in [("early", uri), ("late", 42)]))
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("accepted an invalid later entry")
+    assert properties["early"].identity_raw() == uri._obj.identity_raw()
+    assert not properties.has_key("late")
+
+    released = Uri("https://example.com/released")
+    release_projected(released)
+    for operation in (
+        lambda: properties.update(released=released),
+        lambda: properties.setdefault("released", released),
+    ):
+        try:
+            operation()
+        except RuntimeError as error:
+            assert "released" in str(error)
+        else:
+            raise AssertionError("accepted a released input")
+    assert properties.setdefault("null-default", released) is None
+    assert not properties.has_key("released")
+
+    iid = WinGUID.parse("96369f54-8eb6-48f0-abce-c1b211e627c3")
+    signature = DynWinRTMethodSig().add_out(DynWinRTType.hstring())
+    stringable = DynWinRTType.register_interface("Tests.IMapDefaultOwner", iid)
+    stringable = stringable.add_method("ToString", signature)
+    plan = DynWinRTInterfacePlan.create(
+        "Tests.IMapDefaultOwner", stringable,
+        [DynWinRTImplementationMethod("ToString", 6, signature)],
+    )
+    owner = DynWinRTImplementation.create(
+        [plan], lambda *_: [DynWinRTValue.from_hstring("owner alive")],
+    )
+    source = owner.to_value()
+    retained = properties.setdefault("owned", NativeCarrier(source))
+    assert isinstance(retained, DynWinRTValue)
+    assert retained.identity_raw() == source.identity_raw()
+    errors = []
+
+    def worker():
+        with RoApartment(1):
+            foreign = PropertySet()
+            foreign["existing"] = None
+            assert foreign.setdefault("existing", NativeCarrier(retained)) is None
+            for operation in (
+                lambda: foreign.update({"foreign": NativeCarrier(retained)}),
+                lambda: foreign.setdefault("foreign", NativeCarrier(retained)),
+            ):
+                try:
+                    operation()
+                except RuntimeError as error:
+                    assert "non-agile" in str(error) or "thread" in str(error)
+                    errors.append(error)
+                else:
+                    raise AssertionError("accepted a foreign-thread non-agile input")
+            assert not foreign.has_key("foreign")
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert len(errors) == 2
+    source_view = source.cast(iid)
+    assert stringable.method(6).invoke(source_view, []).to_string() == "owner alive"
+    source_view.release()
+    owner.release()
+    source.release()
+    retained.release()
+    assert not owner.is_closed
+    del properties["owned"]
+    assert owner.is_closed
+assert uri._obj.is_released() and missing.is_released()
 print("collection-subscript-native-ok", flush=True)
 "#,
         )

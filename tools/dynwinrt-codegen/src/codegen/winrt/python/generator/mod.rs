@@ -54,6 +54,7 @@ fn import_line(
     needs_legacy_int_guard: bool,
 ) -> String {
     let object_input = context.support_symbol_import(PythonSupportSymbol::ObjectInput);
+    let mapping_input = context.support_symbol_import(PythonSupportSymbol::MappingInput);
     let can_cast = context.support_symbol_import(PythonSupportSymbol::CanCast);
     let mut legacy_helpers = String::new();
     if needs_legacy_helper {
@@ -73,10 +74,10 @@ fn import_line(
         "\
 from ._runtime import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
-    TYPE_CHECKING, UUID, WinGUID, datetime, timedelta,
+    TYPE_CHECKING, Self, TypeVar, UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
-    {object_input}, _property, _weakref_ref,
+    {object_input}, {mapping_input}, _property, _weakref_ref,
     _dynwinrt_array, _dynwinrt_bind_overload, {can_cast}, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
 {legacy_helpers}    _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
@@ -119,7 +120,7 @@ from collections.abc import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
 )
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Self, TypeVar, overload
 from uuid import UUID
 from weakref import ref as _weakref_ref
 from dynwinrt import (
@@ -254,8 +255,9 @@ fn as_interface_method(context: &PythonProjectionContext) -> String {
 
 pub fn generate_runtime_support_module() -> String {
     format!(
-        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}",
+        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}{}",
         super::shared::NATIVE_OBJECT_PROTOCOL,
+        super::shared::MAPPING_INPUT_PROTOCOL,
         super::implementation::HELPERS
     )
 }

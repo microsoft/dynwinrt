@@ -69,7 +69,7 @@ pub(crate) fn py_optional_type(typ: String) -> String {
     format!("{} | None", unquoted)
 }
 
-fn unquoted(typ: &str) -> &str {
+pub(super) fn unquoted(typ: &str) -> &str {
     typ.strip_prefix('\'')
         .and_then(|value| value.strip_suffix('\''))
         .unwrap_or(typ)
