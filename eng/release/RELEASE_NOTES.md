@@ -2,14 +2,12 @@
 
 This preview improves Python apartment lifetime safety, Object value conversion, callback projection, overload dispatch, and type declarations. It also fixes generated JavaScript/TypeScript interface inputs and async-with-progress Promises, and adds Windows Python output-path diagnostics. These changes are relative to preview.22.
 
-## Packages and requirements
+## Packages and installation
 
 - `@microsoft/dynwinrt` - JavaScript/TypeScript runtime.
 - `@microsoft/dynwinrt-codegen` - JavaScript/TypeScript code generator.
 - `dynwinrt` - Native Python runtime.
 - `dynwinrt-codegen` - Standalone Python code generator.
-
-The npm version and release tag use `0.1.0-preview.23`; Python packages use the equivalent PEP 440 version `0.1.0rc23`. Runtime packages target Windows x64 and ARM64. JavaScript requires Node.js 18 or later; the Python runtime and generated bindings require CPython 3.11-3.14. The standalone Python codegen supports Python 3.8-3.14. Available APIs also depend on Windows components, metadata, package identity, framework bootstrap, and hardware.
 
 ```powershell
 npm install @microsoft/dynwinrt@0.1.0-preview.23
