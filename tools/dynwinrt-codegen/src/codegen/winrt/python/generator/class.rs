@@ -709,6 +709,7 @@ pub fn generate_class<'a>(
     if let Some(iface) = collection_iface {
         out.push_str(&super::super::collections::protocol_helper_methods(
             iface,
+            &plan.instance.collection_helpers,
             &context.class_name(class),
             context,
             super::super::nullability::AnnotationSurface::Runtime,
@@ -967,6 +968,7 @@ pub fn generate_class<'a>(
         }
         out.push_str(&super::super::collections::protocol_helper_methods(
             req_iface,
+            &iface_plan.collection_helpers,
             &symbol,
             context,
             super::super::nullability::AnnotationSurface::Runtime,

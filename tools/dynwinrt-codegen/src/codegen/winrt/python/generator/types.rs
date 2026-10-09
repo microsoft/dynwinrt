@@ -295,6 +295,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str("    _dynwinrt_interface_type = True\n");
     out.push_str(&super::super::collections::protocol_helper_methods(
         iface,
+        &plan.collection_helpers,
         &iface.name,
         context,
         super::super::nullability::AnnotationSurface::Runtime,

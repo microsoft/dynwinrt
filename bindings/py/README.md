@@ -168,6 +168,13 @@ maps; `extend()` and `+=` accept iterables of valid vector inputs. They do not
 change the types returned by reads. `extend()` returns `None`, and `+=` returns
 the same wrapper.
 
+If metadata already exposes a native member with a helper's Python name, that
+native method, property or compatibility alias keeps its existing meaning.
+Use an explicit collection interface view for the standard collection helper
+instead; generated helper refinements never replace a native entry point.
+When a vector has a native `extend`, `+=` keeps its inherited dispatch to that
+member rather than gaining a new bulk-write refinement.
+
 `setdefault(key, default)` returns the value as `self[key]` reads it, including
 after inserting a missing key. For an `Object`-valued map such as `PropertySet`,
 a generated wrapper with a valid `_obj` can be a write input, but reads and

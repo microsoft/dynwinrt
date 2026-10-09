@@ -29,8 +29,8 @@ use super::collections::{
     projected_interface_kind, stock_json_class_contract,
 };
 use super::member_plan::{
-    ClassMemberPlan, MethodGroup, PlannedMember, ScopePlan, class_instance_interfaces,
-    interface_member_plan,
+    ClassMemberPlan, CollectionHelperPlan, MethodGroup, PlannedMember, ScopePlan,
+    class_instance_interfaces, interface_member_plan,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
@@ -494,7 +494,14 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
-    out.push_str(&collection_protocol_stubs(iface, context, 4, false));
+    let plan = interface_member_plan(iface, context);
+    out.push_str(&collection_protocol_stubs(
+        iface,
+        &plan.collection_helpers,
+        context,
+        4,
+        false,
+    ));
     if has_projection {
         out.push('\n');
         if !is_protocol {
@@ -573,7 +580,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         ));
     }
 
-    let plan = interface_member_plan(iface, context);
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()
         .map(|method| (iface, method));
@@ -1084,14 +1090,20 @@ pub fn generate_class_stub<'a>(
         }
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
         out.push_str(NATIVE_OBJECT_STUB);
-        out.push_str(&collection_protocol_stubs(req_iface, context, 4, false));
+        let iface_plan = interface_member_plan(req_iface, context);
+        out.push_str(&collection_protocol_stubs(
+            req_iface,
+            &iface_plan.collection_helpers,
+            context,
+            4,
+            false,
+        ));
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
-        let iface_plan = interface_member_plan(req_iface, context);
         let members = reorder_getters_before_setters(&req_iface.methods)
             .into_iter()
             .map(|method| (req_iface, method));
@@ -1160,6 +1172,7 @@ fn emit_class_instance_stubs<'a>(
     if let Some(collection_iface) = collection_iface {
         out.push_str(&collection_protocol_stubs(
             collection_iface,
+            &plan.collection_helpers,
             context,
             4,
             stock_json_receiver,
@@ -1314,6 +1327,7 @@ fn emit_class_instance_stubs<'a>(
 
 fn collection_protocol_stubs(
     iface: &InterfaceMeta,
+    helpers: &CollectionHelperPlan,
     context: &PythonProjectionContext,
     indent_spaces: usize,
     stock_json_receiver: bool,
@@ -1434,6 +1448,7 @@ fn collection_protocol_stubs(
     };
     result.push_str(&super::collections::protocol_helper_methods(
         iface,
+        helpers,
         &iface.name,
         context,
         AnnotationSurface::Stub,

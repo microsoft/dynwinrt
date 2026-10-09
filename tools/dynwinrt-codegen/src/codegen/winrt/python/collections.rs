@@ -6,6 +6,7 @@ use crate::meta::{
 };
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
+use super::member_plan::CollectionHelperPlan;
 use super::naming::{PythonProjectionContext, PythonSupportSymbol};
 use super::nullability::{AnnotationSurface, ElementContainer, may_project_none};
 use super::type_helpers::{
@@ -283,6 +284,7 @@ pub(super) fn protocol_helper_imports<'a>(
 /// read projection (or Self), never the caller's unconverted input.
 pub(super) fn protocol_helper_methods(
     iface: &InterfaceMeta,
+    helpers: &CollectionHelperPlan,
     owner_name: &str,
     context: &PythonProjectionContext,
     surface: AnnotationSurface,
@@ -304,20 +306,31 @@ pub(super) fn protocol_helper_methods(
     ) {
         (Some(CollectionKind::MutableSequence), [element]) => {
             let element = input(element);
-            if is_stub {
-                format!(
-                    "{indent}def extend(self, values: Iterable[{element}]) -> None: ...\n\
-                         {indent}def __iadd__(self, values: Iterable[{element}]) -> Self: ...\n"
-                )
-            } else {
-                format!(
-                    "\n{indent}def extend(self, values: Iterable[{element}]) -> None:\n\
-                         {indent}    super().extend(values)\n\
-                         \n{indent}def __iadd__(self, values: Iterable[{element}]) -> Self:\n\
+            let mut result = String::new();
+            if helpers.extend {
+                result.push_str(&if is_stub {
+                    format!("{indent}def extend(self, values: Iterable[{element}]) -> None: ...\n")
+                } else {
+                    format!(
+                        "\n{indent}def extend(self, values: Iterable[{element}]) -> None:\n\
+                         {indent}    super().extend(values)\n"
+                    )
+                });
+            }
+            if helpers.iadd {
+                result.push_str(&if is_stub {
+                    format!(
+                        "{indent}def __iadd__(self, values: Iterable[{element}]) -> Self: ...\n"
+                    )
+                } else {
+                    format!(
+                        "\n{indent}def __iadd__(self, values: Iterable[{element}]) -> Self:\n\
                          {indent}    self.extend(values)\n\
                          {indent}    return self\n"
-                )
+                    )
+                });
             }
+            result
         }
         (Some(CollectionKind::MutableMapping), [key, value]) => {
             let key_input = py_collection_input_type(key, context);
@@ -343,28 +356,31 @@ pub(super) fn protocol_helper_methods(
             } else {
                 String::new()
             };
-            let mut result = format!(
-                "\n{indent}{key_variable} = TypeVar('{key_variable}', bound={key_bound})\n\
+            let mut result = String::new();
+            if helpers.update {
+                result.push_str(&format!(
+                    "\n{indent}{key_variable} = TypeVar('{key_variable}', bound={key_bound})\n\
                      \n{indent}@overload\n\
                      {indent}def update(self, other: {mapping}, /{keywords}) -> None: ...\n\
                      {indent}@overload\n\
                      {indent}def update(self, other: {pairs} = (), /{keywords}) -> None: ...\n"
-            );
-            if !is_stub {
-                // Keep runtime kwargs handling, including partial updates, in
-                // the existing checked mixin even for non-string key types.
-                result.push_str(&format!(
+                ));
+                if !is_stub {
+                    // Keep runtime kwargs handling, including partial updates, in
+                    // the existing checked mixin even for non-string key types.
+                    result.push_str(&format!(
                         "{indent}def update(self, other: {mapping} | {pairs} = (), /, **kwargs: {value_input}) -> None:\n\
                          {indent}    super().update(other, **kwargs)\n"
                     ));
+                }
             }
             let nullable = may_project_none(value) && !stock_json_receiver;
-            if is_stub {
+            if helpers.setdefault && is_stub {
                 let default = if nullable { " = None" } else { "" };
                 result.push_str(&format!(
                         "\n{indent}def setdefault(self, key: {key_input}, default: {value_input}{default}) -> {value_read}: ...\n"
                     ));
-            } else {
+            } else if helpers.setdefault {
                 if !nullable {
                     result.push_str(&format!(
                             "\n{indent}@overload\n\

@@ -577,7 +577,7 @@ jobs:
             reference_array_results_preserve_null_elements -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_collection_helper_collision_test `
-            collection_helper_aliases_execute_for_packaged_and_standalone_outputs -- --exact
+            --test python_collection_member_collision_test -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_delegate_callback_test `
             nested_delegate_callback_argument_preserves_native_null -- --exact --nocapture
