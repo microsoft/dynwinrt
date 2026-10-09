@@ -17,10 +17,10 @@ import importlib
 import inspect
 import json
 import re
+import runpy
 import subprocess
 import sys
 import os
-import subprocess
 import threading
 
 
@@ -3210,6 +3210,30 @@ async def run_check(
                 if error is not None:
                     cr['error'] = error
                     return cr
+            cr['pass'] = True
+
+        elif kind == 'apartment_owner_reinitialization':
+            runner = os.path.join(
+                os.path.dirname(__file__), 'py_apartment_owner_reinitialization.py'
+            )
+            scenarios = runpy.run_path(runner)['SCENARIOS']
+            for mode in (dw.RO_INIT_SINGLETHREADED, dw.RO_INIT_MULTITHREADED):
+                for scenario in scenarios:
+                    child = subprocess.run(
+                        [
+                            sys.executable, '-I', runner, '--generated', generated_dir,
+                            '--mode', str(mode), '--scenario', scenario,
+                        ],
+                        capture_output=True, text=True, timeout=45, check=False,
+                    )
+                    marker = f'PASS owner-reinitialization {scenario} apartment={mode}'
+                    if child.returncode or marker not in child.stdout:
+                        cr['error'] = (
+                            f'{marker}: isolated Python exited '
+                            f'{hex(child.returncode & 0xFFFFFFFF)}: '
+                            f'{child.stdout} {child.stderr}'
+                        )
+                        return cr
             cr['pass'] = True
 
         elif kind == 'threadpool_async_apartment_owner':

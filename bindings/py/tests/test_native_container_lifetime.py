@@ -4,6 +4,7 @@
 """Native container owners must be disposed before their COM apartment exits."""
 
 import gc
+from pathlib import Path
 import subprocess
 import sys
 import weakref
@@ -1699,6 +1700,39 @@ def test_managed_apartment_drain_is_reentrant_and_unbalanced_calls_fail(script, 
         result.stderr,
     )
     assert marker in result.stdout
+
+
+@pytest.mark.parametrize("apartment_type", [0, 1])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "close", "exit", "drop", "manual", "retry",
+        "close_failure", "manual_failure", "retry_failure",
+        "manual_nested_pair", "retry_nested_pair",
+        "recover", "recover_failure",
+        "foreign_retry", "foreign_retry_failure", "foreign_retry_nested_pair",
+        "foreign_recover", "foreign_recover_failure",
+    ],
+)
+def test_owner_drain_preserves_reentrant_initialization_leases(apartment_type, scenario):
+    runner = Path(__file__).resolve().parents[3].joinpath(
+        "tests", "e2e", "runners", "py_apartment_owner_reinitialization.py"
+    )
+    result = subprocess.run(
+        [
+            sys.executable, "-I", str(runner),
+            "--mode", str(apartment_type), "--scenario", scenario,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        scenario, apartment_type, hex(result.returncode & 0xFFFFFFFF),
+        result.stdout, result.stderr,
+    )
+    assert f"PASS owner-reinitialization {scenario} apartment={apartment_type}" in result.stdout
 
 
 def test_wrong_thread_apartment_close_preserves_native_owners():

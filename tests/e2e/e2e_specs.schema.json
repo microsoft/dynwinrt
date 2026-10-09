@@ -81,6 +81,7 @@
              "async_progress_cancel_error",
              "async_cancellation",
              "unscoped_uri_apartment_exit",
+             "apartment_owner_reinitialization",
              "threadpool_async_apartment_owner",
              "nonagile_async_apartment_exit",
              "property_set_equals",

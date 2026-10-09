@@ -501,7 +501,8 @@ fn leave_managed_apartment_with_drain(
     if depth == 1 {
         drain()?;
     }
-    MANAGED_APARTMENT_DEPTH.with(|state| state.set(depth - 1));
+    // Releasing an owner can run Python finalizers that successfully initialize again.
+    MANAGED_APARTMENT_DEPTH.with(|state| state.set(state.get() - 1));
     unsafe { windows::Win32::System::WinRT::RoUninitialize() };
     Ok(())
 }
@@ -889,13 +890,17 @@ pub fn ro_uninitialize(py: Python<'_>) -> PyResult<()> {
             "ro_uninitialize() requires a successful ro_initialize() on this thread",
         ));
     }
-    leave_managed_apartment(py, "ro_uninitialize()")?;
+    // Reserve the closing manual lease so cleanup cannot consume it a second time.
     MANUAL_APARTMENT_DEPTH.with(|state| state.set(depth - 1));
-    Ok(())
+    let result = leave_managed_apartment(py, "ro_uninitialize()");
+    if result.is_err() {
+        MANUAL_APARTMENT_DEPTH.with(|state| state.set(state.get() + 1));
+    }
+    result
 }
 
-#[pyfunction]
-pub fn retry_pending_apartment_close(py: Python<'_>) -> PyResult<()> {
+fn retry_pending_apartment_close_with_drain(drain: impl FnOnce() -> PyResult<()>) -> PyResult<()> {
+    let _retry = PendingRetryGuard::enter()?;
     let local_pending = PENDING_APARTMENT_CLOSES
         .try_with(|pending| {
             pending
@@ -932,15 +937,21 @@ pub fn retry_pending_apartment_close(py: Python<'_>) -> PyResult<()> {
             "no failed RoApartment close is pending on this thread",
         ));
     }
-    let _retry = PendingRetryGuard::enter()?;
-    leave_managed_apartment(py, "retry_pending_apartment_close()")?;
-    if local_pending {
-        PENDING_APARTMENT_CLOSES.with(|pending| {
+    // Reserve this lease, not an entry added by a finalizer during the drain.
+    let (pending, foreign_index) = if local_pending {
+        let apartment_type = PENDING_APARTMENT_CLOSES.with(|pending| {
             pending
                 .borrow_mut()
                 .pop()
-                .expect("pending cleanup was checked");
+                .expect("pending cleanup was checked")
         });
+        (
+            PendingApartment {
+                apartment_type,
+                retry_cleanup: true,
+            },
+            None,
+        )
     } else {
         FOREIGN_DROPS.with(|owner| {
             let (mut queue, _) = lock_foreign_drops(&owner.0);
@@ -949,10 +960,33 @@ pub fn retry_pending_apartment_close(py: Python<'_>) -> PyResult<()> {
                 .iter()
                 .rposition(|pending| pending.retry_cleanup)
                 .expect("pending foreign cleanup was checked");
-            queue.pending.remove(index);
-        });
+            (queue.pending.remove(index), Some(index))
+        })
+    };
+    let result = leave_managed_apartment_with_drain("retry_pending_apartment_close()", drain);
+    if result.is_err() {
+        if let Some(index) = foreign_index {
+            FOREIGN_DROPS.with(|owner| {
+                let (mut queue, _) = lock_foreign_drops(&owner.0);
+                queue.pending.insert(index, pending);
+            });
+        } else {
+            PENDING_APARTMENT_CLOSES.with(|state| {
+                state.borrow_mut().push(pending.apartment_type);
+            });
+        }
     }
-    Ok(())
+    result
+}
+
+#[pyfunction]
+pub fn retry_pending_apartment_close(py: Python<'_>) -> PyResult<()> {
+    retry_pending_apartment_close_with_drain(|| {
+        py.import("dynwinrt.dynwinrt")?
+            .getattr("_dynwinrt_drain_apartment_owners")?
+            .call0()?;
+        Ok(())
+    })
 }
 
 #[pyfunction]
@@ -4805,6 +4839,139 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn owner_drain_preserves_reentrant_initializations_and_failed_close() {
+        Python::initialize();
+        for apartment_type in [0, 1] {
+            for fail_drain in [false, true] {
+                thread::spawn(move || {
+                    assert_eq!(managed_apartment_depth(), 0);
+                    enter_managed_apartment(apartment_type).unwrap();
+                    let result = leave_managed_apartment_with_drain("owner drain test", || {
+                        enter_managed_apartment(apartment_type)?;
+                        if fail_drain {
+                            Err(PyRuntimeError::new_err(
+                                "owner drain failed after initialization",
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    });
+                    assert_eq!(result.is_err(), fail_drain);
+                    assert_eq!(managed_apartment_depth(), if fail_drain { 2 } else { 1 });
+                    if fail_drain {
+                        leave_managed_apartment_with_drain("owner drain test", || {
+                            panic!("a non-final close must not drain owners")
+                        })
+                        .unwrap();
+                        assert_eq!(managed_apartment_depth(), 1);
+                    }
+                    leave_managed_apartment_with_drain("owner drain test", || Ok(())).unwrap();
+                    assert_eq!(managed_apartment_depth(), 0);
+                    unsafe { RoInitialize(ro_init_type(1 - apartment_type)) }.unwrap();
+                    unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+                })
+                .join()
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn pending_retry_reserves_exact_lease_and_restores_after_reentrant_failure() {
+        Python::initialize();
+        for apartment_type in [0, 1] {
+            for foreign in [false, true] {
+                for fail_drain in [false, true] {
+                    thread::spawn(move || {
+                        let enqueue = |apartment_type| {
+                            if foreign {
+                                FOREIGN_DROPS.with(|owner| {
+                                    lock_foreign_drops(&owner.0)
+                                        .0
+                                        .pending
+                                        .push(PendingApartment {
+                                            apartment_type,
+                                            retry_cleanup: true,
+                                        });
+                                });
+                            } else {
+                                PENDING_APARTMENT_CLOSES.with(|state| {
+                                    state.borrow_mut().push(apartment_type);
+                                });
+                            }
+                        };
+                        let pending_types = || {
+                            if foreign {
+                                FOREIGN_DROPS.with(|owner| {
+                                    lock_foreign_drops(&owner.0)
+                                        .0
+                                        .pending
+                                        .iter()
+                                        .map(|pending| pending.apartment_type)
+                                        .collect::<Vec<_>>()
+                                })
+                            } else {
+                                PENDING_APARTMENT_CLOSES.with(|state| state.borrow().clone())
+                            }
+                        };
+                        enter_managed_apartment(apartment_type).unwrap();
+                        enqueue(apartment_type);
+                        let new_type = if apartment_type == 1 { 7 } else { 0 };
+                        let result = retry_pending_apartment_close_with_drain(|| {
+                            assert!(
+                                pending_types().is_empty(),
+                                "the closing lease was not reserved"
+                            );
+                            assert!(RoApartment::recover_pending().is_err());
+                            enter_managed_apartment(new_type)?;
+                            enqueue(new_type);
+                            assert!(
+                                retry_pending_apartment_close_with_drain(|| {
+                                    panic!("a nested retry must not consume another pending lease")
+                                })
+                                .is_err()
+                            );
+                            assert!(RoApartment::recover_pending().is_err());
+                            if fail_drain {
+                                Err(PyRuntimeError::new_err(
+                                    "owner drain failed after initialization",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        });
+                        assert_eq!(result.is_err(), fail_drain);
+                        assert_eq!(managed_apartment_depth(), if fail_drain { 2 } else { 1 });
+                        assert!(!PENDING_RETRY_IN_PROGRESS.with(Cell::get));
+                        if fail_drain {
+                            assert_eq!(
+                                pending_types(),
+                                if foreign {
+                                    vec![apartment_type, new_type]
+                                } else {
+                                    vec![new_type, apartment_type]
+                                }
+                            );
+                        } else {
+                            assert_eq!(pending_types(), vec![new_type]);
+                        }
+                        for _ in 0..if fail_drain { 2 } else { 1 } {
+                            retry_pending_apartment_close_with_drain(|| Ok(())).unwrap();
+                        }
+                        assert!(pending_types().is_empty());
+                        assert!(RoApartment::recover_pending().is_err());
+                        assert_eq!(managed_apartment_depth(), 0);
+                        unsafe { RoInitialize(ro_init_type(1 - apartment_type)) }.unwrap();
+                        unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+                    })
+                    .join()
+                    .unwrap();
+                }
+            }
+        }
     }
 
     #[test]
