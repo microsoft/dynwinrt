@@ -26,10 +26,12 @@ from collections.abc import (
     Coroutine as _Coroutine,
     Iterable as _Iterable,
     Iterator as _Iterator,
+    ItemsView as _ItemsView,
     Mapping as _Mapping,
     MutableMapping as _MutableMapping,
     MutableSequence as _MutableSequence,
     Sequence as _Sequence,
+    ValuesView as _ValuesView,
 )
 from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
 from itertools import count as _count
@@ -515,6 +517,66 @@ def _dynwinrt_preflight_non_null_collection(self, values):
             native._validate_non_null_collection_input(raw, *contract)
     return items
 
+_dynwinrt_no_collection_identity = object()
+_dynwinrt_collection_iunknown = None
+
+def _dynwinrt_collection_identity(value):
+    if value is None:
+        return None
+    native = getattr(value, '_obj', value)
+    if not isinstance(native, DynWinRTValue):
+        return _dynwinrt_no_collection_identity
+    global _dynwinrt_collection_iunknown
+    if _dynwinrt_collection_iunknown is None:
+        _dynwinrt_collection_iunknown = WinGUID.parse(
+            '00000000-0000-0000-c000-000000000046'
+        )
+    # The probe checks lifetime/thread access even for scalar and null carriers.
+    if native._try_query_interface(_dynwinrt_collection_iunknown):
+        identity = native.cast(_dynwinrt_collection_iunknown)
+        try:
+            return identity.as_raw()
+        finally:
+            identity.release()
+    return None if native.is_null() else _dynwinrt_no_collection_identity
+
+def _dynwinrt_collection_equal(left, right):
+    left_identity = _dynwinrt_collection_identity(left)
+    right_identity = _dynwinrt_collection_identity(right)
+    if (
+        left_identity is not _dynwinrt_no_collection_identity
+        and right_identity is not _dynwinrt_no_collection_identity
+    ):
+        return left_identity == right_identity
+    return left is right or left == right
+
+def _dynwinrt_collection_key(key):
+    identity = _dynwinrt_collection_identity(key)
+    if identity is _dynwinrt_no_collection_identity:
+        return key
+    if identity is None:
+        return None
+    return (_dynwinrt_no_collection_identity, identity)
+
+def _dynwinrt_mapping_equal(left, right):
+    if not isinstance(right, _Mapping):
+        return NotImplemented
+    # Retain native keys while their canonical identities are dictionary keys.
+    left_pairs = list(left.items())
+    right_pairs = list(right.items())
+    left_keys = [_dynwinrt_collection_key(key) for key, _ in left_pairs]
+    right_values = {}
+    for key, value in right_pairs:
+        right_values.setdefault(_dynwinrt_collection_key(key), []).append(value)
+    if len(left_pairs) != len(right_pairs):
+        return False
+    # Identity normalization must match entries one-to-one, not collapse aliases.
+    for key, (_, value) in zip(left_keys, left_pairs):
+        candidates = right_values.pop(key, ())
+        if len(candidates) != 1 or not _dynwinrt_collection_equal(value, candidates[0]):
+            return False
+    return not right_values
+
 class _WinRTSequenceMixin(_Sequence):
     def __len__(self):
         return self.size
@@ -524,15 +586,31 @@ class _WinRTSequenceMixin(_Sequence):
             return [self.get_at(i) for i in range(*index.indices(len(self)))]
         return self.get_at(_dynwinrt_normalize_index(index, len(self)))
 
-class _WinRTMutableSequenceMixin(_MutableSequence):
-    def __len__(self):
-        return self.size
+    def __contains__(self, value):
+        return any(_dynwinrt_collection_equal(item, value) for item in self)
 
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self.get_at(i) for i in range(*index.indices(len(self)))]
-        return self.get_at(_dynwinrt_normalize_index(index, len(self)))
+    def index(self, value, start=0, stop=None):
+        start = _index(start)
+        if start < 0:
+            start = max(0, len(self) + start)
+        if stop is not None:
+            stop = _index(stop)
+            if stop < 0:
+                stop += len(self)
+        while stop is None or start < stop:
+            try:
+                item = self[start]
+            except IndexError:
+                break
+            if _dynwinrt_collection_equal(item, value):
+                return start
+            start += 1
+        raise ValueError
 
+    def count(self, value):
+        return sum(1 for item in self if _dynwinrt_collection_equal(item, value))
+
+class _WinRTMutableSequenceMixin(_WinRTSequenceMixin, _MutableSequence):
     def __setitem__(self, index, value):
         if isinstance(index, slice):
             items = list(self)
@@ -577,6 +655,19 @@ class _WinRTIteratorMixin(_Iterator):
         self.move_next()
         return value
 
+class _WinRTItemsView(_ItemsView):
+    def __contains__(self, item):
+        key, value = item
+        try:
+            candidate = self._mapping[key]
+        except KeyError:
+            return False
+        return _dynwinrt_collection_equal(candidate, value)
+
+class _WinRTValuesView(_ValuesView):
+    def __contains__(self, value):
+        return any(_dynwinrt_collection_equal(item, value) for item in self)
+
 class _WinRTMappingMixin(_Mapping):
     def __len__(self):
         return self.size
@@ -590,19 +681,16 @@ class _WinRTMappingMixin(_Mapping):
             raise KeyError(key)
         return self.lookup(key)
 
-class _WinRTMutableMappingMixin(_MutableMapping):
-    def __len__(self):
-        return self.size
+    def __eq__(self, other):
+        return _dynwinrt_mapping_equal(self, other)
 
-    def __iter__(self):
-        for pair in self._iter_pairs():
-            yield pair.key
+    def items(self):
+        return _WinRTItemsView(self)
 
-    def __getitem__(self, key):
-        if not self.has_key(key):
-            raise KeyError(key)
-        return self.lookup(key)
+    def values(self):
+        return _WinRTValuesView(self)
 
+class _WinRTMutableMappingMixin(_WinRTMappingMixin, _MutableMapping):
     def __setitem__(self, key, value):
         self.insert(key, value)
 

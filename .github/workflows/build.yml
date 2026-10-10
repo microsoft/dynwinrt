@@ -564,12 +564,15 @@ jobs:
             --test implementation_naming_test `
             --test python_overload_legacy_compat_test `
             --test python_released_implementation_test
-      - name: Test generated nullable collection values
+      - name: Test generated collection protocols
         shell: pwsh
         run: |
           $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
           $env:DYNWINRT_REQUIRE_MYPY = '1'
+          cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
+            collection_comparisons_preserve_native_identity_and_python_value_semantics -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             mutable_collection_mutators_accept_none -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
