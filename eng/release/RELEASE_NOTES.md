@@ -68,23 +68,23 @@ Recover deferred guards with `RoApartment.recover_pending()` on the owner thread
 
 ## Upgrade notes
 
-Upgrade runtime and codegen together, then fully regenerate and rebuild/reinstall affected bindings. Generated Python manifests pin the matching runtime version; do not mix old generated packages or stubs with a different runtime.
+Upgrade runtime and codegen together. Regenerate bindings and rebuild/reinstall generated packages. Do not mix old bindings or stubs with the new runtime.
 
-- **Python lifecycle:** initialize and balance each worker thread's own apartment. `projected_lifetime_scope()` remains an optional earlier-cleanup tool; do not rely on garbage collection to close apartments or on a close to revoke external COM references.
-- **Python regeneration and imports:** use a fresh output directory, or manually clean the dedicated generated-output directory and regenerate the entire selection. Do not remove or edit only the producer stamp. Direct imports of shortened long module names must migrate; prefer stable namespace imports such as `from generated.windows.foundation import Uri`.
-- **Python typing:** regenerate `.pyi` files together with their runtime modules. Cache potentially absent results and guard them before reading members. The Windows SDK nullable-result facts are not a universal nullability guarantee for custom or Windows App SDK metadata.
-- **Python collection defaults:** `setdefault()` follows the map's read projection rather than returning an unconverted input wrapper. Raw `Object`-valued maps return `DynWinRTValue | None`; project or unbox the result explicitly, or use `object_value_view()` on supported maps.
-- **Python JSON:** use `JsonValue.create_null_value()` for JSON semantic null. It is a non-null native `IJsonValue`; Python `None` is not a substitute in stock JSON collections.
-- **Python Object conversion:** a plain `int` boxes as Int32 only. Use explicit tags or `PropertyType` for other widths, enums, empty/mixed arrays, and InspectableArray. Re-boxing preserves type and value, not box identity.
-- **JavaScript/TypeScript:** regenerate wrappers to obtain interface aliases and the progress Promise fix; upgrading the native runtime alone does not repair previously generated JavaScript.
-- **Rust source compatibility:** exhaustive matches on public `PropertyValueData` and `PropertyValueUnboxResult` must handle the new payload variants and `PropertyValueUnboxResult::Unsupported(PropertyType)`. Keep `Null` and `NotPropertyValue` distinct and handle unsupported boxes explicitly.
+- **Python lifecycle:** Balance each worker thread's apartment explicitly. `projected_lifetime_scope()` is optional. External COM references remain caller-owned.
+- **Python regeneration:** Regenerate fully in a fresh or cleaned generated-output directory. Do not delete or edit only the producer stamp. Use namespace imports for shortened modules.
+- **Python typing:** Regenerate `.py` and `.pyi` together. Guard nullable results before member access. SDK nullability facts are not universal.
+- **Python collection defaults:** `setdefault()` returns the map's read projection. Raw `Object` maps return `DynWinRTValue | None`. Project or unbox results explicitly.
+- **Python JSON:** Use `JsonValue.create_null_value()` for JSON null. Do not pass `None` to stock JSON collections.
+- **Python Object conversion:** Plain `int` values box as Int32. Use tags or `PropertyType` for other types. Re-boxing does not preserve box identity.
+- **JavaScript/TypeScript:** Regenerate wrappers for interface aliases and the progress Promise fix. A runtime-only upgrade does not update generated code.
+- **Rust source compatibility:** Update exhaustive matches on `PropertyValueData` and `PropertyValueUnboxResult`. Handle new variants and `Unsupported(PropertyType)`. Keep `Null` and `NotPropertyValue` distinct.
 
 ## Known boundaries
 
-Classic COM, flat Win32, and WinUI hosting remain experimental. This preview does not expand their support guarantees or remove the documented architecture-specific WinRT collection-producer limits. Native ARM64 live WinUI coverage remains incomplete; ordinary runtime-wheel checks do not establish full UI support.
-
-Embedded hosts retaining native aliases to Python-backed callbacks must stop new calls, settle in-flight callbacks, and call `shutdown_python_callbacks()` while Python is alive, before `Py_FinalizeEx`. Hosts skipping that protocol have only best-effort protection against callbacks during early interpreter finalization; no universal deadlock-free guarantee is claimed.
-
-Python module shortening and compact staging reduce path risk but do not guarantee arbitrary checkout, package-name, build-temporary-directory, or venv depths. Use short paths and leave headroom for installation and bytecode caches; a missing warning is not a guarantee that every downstream tool can open the output.
+- **Experimental APIs:** Classic COM, flat Win32, and WinUI hosting remain experimental.
+- **Collection producers:** Architecture-specific support limits remain unchanged.
+- **ARM64 WinUI:** Native live coverage remains incomplete.
+- **Embedded hosts:** Stop new calls and settle in-flight callbacks. Call `shutdown_python_callbacks()` before `Py_FinalizeEx`. Skipping this protocol leaves only best-effort protection.
+- **Windows paths:** Short names do not remove all path limits. Keep output and venv paths short. A missing warning does not guarantee compatibility.
 
 For details, see the [Python runtime guide](https://github.com/microsoft/dynwinrt/blob/main/bindings/py/README.md), [Python codegen path guidance](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#windows-path-length), and the [project README](https://github.com/microsoft/dynwinrt#readme).
