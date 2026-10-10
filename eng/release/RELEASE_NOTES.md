@@ -1,6 +1,6 @@
 ## Prerelease v0.1.0-preview.23
 
-This preview improves Python apartment lifetime safety, collection reference comparisons, Object value conversion, and generated-package installation on Windows. It also strengthens Python callback, overload, and typing contracts, and fixes generated JavaScript/TypeScript interface inputs and async-with-progress Promises. These changes are relative to preview.22.
+This preview improves Python apartment lifetime safety, collection comparisons and write contracts, Object value conversion, and generated-package installation on Windows. It also strengthens Python callback, overload, and typing contracts, and fixes generated JavaScript/TypeScript interface inputs and async-with-progress Promises. These changes are relative to preview.22.
 
 ## Packages and installation
 
@@ -13,7 +13,7 @@ Runtime packages target Windows x64 and ARM64. JavaScript requires Node.js 18 or
 
 **Version matching:** runtime and codegen packages must use the same version within each language ecosystem. Upgrade them together before regenerating bindings.
 
-**Before using this version:** uninstall the previous runtime/codegen packages from the target environment and clean the old generated bindings and their build/install artifacts in the dedicated output location. Install the matching versions below and regenerate the complete bindings selection; do not mix old modules or stubs with the new runtime.
+**Before using this version:** clean the old generated bindings.
 
 ```powershell
 npm install @microsoft/dynwinrt@0.1.0-preview.23
@@ -37,6 +37,8 @@ Use `RoApartment.recover_pending()` on the owner thread for a guard deferred dur
 
 - Compare WinRT references by canonical COM identity in sequence containment, `index()`, `count()`, and `remove()`, mapping equality, and value/item-view membership. Class, interface, and raw views of the same object now match; distinct objects with equal content remain distinct. Ordinary Python value equality and wrapper equality/hashing outside these collection operations are unchanged.
 - Preserve mapping entry counts when Python keys alias the same native reference. Raw `Object` collections do not implicitly box or unbox for comparison; `object_value_view()` compares converted Python values normally and remaining native references by COM identity.
+- Align `update()`, `setdefault()`, `extend()`, and `+=` input declarations with checked item writes across generated classes, interface views, Like protocols, `.pyi` stubs, and inline `.py` annotations. Read types remain unchanged, and native methods, properties, and aliases keep their existing names and dispatch.
+- Return the stored read projection from `setdefault()` after inserting a missing key, without consuming the supplied input. A present key leaves its default unused; explicit `get()` and `pop()` fallback values remain unchanged.
 - Add `to_winrt_object(value, property_type=None)` for explicit boxing. Generated `Object`/`IInspectable` positions remain native by default; they do not implicitly box arbitrary Python values.
 - Extend `unbox_object()` with DateTime, TimeSpan, Point/Size/Rect, their arrays, and recursively unboxed InspectableArray values. `preserve_type=True`, numeric tags, typed arrays, and `PropertyType` retain exact WinRT type information through `dynwinrt.values`.
 - Add the opt-in live `dynwinrt.values.object_value_view()` for supported `IMap`/`IMapView<String or Guid, Object>` projections. Reads unbox and writes box explicitly; `.raw` retains access to the native map.
@@ -45,7 +47,7 @@ Use `RoApartment.recover_pending()` on the owner thread for a guard deferred dur
 
 - Project supported delegate callback arguments from their actual `Invoke` signatures, including typed `MapChanged` senders and event arguments.
 - Unify method names, overloads, aliases, and collision handling across `.py` and `.pyi`. Preserve existing explicit ABI aliases and successful native dispatch targets, and use QueryInterface for compatible interface-typed overload inputs rather than requiring a particular wrapper class.
-- Type `.pyi` outputs as non-null by default while preserving supported nullable positions, including `IReference<T>`, `Try*` results, Object/delegate values, documented Windows SDK null results, and reference collection elements. Correct exact XML DOM declarations for absent roots, DTDs, node navigation, owner documents, and attribute lookup/replacement results. Runtime null conversion and the broader inline `.py` output annotations are unchanged.
+- Type `.pyi` outputs as non-null by default while preserving supported nullable positions, including `IReference<T>`, `Try*` results, Object/delegate values, documented Windows SDK null results, and reference collection elements. Correct exact XML DOM declarations for absent roots, DTDs, node navigation, owner documents, and attribute lookup/replacement results. Runtime null conversion and the existing inline `.py` nullability policy are unchanged.
 - Reject native null before mutating stock `JsonArray`/`JsonObject`, including bulk writes and generic interface views. Rejected null input leaves the collection unchanged; custom generic collections retain their valid native-null behavior.
 - QueryInterface-check direct generated interface construction before retaining a pointer. Validate array element contracts before taking independent native references, and reject Async receivers in low-level `call_0()`/`call_1()` before vtable dispatch.
 - Improve Python runtime errors and expose named `RO_INIT_SINGLETHREADED` and `RO_INIT_MULTITHREADED` constants.
@@ -70,6 +72,7 @@ Upgrade runtime and codegen together, then fully regenerate and rebuild/reinstal
 - **Python lifecycle:** initialize and balance each worker thread's own apartment. `projected_lifetime_scope()` remains an optional earlier-cleanup tool; do not rely on garbage collection to close apartments or on a close to revoke external COM references.
 - **Python regeneration and imports:** use a fresh output directory, or manually clean the dedicated generated-output directory and regenerate the entire selection. Do not remove or edit only the producer stamp. Direct imports of shortened long module names must migrate; prefer stable namespace imports such as `from generated.windows.foundation import Uri`.
 - **Python typing:** regenerate `.pyi` files together with their runtime modules. Cache potentially absent results and guard them before reading members. The Windows SDK nullable-result facts are not a universal nullability guarantee for custom or Windows App SDK metadata.
+- **Python collection defaults:** `setdefault()` follows the map's read projection rather than returning an unconverted input wrapper. Raw `Object`-valued maps return `DynWinRTValue | None`; project or unbox the result explicitly, or use `object_value_view()` on supported maps.
 - **Python JSON:** use `JsonValue.create_null_value()` for JSON semantic null. It is a non-null native `IJsonValue`; Python `None` is not a substitute in stock JSON collections.
 - **Python Object conversion:** a plain `int` boxes as Int32 only. Use explicit tags or `PropertyType` for other widths, enums, empty/mixed arrays, and InspectableArray. Re-boxing preserves type and value, not box identity.
 - **JavaScript/TypeScript:** regenerate wrappers to obtain interface aliases and the progress Promise fix; upgrading the native runtime alone does not repair previously generated JavaScript.
