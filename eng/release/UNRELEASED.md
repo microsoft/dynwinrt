@@ -4,6 +4,6 @@ Potential improvements for the next preview:
 
 - Broader ABI-safe POD vector support for JavaScript and Python ([#161](https://github.com/microsoft/dynwinrt/issues/161), [#179](https://github.com/microsoft/dynwinrt/pull/179)).
 - Explicit Object-value conversion helpers for JavaScript/TypeScript, including boxing, typed unboxing, and opt-in map views.
-- Initial Classic COM support for Python.
-- Continued development of JavaScript/TypeScript Classic COM and flat Win32 bindings.
+- Python Classic COM: generated wrappers, object activation, QueryInterface, and managed reference cleanup.
+- JavaScript/TypeScript: managed COM interface replacement and broader flat Win32 buffer and resource contracts.
 - Smaller generated JavaScript by sharing implementation helpers ([#182](https://github.com/microsoft/dynwinrt/issues/182)).
