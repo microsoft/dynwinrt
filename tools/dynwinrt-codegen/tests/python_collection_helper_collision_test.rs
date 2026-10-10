@@ -210,23 +210,24 @@ fn write_standalone(root: &Path, classes: &[ClassMeta]) -> Modules {
     modules(&context)
 }
 
-fn generate_packaged(root: &Path, custom: &Path, classes: &[ClassMeta]) -> Modules {
+fn generate_packaged(root: &Path, custom: &Path, classes: &[ClassMeta], no_pyi: bool) -> Modules {
     let package = root.join("pyviews");
-    success(
-        Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
-            .args(["generate", "--winmd"])
-            .arg(custom)
-            .args(["--ref", WINDOWS_WINMD, "--output"])
-            .arg(&package)
-            .args([
-                "--lang",
-                "py",
-                "--class-name",
-                "Audit.Vector._dynwinrt_collection_item,Audit.Map._dynwinrt_collection_item",
-            ])
-            .output()
-            .unwrap(),
-    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+    command
+        .args(["generate", "--winmd"])
+        .arg(custom)
+        .args(["--ref", WINDOWS_WINMD, "--output"])
+        .arg(&package)
+        .args([
+            "--lang",
+            "py",
+            "--class-name",
+            "Audit.Vector._dynwinrt_collection_item,Audit.Map._dynwinrt_collection_item",
+        ]);
+    if no_pyi {
+        command.arg("--no-pyi");
+    }
+    success(command.output().unwrap());
     let context = projection_context(classes, true);
     let modules = modules(&context);
     for (module, operation) in [
@@ -273,6 +274,13 @@ with dw.RoApartment(1), dw.projected_lifetime_scope():
     item.release()
     vector.replace_all([live, None])
     assert vector[1] is None
+    projected = type('Projected', (), {{'_obj': live}})()
+    assert vector.extend(item for item in [projected, None]) is None
+    assert vector.__iadd__([projected]) is vector
+    for index in (2, 4):
+        item = vector[index]
+        assert item is not None and item.identity_raw() == live.identity_raw()
+        item.release()
 
     mapping = Map._from_native(
         dw.DynWinRTValue.create_map(
@@ -285,6 +293,29 @@ with dw.RoApartment(1), dw.projected_lifetime_scope():
     value = mapping.lookup(live)
     assert value is not None and value.identity_raw() == live.identity_raw()
     value.release()
+    mapping.remove(None)
+    stored = mapping.setdefault(None, projected)
+    assert isinstance(stored, dw.DynWinRTValue) and stored is not live
+    assert stored.identity_raw() == live.identity_raw()
+    stored.release()
+    existing = mapping.setdefault(None, object())
+    assert isinstance(existing, dw.DynWinRTValue)
+    assert existing.identity_raw() == live.identity_raw()
+    existing.release()
+    mapping.update({{None: None}})
+    mapping.update([(live, projected)])
+    assert mapping[None] is None
+    for operation in (
+        lambda: mapping.update({{None: object()}}),
+        lambda: vector.extend([42]),
+    ):
+        try:
+            operation()
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('bulk helper accepted an unboxed input')
+    assert not live.is_released()
 
     live.release()
 
@@ -339,7 +370,7 @@ fn old_hardcoded_binding_fails(root: &Path, modules: &Modules) {
     );
 }
 
-fn strict_typecheck(root: &Path, modules: &Modules) {
+fn strict_typecheck(root: &Path, modules: &Modules, no_pyi: bool) {
     let available = Command::new(python())
         .args(["-m", "mypy", "--version"])
         .output()
@@ -354,18 +385,30 @@ fn strict_typecheck(root: &Path, modules: &Modules) {
     }
     let consumer = format!(
         r#"
+from typing import assert_type
 from dynwinrt import DynWinRTValue
 from pyviews.{vector_class} import {COLLIDING} as Vector
 from pyviews.{map_class} import {COLLIDING} as Map
 
-def vectors(vector: Vector, value: DynWinRTValue) -> None:
+class Projected:
+    def __init__(self, value: DynWinRTValue) -> None:
+        self._obj = value
+
+def vectors(vector: Vector, value: DynWinRTValue, projected: Projected) -> None:
     vector.append(None)
     vector.append(value)
     vector.replace_all([None, value])
+    assert_type(vector.extend([projected, None]), None)
+    assert_type(vector.__iadd__([projected]), Vector)
+    vector += [projected, value]
 
 def maps(mapping: Map, value: DynWinRTValue) -> None:
     mapping.insert(None, None)
     mapping.insert(value, value)
+    mapping.update({{value: value, None: None}})
+    mapping.update({{Projected(value): Projected(value)}})
+    mapping.update([(None, Projected(value))])
+    assert_type(mapping.setdefault(value, Projected(value)), DynWinRTValue | None)
 "#,
         vector_class = modules.vector_class,
         map_class = modules.map_class,
@@ -378,8 +421,36 @@ def maps(mapping: Map, value: DynWinRTValue) -> None:
         .join("py")
         .canonicalize()
         .unwrap();
-    success(
-        Command::new(python())
+    fs::write(
+        root.join("invalid_probe.py"),
+        format!(
+            r#"from dynwinrt import DynWinRTValue
+from pyviews.{vector_class} import {COLLIDING} as Vector
+from pyviews.{map_class} import {COLLIDING} as Map
+
+class WrongObject:
+    _obj: int = 42
+
+def invalid(vector: Vector, mapping: Map, value: DynWinRTValue) -> None:
+    vector.extend([WrongObject()])
+    vector += [42]
+    mapping.update({{None: object()}})
+    mapping.update({{object(): value}})
+    mapping.setdefault(None, 42)
+"#,
+            vector_class = modules.vector_class,
+            map_class = modules.map_class,
+        ),
+    )
+    .unwrap();
+    let installed = std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() == Ok("1");
+    for source_stubs in if installed {
+        &[true, false][..]
+    } else {
+        &[true][..]
+    } {
+        let mut command = Command::new(python());
+        command
             .args([
                 "-B",
                 "-m",
@@ -389,17 +460,39 @@ def maps(mapping: Map, value: DynWinRTValue) -> None:
                 "--no-incremental",
                 "--cache-dir",
                 "mypy-cache",
-                "typing_probe.py",
             ])
-            .current_dir(root)
-            .env(
+            .current_dir(root);
+        if *source_stubs {
+            command.env(
                 "MYPYPATH",
-                std::env::join_paths([binding_stubs, root.to_path_buf()]).unwrap(),
-            )
-            .output()
-            .unwrap(),
-    );
-    if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
+                std::env::join_paths([binding_stubs.clone(), root.to_path_buf()]).unwrap(),
+            );
+        } else {
+            command.env_remove("MYPYPATH");
+        }
+        success(command.arg("typing_probe.py").output().unwrap());
+        let output = command.arg("invalid_probe.py").output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        let errors = text
+            .lines()
+            .filter(|line| line.contains(": error:"))
+            .collect::<Vec<_>>();
+        assert_eq!(output.status.code(), Some(1), "{text}");
+        assert_eq!(errors.len(), 5, "{text}");
+        for (line, code) in errors.iter().zip([
+            "[list-item]",
+            "[list-item]",
+            "[dict-item]",
+            "[type-var]",
+            "[arg-type]",
+        ]) {
+            assert!(
+                line.starts_with("invalid_probe.py:") && line.ends_with(code),
+                "{text}"
+            );
+        }
+    }
+    if !no_pyi && let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
         fs::write(
             root.join("pyright_probe.py"),
             format!("# pyright: strict, reportPrivateUsage=false\n{consumer}"),
@@ -413,6 +506,56 @@ def maps(mapping: Map, value: DynWinRTValue) -> None:
                 .current_dir(root)
                 .output()
                 .unwrap(),
+        );
+    }
+}
+
+fn assert_incremental_parity(complete: &Path, root: &Path, custom: &Path, no_pyi: bool) {
+    let incremental = root.join("pyviews");
+    for class in [
+        "Audit.Vector._dynwinrt_collection_item",
+        "Audit.Map._dynwinrt_collection_item",
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command
+            .args(["generate", "--winmd"])
+            .arg(custom)
+            .args([
+                "--ref",
+                WINDOWS_WINMD,
+                "--lang",
+                "py",
+                "--class-name",
+                class,
+                "--output",
+            ])
+            .arg(&incremental);
+        if no_pyi {
+            command.arg("--no-pyi");
+        }
+        success(command.output().unwrap());
+    }
+    let modules = |directory: &Path| {
+        let mut files = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext == "py" || ext == "pyi")
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    };
+    let files = modules(&complete.join("pyviews"));
+    assert_eq!(modules(&incremental), files);
+    for file in files {
+        assert_eq!(
+            fs::read(complete.join("pyviews").join(&file)).unwrap(),
+            fs::read(incremental.join(&file)).unwrap(),
+            "incremental helper surface drift: {}",
+            file.to_string_lossy()
         );
     }
 }
@@ -437,9 +580,30 @@ fn collection_helper_aliases_execute_for_packaged_and_standalone_outputs() {
     }
 
     let packaged = fixture.0.join("packaged");
-    let modules = generate_packaged(&packaged, &custom, &classes);
-    strict_typecheck(&packaged, &modules);
+    let modules = generate_packaged(&packaged, &custom, &classes, false);
+    assert_incremental_parity(&packaged, &fixture.0.join("incremental"), &custom, false);
+    strict_typecheck(&packaged, &modules, false);
     if runtime_available() {
         runtime_probe(&packaged, &modules);
+    }
+
+    let no_pyi = fixture.0.join("no_pyi");
+    let modules = generate_packaged(&no_pyi, &custom, &classes, true);
+    assert_incremental_parity(
+        &no_pyi,
+        &fixture.0.join("incremental_no_pyi"),
+        &custom,
+        true,
+    );
+    assert!(fs::read_dir(no_pyi.join("pyviews")).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "pyi")
+    }));
+    strict_typecheck(&no_pyi, &modules, true);
+    if runtime_available() {
+        runtime_probe(&no_pyi, &modules);
     }
 }

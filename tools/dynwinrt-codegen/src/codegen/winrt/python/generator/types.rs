@@ -101,6 +101,11 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         plan.has_legacy_fallback(),
         plan.has_legacy_int_guard(),
     ));
+    out.push_str(&super::super::collections::protocol_helper_imports(
+        std::iter::once(iface),
+        context,
+        super::super::nullability::AnnotationSurface::Runtime,
+    ));
     out.push_str(&collection_item_import(
         context,
         iface.methods.iter(),
@@ -288,6 +293,15 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         ));
     }
     out.push_str("    _dynwinrt_interface_type = True\n");
+    out.push_str(&super::super::collections::protocol_helper_methods(
+        iface,
+        &plan.collection_helpers,
+        &iface.name,
+        context,
+        super::super::nullability::AnnotationSurface::Runtime,
+        false,
+        4,
+    ));
     out.push_str(&implementation.factory_body);
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push_str(&format!(

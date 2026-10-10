@@ -162,6 +162,31 @@ and iterators work with `iter()` and `next()`. Mutable vectors support indexing,
 slicing, assignment, insertion, and deletion; mutable maps support standard
 mapping assignment and deletion.
 
+Bulk writes use the same checked inputs as item assignment: `update()` accepts
+mappings or iterables of key/value pairs, plus keyword entries for string-keyed
+maps; `extend()` and `+=` accept iterables of valid vector inputs. They do not
+change the types returned by reads. `extend()` returns `None`, and `+=` returns
+the same wrapper.
+
+If metadata already exposes a native member with a helper's Python name, that
+native method, property or compatibility alias keeps its existing meaning.
+Use an explicit collection interface view for the standard collection helper
+instead; generated helper refinements never replace a native entry point.
+When a vector has a native `extend`, `+=` keeps its inherited dispatch to that
+member rather than gaining a new bulk-write refinement.
+
+`setdefault(key, default)` returns the value as `self[key]` reads it, including
+after inserting a missing key. For an `Object`-valued map such as `PropertySet`,
+a generated wrapper with a valid `_obj` can be a write input, but reads and
+`setdefault()` still return `DynWinRTValue | None`, not that input wrapper or an
+automatically unboxed Python value. The input remains usable. A present key
+leaves its default unused, while a missing key requires a valid default
+(`None` can be omitted only for nullable value types). Explicit fallback
+defaults passed to `get()` or `pop()` are not stored and remain unchanged.
+Native failures propagate; ordinary bulk writes can retain entries already
+written before a later failure. The stock JSON null preflight described above
+still rejects null inputs before mutation.
+
 Sequence containment, `index()`, `count()`, and `remove()`, mapping equality,
 and value/item-view membership compare WinRT references by canonical COM
 identity, including different generated class/interface views and raw

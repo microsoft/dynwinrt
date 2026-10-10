@@ -29,8 +29,8 @@ use super::collections::{
     projected_interface_kind, stock_json_class_contract,
 };
 use super::member_plan::{
-    ClassMemberPlan, MethodGroup, PlannedMember, ScopePlan, class_instance_interfaces,
-    interface_member_plan,
+    ClassMemberPlan, CollectionHelperPlan, MethodGroup, PlannedMember, ScopePlan,
+    class_instance_interfaces, interface_member_plan,
 };
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
@@ -73,7 +73,7 @@ from collections.abc import (\n\
     MutableSequence as MutableSequence, Sequence as Sequence,\n\
 )\n\
 from datetime import datetime as datetime, timedelta as timedelta\n\
-from typing import Protocol, overload as overload\n\
+from typing import Protocol, TypeVar, overload as overload\n\
 from uuid import UUID as UUID\n\
 from dynwinrt import (\n\
     DynWinRTType as DynWinRTType, DynWinRTValue as DynWinRTValue,\n\
@@ -82,8 +82,9 @@ from dynwinrt import (\n\
     _DynWinRTProjector as _DynWinRTProjector,\n\
     _DynWinRTProjectableClass as _DynWinRTProjectableClass,\n\
     _DynWinRTRuntimeClass as _DynWinRTRuntimeClass,\n\
-)\n{}",
+)\n{}{}",
         super::shared::NATIVE_OBJECT_PROTOCOL,
+        super::shared::MAPPING_INPUT_PROTOCOL,
     )
 }
 
@@ -285,6 +286,11 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if has_factory {
         out.push_str("from abc import ABCMeta\n");
     }
+    out.push_str(&super::collections::protocol_helper_imports(
+        std::iter::once(iface),
+        context,
+        AnnotationSurface::Stub,
+    ));
     if implementation.supported {
         out.push_str(super::implementation::IMPORTS);
         out.push_str("from typing import TypeVar\nfrom dynwinrt import _DynWinRTImplementationFactory\n_ImplementationHandlers = TypeVar('_ImplementationHandlers')\n");
@@ -488,7 +494,14 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
-    out.push_str(&collection_protocol_stubs(iface, context, 4, false));
+    let plan = interface_member_plan(iface, context);
+    out.push_str(&collection_protocol_stubs(
+        iface,
+        &plan.collection_helpers,
+        context,
+        4,
+        false,
+    ));
     if has_projection {
         out.push('\n');
         if !is_protocol {
@@ -567,7 +580,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         ));
     }
 
-    let plan = interface_member_plan(iface, context);
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()
         .map(|method| (iface, method));
@@ -655,6 +667,11 @@ pub fn generate_class_stub<'a>(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(&import_line(context));
+    out.push_str(&super::collections::protocol_helper_imports(
+        class.all_interfaces(),
+        context,
+        AnnotationSurface::Stub,
+    ));
     if projectable {
         out.push_str("from ._typing import _DynWinRTRuntimeClass\n");
     } else if native_projectable {
@@ -1073,14 +1090,20 @@ pub fn generate_class_stub<'a>(
         }
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
         out.push_str(NATIVE_OBJECT_STUB);
-        out.push_str(&collection_protocol_stubs(req_iface, context, 4, false));
+        let iface_plan = interface_member_plan(req_iface, context);
+        out.push_str(&collection_protocol_stubs(
+            req_iface,
+            &iface_plan.collection_helpers,
+            context,
+            4,
+            false,
+        ));
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
-        let iface_plan = interface_member_plan(req_iface, context);
         let members = reorder_getters_before_setters(&req_iface.methods)
             .into_iter()
             .map(|method| (req_iface, method));
@@ -1149,6 +1172,7 @@ fn emit_class_instance_stubs<'a>(
     if let Some(collection_iface) = collection_iface {
         out.push_str(&collection_protocol_stubs(
             collection_iface,
+            &plan.collection_helpers,
             context,
             4,
             stock_json_receiver,
@@ -1303,6 +1327,7 @@ fn emit_class_instance_stubs<'a>(
 
 fn collection_protocol_stubs(
     iface: &InterfaceMeta,
+    helpers: &CollectionHelperPlan,
     context: &PythonProjectionContext,
     indent_spaces: usize,
     stock_json_receiver: bool,
@@ -1346,7 +1371,7 @@ fn collection_protocol_stubs(
             }
         })
         .unwrap_or_else(|| "object".to_string());
-    match kind {
+    let mut result = match kind {
         super::collections::CollectionKind::Iterable => {
             format!("\n{indent}def __iter__(self) -> Iterator[{item_type}]: ...\n")
         }
@@ -1374,12 +1399,6 @@ fn collection_protocol_stubs(
                      {indent}def __delitem__(self, index: int | slice) -> None: ...\n\
                      {indent}def insert(self, index: int, value: {item_input}) -> None: ...\n"
                 ));
-                if stock_json_receiver {
-                    result.push_str(&format!(
-                        "{indent}def extend(self, values: Iterable[{item_input}]) -> None: ...\n\
-                         {indent}def __iadd__(self, values: Iterable[{item_input}]) -> Self: ...\n"
-                    ));
-                }
             }
             result
         }
@@ -1424,16 +1443,21 @@ fn collection_protocol_stubs(
                     "{indent}def __setitem__(self, key: {item_input}, value: {value_input}) -> None: ...\n\
                      {indent}def __delitem__(self, key: {item_input}) -> None: ...\n"
                 ));
-                if stock_json_receiver {
-                    result.push_str(&format!(
-                        "{indent}def setdefault(self, key: {item_input}, default: {value_input}) -> {value_type}: ...\n"
-                    ));
-                }
             }
             result
         }
         super::collections::CollectionKind::KeyValuePair => String::new(),
-    }
+    };
+    result.push_str(&super::collections::protocol_helper_methods(
+        iface,
+        helpers,
+        &iface.name,
+        context,
+        AnnotationSurface::Stub,
+        stock_json_receiver,
+        indent_spaces,
+    ));
+    result
 }
 
 fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) -> String {

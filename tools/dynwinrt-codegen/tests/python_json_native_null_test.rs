@@ -329,6 +329,7 @@ with RoApartment():
         lambda: array.replace_all(array_of_null),
         lambda: array.replace_all(array_of_null.to_value()),
         lambda: array.extend([json_null, None]),
+        lambda: array.extend(value for value in [json_null, None]),
         lambda: operator.iadd(array, [json_null, None]),
         lambda: view.append(None),
         lambda: view.set_at(0, None),
@@ -345,11 +346,13 @@ with RoApartment():
         lambda: obj.set_named_value('bad', native_null),
         lambda: obj.update({'good': json_null, 'bad': None}),
         lambda: obj.update([('good', json_null), ('bad', native_null)]),
+        lambda: obj.update(entry for entry in [('good', json_null), ('bad', None)]),
         lambda: obj.update([('good', json_null), (None, json_null)]),
         lambda: obj.setdefault('bad'),
         lambda: map_view.insert('bad', None),
         lambda: operator.setitem(map_view, 'bad', None),
         lambda: map_view.update({'good': json_null, 'bad': None}),
+        lambda: map_view.update(entry for entry in [('good', json_null), ('bad', native_null)]),
     ):
         rejected_without_mutation(obj, mutation)
 
@@ -357,6 +360,12 @@ with RoApartment():
     obj['valid'] = json_null
     assert array[-1].stringify() == 'null'
     assert obj['valid'].stringify() == 'null'
+    stored = obj.setdefault('default', json_null)
+    assert type(stored) is type(obj['default'])
+    assert stored._obj.identity_raw() == json_null._obj.identity_raw()
+    assert obj.setdefault('default', None)._obj.identity_raw() == stored._obj.identity_raw()
+    assert obj.setdefault('default')._obj.identity_raw() == stored._obj.identity_raw()
+    assert json_null.stringify() == 'null'
     activated_array = JsonArray.create()
     activated_object = JsonObject.create()
     activated_array.append(json_null)
@@ -395,6 +404,7 @@ with RoApartment():
     assert not borrowed_map.is_released()
     borrowed_map.release()
     generic_map.update({'next': None})
+    assert generic_map.setdefault('default', None) is None
     assert generic_map['original'] is None and generic_map['next'] is None
     try:
         JsonObject(generic_map._obj)

@@ -46,7 +46,8 @@ use crate::meta::{
 use crate::types::TypeMeta;
 
 use super::collections::{
-    class_interface, interface_kind, observable_vector_identity, runtime_mixin, type_kind,
+    CollectionKind, class_interface, interface_kind, observable_vector_identity,
+    projected_interface_kind, runtime_mixin, type_kind,
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
@@ -199,8 +200,36 @@ pub(crate) struct ScopePlan<'a> {
     group_of: HashMap<*const MethodMeta, usize>,
     aliases: Vec<Alias<'a>>,
     previous_attributes: HashMap<*const MethodMeta, String>,
+    defined_names: HashSet<String>,
+    pub(crate) collection_helpers: CollectionHelperPlan,
     #[cfg(test)]
     fallbacks: Vec<String>,
+}
+
+/// Refine inherited helpers only when no native member owns their Python name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CollectionHelperPlan {
+    pub(crate) update: bool,
+    pub(crate) setdefault: bool,
+    pub(crate) extend: bool,
+    pub(crate) iadd: bool,
+}
+
+impl CollectionHelperPlan {
+    fn new(iface: Option<&InterfaceMeta>, names: &HashSet<String>) -> Self {
+        let kind = iface.and_then(projected_interface_kind);
+        let mapping = kind == Some(CollectionKind::MutableMapping);
+        let sequence = kind == Some(CollectionKind::MutableSequence);
+        let extend = sequence && !names.contains("extend");
+        Self {
+            update: mapping && !names.contains("update"),
+            setdefault: mapping && !names.contains("setdefault"),
+            extend,
+            // Inherited += calls self.extend; do not refine its input contract
+            // when a native member, property or alias owns that operation.
+            iadd: extend && !names.contains("__iadd__"),
+        }
+    }
 }
 
 impl<'a> ScopePlan<'a> {
@@ -319,10 +348,15 @@ impl<'a> ClassMemberPlan<'a> {
             &class_abi_name_exceptions(class),
         )
         .into_iter();
-        Self {
-            statics: scopes.next().expect("static scope"),
-            instance: scopes.next().expect("instance scope"),
-        }
+        let statics = scopes.next().expect("static scope");
+        let mut instance = scopes.next().expect("instance scope");
+        let names = statics
+            .defined_names
+            .union(&instance.defined_names)
+            .cloned()
+            .collect();
+        instance.collection_helpers = CollectionHelperPlan::new(class_interface(class), &names);
+        Self { statics, instance }
     }
 }
 
@@ -397,14 +431,16 @@ pub(crate) fn interface_member_plan<'a>(
     interface: &'a InterfaceMeta,
     context: &PythonProjectionContext,
 ) -> ScopePlan<'a> {
-    plan_scopes_with_context(
+    let mut plan = plan_scopes_with_context(
         &[vec![interface]],
         &interface_reserved_names(interface),
         context,
         &BTreeSet::new(),
     )
     .pop()
-    .expect("interface scope")
+    .expect("interface scope");
+    plan.collection_helpers = CollectionHelperPlan::new(Some(interface), &plan.defined_names);
+    plan
 }
 
 /// Interfaces whose methods are projected as instance members of a runtime class.
@@ -1065,12 +1101,32 @@ fn plan_scopes_with_context<'a>(
                             .collect(),
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let mut defined_names = plan_groups
+                .iter()
+                .flat_map(|group| {
+                    std::iter::once(group.name.clone()).chain(
+                        group
+                            .candidates
+                            .iter()
+                            .map(|candidate| candidate.attribute.clone()),
+                    )
+                })
+                .chain(aliases.iter().map(|alias| alias.name.clone()))
+                .collect::<HashSet<_>>();
+            for method in scopes[scope]
+                .iter()
+                .flat_map(|interface| &interface.methods)
+            {
+                insert_accessor_names(method, scopes.len() > 1 && scope == 0, &mut defined_names);
+            }
             ScopePlan {
                 groups: plan_groups,
                 group_of,
                 aliases,
                 previous_attributes,
+                defined_names,
+                collection_helpers: CollectionHelperPlan::default(),
                 #[cfg(test)]
                 fallbacks: fallback
                     .iter()
@@ -1344,6 +1400,239 @@ mod tests {
             .iter()
             .map(|(name, target)| (name.to_string(), target.to_string()))
             .collect()
+    }
+
+    fn collection_interface(mapping: bool) -> InterfaceMeta {
+        InterfaceMeta {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: if mapping {
+                "IMap_String_Object"
+            } else {
+                "IVector_Object"
+            }
+            .into(),
+            generic_piid: Some(
+                if mapping {
+                    super::super::collections::IMAP_PIID
+                } else {
+                    super::super::collections::IVECTOR_PIID
+                }
+                .into(),
+            ),
+            generic_args: if mapping {
+                vec![TypeMeta::String, TypeMeta::Object]
+            } else {
+                vec![TypeMeta::Object]
+            },
+            ..Default::default()
+        }
+    }
+
+    fn helper_available(helpers: CollectionHelperPlan, name: &str) -> bool {
+        match name {
+            "update" => helpers.update,
+            "setdefault" => helpers.setdefault,
+            "extend" => helpers.extend,
+            "__iadd__" => helpers.iadd,
+            _ => panic!("unknown collection helper"),
+        }
+    }
+
+    #[test]
+    fn collection_helpers_yield_to_methods_statics_properties_and_compatibility_aliases() {
+        for (mapping, abi, name) in [
+            (true, "Update", "update"),
+            (true, "Setdefault", "setdefault"),
+            (false, "Extend", "extend"),
+        ] {
+            for owner in [
+                "method",
+                "overloads",
+                "static",
+                "property",
+                "setter",
+                "alias",
+                "static_alias",
+            ] {
+                let collection = collection_interface(mapping);
+                let mut native = method(abi, 6, TypeMeta::I32);
+                let mut methods = Vec::new();
+                match owner {
+                    "property" => {
+                        native.name = format!("get_{abi}");
+                        native.raw_name = native.name.clone();
+                        native.is_property_getter = true;
+                        native.params.clear();
+                    }
+                    "setter" => {
+                        native.name = format!("put_{abi}");
+                        native.raw_name = native.name.clone();
+                        native.is_property_setter = true;
+                    }
+                    "alias" | "static_alias" => native.raw_name = "Transform".into(),
+                    "overloads" => methods.push(method(&format!("{abi}2"), 7, TypeMeta::String)),
+                    _ => {}
+                }
+                methods.insert(0, native);
+                let native_iface = interface("INative", methods);
+                let class = ClassMeta {
+                    namespace: "Contoso".into(),
+                    name: "NativeCollection".into(),
+                    default_interface: Some(collection.clone()),
+                    required_interfaces: if owner.starts_with("static") {
+                        vec![]
+                    } else {
+                        vec![native_iface.clone()]
+                    },
+                    static_interfaces: if owner.starts_with("static") {
+                        vec![native_iface]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                };
+                let plan = ClassMemberPlan::new(&class, &PythonProjectionContext::default());
+                assert!(
+                    !helper_available(plan.instance.collection_helpers, name),
+                    "{name} overwrote {owner}"
+                );
+                if name == "extend" {
+                    assert!(!plan.instance.collection_helpers.iadd, "{owner}");
+                }
+                if owner == "alias" || owner == "static_alias" {
+                    let aliases = if owner == "static_alias" {
+                        &plan.statics.aliases
+                    } else {
+                        &plan.instance.aliases
+                    };
+                    assert!(aliases.iter().any(|alias| alias.name == name));
+                }
+                let peer = if mapping { "update" } else { "extend" };
+                if peer != name {
+                    assert!(
+                        helper_available(plan.instance.collection_helpers, peer),
+                        "{owner}"
+                    );
+                }
+                let context = PythonProjectionContext::default();
+                let source =
+                    super::super::generator::generate_class(&context, &class, &HashSet::new());
+                let stub =
+                    super::super::stubs::generate_class_stub(&context, &class, &HashSet::new());
+                let body = |code: &str, marker: &str| {
+                    let body = code
+                        .split_once(marker)
+                        .expect("generated collection declaration")
+                        .1;
+                    body.split_once("\nclass ")
+                        .map_or(body, |(body, _)| body)
+                        .to_string()
+                };
+                for code in [
+                    body(&source, "\nclass NativeCollection("),
+                    body(&stub, "\nclass NativeCollection("),
+                    body(&stub, "\nclass NativeCollectionLike("),
+                ] {
+                    let helper_signature = match name {
+                        "update" => "def update(self, other:",
+                        "setdefault" => "def setdefault(self, key:",
+                        "extend" => "def extend(self, values:",
+                        _ => unreachable!(),
+                    };
+                    assert!(!code.contains(helper_signature), "{owner}: {code}");
+                    if name == "extend" {
+                        assert!(!code.contains("def __iadd__("), "{owner}: {code}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interface_helpers_share_the_final_member_namespace_without_renaming_native_entries() {
+        for (mapping, abi, name) in [
+            (true, "Update", "update"),
+            (true, "Setdefault", "setdefault"),
+            (false, "Extend", "extend"),
+        ] {
+            let mut iface = collection_interface(mapping);
+            let context = PythonProjectionContext::default();
+            assert!(helper_available(
+                interface_member_plan(&iface, &context).collection_helpers,
+                name
+            ));
+            let mut native = method(abi, 6, TypeMeta::I32);
+            native.raw_name = "Transform".into();
+            iface.methods.push(native);
+            let plan = interface_member_plan(&iface, &context);
+            assert!(!helper_available(plan.collection_helpers, name));
+            assert_eq!(plan.aliases[0].name, name);
+            assert_eq!(plan.aliases[0].target, "transform");
+            let source = super::super::generator::generate_interface(&context, &iface);
+            let stub = super::super::stubs::generate_interface_stub(&context, &iface);
+            assert!(source.contains(&format!("    {name} = transform\n")));
+            assert!(!source.contains(&format!("def {name}(self,")));
+            assert_eq!(stub.matches(&format!("def {name}(")).count(), 1);
+            assert!(!stub.contains(&format!("def {name}(self, other:")));
+        }
+    }
+
+    #[test]
+    fn metadata_iadd_names_keep_their_established_normalization() {
+        assert_eq!(to_snake_case("__iadd__"), "iadd__");
+        for owner in ["method", "static", "property", "alias"] {
+            let mut native = method("__iadd__", 6, TypeMeta::I32);
+            if owner == "property" {
+                native.name = "get___iadd__".into();
+                native.is_property_getter = true;
+                native.params.clear();
+            } else if owner == "alias" {
+                native.raw_name = "Transform".into();
+            }
+            let native_iface = interface("INative", vec![native]);
+            let class = ClassMeta {
+                default_interface: Some(collection_interface(false)),
+                required_interfaces: if owner == "static" {
+                    vec![]
+                } else {
+                    vec![native_iface.clone()]
+                },
+                static_interfaces: if owner == "static" {
+                    vec![native_iface]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            };
+            let plan = ClassMemberPlan::new(&class, &PythonProjectionContext::default());
+            assert!(plan.instance.collection_helpers.iadd, "{owner}");
+            let names = if owner == "static" {
+                &plan.statics.defined_names
+            } else {
+                &plan.instance.defined_names
+            };
+            assert!(names.contains("iadd__"), "{owner}");
+            assert!(!names.contains("__iadd__"), "{owner}");
+        }
+        let names = HashSet::from(["__iadd__".to_string()]);
+        let helpers = CollectionHelperPlan::new(Some(&collection_interface(false)), &names);
+        assert!(helpers.extend && !helpers.iadd);
+    }
+
+    #[test]
+    fn static_property_getters_do_not_claim_the_instance_helper_name() {
+        let mut getter = method("get_Update", 6, TypeMeta::I32);
+        getter.is_property_getter = true;
+        getter.params.clear();
+        let class = ClassMeta {
+            default_interface: Some(collection_interface(true)),
+            static_interfaces: vec![interface("IStatics", vec![getter])],
+            ..Default::default()
+        };
+        let plan = ClassMemberPlan::new(&class, &PythonProjectionContext::default());
+        assert!(plan.instance.collection_helpers.update);
+        assert!(plan.statics.defined_names.contains("get_update"));
+        assert!(!plan.statics.defined_names.contains("update"));
     }
 
     #[test]

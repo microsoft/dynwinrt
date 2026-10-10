@@ -119,7 +119,7 @@ from collections.abc import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
 )
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Self, TypeVar, overload
 from uuid import UUID
 from weakref import ref as _weakref_ref
 from dynwinrt import (
@@ -254,8 +254,9 @@ fn as_interface_method(context: &PythonProjectionContext) -> String {
 
 pub fn generate_runtime_support_module() -> String {
     format!(
-        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}",
+        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}{}{}",
         super::shared::NATIVE_OBJECT_PROTOCOL,
+        super::shared::MAPPING_INPUT_PROTOCOL,
         super::implementation::HELPERS
     )
 }

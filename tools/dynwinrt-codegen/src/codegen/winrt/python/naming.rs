@@ -18,6 +18,8 @@ pub type PythonTypeIdentity = TypeIdentity;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PythonSupportSymbol {
     ObjectInput,
+    MappingInput,
+    MappingKey,
     AsInterface,
     CollectionItem,
     CanCast,
@@ -29,6 +31,8 @@ impl PythonSupportSymbol {
     fn name(self) -> &'static str {
         match self {
             Self::ObjectInput => "_DynWinRTObject",
+            Self::MappingInput => "_SupportsKeysAndGetItem",
+            Self::MappingKey => "_MapUpdateKeyT",
             Self::AsInterface => "_dynwinrt_as_interface",
             Self::CollectionItem => "_dynwinrt_collection_item",
             Self::CanCast => "_dynwinrt_can_cast",
@@ -1003,6 +1007,8 @@ impl PythonProjectionContext {
         // Support imports yield to metadata declarations and their allocated roles.
         for helper in [
             PythonSupportSymbol::ObjectInput,
+            PythonSupportSymbol::MappingInput,
+            PythonSupportSymbol::MappingKey,
             PythonSupportSymbol::AsInterface,
             PythonSupportSymbol::CollectionItem,
             PythonSupportSymbol::CanCast,
@@ -1587,6 +1593,8 @@ mod tests {
         let [second, third] = [format!("{name}_2"), format!("{name}_3")];
         let others = [
             PythonSupportSymbol::ObjectInput,
+            PythonSupportSymbol::MappingInput,
+            PythonSupportSymbol::MappingKey,
             PythonSupportSymbol::AsInterface,
             PythonSupportSymbol::CollectionItem,
             PythonSupportSymbol::CanCast,
@@ -1645,6 +1653,12 @@ mod tests {
     #[test]
     fn object_input_helper_yields_to_visible_roles_without_renaming_metadata() {
         assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::ObjectInput);
+    }
+
+    #[test]
+    fn mapping_input_helper_yields_to_visible_roles_without_renaming_metadata() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::MappingInput);
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::MappingKey);
     }
 
     #[test]
