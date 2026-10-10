@@ -26,45 +26,45 @@ python -m pip install --pre "dynwinrt==0.1.0rc23" "dynwinrt-codegen==0.1.0rc23"
 
 ### Python apartment and native-owner safety
 
-- Release library-owned raw values, generated wrappers, and COM-bearing arrays and structs before the final library-managed apartment close, including independently owned nested and cloned values. This protects ordinary `RoApartment` exits even without `projected_lifetime_scope()`. Retained Python owners report that they are released and reject further native access; scalar-only values and containers remain usable.
-- Reject a final apartment close inside a synchronous native-to-Python callback before owner cleanup or `RoUninitialize`. Named guards remain active for retry after both the callback and outer native call return.
-- Preserve successful nested and manual initialization counts, including `S_FALSE` and new initializations acquired by Python finalizers during owner cleanup. A close consumes only its own initialization. Failed cleanup retains that lease for retry without discarding newly acquired leases.
-- Reject explicit apartment operations on the wrong OS thread without changing state. An implicit foreign-thread guard drop retains an owner-thread recovery token and emits a native diagnostic instead of calling COM there.
-- Keep unsafe pending async owners from being released by apartment cleanup. Settle or explicitly cancel blocked work before retrying close; cleanup does not silently cancel it or consume externally owned COM aliases.
+- Release library-owned COM references before the final managed apartment close. `projected_lifetime_scope()` is optional.
+- Block final apartment teardown inside synchronous native callbacks. Preserve guards for recovery.
+- Keep nested initialization counts balanced, including initialization during cleanup. Preserve failed closes for retry.
+- Reject wrong-thread apartment closes without changing state. Preserve dropped guards for owner-thread recovery.
+- Refuse cleanup of unsafe pending async owners. Cleanup does not silently cancel work.
 
-Use `RoApartment.recover_pending()` on the owner thread for a guard deferred during a callback or dropped on another thread. For an unnamed guard whose owner cleanup failed, use `retry_pending_apartment_close()` or recover and explicitly close it after fixing the failure. The retry helper does not consume a callback-deferred lease.
+Recover deferred guards with `RoApartment.recover_pending()` on the owner thread. Use `retry_pending_apartment_close()` for failed unnamed closes.
 
 ### Python collections and Object values
 
-- Compare WinRT references by canonical COM identity in sequence containment, `index()`, `count()`, and `remove()`, mapping equality, and value/item-view membership. Class, interface, and raw views of the same object now match; distinct objects with equal content remain distinct. Ordinary Python value equality and wrapper equality/hashing outside these collection operations are unchanged.
-- Preserve mapping entry counts when Python keys alias the same native reference. Raw `Object` collections do not implicitly box or unbox for comparison; `object_value_view()` compares converted Python values normally and remaining native references by COM identity.
-- Align `update()`, `setdefault()`, `extend()`, and `+=` input declarations with checked item writes across generated classes, interface views, Like protocols, `.pyi` stubs, and inline `.py` annotations. Read types remain unchanged, and native methods, properties, and aliases keep their existing names and dispatch.
-- Return the stored read projection from `setdefault()` after inserting a missing key, without consuming the supplied input. A present key leaves its default unused; explicit `get()` and `pop()` fallback values remain unchanged.
-- Add `to_winrt_object(value, property_type=None)` for explicit boxing. Generated `Object`/`IInspectable` positions remain native by default; they do not implicitly box arbitrary Python values.
-- Extend `unbox_object()` with DateTime, TimeSpan, Point/Size/Rect, their arrays, and recursively unboxed InspectableArray values. `preserve_type=True`, numeric tags, typed arrays, and `PropertyType` retain exact WinRT type information through `dynwinrt.values`.
-- Add the opt-in live `dynwinrt.values.object_value_view()` for supported `IMap`/`IMapView<String or Guid, Object>` projections. Reads unbox and writes box explicitly; `.raw` retains access to the native map.
+- Match class, interface, and raw references by COM identity in collection comparisons. Equality and hashing outside collections stay unchanged.
+- Preserve mapping entry counts and ordinary Python value equality. Raw `Object` collections do not implicitly box or unbox.
+- Align bulk-write input types with item assignment. Preserve native member names and dispatch.
+- Return the stored read projection from `setdefault()`. Do not consume the caller's input.
+- Add explicit Object boxing with `to_winrt_object()`. Generated Object positions remain native by default.
+- Extend `unbox_object()` to DateTime, TimeSpan, geometry, and arrays. Retain exact WinRT types when requested.
+- Add opt-in Object map views with `object_value_view()`. Reads unbox and writes box. `.raw` stays native.
 
 ### Python projection contracts
 
-- Project supported delegate callback arguments from their actual `Invoke` signatures, including typed `MapChanged` senders and event arguments.
-- Unify method names, overloads, aliases, and collision handling across `.py` and `.pyi`. Preserve existing explicit ABI aliases and successful native dispatch targets, and use QueryInterface for compatible interface-typed overload inputs rather than requiring a particular wrapper class.
-- Type `.pyi` outputs as non-null by default while preserving supported nullable positions, including `IReference<T>`, `Try*` results, Object/delegate values, documented Windows SDK null results, and reference collection elements. Correct exact XML DOM declarations for absent roots, DTDs, node navigation, owner documents, and attribute lookup/replacement results. Runtime null conversion and the existing inline `.py` nullability policy are unchanged.
-- Reject native null before mutating stock `JsonArray`/`JsonObject`, including bulk writes and generic interface views. Rejected null input leaves the collection unchanged; custom generic collections retain their valid native-null behavior.
-- QueryInterface-check direct generated interface construction before retaining a pointer. Validate array element contracts before taking independent native references, and reject Async receivers in low-level `call_0()`/`call_1()` before vtable dispatch.
-- Improve Python runtime errors and expose named `RO_INIT_SINGLETHREADED` and `RO_INIT_MULTITHREADED` constants.
-- Correct click-handler annotations in both Python Tic-Tac-Toe samples so they work with precise delegate typing, without changing game behavior or lifetime cleanup.
+- Project typed delegate arguments from native signatures. Include typed `MapChanged` callbacks.
+- Keep `.py` and `.pyi` overloads and aliases consistent. Accept compatible interface inputs through QueryInterface.
+- Default `.pyi` outputs to non-null. Preserve supported nullable results, including XML DOM results.
+- Reject native null in stock JSON writes before mutation. Keep valid nulls in custom generic collections.
+- Validate interface construction and arrays before retaining native references. Reject Async receivers in `call_0()` and `call_1()`.
+- Add named apartment constants and clearer runtime errors.
+- Fix strict click-handler typing in both Python Tic-Tac-Toe samples.
 
 ### Python package generation and Windows paths
 
-- Fix generated-package source and wheel installation failures under legacy Windows path limits by selectively shortening over-budget module paths with stable type-identity hashes and compacting setuptools build and wheel staging. Public type names and namespace exports remain unchanged.
-- Record the complete generator version in `.dynwinrt-generator.json`. Reject incompatible, unstamped, or corrupt existing generated output before changing files, including during `--dry-run`; same-version incremental generation remains supported.
-- Warn when a final generated `.py`/`.pyi` path reaches the legacy 260-UTF-16-unit boundary. The warning identifies the longest final path and how much shorter the output root must be; it does not enable Windows long-path support or change names according to the output root.
+- Improve Windows installs with shorter module and staging paths. Keep public type names and namespace exports unchanged.
+- Record the producer version in `.dynwinrt-generator.json`. Reject incompatible output before changing files. Keep same-version incremental generation.
+- Warn when final generated paths reach the legacy Windows limit.
 
 ### JavaScript/TypeScript and shared code generation
 
-- Reuse the existing projected Promise from generated async-with-progress `.toPromise()`. Repeated calls no longer register native completion twice; direct await and `.toPromise()` share the converted result or rejection. Pre-aborted signals also reuse their existing rejected Promise.
-- Retain explicit interface-method aliases as real JavaScript class methods with matching declarations. For example, `StorageFile` can satisfy `IStorageFile` inputs in strict TypeScript while keeping `copyAsync(...)` and adding the interface's `copyOverloadDefaultOptions(...)` alias. Existing overload dispatchers and `.as(...)` views remain supported.
-- Classify explicitly selected non-generic WinRT delegates correctly in both JavaScript and Python. Delegate-only, combined class/delegate, namespace, and incremental selections reuse the existing automatic-dependency projection; malformed or open-generic delegate roots fail explicitly.
+- Reuse the projected Promise for repeated async-with-progress `.toPromise()` calls. Avoid duplicate native completion registration.
+- Generate real interface-method aliases with matching TypeScript declarations. Keep existing overload dispatch unchanged.
+- Handle explicitly selected non-generic WinRT delegates in JavaScript and Python. Reject malformed or open-generic delegate roots.
 
 ## Upgrade notes
 
