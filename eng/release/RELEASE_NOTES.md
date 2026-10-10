@@ -85,6 +85,5 @@ Upgrade runtime and codegen together. Regenerate bindings and rebuild/reinstall 
 - **Collection producers:** Architecture-specific support limits remain unchanged.
 - **ARM64 WinUI:** Native live coverage remains incomplete.
 - **Embedded hosts:** Stop new calls and settle in-flight callbacks. Call `shutdown_python_callbacks()` before `Py_FinalizeEx`. Skipping this protocol leaves only best-effort protection.
-- **Windows paths:** Short names do not remove all path limits. Keep output and venv paths short. A missing warning does not guarantee compatibility.
 
 For details, see the [Python runtime guide](https://github.com/microsoft/dynwinrt/blob/main/bindings/py/README.md), [Python codegen path guidance](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#windows-path-length), and the [project README](https://github.com/microsoft/dynwinrt#readme).
