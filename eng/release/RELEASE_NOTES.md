@@ -1,6 +1,6 @@
 ## Prerelease v0.1.0-preview.23
 
-This preview improves Python apartment lifetime safety, Object value conversion, callback projection, overload dispatch, and type declarations. It also fixes generated JavaScript/TypeScript interface inputs and async-with-progress Promises, and adds Windows Python output-path diagnostics. These changes are relative to preview.22.
+This preview improves Python apartment lifetime safety, collection reference comparisons, Object value conversion, and generated-package installation on Windows. It also strengthens Python callback, overload, and typing contracts, and fixes generated JavaScript/TypeScript interface inputs and async-with-progress Promises. These changes are relative to preview.22.
 
 ## Packages and installation
 
@@ -27,8 +27,10 @@ python -m pip install --pre "dynwinrt==0.1.0rc23" "dynwinrt-codegen==0.1.0rc23"
 
 Use `RoApartment.recover_pending()` on the owner thread for a guard deferred during a callback or dropped on another thread. For an unnamed guard whose owner cleanup failed, use `retry_pending_apartment_close()` or recover and explicitly close it after fixing the failure. The retry helper does not consume a callback-deferred lease.
 
-### Explicit Python Object values
+### Python collections and Object values
 
+- Compare WinRT references by canonical COM identity in sequence containment, `index()`, `count()`, and `remove()`, mapping equality, and value/item-view membership. Class, interface, and raw views of the same object now match; distinct objects with equal content remain distinct. Ordinary Python value equality and wrapper equality/hashing outside these collection operations are unchanged.
+- Preserve mapping entry counts when Python keys alias the same native reference. Raw `Object` collections do not implicitly box or unbox for comparison; `object_value_view()` compares converted Python values normally and remaining native references by COM identity.
 - Add `to_winrt_object(value, property_type=None)` for explicit boxing. Generated `Object`/`IInspectable` positions remain native by default; they do not implicitly box arbitrary Python values.
 - Extend `unbox_object()` with DateTime, TimeSpan, Point/Size/Rect, their arrays, and recursively unboxed InspectableArray values. `preserve_type=True`, numeric tags, typed arrays, and `PropertyType` retain exact WinRT type information through `dynwinrt.values`.
 - Add the opt-in live `dynwinrt.values.object_value_view()` for supported `IMap`/`IMapView<String or Guid, Object>` projections. Reads unbox and writes box explicitly; `.raw` retains access to the native map.
@@ -41,19 +43,26 @@ Use `RoApartment.recover_pending()` on the owner thread for a guard deferred dur
 - Reject native null before mutating stock `JsonArray`/`JsonObject`, including bulk writes and generic interface views. Rejected null input leaves the collection unchanged; custom generic collections retain their valid native-null behavior.
 - QueryInterface-check direct generated interface construction before retaining a pointer. Validate array element contracts before taking independent native references, and reject Async receivers in low-level `call_0()`/`call_1()` before vtable dispatch.
 - Improve Python runtime errors and expose named `RO_INIT_SINGLETHREADED` and `RO_INIT_MULTITHREADED` constants.
+- Correct click-handler annotations in both Python Tic-Tac-Toe samples so they work with precise delegate typing, without changing game behavior or lifetime cleanup.
+
+### Python package generation and Windows paths
+
+- Fix generated-package source and wheel installation failures under legacy Windows path limits by selectively shortening over-budget module paths with stable type-identity hashes and compacting setuptools build and wheel staging. Public type names and namespace exports remain unchanged.
+- Record the complete generator version in `.dynwinrt-generator.json`. Reject incompatible, unstamped, or corrupt existing generated output before changing files, including during `--dry-run`; same-version incremental generation remains supported.
+- Warn when a final generated `.py`/`.pyi` path reaches the legacy 260-UTF-16-unit boundary. The warning identifies the longest final path and how much shorter the output root must be; it does not enable Windows long-path support or change names according to the output root.
 
 ### JavaScript/TypeScript and shared code generation
 
 - Reuse the existing projected Promise from generated async-with-progress `.toPromise()`. Repeated calls no longer register native completion twice; direct await and `.toPromise()` share the converted result or rejection. Pre-aborted signals also reuse their existing rejected Promise.
 - Retain explicit interface-method aliases as real JavaScript class methods with matching declarations. For example, `StorageFile` can satisfy `IStorageFile` inputs in strict TypeScript while keeping `copyAsync(...)` and adding the interface's `copyOverloadDefaultOptions(...)` alias. Existing overload dispatchers and `.as(...)` views remain supported.
 - Classify explicitly selected non-generic WinRT delegates correctly in both JavaScript and Python. Delegate-only, combined class/delegate, namespace, and incremental selections reuse the existing automatic-dependency projection; malformed or open-generic delegate roots fail explicitly.
-- Warn before publishing generated Python output when a final `.py`/`.pyi` path reaches the legacy Windows 260-UTF-16-unit boundary. The diagnostic identifies the longest final path and how much shorter the output root must be, without changing generated names, layout, or bytes.
 
 ## Upgrade notes
 
 Upgrade runtime and codegen together, then fully regenerate and rebuild/reinstall affected bindings. Generated Python manifests pin the matching runtime version; do not mix old generated packages or stubs with a different runtime.
 
 - **Python lifecycle:** initialize and balance each worker thread's own apartment. `projected_lifetime_scope()` remains an optional earlier-cleanup tool; do not rely on garbage collection to close apartments or on a close to revoke external COM references.
+- **Python regeneration and imports:** use a fresh output directory, or manually clean the dedicated generated-output directory and regenerate the entire selection. Do not remove or edit only the producer stamp. Direct imports of shortened long module names must migrate; prefer stable namespace imports such as `from generated.windows.foundation import Uri`.
 - **Python typing:** regenerate `.pyi` files together with their runtime modules. Cache potentially absent results and guard them before reading members. The Windows SDK nullable-result facts are not a universal nullability guarantee for custom or Windows App SDK metadata.
 - **Python JSON:** use `JsonValue.create_null_value()` for JSON semantic null. It is a non-null native `IJsonValue`; Python `None` is not a substitute in stock JSON collections.
 - **Python Object conversion:** a plain `int` boxes as Int32 only. Use explicit tags or `PropertyType` for other widths, enums, empty/mixed arrays, and InspectableArray. Re-boxing preserves type and value, not box identity.
@@ -66,6 +75,6 @@ Classic COM, flat Win32, and WinUI hosting remain experimental. This preview doe
 
 Embedded hosts retaining native aliases to Python-backed callbacks must stop new calls, settle in-flight callbacks, and call `shutdown_python_callbacks()` while Python is alive, before `Py_FinalizeEx`. Hosts skipping that protocol have only best-effort protection against callbacks during early interpreter finalization; no universal deadlock-free guarantee is claimed.
 
-Python path warnings are diagnostic only. Use short output and venv paths, leaving headroom for pip staging and installation. No warning is not a guarantee that every downstream tool can open arbitrary long paths.
+Python module shortening and compact staging reduce path risk but do not guarantee arbitrary checkout, package-name, build-temporary-directory, or venv depths. Use short paths and leave headroom for installation and bytecode caches; a missing warning is not a guarantee that every downstream tool can open the output.
 
 For details, see the [Python runtime guide](https://github.com/microsoft/dynwinrt/blob/main/bindings/py/README.md), [Python codegen path guidance](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#windows-path-length), and the [project README](https://github.com/microsoft/dynwinrt#readme).
