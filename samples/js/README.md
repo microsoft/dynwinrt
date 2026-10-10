@@ -10,6 +10,7 @@ The application samples below use generated bindings and the
 | [`windows-hello`](windows-hello/)                             | Electron, Windows Hello, and HWND-bound Classic COM interop  |
 | [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
 | [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
+| [`electron-aion-chat`](electron-aion-chat/) | Local Aion streaming chat in Electron; requires Snapdragon ARM64, QNN, and the Aion preview framework |
 | [`interface-implementation`](interface-implementation/) | Standalone JavaScript-backed WinRT interfaces, native IBackgroundTask calls, and multi-interface lifetime |
 | [`win32`](win32/) | Generated Win32 DLL exports, Registry buffers and handle cleanup, and IOCP-backed asynchronous file I/O |
 | [`ocr`](ocr/) | Windows AI TextRecognizer OCR, generated bindings, interactive picker or `--image`, and private WinApp CLI identity |

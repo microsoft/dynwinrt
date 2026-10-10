@@ -1,18 +1,9 @@
 ## Unreleased (next preview)
 
-Draft notes for a future release, not part of v0.1.0-preview.22. Before tagging
-the next release, promote the applicable entries to `RELEASE_NOTES.md` under
-the correct version heading. The release pipeline does not stage this file.
+Potential improvements for the next preview:
 
-### Python Object values
-
-- Explicitly box Python values with `to_winrt_object()` and convert values in
-  supported Object-valued maps with `dynwinrt.values.object_value_view()`.
-  Generated `Object` positions remain native by default.
-
-### Rust source compatibility
-
-- Exhaustive matches on the public `PropertyValueData` and
-  `PropertyValueUnboxResult` enums must add arms for the new payload variants
-  and `PropertyValueUnboxResult::Unsupported(PropertyType)`. Handle unsupported
-  boxes explicitly; keep `Null` and `NotPropertyValue` distinct.
+- Broader ABI-safe POD vector support for JavaScript and Python ([#161](https://github.com/microsoft/dynwinrt/issues/161), [#179](https://github.com/microsoft/dynwinrt/pull/179)).
+- Explicit Object-value conversion helpers for JavaScript/TypeScript, including boxing, typed unboxing, and opt-in map views.
+- Python Classic COM: generated wrappers, object activation, QueryInterface, and managed reference cleanup.
+- JavaScript/TypeScript: managed COM interface replacement and broader flat Win32 buffer and resource contracts.
+- Smaller generated JavaScript by sharing implementation helpers ([#182](https://github.com/microsoft/dynwinrt/issues/182)).

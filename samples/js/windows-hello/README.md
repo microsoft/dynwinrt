@@ -14,8 +14,10 @@ native addon, without requiring sample-specific C++ or `node-gyp`.
 
 - Windows 10 or 11;
 - Windows Hello configured for the current user;
-- Node.js and Rust/Cargo; and
-- a Windows SDK containing `Windows.winmd`.
+- Node.js and Rust/Cargo;
+- a Windows SDK containing `Windows.winmd`; and
+- `Microsoft.Windows.SDK.Win32Metadata` containing `Windows.Win32.winmd`
+  for the Classic COM interop projection.
 
 ## Run
 
@@ -35,6 +37,9 @@ npm install
 npm run generate
 npm start
 ```
+
+Set `DYNWINRT_WIN32_WINMD` to the metadata file when it is outside the default
+`$HOME\.nuget\packages` cache.
 
 Click **Verify identity**. Windows displays its native verification dialog
 owned by the Electron window. Complete or cancel the prompt; the result is

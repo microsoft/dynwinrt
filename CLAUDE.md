@@ -109,22 +109,22 @@ napi-rs binding exposing: `DynWinRtType`, `DynWinRtMethodSig`, `DynWinRtMethodHa
 
 ### Python Binding (`bindings/py/`)
 
-PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandle`, `DynWinRTValue`, `DynWinRTArray`, `DynWinRTStruct`, `DynWinRtDelegate`, `WinGUID`. Async operations block via `wait()` (releases GIL). Events use `DynWinRtDelegate.create()` with `Python::attach()` for GIL-safe callback invocation.
+PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandle`, `DynWinRTValue`, `DynWinRTArray`, `DynWinRTStruct`, `DynWinRtDelegate`, `WinGUID`. Generated async operations support `asyncio`; the low-level `wait()` fallback blocks with the GIL released. Events use `DynWinRtDelegate.create()` with `Python::attach()` for GIL-safe callback invocation.
 
 ### Code Generation Tool (`dynwinrt-codegen`, source in `tools/dynwinrt-codegen/`)
 
 Reads .winmd metadata and generates typed wrapper code:
-- `--lang js` (default): emits ESM `.js` + ambient `.d.ts` (no tsc step required) using the `DynWinRtType`/`DynWinRtValue` API
+- `--lang js` (default): emits CommonJS `.js`, ESM index facades, and `.d.ts` declarations using the `DynWinRtType`/`DynWinRtValue` API; no tsc step is required
 - `--lang py`: Python classes using the `DynWinRTType`/`DynWinRTValue` API, with `.pyi` stubs and a `py.typed` marker by default; `--no-pyi` opts out
 - Handles: classes, interfaces, enums, structs (pack/unpack), delegates (IID + param types), async operations (with `AbortSignal`/cancellation), generic collections, events
 - Auto-detects Windows SDK winmd, auto-discovers sibling `.winmd` files in the same directory, resolves transitive dependencies
 
 Key codegen modules:
-- **codegen/common.rs**: Shared helpers — type mapping, method sig building, struct field accessors, argument wrapping, return conversion (both JS and Python variants)
-- **codegen/project.rs** + **codegen/projected.rs**: Build `ProjectedFile` IR from metadata
-- **codegen/render_js.rs** + **codegen/render_dts.rs**: Render IR to `.js` and `.d.ts`
-- **codegen/python.rs** + **codegen/py_method.rs** + **codegen/python_stub.rs**: Python `.py` and `.pyi` generation
-- **codegen/typescript.rs** + **codegen/method.rs**: Legacy TS generators (still used by some code paths)
+- **codegen/winrt/shared/**: Shared WinRT dependency, import, and documentation helpers
+- **codegen/winrt/javascript/project/** + **ir.rs**: Build the JavaScript/TypeScript projection IR from metadata
+- **codegen/winrt/javascript/render/**: Render CommonJS `.js` and `.d.ts` declarations
+- **codegen/winrt/javascript/generator.rs**: Index-file generation and ESM/CommonJS facades
+- **codegen/winrt/python/generator/** + **stubs.rs**: Python `.py` and `.pyi` generation
 - **meta.rs**: WinMD parsing — classes, interfaces, enums, methods, parameters, vtable indices
 - **types.rs**: `TypeMeta` enum describing WinRT types extracted from metadata
 - **xml_doc.rs**: Loads sibling `.xml` files (C# /doc format) to inject JSDoc/docstrings
@@ -136,9 +136,9 @@ Tests use real Windows APIs without mocking:
 - **Core Rust tests** (`cargo test -p dynwinrt`): Uri, HttpClient (async), XmlDocument, metadata reading, vector/map collections
 - **dynwinrt-codegen tests** (`cargo test -p dynwinrt-codegen`): Snapshot tests for Uri TypeScript output, unit tests for type mapping/codegen
 - **Python binding tests** (`bindings/py/tests/`):
-  - `test_basic.py` (27 tests): All binding features — primitives, GUID, arrays, structs, enum, URI E2E
-  - `test_e2e_winrt.py` (19 tests): Real WinRT APIs — XmlDocument, Geopoint, PropertyValue, Buffer, Uri
-  - `test_runtime.py` (5 tests): Value conversion utilities
+  - `test_basic.py`: Binding features — primitives, GUID, arrays, structs, enum, URI E2E
+  - `test_e2e_winrt.py`: Real WinRT APIs — XmlDocument, Geopoint, PropertyValue, Buffer, Uri
+  - `test_runtime.py`: Value conversion utilities
 
 ## Common Patterns
 
@@ -173,23 +173,27 @@ let delegate = dynwinrt::delegate::create_delegate_value(
 ```rust
 // Core: WinRTValue::Async implements Future
 let result = async_value.await?;
+```
 
+```js
 // JS: returns Promise
-let result = value.toPromise().await?;
+const result = await value.toPromise();
+```
 
-// Python: blocks with GIL released
-let result = value.wait()?;
+```python
+result = await generated_async_operation
+result = value.wait()  # Low-level blocking fallback; releases the GIL.
 ```
 
 ## Known Limitations
 
 - Delegate callbacks support up to 2 ABI parameters (covers ~95% of WinRT delegates)
-- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework) — WinUI-style controls need composition/aggregation of runtime classes, which the codegen skips (see composable `.ctor` note in `docs/status/TODO.md`)
-- Python binding does not yet support async/await integration with `asyncio`
+- WinUI/XAML hosting and DispatcherQueue support remain experimental and require matching Windows App SDK metadata and runtime inputs.
+- Python generated async operations integrate with `asyncio`; synchronous interface-implementation callbacks must not return coroutines.
 
 ## Environment Setup — updated invariant
 
-`initialize_winappsdk()` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable at `crates/dynwinrt/src/winapp.rs:43`. Auto-detection from `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and Program Files install paths is tracked in `docs/status/TODO.md` P0.
+Windows App SDK bootstrap requires an explicit `bootstrap_dll_path` or `WINAPPSDK_BOOTSTRAP_DLL_PATH`. Missing paths, invalid versions, and DLL/export failures return errors; they do not panic. Samples restore or select matching SDK inputs explicitly. Bootstrap-path auto-discovery is not implemented.
 
 ## Implementation Notes
 
