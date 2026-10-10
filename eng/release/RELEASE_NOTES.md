@@ -9,12 +9,12 @@ This preview improves Python apartment lifetime safety, collection comparisons a
 - `dynwinrt` - Native Python runtime.
 - `dynwinrt-codegen` - Standalone Python code generator.
 
-- Runtime packages target Windows x64 and ARM64.
-- JavaScript requires Node.js 18 or later.
-- The Python runtime and generated bindings require CPython 3.11-3.14.
-- Available APIs also depend on the installed Windows version, SDK components, package identity, and hardware.
-- **Version matching:** runtime and codegen packages must use the same version within each language ecosystem. Upgrade them together before regenerating bindings.
-- **Before using this version:** clean the old generated bindings.
+- **Runtime platforms:** Windows x64 and ARM64.
+- **JavaScript version:** Node.js 18 or later.
+- **Python version:** CPython 3.11-3.14 for the runtime and generated bindings.
+- **API availability:** Depends on the Windows version, installed SDK components, package identity, and hardware.
+- **Package versions:** Use the same runtime and codegen version for each language.
+- **Upgrade cleanup:** Clean old generated bindings before using the new version.
 
 ```powershell
 npm install @microsoft/dynwinrt@0.1.0-preview.23
