@@ -4,12 +4,12 @@ This preview improves Python apartment lifetime safety, collection comparisons a
 
 ## Packages and installation
 
-Runtime packages target Windows x64 and ARM64. JavaScript requires Node.js 18 or later; the Python runtime and generated bindings require CPython 3.11-3.14. Available APIs also depend on the installed Windows version, SDK components, package identity, and hardware.
-
 - `@microsoft/dynwinrt` - JavaScript/TypeScript runtime.
 - `@microsoft/dynwinrt-codegen` - JavaScript/TypeScript code generator.
 - `dynwinrt` - Native Python runtime.
 - `dynwinrt-codegen` - Standalone Python code generator.
+
+Runtime packages target Windows x64 and ARM64. JavaScript requires Node.js 18 or later; the Python runtime and generated bindings require CPython 3.11-3.14. Available APIs also depend on the installed Windows version, SDK components, package identity, and hardware.
 
 **Version matching:** runtime and codegen packages must use the same version within each language ecosystem. Upgrade them together before regenerating bindings.
 
