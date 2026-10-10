@@ -13,6 +13,7 @@ to generated dynwinrt bindings. It demonstrates:
 ## Prerequisites
 
 - Windows 10 or 11 with a Windows SDK installed;
+- an active audio output device for playback;
 - `dynwinrt` installed in the selected Python interpreter; and
 - `dynwinrt-codegen` on `PATH`, or passed to `generate.ps1` with `-Codegen`.
 
@@ -33,3 +34,6 @@ For non-interactive validation, synthesize the stream without playing it:
 ```powershell
 .\run.ps1 -Python C:\path\to\python.exe -Smoke
 ```
+
+`-Smoke` validates synthesis, not playback. In headless or remote sessions without
+an audio output, playback may time out because Windows cannot create a media sink.

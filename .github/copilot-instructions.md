@@ -20,13 +20,13 @@ model; see [the Win32 architecture](../docs/architecture/flat-win32-contracts.md
 # Build everything
 cargo build
 
-# Core library tests (52 tests, 1 ignored — requires WinAppSDK)
+# Core library tests (WinAppSDK-specific tests require their SDK inputs)
 cargo test -p dynwinrt
 
-# dynwinrt-codegen tests (49 unit tests + 1 snapshot test)
+# dynwinrt-codegen unit, integration, and snapshot tests
 cargo test -p dynwinrt-codegen
 
-# Python binding (requires Python 3.8+ and maturin)
+# Python binding (requires CPython 3.11-3.14 and maturin)
 cd bindings/py
 python -m venv .venv && .venv/Scripts/Activate.ps1
 pip install pytest maturin
@@ -111,12 +111,12 @@ semantics. Classic COM changes must preserve existing WinRT models, generated
 output, runtime behavior, and the `@microsoft/dynwinrt` root API.
 
 ### Code Generator (dynwinrt-codegen)
-- `src/codegen/project.rs` + `src/codegen/projected.rs` — Build the language-neutral `ProjectedFile` IR from parsed metadata
-- `src/codegen/render_js.rs` + `src/codegen/render_dts.rs` — Render IR to `.js` and `.d.ts`
-- `src/codegen/python.rs` + `src/codegen/py_method.rs` + `src/codegen/python_stub.rs` — Python `.py` and `.pyi` generation
-- `src/codegen/common.rs` — Shared helpers (type mapping, argument wrapping, return conversion)
-- `src/codegen/typescript.rs` + `src/codegen/method.rs` — Index-file generation and ESM/CJS shim helpers (name is historical; no longer emits stand-alone `.ts` output)
-- `--lang js` (default) generates `.js` + ambient `.d.ts` with the `DynWinRtType`/`DynWinRtValue` API (camelCase)
+- `src/codegen/winrt/javascript/project/` + `ir.rs` — Build the JavaScript/TypeScript projection IR from parsed metadata
+- `src/codegen/winrt/javascript/render/` — Render CommonJS `.js` and `.d.ts` declarations
+- `src/codegen/winrt/javascript/generator.rs` — Index-file generation and ESM/CommonJS facades
+- `src/codegen/winrt/python/generator/` + `stubs.rs` — Python `.py` and `.pyi` generation
+- `src/codegen/winrt/shared/` — Shared WinRT dependency, import, and documentation helpers
+- `--lang js` (default) generates CommonJS `.js`, ESM index facades, and `.d.ts` with the `DynWinRtType`/`DynWinRtValue` API (camelCase)
 - `--lang py` generates `.py`, `.pyi`, and a `py.typed` marker by default using the `DynWinRTType`/`DynWinRTValue` API (snake_case); `--no-pyi` opts out
 
 ### Python Binding API Names
