@@ -1384,6 +1384,7 @@ fn collection_protocol_stubs(
         | super::collections::CollectionKind::MutableSequence => {
             let mut result = format!(
                 "\n{indent}def __len__(self) -> int: ...\n\
+                 {indent}def __contains__(self, value: object) -> bool: ...\n\
                  {indent}@overload\n\
                  {indent}def __getitem__(self, index: int) -> {item_type}: ...\n\
                  {indent}@overload\n\
@@ -1423,7 +1424,8 @@ fn collection_protocol_stubs(
             let mut result = format!(
                 "\n{indent}def __len__(self) -> int: ...\n\
                  {indent}def __iter__(self) -> Iterator[{key_type}]: ...\n\
-                 {indent}def __getitem__(self, key: {item_input}) -> {value_type}: ...\n"
+                 {indent}def __getitem__(self, key: {item_input}) -> {value_type}: ...\n\
+                 {indent}def __eq__(self, other: object) -> bool: ...\n"
             );
             if kind == super::collections::CollectionKind::MutableMapping {
                 let value_input = iface

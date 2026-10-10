@@ -622,6 +622,43 @@ def test_dict_and_equality_use_converted_values():
     assert view != [("count", 5)]
 
 
+def test_equality_and_membership_preserve_remaining_native_reference_identity():
+    properties = property_set()
+    native = uri()
+    alias = native.cast(WinGUID.parse("00000000-0000-0000-c000-000000000046"))
+    different = uri()
+    view = object_value_view(properties)
+    view["uri"] = native
+    view["count"] = 5
+    view["null"] = None
+    readonly = properties.get_view()
+    for mapping in (properties, readonly):
+        count = properties["count"]
+        expected = {"uri": alias, "count": count, "null": DynWinRTValue.null_value()}
+        assert mapping == mapping and mapping == expected and expected == mapping
+        assert native in mapping.values() and ("uri", alias) in mapping.items()
+        assert different not in mapping.values()
+        assert ("uri", different) not in mapping.items()
+        assert mapping != {"uri": native, "count": to_winrt_object(5), "null": None}
+        assert mapping != {"uri": native, "count": 5, "null": None}
+    for converted in (view, object_value_view(readonly)):
+        assert converted == converted
+        assert converted == {"uri": alias, "count": 5, "null": None}
+        assert converted != {"uri": different, "count": 5, "null": None}
+        assert native in converted.values() and ("uri", alias) in converted.items()
+        assert 5 in converted.values() and ("count", 5) in converted.items()
+        assert different not in converted.values()
+    assert not native.is_released() and not alias.is_released()
+
+
+def test_converted_nan_keeps_python_equality_instead_of_raw_box_identity():
+    view = object_value_view(property_set())
+    view["nan"] = float("nan")
+    assert view.raw == view.raw
+    assert view != view and float("nan") not in view.values()
+    assert ("nan", float("nan")) not in view.items()
+
+
 def test_mutable_mapping_methods():
     view = object_value_view(property_set())
     view.update({"a": 1}, b="x")

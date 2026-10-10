@@ -30,9 +30,18 @@ from __future__ import annotations
 
 import operator
 import struct
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    ItemsView,
+    Mapping,
+    MutableMapping,
+    ValuesView,
+)
 from datetime import datetime, timedelta
 from enum import IntEnum
+from importlib import import_module as _import_module
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -49,6 +58,8 @@ from typing import (
 from uuid import UUID
 
 from dynwinrt import DynWinRTType, DynWinRTValue, WinGUID, to_winrt_object, unbox_object
+
+_native = _import_module("dynwinrt.dynwinrt")
 
 if TYPE_CHECKING:
     from _typeshed import SupportsKeysAndGetItem
@@ -790,7 +801,9 @@ class ObjectValueView(Mapping[_K, WinRTObjectValue]):
     ``datetime.datetime``. Other errors propagate.
 
     Every operation goes to the map; the view holds no WinRT reference of its
-    own. ``raw`` is the generated map, whose values stay native.
+    own. ``raw`` is the generated map, whose values stay native. Equality and
+    value/item membership compare remaining native references by COM identity;
+    converted Python values retain their normal equality.
     """
 
     __slots__ = ("_map", "_preserve_type")
@@ -832,6 +845,18 @@ class ObjectValueView(Mapping[_K, WinRTObjectValue]):
 
     def __contains__(self, key: object) -> bool:
         return key in self._map
+
+    def __eq__(self, other: object) -> bool:
+        mapping_equal: Callable[[object, object], bool] = _native._dynwinrt_mapping_equal
+        return mapping_equal(self, other)
+
+    def items(self) -> ItemsView[_K, WinRTObjectValue]:
+        view: ItemsView[_K, WinRTObjectValue] = _native._WinRTItemsView(self)
+        return view
+
+    def values(self) -> ValuesView[WinRTObjectValue]:
+        view: ValuesView[WinRTObjectValue] = _native._WinRTValuesView(self)
+        return view
 
     def __repr__(self) -> str:
         options = ", preserve_type=True" if self._preserve_type else ""
