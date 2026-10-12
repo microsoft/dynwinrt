@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
+use windows_metadata::{MethodCallAttributes, Signature, Type, TypeAttributes, TypeName, writer};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -85,9 +86,21 @@ fn has_implementation_runtime() -> bool {
 }
 
 fn typecheck(fixture: &Fixture, packages: &[&str], consumer: &str, errors: &[&str]) {
+    typecheck_with_imports(fixture, packages, consumer, errors, "normal");
+}
+
+fn typecheck_with_imports(
+    fixture: &Fixture,
+    packages: &[&str],
+    consumer: &str,
+    errors: &[&str],
+    follow_imports: &str,
+) {
     fs::write(fixture.0.join("consumer.py"), consumer).unwrap();
     let installed = std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() == Ok("1");
-    for source_stubs in if installed {
+    for source_stubs in if installed && follow_imports == "silent" {
+        &[false][..]
+    } else if installed {
         &[true, false][..]
     } else {
         &[true][..]
@@ -100,7 +113,8 @@ fn typecheck(fixture: &Fixture, packages: &[&str], consumer: &str, errors: &[&st
                 "mypy",
                 "--strict",
                 "--no-incremental",
-                "--follow-imports=normal",
+                "--follow-imports",
+                follow_imports,
                 "--no-pretty",
                 "--show-error-codes",
                 "--cache-dir",
@@ -991,6 +1005,303 @@ print("subclass-factory-native-ok", flush=True)
             "{}",
             diagnostics(&output)
         );
+    }
+}
+
+#[test]
+fn resource_dictionary_keys_are_scoped_and_typed_in_stubs_and_inline_sources() {
+    let winmd = Path::new(
+        r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+    );
+    assert!(
+        winmd.is_file(),
+        "ResourceDictionary fixtures require Windows.winmd"
+    );
+    if !has_mypy() {
+        return;
+    }
+    let runtime = has_implementation_runtime();
+    let fixture = Fixture::new();
+    let metadata = fixture.0.join("ResourceKeys.winmd");
+    let mut file = writer::File::new("ResourceKeys");
+    let object = file.TypeRef("System", "Object");
+    let default = file.TypeRef("Windows.Foundation.Metadata", "DefaultAttribute");
+    let default_constructor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![],
+        },
+        writer::MemberRefParent::TypeRef(default),
+    );
+    for namespace in ["Microsoft.UI.Xaml", "Contoso"] {
+        let class = file.TypeDef(
+            namespace,
+            "ResourceDictionary",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public | TypeAttributes::Sealed | TypeAttributes::WindowsRuntime,
+        );
+        let implementation = file.InterfaceImpl(
+            class,
+            &Type::Name(TypeName {
+                namespace: "Windows.Foundation.Collections".into(),
+                name: "IMap`2".into(),
+                generics: vec![Type::Object, Type::Object],
+            }),
+        );
+        file.Attribute(
+            writer::HasAttribute::InterfaceImpl(implementation),
+            writer::AttributeType::MemberRef(default_constructor),
+            &[],
+        );
+    }
+    fs::write(&metadata, file.into_stream()).unwrap();
+
+    let consumer = r#"from typing import assert_type
+from dynwinrt import DynWinRTValue
+from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
+from views.windows__ui__xaml__resource_dictionary import ResourceDictionary as UwpResourceDictionary
+
+class Carrier:
+    def __init__(self, value: DynWinRTValue) -> None:
+        self._obj = value
+
+def keys(resources: ResourceDictionary, raw: DynWinRTValue, carrier: Carrier) -> None:
+    assert_type(resources.lookup("AccentButtonStyle"), DynWinRTValue | None)
+    assert_type(resources["AccentButtonStyle"], DynWinRTValue | None)
+    assert_type(resources.get("AccentButtonStyle"), DynWinRTValue | None)
+    assert_type(resources.get("absent", 17), DynWinRTValue | int | None)
+    assert_type(resources.get(key="absent", default=17), DynWinRTValue | int | None)
+    assert_type(resources.has_key("AccentButtonStyle"), bool)
+    assert_type(resources.insert("new", carrier), bool)
+    resources["new"] = raw
+    resources.update({"new": raw}, other=carrier)
+    resources.update([("new", carrier)])
+    assert_type(resources.setdefault("new", carrier), DynWinRTValue | None)
+    assert_type(resources.pop("new"), DynWinRTValue | None)
+    assert_type(resources.pop("absent", 17), DynWinRTValue | int | None)
+    resources.remove("new")
+    del resources["new"]
+    for key in (raw, carrier, None):
+        assert_type(resources.lookup(key), DynWinRTValue | None)
+        assert_type(resources[key], DynWinRTValue | None)
+
+def stock_contract(resources: UwpResourceDictionary) -> None:
+    assert_type(resources.lookup("style"), DynWinRTValue | None)
+    assert_type(resources["style"], DynWinRTValue | None)
+    assert_type(resources.get("style"), DynWinRTValue | None)
+"#;
+    let like_consumer = r#"
+from collections.abc import Iterator
+from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionaryLike
+
+def like_keys(resources: ResourceDictionaryLike, concrete: ResourceDictionary) -> None:
+    resources = concrete
+    assert_type(resources.lookup("style"), DynWinRTValue | None)
+    assert_type(resources["style"], DynWinRTValue | None)
+    assert_type(resources.get("style"), DynWinRTValue | None)
+    assert_type(resources.pop("absent", 17), DynWinRTValue | int | None)
+    assert_type(resources.__iter__(), Iterator[DynWinRTValue | None])
+    assert_type(iter(concrete), Iterator[DynWinRTValue | None])
+"#;
+    let invalid = r#"from dynwinrt import DynWinRTValue
+from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
+from views.contoso__resource_dictionary import ResourceDictionary as Unrelated
+from views.windows__foundation__collections__i_map_object_object import IMap_Object_Object
+from views.__MAP_VIEW_MODULE__ import IMapView_Object_Object
+
+def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Object_Object,
+            view: IMapView_Object_Object, raw: DynWinRTValue) -> None:
+    resources.lookup(17)
+    resources[17]
+    resources.insert("style", "not an Object value")
+    resources.update(style=17)
+    other.lookup("style")
+    mapping.lookup("style")
+    view.lookup("style")
+"#;
+    let invalid = invalid.replace(
+        "__MAP_VIEW_MODULE__",
+        &common::python_module(TypeIdentity::closed_generic(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IMapView",
+            [
+                TypeMeta::Object.type_identity(),
+                TypeMeta::Object.type_identity(),
+            ],
+        )),
+    );
+    for no_pyi in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command
+            .args(["generate", "--winmd"])
+            .arg(format!("{};{}", metadata.display(), winmd.display()))
+            .args([
+                "--class-name",
+                "Microsoft.UI.Xaml.ResourceDictionary,Contoso.ResourceDictionary,Windows.UI.Xaml.ResourceDictionary",
+                "--lang",
+                "py",
+                "--output",
+            ])
+            .arg(fixture.0.join("views"));
+        if no_pyi {
+            command.arg("--no-pyi");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}", diagnostics(&output));
+        let source = fs::read_to_string(
+            fixture
+                .0
+                .join("views")
+                .join("microsoft__ui__xaml__resource_dictionary.py"),
+        )
+        .unwrap();
+        assert_eq!(source.matches("def lookup(").count(), 1);
+        assert!(source.contains("_dynwinrt_to_winrt_object(key, _dynwinrt_property_type.String) if isinstance(key, str) else key"));
+        let other = fs::read_to_string(
+            fixture
+                .0
+                .join("views")
+                .join("contoso__resource_dictionary.py"),
+        )
+        .unwrap();
+        assert!(!other.contains("to_winrt_object"));
+        typecheck_with_imports(
+            &fixture,
+            if no_pyi { &[] } else { &["views"] },
+            &format!("{consumer}{}", if no_pyi { "" } else { like_consumer }),
+            &[],
+            if no_pyi { "silent" } else { "normal" },
+        );
+        typecheck_with_imports(
+            &fixture,
+            &[],
+            &invalid,
+            &[
+                "[arg-type]",
+                "[index]",
+                "[arg-type]",
+                "[call-overload]",
+                "[arg-type]",
+                "[arg-type]",
+                "[arg-type]",
+            ],
+            if no_pyi { "silent" } else { "normal" },
+        );
+        if runtime {
+            let output = Command::new(python())
+                .args(["-B", "-c", r#"
+import ast
+from pathlib import Path
+from types import SimpleNamespace
+import threading
+from dynwinrt import (
+    DynWinRTArray, DynWinRTImplementation, DynWinRTImplementationMethod,
+    DynWinRTInterfacePlan, DynWinRTMethodSig, DynWinRTType, DynWinRTValue, RoApartment, WinGUID,
+    projected_lifetime_scope, to_winrt_object, unbox_object,
+)
+from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
+from views.contoso__resource_dictionary import ResourceDictionary as Unrelated
+from views.windows.foundation.collections import IMap_Object_Object
+
+source = ast.parse((Path("views") / "microsoft__ui__xaml__resource_dictionary.py").read_text(encoding="utf-8"))
+owner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ResourceDictionary")
+assert sum(isinstance(node, ast.FunctionDef) and node.name == "lookup" for node in owner.body) == 1
+with RoApartment(1), projected_lifetime_scope():
+    key = to_winrt_object("raw key")
+    value = to_winrt_object("raw value")
+    identities = key.identity_raw(), value.identity_raw()
+    native = DynWinRTValue.create_map([key], [value], DynWinRTType.object(), DynWinRTType.object())
+    assert native._try_query_interface(WinGUID.parse("94ea2b94-e9cc-49e0-c0ff-ee64ca8f5b90"))
+    resources = ResourceDictionary._from_native(native.cast(WinGUID.parse("00000000-0000-0000-c000-000000000046")))
+    carrier = SimpleNamespace(_obj=key)
+    for source_key in (key, carrier):
+        assert resources.lookup(source_key).identity_raw() == identities[1]
+        assert resources[source_key].identity_raw() == identities[1]
+        assert resources.get(source_key).identity_raw() == identities[1]
+        assert resources.has_key(source_key)
+    assert resources.insert("boxed by projection", value) is False
+    assert {unbox_object(item) for item in resources} == {"raw key", "boxed by projection"}
+    assert resources.has_key("raw key")
+    assert resources.lookup("raw key").identity_raw() == identities[1]
+    fallback = object()
+    assert resources.get("absent", fallback) is fallback
+    assert resources.pop("absent", default=fallback) is fallback
+    for mapping in (IMap_Object_Object.from_value(native), Unrelated._from_native(native.cast(WinGUID.parse("00000000-0000-0000-c000-000000000046")))):
+        try:
+            mapping.lookup("raw key")
+        except TypeError as error:
+            assert "DynWinRTValue" in str(error), error
+        else:
+            raise AssertionError("unrelated Object-key map auto-boxed a string")
+    generic = IMap_Object_Object.from_value(native)
+    for invalid in (17, DynWinRTValue.from_i32(17), SimpleNamespace(_obj="not native")):
+        errors = []
+        for projection in (generic, resources):
+            try:
+                projection.lookup(invalid)
+            except (TypeError, OSError) as error:
+                if isinstance(error, OSError):
+                    assert error.winerror == -2147024809, error
+                errors.append((type(error), str(error)))
+            else:
+                raise AssertionError("invalid Object input reached native dispatch")
+        assert errors[0] == errors[1], errors
+    assert (key.identity_raw(), value.identity_raw()) == identities
+    assert not native.is_released()
+    released = to_winrt_object("released")
+    released.release()
+    for source_key in (released, SimpleNamespace(_obj=released)):
+        try:
+            resources.lookup(source_key)
+        except RuntimeError as error:
+            assert "released" in str(error), error
+        else:
+            raise AssertionError("released key reached native dispatch")
+    iid = WinGUID.parse("96369f54-8eb6-48f0-abce-c1b211e627c3")
+    signature = DynWinRTMethodSig().add_out(DynWinRTType.hstring())
+    interface = DynWinRTType.register_interface("Windows.Foundation.IStringable", iid).add_method("ToString", signature)
+    plan = DynWinRTInterfacePlan.create("Windows.Foundation.IStringable", interface, [
+        DynWinRTImplementationMethod("ToString", 6, signature)
+    ])
+    calls = []
+    def callback(*args):
+        calls.append(args)
+        return [DynWinRTValue.from_hstring("live")]
+    owner = DynWinRTImplementation.create([plan], callback)
+    source = owner.to_value()
+    array = DynWinRTArray.from_object_values([source], DynWinRTType.object())
+    guarded = array.get(0)
+    assert not guarded._try_query_interface(WinGUID.parse("94ea2b94-e9cc-49e0-c0ff-ee64ca8f5b90"))
+    failures = []
+    def foreign():
+        try:
+            with RoApartment(1):
+                for source_key in (guarded, SimpleNamespace(_obj=guarded)):
+                    try:
+                        resources.lookup(source_key)
+                    except RuntimeError as error:
+                        assert "owning COM apartment thread" in str(error), error
+                    else:
+                        raise AssertionError("non-agile key reached native dispatch")
+        except BaseException as error:
+            failures.append(error)
+    thread = threading.Thread(target=foreign)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive() and not failures, failures
+    assert not calls and not guarded.is_released() and not source.is_released()
+    owner.release()
+print("resource-key-fixture-ok")
+"#])
+                .current_dir(&fixture.0)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", diagnostics(&output));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("resource-key-fixture-ok"));
+        }
     }
 }
 

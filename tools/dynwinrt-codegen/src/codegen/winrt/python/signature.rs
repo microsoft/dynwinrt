@@ -1084,6 +1084,25 @@ pub(crate) fn py_wrap_collection_input(
     py_wrap_collection_item(name, typ, role, context)
 }
 
+pub(crate) fn py_wrap_collection_input_for_receiver(
+    name: &str,
+    typ: &TypeMeta,
+    role: CollectionInputRole,
+    context: &PythonProjectionContext,
+    input_contract: super::collections::CollectionInputContract,
+) -> String {
+    if input_contract.string_key(typ, role) {
+        let key = format!(
+            "{}({name}, {}.String) if isinstance({name}, str) else {name}",
+            context.support_symbol_reference(PythonSupportSymbol::BoxObject),
+            context.support_symbol_reference(PythonSupportSymbol::PropertyType),
+        );
+        py_wrap_collection_input(&format!("({key})"), typ, role, context)
+    } else {
+        py_wrap_collection_input(name, typ, role, context)
+    }
+}
+
 fn py_wrap_collection(
     name: &str,
     typ: &TypeMeta,

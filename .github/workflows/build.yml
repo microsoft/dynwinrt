@@ -579,6 +579,10 @@ jobs:
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             reference_array_results_preserve_null_elements -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:DYNWINRT_TEST_INSTALLED_RUNTIME = '1'
+          cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
+            resource_dictionary_keys_are_scoped_and_typed_in_stubs_and_inline_sources -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_collection_helper_collision_test `
             --test python_collection_member_collision_test -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

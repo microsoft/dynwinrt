@@ -38,6 +38,60 @@ const JSON_OBJECT: NonNullJsonCollection = NonNullJsonCollection {
     class_iid: "064e24dd-29c2-4f83-9ac1-9ee11578beb3",
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CollectionInputContract {
+    #[default]
+    General,
+    NonNullJson,
+    ResourceDictionary,
+}
+
+impl CollectionInputContract {
+    pub(crate) fn for_class(class: &ClassMeta) -> Self {
+        if stock_json_class_contract(class).is_some() {
+            return Self::NonNullJson;
+        }
+        if matches!(
+            class.namespace.as_str(),
+            "Microsoft.UI.Xaml" | "Windows.UI.Xaml"
+        ) && class.name == "ResourceDictionary"
+            && class.full_name == format!("{}.{}", class.namespace, class.name)
+            && class_interface(class).is_some_and(|iface| {
+                iface.namespace == WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE
+                    && iface.generic_piid.as_deref() == Some(IMAP_PIID)
+                    && iface.generic_args == [TypeMeta::Object, TypeMeta::Object]
+            })
+        {
+            Self::ResourceDictionary
+        } else {
+            Self::General
+        }
+    }
+
+    pub(crate) fn is_non_null_json(self) -> bool {
+        self == Self::NonNullJson
+    }
+
+    pub(crate) fn string_key(self, typ: &TypeMeta, role: CollectionInputRole) -> bool {
+        self == Self::ResourceDictionary
+            && role == CollectionInputRole::Key
+            && *typ == TypeMeta::Object
+    }
+
+    pub(crate) fn key_input_type(
+        self,
+        typ: &TypeMeta,
+        context: &PythonProjectionContext,
+    ) -> String {
+        let input = py_collection_input_type(typ, context);
+        if self.string_key(typ, CollectionInputRole::Key) {
+            format!("str | {}", super::type_helpers::unquoted(&input))
+        } else {
+            input
+        }
+    }
+}
+
 fn is_json_value(typ: &TypeMeta) -> bool {
     matches!(
         typ,
@@ -288,12 +342,12 @@ pub(super) fn protocol_helper_methods(
     owner_name: &str,
     context: &PythonProjectionContext,
     surface: AnnotationSurface,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
     indent_spaces: usize,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let input = |typ| {
-        if stock_json_receiver {
+        if input_contract.is_non_null_json() {
             py_param_type_safe(typ, context)
         } else {
             py_collection_input_type(typ, context)
@@ -333,9 +387,9 @@ pub(super) fn protocol_helper_methods(
             result
         }
         (Some(CollectionKind::MutableMapping), [key, value]) => {
-            let key_input = py_collection_input_type(key, context);
+            let key_input = input_contract.key_input_type(key, context);
             let value_input = input(value);
-            let value_read = if stock_json_receiver {
+            let value_read = if input_contract.is_non_null_json() {
                 py_param_type_safe(value, context)
             } else {
                 py_collection_item_type(value, ElementContainer::Mutable, surface, context)
@@ -351,7 +405,9 @@ pub(super) fn protocol_helper_methods(
                 .expect("serialize a Python type annotation");
             let mapping = format!("{supports}[{key_reference}, {value_input}]");
             let pairs = format!("Iterable[tuple[{key_input}, {value_input}]]");
-            let keywords = if matches!(key, TypeMeta::String | TypeMeta::Char16) {
+            let keywords = if matches!(key, TypeMeta::String | TypeMeta::Char16)
+                || input_contract.string_key(key, CollectionInputRole::Key)
+            {
                 format!(", **kwargs: {value_input}")
             } else {
                 String::new()
@@ -374,7 +430,7 @@ pub(super) fn protocol_helper_methods(
                     ));
                 }
             }
-            let nullable = may_project_none(value) && !stock_json_receiver;
+            let nullable = may_project_none(value) && !input_contract.is_non_null_json();
             if helpers.setdefault && is_stub {
                 let default = if nullable { " = None" } else { "" };
                 result.push_str(&format!(
@@ -389,13 +445,65 @@ pub(super) fn protocol_helper_methods(
                              {indent}def setdefault(self, key: {key_input}, *, default: {value_input}) -> {value_read}: ...\n"
                         ));
                 }
-                let default_input = py_optional_type(value_input);
+                let default_input = py_optional_type(value_input.clone());
                 // An omitted/invalid default is still ignored for an existing
                 // key. The overloads constrain values that may be inserted.
                 result.push_str(&format!(
                         "\n{indent}def setdefault(self, key: {key_input}, default: {default_input} = None) -> {value_read}:\n\
                          {indent}    return super().setdefault(key, default)\n"
                     ));
+            }
+            if input_contract.string_key(key, CollectionInputRole::Key) {
+                if helpers.getitem && !is_stub {
+                    result.push_str(&format!(
+                        "\n{indent}def __getitem__(self, key: {key_input}) -> {value_read}:\n\
+                         {indent}    value = super().__getitem__(key)\n\
+                         {indent}    if value is None or isinstance(value, DynWinRTValue):\n\
+                         {indent}        return value\n\
+                         {indent}    raise TypeError('ResourceDictionary Object results must remain raw DynWinRTValue objects')\n"
+                    ));
+                }
+                if helpers.setitem && !is_stub {
+                    result.push_str(&format!(
+                        "\n{indent}def __setitem__(self, key: {key_input}, value: {value_input}) -> None:\n\
+                         {indent}    super().__setitem__(key, value)\n"
+                    ));
+                }
+                if helpers.delitem && !is_stub {
+                    result.push_str(&format!(
+                        "\n{indent}def __delitem__(self, key: {key_input}) -> None:\n\
+                         {indent}    super().__delitem__(key)\n"
+                    ));
+                }
+                if helpers.get || helpers.pop {
+                    let default_variable =
+                        context.support_symbol_reference(PythonSupportSymbol::MappingDefault);
+                    let default_reference = if is_stub {
+                        default_variable.to_string()
+                    } else {
+                        format!("{owner_name}.{default_variable}")
+                    };
+                    result.push_str(&format!(
+                        "\n{indent}{default_variable} = TypeVar('{default_variable}')\n"
+                    ));
+                    for (name, enabled) in [("get", helpers.get), ("pop", helpers.pop)] {
+                        if !enabled {
+                            continue;
+                        }
+                        result.push_str(&format!(
+                            "\n{indent}@overload\n\
+                             {indent}def {name}(self, key: {key_input}) -> {value_read}: ...\n\
+                             {indent}@overload\n\
+                             {indent}def {name}(self, key: {key_input}, default: {default_reference}) -> {value_read} | {default_reference}: ...\n"
+                        ));
+                        if !is_stub {
+                            result.push_str(&format!(
+                                "{indent}def {name}(self, key: {key_input}, *args: object, **kwargs: object) -> object:\n\
+                                 {indent}    return super().{name}(key, *args, **kwargs)\n"
+                            ));
+                        }
+                    }
+                }
             }
             result
         }
@@ -406,6 +514,74 @@ pub(super) fn protocol_helper_methods(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_keys_require_the_full_class_identity_and_object_map_contract() {
+        let resource = |namespace: &str| ClassMeta {
+            namespace: namespace.into(),
+            name: "ResourceDictionary".into(),
+            full_name: format!("{namespace}.ResourceDictionary"),
+            default_interface: Some(InterfaceMeta {
+                namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+                generic_piid: Some(IMAP_PIID.into()),
+                generic_args: vec![TypeMeta::Object, TypeMeta::Object],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for namespace in ["Microsoft.UI.Xaml", "Windows.UI.Xaml"] {
+            let class = resource(namespace);
+            let contract = CollectionInputContract::for_class(&class);
+            assert_eq!(contract, CollectionInputContract::ResourceDictionary);
+            assert!(contract.string_key(&TypeMeta::Object, CollectionInputRole::Key));
+            assert!(!contract.string_key(&TypeMeta::Object, CollectionInputRole::Value));
+            assert!(!contract.string_key(&TypeMeta::Object, CollectionInputRole::Element));
+            assert!(!contract.string_key(&TypeMeta::String, CollectionInputRole::Key));
+        }
+        let mut controls = vec![resource("Contoso")];
+        let mut wrong_full_name = resource("Microsoft.UI.Xaml");
+        wrong_full_name.full_name = "Contoso.ResourceDictionary".into();
+        controls.push(wrong_full_name);
+        let mut wrong_class = resource("Microsoft.UI.Xaml");
+        wrong_class.name = "Other".into();
+        wrong_class.full_name = "Microsoft.UI.Xaml.Other".into();
+        controls.push(wrong_class);
+        for (namespace, piid, args) in [
+            (
+                "Contoso",
+                IMAP_PIID,
+                vec![TypeMeta::Object, TypeMeta::Object],
+            ),
+            (
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                IMAP_VIEW_PIID,
+                vec![TypeMeta::Object, TypeMeta::Object],
+            ),
+            (
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                IMAP_PIID,
+                vec![TypeMeta::String, TypeMeta::Object],
+            ),
+            (
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                IMAP_PIID,
+                vec![TypeMeta::Object, TypeMeta::String],
+            ),
+        ] {
+            let mut class = resource("Microsoft.UI.Xaml");
+            let iface = class.default_interface.as_mut().unwrap();
+            iface.namespace = namespace.into();
+            iface.generic_piid = Some(piid.into());
+            iface.generic_args = args;
+            controls.push(class);
+        }
+        for class in controls {
+            assert_eq!(
+                CollectionInputContract::for_class(&class),
+                CollectionInputContract::General
+            );
+        }
+    }
 
     #[test]
     fn json_null_contract_needs_the_exact_element_iid_and_native_class() {

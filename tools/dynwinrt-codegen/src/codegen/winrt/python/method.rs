@@ -9,7 +9,7 @@ use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
-use super::collections::non_null_json_input;
+use super::collections::{CollectionInputContract, non_null_json_input};
 use super::delegates::{
     py_delegate_input_arg, py_event_handler_arg, py_once_callback_check,
     py_runtime_delegate_callable_type, py_runtime_delegate_param_type,
@@ -20,7 +20,7 @@ use super::nullability::AnnotationSurface;
 use super::signature::{
     LegacyPreservationPredicate, py_convert_return, py_has_permissive_guard,
     py_interface_cast_guard, py_type_guard, py_wrap_arg, py_wrap_async,
-    py_wrap_async_with_converters, py_wrap_collection_input,
+    py_wrap_async_with_converters, py_wrap_collection_input_for_receiver,
 };
 use super::type_helpers::{
     method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
@@ -62,6 +62,7 @@ fn py_build_method_args_expr(
     method: &MethodMeta,
     context: &PythonProjectionContext,
     receiver: Option<&str>,
+    input_contract: CollectionInputContract,
 ) -> String {
     method
         .params
@@ -80,7 +81,9 @@ fn py_build_method_args_expr(
                 .iter()
                 .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
             let wrapped = match role {
-                Some(role) => py_wrap_collection_input(&name, &param.typ, role, context),
+                Some(role) => {
+                    py_wrap_collection_input_for_receiver(&name, &param.typ, role, context, input_contract)
+                }
                 None => py_wrap_method_arg(&name, &param.typ, context),
             };
             if let (Some(receiver), Some(role)) = (receiver, role)
@@ -147,6 +150,7 @@ pub(crate) struct DispatchCandidate<'a> {
     pub(crate) legacy_preservation: Option<&'a LegacyPreservation>,
     /// Python-visible input parameters, in call order.
     pub(crate) params: Vec<&'a crate::meta::ParamMeta>,
+    pub(crate) guards: Option<Vec<ParamGuard>>,
     /// Statements run when the candidate matches, relative to its `if` block.
     pub(crate) body: Vec<String>,
 }
@@ -175,12 +179,16 @@ pub(crate) fn emit_dispatch(
     let guards = candidates
         .iter()
         .map(|candidate| {
-            candidate
-                .params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| param_guard(&format!("_bound[{index}]"), &param.typ, context))
-                .collect::<Vec<_>>()
+            candidate.guards.clone().unwrap_or_else(|| {
+                candidate
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        param_guard(&format!("_bound[{index}]"), &param.typ, context)
+                    })
+                    .collect()
+            })
         })
         .collect::<Vec<_>>();
     let needs_legacy_bound = candidates.iter().any(|candidate| {
@@ -461,7 +469,8 @@ fn generate_factory_method_invoke_named(
     }
     out.push_str(&method_pydoc(method, &in_params));
 
-    let args_expr = py_build_method_args_expr(method, context, None);
+    let args_expr =
+        py_build_method_args_expr(method, context, None, CollectionInputContract::General);
     let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
         &context.registration_symbol(iface),
@@ -561,7 +570,8 @@ fn generate_static_method_invoke_named(
             ));
         }
         out.push_str(&method_pydoc(method, &in_params));
-        let args_expr = py_build_method_args_expr(method, context, None);
+        let args_expr =
+            py_build_method_args_expr(method, context, None, CollectionInputContract::General);
         let call_expr = method_call_expr(
             &context.registration_symbol(iface),
             method,
@@ -580,7 +590,7 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) method: &'a MethodMeta,
     pub(crate) sibling_methods: Option<&'a [MethodMeta]>,
     pub(crate) property_has_getter: bool,
-    pub(crate) stock_json_receiver: bool,
+    pub(crate) input_contract: CollectionInputContract,
 }
 
 /// Render an instance accessor (property or event method).
@@ -596,7 +606,7 @@ pub(crate) fn generate_instance_accessor(
         None,
         overload.sibling_methods,
         overload.property_has_getter,
-        overload.stock_json_receiver,
+        overload.input_contract,
     )
 }
 
@@ -630,7 +640,7 @@ pub(crate) fn generate_instance_method_group<'a>(
                 Some(attribute),
                 overload.sibling_methods,
                 overload.property_has_getter,
-                overload.stock_json_receiver,
+                overload.input_contract,
             ));
         }
         if overloads.len() == 1 {
@@ -650,10 +660,42 @@ pub(crate) fn generate_instance_method_group<'a>(
     let candidates = overloads
         .iter()
         .zip(&group.candidates)
-        .map(|((overload, attribute, _), candidate)| DispatchCandidate {
-            legacy_preservation: candidate.legacy_preservation.as_ref(),
-            params: get_in_params(overload.method),
-            body: vec![format!("return self.{attribute}(*_bound)")],
+        .map(|((overload, attribute, _), candidate)| {
+            let guards = overload
+                .method
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, param)| {
+                    matches!(
+                        param.direction,
+                        crate::meta::ParamDirection::In | crate::meta::ParamDirection::OutFill
+                    )
+                })
+                .enumerate()
+                .map(|(input_index, (index, param))| {
+                    let name = format!("_bound[{input_index}]");
+                    let mut guard = param_guard(&name, &param.typ, context);
+                    if overload
+                        .method
+                        .collection_inputs
+                        .iter()
+                        .any(|(parameter, role)| {
+                            *parameter == index
+                                && overload.input_contract.string_key(&param.typ, *role)
+                        })
+                    {
+                        guard.strict = format!("(isinstance({name}, str) or {})", guard.strict);
+                    }
+                    guard
+                })
+                .collect();
+            DispatchCandidate {
+                legacy_preservation: candidate.legacy_preservation.as_ref(),
+                params: get_in_params(overload.method),
+                guards: Some(guards),
+                body: vec![format!("return self.{attribute}(*_bound)")],
+            }
         })
         .collect::<Vec<_>>();
     let legacy = group
@@ -765,6 +807,7 @@ pub(crate) fn generate_static_method_group<'a>(
         .map(|((overload, attribute, _), candidate)| DispatchCandidate {
             legacy_preservation: candidate.legacy_preservation.as_ref(),
             params: get_in_params(overload.method),
+            guards: None,
             body: vec![format!(
                 "return {}.{attribute}(*_bound)",
                 context.class_name(overload.class)
@@ -800,7 +843,7 @@ pub(crate) fn generate_method_body(
     name_override: Option<&str>,
     sibling_methods: Option<&[MethodMeta]>,
     property_has_getter: bool,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
@@ -955,8 +998,7 @@ pub(crate) fn generate_method_body(
             iface_var, method.vtable_index, obj_expr, arg
         ));
     } else {
-        let py_params =
-            py_runtime_method_param_list_for_receiver(method, context, stock_json_receiver);
+        let py_params = py_runtime_method_param_list_for_receiver(method, context, input_contract);
         let py_return = py_method_return_type(method, AnnotationSurface::Runtime, context);
         let method_name = name_override
             .map(|s| s.to_string())
@@ -973,7 +1015,7 @@ pub(crate) fn generate_method_body(
         ));
         out.push_str(&method_pydoc(method, &in_params));
 
-        let args_expr = py_build_method_args_expr(method, context, Some(obj_expr));
+        let args_expr = py_build_method_args_expr(method, context, Some(obj_expr), input_contract);
         let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr, context);
         emit_method_result(&mut out, &call_expr, method, context);
     }
@@ -1043,7 +1085,7 @@ mod tests {
                 method: candidate.method,
                 sibling_methods: None,
                 property_has_getter: true,
-                stock_json_receiver: false,
+                input_contract: CollectionInputContract::General,
             },
             context,
         )
@@ -1051,6 +1093,32 @@ mod tests {
 
     fn instance_group(methods: &[&MethodMeta], context: &PythonProjectionContext) -> String {
         instance_group_on(&[("IReader", methods)], context)
+    }
+
+    #[test]
+    fn resource_key_contract_reaches_native_overload_groups_without_replacing_lookup() {
+        let mut class = crate::meta::parse_class(
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+            "Windows.UI.Xaml",
+            "ResourceDictionary",
+        )
+        .expect("stock ResourceDictionary metadata");
+        let native = overloaded_method("Lookup2", 6, TypeMeta::I32);
+        class
+            .required_interfaces
+            .push(interface("INative", &[&native]));
+        let source = super::super::generator::generate_class(
+            &PythonProjectionContext::default(),
+            &class,
+            &Default::default(),
+        );
+        assert_eq!(source.matches("def lookup(").count(), 1, "{source}");
+        assert!(source.contains("isinstance(_bound[0], str) or"), "{source}");
+        assert!(source.contains("\n    lookup2 = lookup\n"), "{source}");
+        assert!(
+            source.contains("_dynwinrt_property_type.String"),
+            "{source}"
+        );
     }
 
     /// Plan `methods` as the statics of `class_name` and render the first method group.
@@ -1123,7 +1191,7 @@ mod tests {
                 method: candidate.method,
                 sibling_methods: None,
                 property_has_getter: true,
-                stock_json_receiver: false,
+                input_contract: CollectionInputContract::General,
             },
             &PythonProjectionContext::default(),
         );
@@ -1249,7 +1317,7 @@ mod tests {
             None,
             None,
             true,
-            false,
+            CollectionInputContract::General,
         );
 
         assert!(code.contains("def load_async(self) -> WinRTCoroutine[int]:"));
@@ -1285,7 +1353,7 @@ mod tests {
             None,
             None,
             true,
-            false,
+            CollectionInputContract::General,
         );
 
         assert!(code.contains(
@@ -1451,7 +1519,7 @@ print(Runner().run(DynWinRtDelegate()))
             None,
             Some(&siblings),
             true,
-            false,
+            CollectionInputContract::General,
         );
 
         assert!(code.contains("def on_changed(self, callback:"));
@@ -1503,7 +1571,7 @@ print(Runner().run(DynWinRtDelegate()))
             None,
             Some(std::slice::from_ref(&add)),
             true,
-            false,
+            CollectionInputContract::General,
         );
 
         assert!(code.contains("'routed_event_handler', 'IID_RoutedEventHandler'"));

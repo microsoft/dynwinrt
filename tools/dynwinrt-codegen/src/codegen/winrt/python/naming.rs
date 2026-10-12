@@ -20,8 +20,11 @@ pub(crate) enum PythonSupportSymbol {
     ObjectInput,
     MappingInput,
     MappingKey,
+    MappingDefault,
     AsInterface,
     CollectionItem,
+    BoxObject,
+    PropertyType,
     CanCast,
     LegacyCall,
     LegacyIntGuard,
@@ -33,8 +36,11 @@ impl PythonSupportSymbol {
             Self::ObjectInput => "_DynWinRTObject",
             Self::MappingInput => "_SupportsKeysAndGetItem",
             Self::MappingKey => "_MapUpdateKeyT",
+            Self::MappingDefault => "_MapDefaultT",
             Self::AsInterface => "_dynwinrt_as_interface",
             Self::CollectionItem => "_dynwinrt_collection_item",
+            Self::BoxObject => "_dynwinrt_to_winrt_object",
+            Self::PropertyType => "_dynwinrt_property_type",
             Self::CanCast => "_dynwinrt_can_cast",
             Self::LegacyCall => "_dynwinrt_legacy_call",
             Self::LegacyIntGuard => "_dynwinrt_legacy_int_guard",
@@ -1009,8 +1015,11 @@ impl PythonProjectionContext {
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::MappingInput,
             PythonSupportSymbol::MappingKey,
+            PythonSupportSymbol::MappingDefault,
             PythonSupportSymbol::AsInterface,
             PythonSupportSymbol::CollectionItem,
+            PythonSupportSymbol::BoxObject,
+            PythonSupportSymbol::PropertyType,
             PythonSupportSymbol::CanCast,
             PythonSupportSymbol::LegacyCall,
             PythonSupportSymbol::LegacyIntGuard,
@@ -1595,8 +1604,11 @@ mod tests {
             PythonSupportSymbol::ObjectInput,
             PythonSupportSymbol::MappingInput,
             PythonSupportSymbol::MappingKey,
+            PythonSupportSymbol::MappingDefault,
             PythonSupportSymbol::AsInterface,
             PythonSupportSymbol::CollectionItem,
+            PythonSupportSymbol::BoxObject,
+            PythonSupportSymbol::PropertyType,
             PythonSupportSymbol::CanCast,
             PythonSupportSymbol::LegacyCall,
             PythonSupportSymbol::LegacyIntGuard,
@@ -1669,6 +1681,13 @@ mod tests {
     #[test]
     fn collection_item_helper_yields_to_visible_roles_without_renaming_metadata() {
         assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::CollectionItem);
+    }
+
+    #[test]
+    fn resource_key_helpers_yield_to_visible_roles() {
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::BoxObject);
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::PropertyType);
+        assert_support_helper_yields_to_visible_roles(PythonSupportSymbol::MappingDefault);
     }
 
     #[test]

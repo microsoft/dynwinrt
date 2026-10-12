@@ -213,6 +213,11 @@ pub(crate) struct CollectionHelperPlan {
     pub(crate) setdefault: bool,
     pub(crate) extend: bool,
     pub(crate) iadd: bool,
+    pub(crate) get: bool,
+    pub(crate) pop: bool,
+    pub(crate) getitem: bool,
+    pub(crate) setitem: bool,
+    pub(crate) delitem: bool,
 }
 
 impl CollectionHelperPlan {
@@ -228,6 +233,11 @@ impl CollectionHelperPlan {
             // Inherited += calls self.extend; do not refine its input contract
             // when a native member, property or alias owns that operation.
             iadd: extend && !names.contains("__iadd__"),
+            get: mapping && !names.contains("get"),
+            pop: mapping && !names.contains("pop"),
+            getitem: mapping && !names.contains("__getitem__"),
+            setitem: mapping && !names.contains("__setitem__"),
+            delitem: mapping && !names.contains("__delitem__"),
         }
     }
 }
@@ -1432,6 +1442,8 @@ mod tests {
         match name {
             "update" => helpers.update,
             "setdefault" => helpers.setdefault,
+            "get" => helpers.get,
+            "pop" => helpers.pop,
             "extend" => helpers.extend,
             "__iadd__" => helpers.iadd,
             _ => panic!("unknown collection helper"),
@@ -1443,6 +1455,8 @@ mod tests {
         for (mapping, abi, name) in [
             (true, "Update", "update"),
             (true, "Setdefault", "setdefault"),
+            (true, "Get", "get"),
+            (true, "Pop", "pop"),
             (false, "Extend", "extend"),
         ] {
             for owner in [
@@ -1454,7 +1468,10 @@ mod tests {
                 "alias",
                 "static_alias",
             ] {
-                let collection = collection_interface(mapping);
+                let mut collection = collection_interface(mapping);
+                if mapping {
+                    collection.generic_args[0] = TypeMeta::Object;
+                }
                 let mut native = method(abi, 6, TypeMeta::I32);
                 let mut methods = Vec::new();
                 match owner {
@@ -1476,8 +1493,9 @@ mod tests {
                 methods.insert(0, native);
                 let native_iface = interface("INative", methods);
                 let class = ClassMeta {
-                    namespace: "Contoso".into(),
-                    name: "NativeCollection".into(),
+                    namespace: "Microsoft.UI.Xaml".into(),
+                    name: "ResourceDictionary".into(),
+                    full_name: "Microsoft.UI.Xaml.ResourceDictionary".into(),
                     default_interface: Some(collection.clone()),
                     required_interfaces: if owner.starts_with("static") {
                         vec![]
@@ -1529,13 +1547,15 @@ mod tests {
                         .to_string()
                 };
                 for code in [
-                    body(&source, "\nclass NativeCollection("),
-                    body(&stub, "\nclass NativeCollection("),
-                    body(&stub, "\nclass NativeCollectionLike("),
+                    body(&source, "\nclass ResourceDictionary("),
+                    body(&stub, "\nclass ResourceDictionary("),
+                    body(&stub, "\nclass ResourceDictionaryLike("),
                 ] {
                     let helper_signature = match name {
                         "update" => "def update(self, other:",
                         "setdefault" => "def setdefault(self, key:",
+                        "get" => "def get(self, key:",
+                        "pop" => "def pop(self, key:",
                         "extend" => "def extend(self, values:",
                         _ => unreachable!(),
                     };

@@ -25,8 +25,8 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, class_interface, interface_kind, observable_vector_identity,
-    projected_interface_kind, stock_json_class_contract,
+    CollectionInputContract, CollectionKind, class_interface, interface_kind,
+    observable_vector_identity, projected_interface_kind,
 };
 use super::member_plan::{
     ClassMemberPlan, CollectionHelperPlan, MethodGroup, PlannedMember, ScopePlan,
@@ -500,7 +500,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         &plan.collection_helpers,
         context,
         4,
-        false,
+        CollectionInputContract::General,
     ));
     if has_projection {
         out.push('\n');
@@ -607,7 +607,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                     event_has_remove,
                     property_has_getter,
                     collection_kind == Some(CollectionKind::MutableSequence),
-                    false,
+                    CollectionInputContract::General,
                 )
             }
             PlannedMember::Group(group) => emit_instance_stub_group(
@@ -615,7 +615,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
                 context,
                 4,
                 collection_kind == Some(CollectionKind::MutableSequence),
-                false,
+                CollectionInputContract::General,
             ),
         });
     }
@@ -624,7 +624,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         context,
         4,
         collection_kind == Some(CollectionKind::MutableSequence),
-        false,
+        CollectionInputContract::General,
     ));
 
     out
@@ -641,7 +641,7 @@ pub fn generate_class_stub<'a>(
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
-    let stock_json_receiver = stock_json_class_contract(class).is_some();
+    let input_contract = CollectionInputContract::for_class(class);
     let known_full_names = context.known_full_names();
     let winui_bootstrap = winui::resolve_application_bootstrap(class, &known_full_names);
     let has_public_composition = class
@@ -868,7 +868,7 @@ pub fn generate_class_stub<'a>(
                 AnnotationSurface::Stub,
                 context,
             );
-            if stock_json_receiver {
+            if input_contract.is_non_null_json() {
                 match (kind, iface.generic_args.as_slice()) {
                     (CollectionKind::MutableSequence, [value]) => Some(format!(
                         "MutableSequence[{}]",
@@ -890,7 +890,7 @@ pub fn generate_class_stub<'a>(
         context,
         &plan.instance,
         collection_iface,
-        stock_json_receiver,
+        input_contract,
         false,
         has_closable,
     );
@@ -966,7 +966,7 @@ pub fn generate_class_stub<'a>(
             context,
             &plan.instance,
             collection_iface,
-            stock_json_receiver,
+            input_contract,
             collection_kind == Some(CollectionKind::MutableSequence),
             has_closable,
         ));
@@ -1096,7 +1096,7 @@ pub fn generate_class_stub<'a>(
             &iface_plan.collection_helpers,
             context,
             4,
-            false,
+            CollectionInputContract::General,
         ));
         out.push('\n');
         out.push_str("    @classmethod\n");
@@ -1131,7 +1131,7 @@ pub fn generate_class_stub<'a>(
                         event_has_remove,
                         property_has_getter,
                         interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
-                        false,
+                        CollectionInputContract::General,
                     )
                 }
                 PlannedMember::Group(group) => emit_instance_stub_group(
@@ -1139,7 +1139,7 @@ pub fn generate_class_stub<'a>(
                     context,
                     4,
                     interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
-                    false,
+                    CollectionInputContract::General,
                 ),
             });
         }
@@ -1148,7 +1148,7 @@ pub fn generate_class_stub<'a>(
             context,
             4,
             interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
-            false,
+            CollectionInputContract::General,
         ));
     }
 
@@ -1161,7 +1161,7 @@ fn emit_class_instance_stubs<'a>(
     context: &PythonProjectionContext,
     plan: &ScopePlan<'a>,
     collection_iface: Option<&InterfaceMeta>,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
     mutable_sequence_override: bool,
     has_closable: bool,
 ) -> String {
@@ -1175,7 +1175,7 @@ fn emit_class_instance_stubs<'a>(
             &plan.collection_helpers,
             context,
             4,
-            stock_json_receiver,
+            input_contract,
         ));
     }
 
@@ -1262,7 +1262,7 @@ fn emit_class_instance_stubs<'a>(
                     event_has_remove,
                     property_has_getter,
                     mutable_sequence_override,
-                    stock_json_receiver,
+                    input_contract,
                 )
             }
             PlannedMember::Group(group) => emit_instance_stub_group(
@@ -1270,7 +1270,7 @@ fn emit_class_instance_stubs<'a>(
                 context,
                 4,
                 mutable_sequence_override,
-                stock_json_receiver,
+                input_contract,
             ),
         });
     }
@@ -1279,7 +1279,7 @@ fn emit_class_instance_stubs<'a>(
         context,
         4,
         mutable_sequence_override,
-        stock_json_receiver,
+        input_contract,
     ));
     if has_closable {
         out.push('\n');
@@ -1330,7 +1330,7 @@ fn collection_protocol_stubs(
     helpers: &CollectionHelperPlan,
     context: &PythonProjectionContext,
     indent_spaces: usize,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     let Some(kind) = projected_interface_kind(iface) else {
         return String::new();
@@ -1342,7 +1342,9 @@ fn collection_protocol_stubs(
         .generic_args
         .first()
         .map(|typ| {
-            if stock_json_receiver && kind == super::collections::CollectionKind::MutableSequence {
+            if input_contract.is_non_null_json()
+                && kind == super::collections::CollectionKind::MutableSequence
+            {
                 super::type_helpers::py_param_type_safe(typ, context)
             } else if matches!(
                 kind,
@@ -1364,8 +1366,15 @@ fn collection_protocol_stubs(
         .generic_args
         .first()
         .map(|typ| {
-            if stock_json_receiver && kind == super::collections::CollectionKind::MutableSequence {
+            if input_contract.is_non_null_json()
+                && kind == super::collections::CollectionKind::MutableSequence
+            {
                 super::type_helpers::py_param_type_safe(typ, context)
+            } else if matches!(
+                kind,
+                CollectionKind::Mapping | CollectionKind::MutableMapping
+            ) {
+                input_contract.key_input_type(typ, context)
             } else {
                 super::type_helpers::py_collection_input_type(typ, context)
             }
@@ -1409,7 +1418,7 @@ fn collection_protocol_stubs(
                 .generic_args
                 .get(1)
                 .map(|typ| {
-                    if stock_json_receiver {
+                    if input_contract.is_non_null_json() {
                         super::type_helpers::py_param_type_safe(typ, context)
                     } else {
                         super::type_helpers::py_collection_item_type(
@@ -1432,7 +1441,7 @@ fn collection_protocol_stubs(
                     .generic_args
                     .get(1)
                     .map(|typ| {
-                        if stock_json_receiver {
+                        if input_contract.is_non_null_json() {
                             super::type_helpers::py_param_type_safe(typ, context)
                         } else {
                             super::type_helpers::py_collection_input_type(typ, context)
@@ -1454,7 +1463,7 @@ fn collection_protocol_stubs(
         &iface.name,
         context,
         AnnotationSurface::Stub,
-        stock_json_receiver,
+        input_contract,
         indent_spaces,
     ));
     result
@@ -1639,13 +1648,18 @@ fn typed_signatures<'m>(
     methods: impl IntoIterator<Item = &'m MethodMeta>,
     return_type: impl Fn(&MethodMeta) -> String,
     context: &PythonProjectionContext,
+    input_contract: CollectionInputContract,
 ) -> Vec<(&'m MethodMeta, bool)> {
     let mut signatures = HashSet::new();
     let mut parameter_signatures = HashSet::new();
     methods
         .into_iter()
         .filter_map(|method| {
-            let parameters = super::type_helpers::py_method_param_list(method, context);
+            let parameters = super::type_helpers::py_method_param_list_for_receiver(
+                method,
+                context,
+                input_contract,
+            );
             signatures
                 .insert((parameters.clone(), return_type(method)))
                 .then(|| (method, !parameter_signatures.insert(parameters)))
@@ -1677,7 +1691,7 @@ fn emit_instance_stub_group(
     context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let methods = typed_signatures(
@@ -1686,6 +1700,7 @@ fn emit_instance_stub_group(
             super::type_helpers::py_method_return_type(method, AnnotationSurface::Stub, context)
         },
         context,
+        input_contract,
     );
     let overloaded = methods.len() > 1;
     methods
@@ -1699,7 +1714,7 @@ fn emit_instance_stub_group(
                 false,
                 true,
                 overrides_mutable_sequence,
-                stock_json_receiver,
+                input_contract,
             );
             if duplicate {
                 stub = ignore_unreachable_overload(stub);
@@ -1718,7 +1733,7 @@ fn emit_instance_compatibility_alias_stubs(
     context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let mut out = String::new();
@@ -1729,6 +1744,7 @@ fn emit_instance_compatibility_alias_stubs(
                 super::type_helpers::py_method_return_type(method, AnnotationSurface::Stub, context)
             },
             context,
+            input_contract,
         );
         for (method, duplicate) in &methods {
             if methods.len() > 1 {
@@ -1742,7 +1758,7 @@ fn emit_instance_compatibility_alias_stubs(
                 false,
                 true,
                 overrides_mutable_sequence,
-                stock_json_receiver,
+                input_contract,
             );
             if *duplicate {
                 stub = ignore_unreachable_overload(stub);
@@ -1782,6 +1798,7 @@ fn emit_static_compatibility_alias_stubs(
             alias.signatures.iter().copied(),
             |method| static_return_type(class_name, class, method, context),
             context,
+            CollectionInputContract::General,
         );
         for (method, duplicate) in &methods {
             if methods.len() > 1 {
@@ -1831,6 +1848,7 @@ fn emit_static_stub_group(
         group.candidates.iter().map(|candidate| candidate.method),
         |method| static_return_type(class_name, class, method, context),
         context,
+        CollectionInputContract::General,
     );
     let overloaded = methods.len() > 1;
     methods
@@ -2111,6 +2129,7 @@ mod tests {
                 }
             },
             &context,
+            CollectionInputContract::General,
         );
 
         assert_eq!(

@@ -10,7 +10,9 @@ use crate::codegen::winrt::shared::imports::{
 use crate::meta::{CollectionInputRole, MethodMeta};
 use crate::types::TypeMeta;
 
-use super::collections::{CollectionKind, abc_name, is_mapping_input, type_kind};
+use super::collections::{
+    CollectionInputContract, CollectionKind, abc_name, is_mapping_input, type_kind,
+};
 use super::docs::format_pydoc;
 use super::naming::to_snake_case;
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, PythonSymbol};
@@ -755,18 +757,18 @@ pub(super) fn py_method_param_list(
     method: &MethodMeta,
     context: &PythonProjectionContext,
 ) -> String {
-    py_method_param_list_for_receiver(method, context, false)
+    py_method_param_list_for_receiver(method, context, CollectionInputContract::General)
 }
 
 fn collection_input_param_type(
     typ: &TypeMeta,
     role: Option<CollectionInputRole>,
     context: &PythonProjectionContext,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> Option<String> {
     match role {
         Some(role @ (CollectionInputRole::Element | CollectionInputRole::Value))
-            if stock_json_receiver
+            if input_contract.is_non_null_json()
                 && super::collections::non_null_json_input(role, typ).is_some() =>
         {
             if let TypeMeta::Array(element) = typ {
@@ -781,7 +783,7 @@ fn collection_input_param_type(
         Some(CollectionInputRole::Element | CollectionInputRole::Value) => {
             Some(py_collection_contract_input_type(typ, context))
         }
-        Some(CollectionInputRole::Key) => Some(py_collection_input_type(typ, context)),
+        Some(CollectionInputRole::Key) => Some(input_contract.key_input_type(typ, context)),
         None => None,
     }
 }
@@ -789,7 +791,7 @@ fn collection_input_param_type(
 pub(super) fn py_method_param_list_for_receiver(
     method: &MethodMeta,
     context: &PythonProjectionContext,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     method
         .params
@@ -806,15 +808,14 @@ pub(super) fn py_method_param_list_for_receiver(
                 .collection_inputs
                 .iter()
                 .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
-            let param_type =
-                collection_input_param_type(&param.typ, role, context, stock_json_receiver)
-                    .unwrap_or_else(|| {
-                        if context.is_delegate_type(&param.typ) {
-                            super::delegates::py_delegate_param_type(&param.typ, context)
-                        } else {
-                            py_param_type_safe(&param.typ, context)
-                        }
-                    });
+            let param_type = collection_input_param_type(&param.typ, role, context, input_contract)
+                .unwrap_or_else(|| {
+                    if context.is_delegate_type(&param.typ) {
+                        super::delegates::py_delegate_param_type(&param.typ, context)
+                    } else {
+                        py_param_type_safe(&param.typ, context)
+                    }
+                });
             format!("{}: {}", to_snake_case(&param.name), param_type)
         })
         .collect::<Vec<_>>()
@@ -827,13 +828,13 @@ pub(super) fn py_runtime_method_param_list(
     method: &MethodMeta,
     context: &PythonProjectionContext,
 ) -> String {
-    py_runtime_method_param_list_for_receiver(method, context, false)
+    py_runtime_method_param_list_for_receiver(method, context, CollectionInputContract::General)
 }
 
 pub(super) fn py_runtime_method_param_list_for_receiver(
     method: &MethodMeta,
     context: &PythonProjectionContext,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     method
         .params
@@ -850,15 +851,14 @@ pub(super) fn py_runtime_method_param_list_for_receiver(
                 .collection_inputs
                 .iter()
                 .find_map(|(parameter, role)| (*parameter == index).then_some(*role));
-            let param_type =
-                collection_input_param_type(&param.typ, role, context, stock_json_receiver)
-                    .unwrap_or_else(|| {
-                        if context.is_delegate_type(&param.typ) {
-                            super::delegates::py_runtime_delegate_param_type().to_string()
-                        } else {
-                            py_param_type_safe(&param.typ, context)
-                        }
-                    });
+            let param_type = collection_input_param_type(&param.typ, role, context, input_contract)
+                .unwrap_or_else(|| {
+                    if context.is_delegate_type(&param.typ) {
+                        super::delegates::py_runtime_delegate_param_type().to_string()
+                    } else {
+                        py_param_type_safe(&param.typ, context)
+                    }
+                });
             format!("{}: {}", to_snake_case(&param.name), param_type)
         })
         .collect::<Vec<_>>()

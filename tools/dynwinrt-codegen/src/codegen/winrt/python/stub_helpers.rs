@@ -7,6 +7,7 @@ use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::{CollectionInputRole, MethodMeta};
 use crate::types::{FieldMeta, TypeMeta};
 
+use super::collections::CollectionInputContract;
 use super::delegates::{py_delegate_callable_type, py_delegate_param_type};
 use super::naming::{PythonProjectionContext, PythonSymbol, STRUCT_SYMBOLS, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
@@ -186,7 +187,7 @@ pub(super) fn emit_method_stub(
     event_has_remove: bool,
     property_has_getter: bool,
     overrides_mutable_sequence: bool,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     emit_method_stub_named(
         method,
@@ -196,7 +197,7 @@ pub(super) fn emit_method_stub(
         event_has_remove,
         property_has_getter,
         overrides_mutable_sequence,
-        stock_json_receiver,
+        input_contract,
     )
 }
 
@@ -218,7 +219,7 @@ pub(super) fn emit_method_stub_named(
     event_has_remove: bool,
     property_has_getter: bool,
     overrides_mutable_sequence: bool,
-    stock_json_receiver: bool,
+    input_contract: CollectionInputContract,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
@@ -328,8 +329,12 @@ pub(super) fn emit_method_stub_named(
             );
         }
     } else {
-        let py_params = py_method_param_list_for_receiver(method, context, stock_json_receiver);
-        let py_return = match (stock_json_receiver, method.raw_name.as_str(), return_type) {
+        let py_params = py_method_param_list_for_receiver(method, context, input_contract);
+        let py_return = match (
+            input_contract.is_non_null_json(),
+            method.raw_name.as_str(),
+            return_type,
+        ) {
             (true, "GetAt", Some(typ))
                 if super::collections::non_null_json_input(CollectionInputRole::Element, typ)
                     .is_some() =>
@@ -358,7 +363,7 @@ pub(super) fn emit_method_stub_named(
         // them. Empty structural protocols can make mypy consider the
         // override compatible.
         let override_ignore = if overrides_mutable_sequence
-            && !stock_json_receiver
+            && !input_contract.is_non_null_json()
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
                 py_param_type_safe(&param.typ, context)
@@ -482,7 +487,7 @@ mod tests {
             true,
             true,
             false,
-            false,
+            CollectionInputContract::General,
         );
         assert!(code.contains("def on_changed("));
         assert!(code.contains("-> 'DynWinRTValue': ..."));
@@ -499,7 +504,7 @@ mod tests {
             false,
             true,
             false,
-            false,
+            CollectionInputContract::General,
         );
         assert!(code.contains("def on_changed("));
         assert!(!code.contains("subscribe_changed"));
@@ -532,7 +537,7 @@ mod tests {
             false,
             true,
             true,
-            false,
+            CollectionInputContract::General,
         );
         let scalar = emit_method_stub(
             &append(TypeMeta::I32),
@@ -541,7 +546,7 @@ mod tests {
             false,
             true,
             true,
-            false,
+            CollectionInputContract::General,
         );
 
         assert!(reference.contains("type: ignore[override, unused-ignore]"));
