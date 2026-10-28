@@ -5,13 +5,16 @@
 
 from dataclasses import dataclass
 import hashlib
+from importlib import import_module as _import_module
 from importlib.metadata import entry_points
 import os
 from pathlib import Path
 import re
 import sysconfig
 
-from . import dynwinrt as _native
+from dynwinrt import WinAppSDKContext
+
+_native = _import_module("dynwinrt.dynwinrt")
 
 _ENVIRONMENT = "WINAPPSDK_BOOTSTRAP_DLL_PATH"
 _GROUP = "dynwinrt.winappsdk"
@@ -140,7 +143,7 @@ def init_winappsdk(
     minor=_MISSING,
     *,
     bootstrap_dll_path: str | os.PathLike[str] | None = None,
-) -> _native.WinAppSDKContext:
+) -> WinAppSDKContext:
     """Initialize explicitly, or discover a consistent installed generated SDK bundle.
 
     This does not initialize COM, install the Runtime, or unload it on return.

@@ -7,6 +7,8 @@ pub mod com_metadata;
 mod contract_registry;
 mod documented_nulls;
 pub mod meta;
+#[cfg(test)]
+mod test_metadata;
 pub mod types;
 mod win32_contracts;
 pub mod win32_metadata;

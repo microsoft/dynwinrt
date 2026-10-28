@@ -401,18 +401,15 @@ mod tests {
     /// typos and drift, and the key derivation against metadata changes.
     #[test]
     fn every_entry_resolves_to_a_flagged_windows_sdk_member() {
-        // Documented, but absent from the 10.0.26100 SDK metadata: newer APIs,
+        // Documented, but absent from the pinned 10.0.26100.8249 metadata: newer APIs,
         // and AllJoyn, which the SDK dropped.
         const ABSENT_FROM_TEST_SDK: [&str; 3] = [
             "M:Windows.Devices.AllJoyn.AllJoynServiceInfo.FromIdAsync(System.String)",
             "M:Windows.Gaming.UI.GameMonitor.GetDefault()",
             "M:Windows.System.User.GetUserAgeRangeAsync()",
         ];
-        if !Path::new(WINDOWS_WINMD).is_file() {
-            eprintln!("Skipping: Windows.winmd not found");
-            return;
-        }
-        let index = crate::meta::load_index(WINDOWS_WINMD).expect("Windows.winmd index");
+        let winmd = crate::test_metadata::windows_winmd();
+        let index = crate::meta::load_index(&winmd).expect("Windows.winmd index");
         let mut by_owner = BTreeMap::<String, BTreeSet<String>>::new();
         for entry in entries() {
             let id = normalize_api_id(entry);

@@ -44,6 +44,20 @@ cargo build -p dynwinrt-codegen
 
 ### Running Tests
 
+The codegen's exhaustive Windows SDK corpus assertions use the immutable
+`Microsoft.Windows.SDK.CPP` package pinned in
+`tools/dynwinrt-codegen/tests/windows_sdk_corpus.json`, not whichever SDK servicing
+update is installed on the machine. Restore and verify that metadata before
+running codegen library tests or the coverage pipeline (requires `nuget` on PATH):
+
+```powershell
+$env:DYNWINRT_WINDOWS_WINMD = .\eng\ci\restore-windows-metadata.ps1 `
+    -OutputDirectory .\target\windows-sdk-corpus
+```
+
+CI uses the same helper and SHA-256 pin. A missing or different corpus fails with
+restore instructions rather than skipping the exact member/count assertions.
+
 ```bash
 # Core library tests
 cargo test -p dynwinrt
