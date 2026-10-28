@@ -2617,14 +2617,8 @@ mod tests {
     fn windows_corpus_marks_every_new_dispatcher_with_its_old_standalone_method() {
         use crate::codegen::winrt::python::naming::PythonProjectionContext;
         use crate::meta;
-        use std::path::Path;
-
-        const WINMD: &str =
-            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
-        if !Path::new(WINMD).is_file() {
-            eprintln!("Skipping: Windows.winmd not found");
-            return;
-        }
+        let winmd = crate::test_metadata::windows_winmd();
+        let winmd = winmd.as_str();
 
         fn assert_scope(interfaces: &[&InterfaceMeta], plan: &ScopePlan<'_>) -> (usize, usize) {
             let methods = interfaces
@@ -2673,21 +2667,21 @@ mod tests {
             (count, bool_shadows)
         }
 
-        let namespaces = meta::list_namespaces(WINMD);
+        let namespaces = meta::list_namespaces(winmd);
         let mut identities = BTreeSet::new();
         for namespace in &namespaces {
             identities.extend(
-                meta::parse_enums(WINMD, namespace)
+                meta::parse_enums(winmd, namespace)
                     .into_iter()
                     .map(|typ| typ.type_identity()),
             );
             identities.extend(
-                meta::parse_interfaces(WINMD, namespace)
+                meta::parse_interfaces(winmd, namespace)
                     .into_iter()
                     .map(|interface| interface.type_identity()),
             );
             identities.extend(
-                meta::parse_namespace(WINMD, namespace)
+                meta::parse_namespace(winmd, namespace)
                     .into_iter()
                     .map(|class| {
                         crate::types::TypeIdentity::named(
@@ -2705,7 +2699,7 @@ mod tests {
         let mut compatibility_fallbacks = BTreeSet::new();
         let mut interface_fallbacks = BTreeSet::new();
         for namespace in namespaces {
-            for class in meta::parse_namespace(WINMD, &namespace) {
+            for class in meta::parse_namespace(winmd, &namespace) {
                 let statics = class
                     .factory_interfaces
                     .iter()
@@ -2740,7 +2734,7 @@ mod tests {
                     bool_shadows += count.1;
                 }
             }
-            for interface in meta::parse_interfaces(WINMD, &namespace) {
+            for interface in meta::parse_interfaces(winmd, &namespace) {
                 if !interface.is_delegate() {
                     let interface_plan = interface_member_plan(&interface, &context);
                     interface_fallbacks.extend(
