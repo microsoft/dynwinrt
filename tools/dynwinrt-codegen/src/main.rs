@@ -191,17 +191,23 @@ enum Commands {
         no_pyi: bool,
 
         /// Stable Windows App SDK product MAJOR.MINOR for an explicit initializer configuration.
-        #[arg(long, value_name = "MAJOR.MINOR", requires = "bootstrap_dll_path")]
+        /// For example, 2.5, not a full NuGet servicing version.
+        #[arg(
+            long,
+            value_name = "MAJOR.MINOR",
+            requires = "winappsdk_bootstrap_path"
+        )]
         winappsdk_version: Option<String>,
 
-        /// Bootstrap DLL source; repeat for multiple files. Architecture is read from each PE.
+        /// Bootstrap DLL file or directory to search recursively; repeat for multiple inputs.
+        /// Directories match Microsoft.WindowsAppRuntime.Bootstrap.dll; architecture comes from PE.
         #[arg(
             long,
             value_name = "PATH",
             num_args = 1,
             requires = "winappsdk_version"
         )]
-        bootstrap_dll_path: Vec<String>,
+        winappsdk_bootstrap_path: Vec<String>,
     },
 }
 
@@ -404,14 +410,16 @@ fn run() -> Result<(), String> {
             pyi,
             no_pyi,
             winappsdk_version,
-            bootstrap_dll_path,
+            winappsdk_bootstrap_path,
         } => {
             if lang != "py" && (pyi || no_pyi) {
                 return Err("--pyi and --no-pyi require --lang py".into());
             }
             let pyi = lang == "py" && !no_pyi;
-            let bootstrap_inputs =
-                winappsdk_output::parse_inputs(winappsdk_version.as_deref(), &bootstrap_dll_path)?;
+            let bootstrap_inputs = winappsdk_output::parse_inputs(
+                winappsdk_version.as_deref(),
+                &winappsdk_bootstrap_path,
+            )?;
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 

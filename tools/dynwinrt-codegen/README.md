@@ -61,8 +61,8 @@ package.
 | `--dry-run` | Validate metadata, dependencies, ABI contracts, and layout without writing files. |
 | `--pyi` | With `--lang py`, explicitly request the default type stubs; retained for compatibility. |
 | `--no-pyi` | With `--lang py`, omit `.pyi` files and `py.typed`. |
-| `--winappsdk-version MAJOR.MINOR` | Opt in to packaged Windows App SDK initialization configuration; requires `--bootstrap-dll-path`. |
-| `--bootstrap-dll-path PATH` | Copy one concrete Bootstrap DLL source; repeat for multiple files. Requires `--winappsdk-version`. |
+| `--winappsdk-version MAJOR.MINOR` | Stable Windows App SDK product version, such as `2.5`, not a NuGet servicing version. Requires `--winappsdk-bootstrap-path`. |
+| `--winappsdk-bootstrap-path PATH` | Bootstrap DLL file or recursively searched directory; repeat for multiple inputs. Requires `--winappsdk-version`. |
 
 ### Examples
 
@@ -157,22 +157,39 @@ dynwinrt-codegen generate `
   --winmd-list .\winmd-inputs.txt --ref-list .\winmd-references.txt `
   --lang py --output .\app_bindings `
   --winappsdk-version 2.5 `
-  --bootstrap-dll-path '.winapp\bin\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll' `
-  --bootstrap-dll-path '.winapp\bin\arm64\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+  --winappsdk-bootstrap-path '.winapp\bin'
 ```
 
-The same options work with `--lang js`. The path is a **generation-time input**:
-the generator validates PE/DLL architecture, bounds and the bootstrap export
-without executing it, then copies the original bytes into
+The same options work with `--lang js`. Each path is a **generation-time input**.
+A directory is searched recursively only for `Microsoft.WindowsAppRuntime.Bootstrap.dll`
+(case-insensitively on Windows), within that directory and its descendants.
+No system directories or global package caches are searched. Directory links and
+reparse points are rejected rather than followed, including links back into the
+tree. An unreadable directory or damaged/unreadable matching DLL fails generation.
+
+The generator validates PE/DLL architecture, bounds and the bootstrap export
+without executing any input, then copies the original bytes into
 `_native/winappsdk/<architecture>/Microsoft.WindowsAppRuntime.Bootstrap.dll`.
-Pass the option once for one file or repeat it for multiple files. Only the
-architectures actually supplied are packaged, as identified by their PE headers;
-directory names and the generator's architecture do not select or supply DLLs.
+Directory matches for unsupported architectures such as x86 are ignored with a
+warning; each directory must contain at least one supported x64/ARM64 DLL.
+Explicit file inputs still reject unsupported architectures. Repeat the option
+to combine directories or concrete files, including renamed files. Only the
+architectures identified by PE headers are packaged; directory names and the
+generator's architecture do not select or supply DLLs.
 Repeated paths and byte-identical DLLs for the same architecture are deduplicated.
 Different DLL contents for the same architecture are rejected with both sources
-identified, never overwritten. Licenses are checked for every source, including
-deduplicated DLLs. Input order does not affect the configuration, payloads or
-build-cache digest.
+identified, never overwritten. Licenses are checked for every supported source,
+including deduplicated DLLs. Input order and overlapping directory/file inputs do
+not affect the configuration, payloads or build-cache digest. The SDK's
+`win-arm64ec` directory may contain a byte-identical x64 Bootstrap DLL; this is
+deduplicated as x64, not treated as native ARM64EC support.
+
+Concrete files can still be supplied individually:
+
+```powershell
+--winappsdk-bootstrap-path '.winapp\bin\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll' `
+--winappsdk-bootstrap-path '.winapp\bin\arm64\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+```
 
 `MAJOR.MINOR` is the stable SDK **product** version used by Bootstrap, not the
 NuGet servicing version, the DLL's FileVersion, or a minimum Runtime package

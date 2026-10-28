@@ -800,7 +800,7 @@ bootstrap = init_winappsdk(2, 5, bootstrap_dll_path=bootstrap_dll)
 explicit two-version-argument path.
 
 When bindings were generated with the paired
-[`--winappsdk-version` / `--bootstrap-dll-path` options](../../tools/dynwinrt-codegen/python/README.md#windows-app-sdk-configuration),
+[`--winappsdk-version` / `--winappsdk-bootstrap-path` options](../../tools/dynwinrt-codegen/python/README.md#windows-app-sdk-configuration),
 install their package normally or editable. The same initializer can then discover
 the installed configuration without application-maintained constants or paths:
 

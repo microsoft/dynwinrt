@@ -108,11 +108,14 @@ initWinappsdk(2, 5, bootstrapDllPath);
 ```
 
 Generate bindings with `--winappsdk-version 2.5` and
-[`--bootstrap-dll-path PATH`](../../tools/dynwinrt-codegen/README.md#packaged-windows-app-sdk-initialization)
-once per concrete DLL source to copy the supplied x64/ARM64 DLLs into their
-package. Architecture is read from each PE, and byte-identical duplicates are
-deduplicated. Then the normal generated
-package or type import registers configuration, without initializing anything:
+[`--winappsdk-bootstrap-path PATH`](../../tools/dynwinrt-codegen/README.md#packaged-windows-app-sdk-initialization),
+accepting a DLL file or a directory such as `.winapp\bin`; repeat the option for
+multiple inputs. Directories are searched recursively for the Bootstrap DLL
+without following links or searching system/global package locations.
+Architecture is read from each PE, and byte-identical duplicates are deduplicated.
+Unsupported directory matches are reported and ignored; explicit unsupported
+files, corrupt matches and directories with no supported DLL fail. Then the normal
+generated package or type import registers configuration, without initializing anything:
 
 ```js
 import { initWinappsdk, roInitialize } from '@microsoft/dynwinrt';

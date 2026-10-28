@@ -113,7 +113,8 @@ pub(crate) fn parse_inputs(
         (Some(version), false) => version,
         _ => {
             return Err(
-                "--winappsdk-version and --bootstrap-dll-path must be supplied together".into(),
+                "--winappsdk-version and --winappsdk-bootstrap-path must be supplied together"
+                    .into(),
             );
         }
     };
@@ -137,7 +138,8 @@ pub(crate) fn parse_inputs(
         .any(|path| path.trim().is_empty() || path.contains('\0'))
     {
         return Err(
-            "Each --bootstrap-dll-path must be a nonempty concrete path without NUL".into(),
+            "Each --winappsdk-bootstrap-path must be a nonempty file or directory path without NUL"
+                .into(),
         );
     }
     Ok(Some(Inputs {
@@ -164,7 +166,12 @@ fn read_input(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn validate_pe(bytes: &[u8]) -> Result<&'static str, String> {
+enum BootstrapArchitecture {
+    Supported(&'static str),
+    Unsupported(u16),
+}
+
+fn validate_pe(bytes: &[u8]) -> Result<BootstrapArchitecture, String> {
     let file =
         object::File::parse(bytes).map_err(|error| format!("Invalid Bootstrap PE: {error}"))?;
     if file.format() != object::BinaryFormat::Pe {
@@ -177,12 +184,6 @@ fn validate_pe(bytes: &[u8]) -> Result<&'static str, String> {
     if characteristics & object::pe::IMAGE_FILE_DLL == 0 {
         return Err("Bootstrap PE input is not marked as a DLL".into());
     }
-    let architecture = match file.architecture() {
-        object::Architecture::X86_64 => "x64",
-        object::Architecture::Aarch64 => "arm64",
-        other => return Err(format!("Unsupported Bootstrap PE architecture: {other:?}")),
-    };
-    // Reject ARM64EC/ARM64X as well as malformed or truncated COFF headers.
     let offset = bytes
         .get(0x3c..0x40)
         .map(|value| u32::from_le_bytes(value.try_into().unwrap()) as usize)
@@ -193,14 +194,6 @@ fn validate_pe(bytes: &[u8]) -> Result<&'static str, String> {
         .get(machine_start..machine_end)
         .map(|value| u16::from_le_bytes(value.try_into().unwrap()))
         .ok_or("Truncated Bootstrap PE header")?;
-    let expected = if architecture == "x64" {
-        0x8664
-    } else {
-        0xaa64
-    };
-    if machine != expected {
-        return Err(format!("Unsupported Bootstrap PE machine 0x{machine:04x}"));
-    }
     for section in file.sections() {
         section
             .data()
@@ -215,7 +208,124 @@ fn validate_pe(bytes: &[u8]) -> Result<&'static str, String> {
     {
         return Err("Bootstrap DLL does not export MddBootstrapInitialize2".into());
     }
-    Ok(architecture)
+    // Validate unsupported DLLs too: a damaged matching file is not an ignorable architecture.
+    Ok(match (machine, file.architecture()) {
+        (0x8664, object::Architecture::X86_64) => BootstrapArchitecture::Supported("x64"),
+        (0xaa64, object::Architecture::Aarch64) => BootstrapArchitecture::Supported("arm64"),
+        _ => BootstrapArchitecture::Unsupported(machine),
+    })
+}
+
+fn inspect_directory_entry(root: &Path, path: &Path) -> Result<(fs::Metadata, PathBuf), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "Cannot inspect Bootstrap directory entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if super::is_link_or_reparse_point(&metadata) {
+        return Err(format!(
+            "Refusing linked Bootstrap directory entry {}; directory searches do not follow links or reparse points",
+            path.display()
+        ));
+    }
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "Cannot resolve Bootstrap directory entry {}: {error}",
+            path.display()
+        )
+    })?;
+    if !resolved.starts_with(root) {
+        return Err(format!(
+            "Bootstrap directory entry {} resolves outside {}",
+            path.display(),
+            root.display()
+        ));
+    }
+    Ok((metadata, resolved))
+}
+
+fn directory_dlls(input: &Path) -> Result<Vec<PathBuf>, String> {
+    let metadata = fs::symlink_metadata(input).map_err(|error| {
+        format!(
+            "Cannot inspect Bootstrap directory {}: {error}",
+            input.display()
+        )
+    })?;
+    if super::is_link_or_reparse_point(&metadata) {
+        return Err(format!(
+            "Refusing linked Bootstrap directory {}",
+            input.display()
+        ));
+    }
+    let root = fs::canonicalize(input).map_err(|error| {
+        format!(
+            "Cannot resolve Bootstrap directory {}: {error}",
+            input.display()
+        )
+    })?;
+    let mut pending = vec![root.clone()];
+    let mut visited = BTreeSet::new();
+    let mut files = BTreeSet::new();
+    while let Some(directory) = pending.pop() {
+        let (metadata, resolved) = inspect_directory_entry(&root, &directory)?;
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Bootstrap search directory is no longer a directory: {}",
+                directory.display()
+            ));
+        }
+        if !visited.insert(resolved) {
+            continue;
+        }
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| {
+                format!(
+                    "Cannot read Bootstrap directory {}: {error}",
+                    directory.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!(
+                    "Cannot read Bootstrap directory {}: {error}",
+                    directory.display()
+                )
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                format!(
+                    "Cannot inspect Bootstrap directory entry {}: {error}",
+                    path.display()
+                )
+            })?;
+            if super::is_link_or_reparse_point(&metadata) {
+                return Err(format!(
+                    "Refusing linked Bootstrap directory entry {}; directory searches do not follow links or reparse points",
+                    path.display()
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(DLL_NAME)
+            {
+                let (metadata, resolved) = inspect_directory_entry(&root, &path)?;
+                if !metadata.is_file() {
+                    return Err(format!(
+                        "Bootstrap directory match is not a file: {}",
+                        path.display()
+                    ));
+                }
+                files.insert(resolved);
+            }
+        }
+    }
+    Ok(files.into_iter().collect())
 }
 
 fn source_license(paths: &[PathBuf]) -> Result<Option<Vec<u8>>, String> {
@@ -265,28 +375,71 @@ fn source_license(paths: &[PathBuf]) -> Result<Option<Vec<u8>>, String> {
 fn from_inputs(inputs: Inputs, language: &str, runtime_import: &str) -> Result<Bundle, String> {
     let mut contents = BTreeMap::new();
     let mut dlls = BTreeMap::new();
-    let mut sources = BTreeMap::<&str, &Path>::new();
-    for path in &inputs.dll_paths {
-        let bytes = read_input(path, MAX_DLL_SIZE)?;
-        let architecture =
-            validate_pe(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-        let relative = dll_path(architecture);
-        if let Some(existing) = contents.get(&relative) {
-            if existing != &bytes {
-                return Err(format!(
-                    "Conflicting Bootstrap DLL inputs for {architecture}: {} and {} have different contents",
-                    sources[architecture].display(),
-                    path.display()
-                ));
-            }
+    let mut sources = BTreeMap::<&str, PathBuf>::new();
+    let mut supported_sources = BTreeSet::new();
+    let mut ignored = BTreeSet::new();
+    for input in inputs.dll_paths.iter().collect::<BTreeSet<_>>() {
+        let metadata = fs::metadata(input).map_err(|error| {
+            format!(
+                "Cannot inspect Bootstrap input {}: {error}",
+                input.display()
+            )
+        })?;
+        let directory = metadata.is_dir();
+        let paths = if directory {
+            directory_dlls(input)?
         } else {
-            sources.insert(architecture, path);
-            dlls.insert(architecture.into(), digest(&bytes));
-            contents.insert(relative, bytes);
+            vec![input.clone()]
+        };
+        let mut supported = false;
+        for path in paths {
+            let bytes = read_input(&path, MAX_DLL_SIZE)?;
+            let architecture = match validate_pe(&bytes)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+            {
+                BootstrapArchitecture::Supported(architecture) => architecture,
+                BootstrapArchitecture::Unsupported(machine) if directory => {
+                    if ignored.insert(path.clone()) {
+                        eprintln!(
+                            "warning: ignoring unsupported Bootstrap PE machine 0x{machine:04x} discovered in {}",
+                            path.display()
+                        );
+                    }
+                    continue;
+                }
+                BootstrapArchitecture::Unsupported(machine) => {
+                    return Err(format!(
+                        "Unsupported Bootstrap PE machine 0x{machine:04x} in explicit file {}",
+                        path.display()
+                    ));
+                }
+            };
+            supported = true;
+            let relative = dll_path(architecture);
+            if let Some(existing) = contents.get(&relative) {
+                if existing != &bytes {
+                    return Err(format!(
+                        "Conflicting Bootstrap DLL inputs for {architecture}: {} and {} have different contents",
+                        sources[architecture].display(),
+                        path.display()
+                    ));
+                }
+            } else {
+                sources.insert(architecture, path.clone());
+                dlls.insert(architecture.into(), digest(&bytes));
+                contents.insert(relative, bytes);
+            }
+            supported_sources.insert(path);
+        }
+        if !supported {
+            return Err(format!(
+                "No supported Bootstrap DLLs found in directory {}; searched recursively for {DLL_NAME} (x64 or ARM64)",
+                input.display()
+            ));
         }
     }
     // Duplicate payloads may still supply a missing or conflicting source license.
-    if let Some(license) = source_license(&inputs.dll_paths)? {
+    if let Some(license) = source_license(&supported_sources.into_iter().collect::<Vec<_>>())? {
         contents.insert(LICENSE.into(), license);
     } else {
         eprintln!(

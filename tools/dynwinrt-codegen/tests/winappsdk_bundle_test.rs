@@ -99,9 +99,9 @@ impl Fixture {
             .env_remove("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT");
         if configured {
             command
-                .args(["--winappsdk-version", "2.5", "--bootstrap-dll-path"])
+                .args(["--winappsdk-version", "2.5", "--winappsdk-bootstrap-path"])
                 .arg(self.input("x64"))
-                .arg("--bootstrap-dll-path")
+                .arg("--winappsdk-bootstrap-path")
                 .arg(self.input("arm64"));
         }
         command
@@ -115,7 +115,7 @@ impl Fixture {
         let mut command = self.command(language, false);
         command.args(["--winappsdk-version", "2.5"]);
         for path in paths {
-            command.arg("--bootstrap-dll-path").arg(path);
+            command.arg("--winappsdk-bootstrap-path").arg(path);
         }
         command
     }
@@ -192,10 +192,12 @@ fn pe(machine: u16) -> Vec<u8> {
     bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
     u16_at(&mut bytes, 0x84, machine);
     u16_at(&mut bytes, 0x86, 1);
-    u16_at(&mut bytes, 0x94, 0xf0);
+    let pe32 = machine == 0x014c;
+    let optional_size = if pe32 { 0xe0 } else { 0xf0 };
+    u16_at(&mut bytes, 0x94, optional_size);
     u16_at(&mut bytes, 0x96, 0x2022);
     let optional = 0x98;
-    u16_at(&mut bytes, optional, 0x20b);
+    u16_at(&mut bytes, optional, if pe32 { 0x10b } else { 0x20b });
     u32_at(&mut bytes, optional + 16, 0x1100);
     u32_at(&mut bytes, optional + 20, 0x1000);
     u32_at(&mut bytes, optional + 32, 0x1000);
@@ -203,10 +205,11 @@ fn pe(machine: u16) -> Vec<u8> {
     u32_at(&mut bytes, optional + 56, 0x2000);
     u32_at(&mut bytes, optional + 60, 0x200);
     u16_at(&mut bytes, optional + 68, 3);
-    u32_at(&mut bytes, optional + 108, 16);
-    u32_at(&mut bytes, optional + 112, 0x1000);
-    u32_at(&mut bytes, optional + 116, 0xa0);
-    let section = optional + 0xf0;
+    let directories = optional + if pe32 { 96 } else { 112 };
+    u32_at(&mut bytes, directories - 4, 16);
+    u32_at(&mut bytes, directories, 0x1000);
+    u32_at(&mut bytes, directories + 4, 0xa0);
+    let section = optional + usize::from(optional_size);
     bytes[section..section + 5].copy_from_slice(b".text");
     u32_at(&mut bytes, section + 8, 0x400);
     u32_at(&mut bytes, section + 12, 0x1000);
@@ -388,9 +391,9 @@ fn conflicting_version_or_payload_requires_complete_regeneration_without_writes(
         fixture.generate(language, true);
         let mut version = fixture.command(language, false);
         version
-            .args(["--winappsdk-version", "2.6", "--bootstrap-dll-path"])
+            .args(["--winappsdk-version", "2.6", "--winappsdk-bootstrap-path"])
             .arg(fixture.input("x64"))
-            .arg("--bootstrap-dll-path")
+            .arg("--winappsdk-bootstrap-path")
             .arg(fixture.input("arm64"));
         fixture.refused_unchanged(
             &mut version,
@@ -418,9 +421,9 @@ fn conflicting_version_or_payload_requires_complete_regeneration_without_writes(
                     "--output",
                 ])
                 .arg(&fresh)
-                .args(["--winappsdk-version", "2.5", "--bootstrap-dll-path"])
+                .args(["--winappsdk-version", "2.5", "--winappsdk-bootstrap-path"])
                 .arg(fixture.input("x64"))
-                .arg("--bootstrap-dll-path")
+                .arg("--winappsdk-bootstrap-path")
                 .arg(fixture.input("arm64"));
             succeeded(command.output().unwrap());
             let new_cache = fs::read_to_string(fresh.join("setup.cfg")).unwrap();
@@ -531,13 +534,13 @@ fn invalid_flags_manual_collisions_and_publication_failures_are_atomic() {
         let mut command = fixture.command("py", false);
         command
             .arg(format!("--winappsdk-version={version}"))
-            .arg("--bootstrap-dll-path")
+            .arg("--winappsdk-bootstrap-path")
             .arg(fixture.input("x64"));
         fixture.refused_unchanged(&mut command, "--winappsdk-version");
     }
     for field in [
         "--winappsdk-version=2.5",
-        "--bootstrap-dll-path=missing.dll",
+        "--winappsdk-bootstrap-path=missing.dll",
     ] {
         fixture.refused_unchanged(fixture.command("py", false).arg(field), "required");
     }
@@ -724,7 +727,7 @@ fn identical_dlls_do_not_hide_conflicting_source_licenses() {
 }
 
 #[test]
-fn missing_empty_and_non_file_paths_never_skip_an_input_or_change_existing_output() {
+fn missing_and_empty_paths_never_skip_an_input_or_change_existing_output() {
     for language in ["py", "js"] {
         let fixture = Fixture::new();
         fixture.generate(language, true);
@@ -732,7 +735,7 @@ fn missing_empty_and_non_file_paths_never_skip_an_input_or_change_existing_outpu
         fixture.refused_unchanged(
             fixture
                 .command(language, false)
-                .arg("--bootstrap-dll-path")
+                .arg("--winappsdk-bootstrap-path")
                 .arg(fixture.input("x64")),
             "required",
         );
@@ -740,7 +743,7 @@ fn missing_empty_and_non_file_paths_never_skip_an_input_or_change_existing_outpu
             fixture.command(language, false).args([
                 "--winappsdk-version",
                 "2.5",
-                "--bootstrap-dll-path",
+                "--winappsdk-bootstrap-path",
             ]),
             "required",
         );
@@ -748,16 +751,12 @@ fn missing_empty_and_non_file_paths_never_skip_an_input_or_change_existing_outpu
             fixture.refused_unchanged(
                 &mut fixture
                     .command_with_paths(language, &[fixture.input("x64"), PathBuf::from(path)]),
-                "--bootstrap-dll-path",
+                "--winappsdk-bootstrap-path",
             );
         }
         let empty = fixture.root.join("empty.dll");
         fs::write(&empty, []).unwrap();
-        for path in [
-            fixture.root.join("missing.dll"),
-            empty,
-            fixture.root.join("inputs"),
-        ] {
+        for path in [fixture.root.join("missing.dll"), empty] {
             fixture.refused_unchanged(
                 &mut fixture.command_with_paths(language, &[fixture.input("x64"), path]),
                 "Bootstrap input",
@@ -770,6 +769,250 @@ fn missing_empty_and_non_file_paths_never_skip_an_input_or_change_existing_outpu
             "unexpected argument",
         );
     }
+}
+
+#[test]
+fn directory_inputs_match_files_recursively_without_changing_the_bundle() {
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let before = files(&fixture.output);
+        let nested = fixture.root.join("inputs/deep/nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::copy(fixture.input("x64"), nested.join(DLL.to_ascii_lowercase())).unwrap();
+        fs::write(nested.join("unrelated.dll"), "not a PE").unwrap();
+        fs::write(fixture.root.join(DLL), "outside the search root").unwrap();
+        let inputs = fixture.root.join("inputs");
+        for paths in [
+            vec![inputs.clone()],
+            vec![
+                fixture.input("arm64"),
+                inputs.clone(),
+                nested.clone(),
+                inputs.clone(),
+            ],
+            vec![nested, inputs, fixture.input("x64")],
+        ] {
+            succeeded(
+                fixture
+                    .command_with_paths(language, &paths)
+                    .output()
+                    .unwrap(),
+            );
+            assert_eq!(files(&fixture.output), before);
+        }
+        fixture.generate(language, false);
+        assert_eq!(files(&fixture.output), before);
+    }
+}
+
+#[test]
+fn directory_scans_ignore_unsupported_pe_architectures_but_explicit_files_remain_strict() {
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let before = files(&fixture.output);
+        let inputs = fixture.root.join("inputs");
+        for (folder, machine) in [("x86", 0x014c), ("unknown", 0xffff), ("arm64ec", 0x8664)] {
+            let dir = inputs.join(folder);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join(DLL), pe(machine)).unwrap();
+        }
+        let result = fixture
+            .command_with_paths(language, std::slice::from_ref(&inputs))
+            .output()
+            .unwrap();
+        let diagnostics = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            diagnostics.contains("ignoring unsupported Bootstrap PE machine 0x014c"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("ignoring unsupported Bootstrap PE machine 0xffff"),
+            "{diagnostics}"
+        );
+        succeeded(result);
+        assert_eq!(files(&fixture.output), before);
+        for folder in ["x86", "unknown"] {
+            let file = inputs.join(folder).join(DLL);
+            for paths in [
+                vec![inputs.clone(), file.clone()],
+                vec![file, inputs.clone()],
+            ] {
+                fixture.refused_unchanged(
+                    &mut fixture.command_with_paths(language, &paths),
+                    "in explicit file",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_and_unsupported_only_directories_fail_even_with_other_valid_inputs() {
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let empty = fixture.root.join("empty");
+        let unsupported = fixture.root.join("unsupported");
+        fs::create_dir(&empty).unwrap();
+        fs::create_dir(&unsupported).unwrap();
+        fs::write(empty.join("another-name.dll"), pe(0x8664)).unwrap();
+        fs::write(unsupported.join(DLL), pe(0x014c)).unwrap();
+        for directory in [empty, unsupported] {
+            for paths in [
+                vec![directory.clone()],
+                vec![fixture.input("x64"), directory.clone()],
+            ] {
+                let error = fixture.refused_unchanged(
+                    &mut fixture.command_with_paths(language, &paths),
+                    "No supported Bootstrap DLLs found in directory",
+                );
+                assert!(error.contains(&directory.display().to_string()), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn damaged_directory_matches_cannot_be_ignored_as_unsupported() {
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let directory = fixture.root.join("inputs/bad");
+        fs::create_dir(&directory).unwrap();
+        for machine in [0x8664, 0x014c, 0xffff] {
+            let mut bytes = pe(machine);
+            bytes[0x280] = b'X';
+            fs::write(directory.join(DLL), bytes).unwrap();
+            fixture.refused_unchanged(
+                &mut fixture.command_with_paths(language, &[fixture.root.join("inputs")]),
+                "does not export MddBootstrapInitialize2",
+            );
+        }
+        fs::write(directory.join(DLL), b"MZ").unwrap();
+        fixture.refused_unchanged(
+            &mut fixture.command_with_paths(language, &[fixture.root.join("inputs")]),
+            "Invalid Bootstrap PE",
+        );
+    }
+}
+
+#[test]
+fn directory_payload_and_license_conflicts_preserve_existing_output() {
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let inputs = fixture.root.join("inputs");
+        let directory = inputs.join("conflicting");
+        fs::create_dir(&directory).unwrap();
+        let mut changed = pe(0x8664);
+        changed[0x500] = 1;
+        fs::write(directory.join(DLL), changed).unwrap();
+        let error = fixture.refused_unchanged(
+            &mut fixture.command_with_paths(language, std::slice::from_ref(&inputs)),
+            "Conflicting Bootstrap DLL inputs for x64",
+        );
+        assert!(
+            error.contains("conflicting") && error.contains("x64"),
+            "{error}"
+        );
+        fs::copy(fixture.input("x64"), directory.join(DLL)).unwrap();
+        fs::write(directory.join("license.txt"), "Different source license").unwrap();
+        fixture.refused_unchanged(
+            &mut fixture.command_with_paths(language, &[inputs]),
+            "conflicting license.txt files",
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn directory_scans_reject_junction_escapes_cycles_and_linked_roots() {
+    let node = std::env::var_os("DYNWINRT_TEST_NODE").unwrap_or_else(|| "node".into());
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let inputs = fixture.root.join("inputs");
+        let outside = fixture.root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join(DLL), "outside DLL must never be read").unwrap();
+        let junction = inputs.join("linked");
+        for target in [&outside, &inputs] {
+            succeeded(Command::new(&node).args([
+                        "-e",
+                        "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')",
+                    ]).arg(target).arg(&junction).output().unwrap());
+            let error = fixture.refused_unchanged(
+                &mut fixture.command_with_paths(language, std::slice::from_ref(&inputs)),
+                "Refusing linked Bootstrap directory entry",
+            );
+            assert!(error.contains("linked"), "{error}");
+            fixture.refused_unchanged(
+                &mut fixture.command_with_paths(language, std::slice::from_ref(&junction)),
+                "Refusing linked Bootstrap directory",
+            );
+            fs::remove_dir(&junction).unwrap();
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn unreadable_directory_matches_and_subdirectories_fail_before_publication() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    for language in ["py", "js"] {
+        let fixture = Fixture::new();
+        fixture.generate(language, true);
+        let inputs = fixture.root.join("inputs");
+        let file = fixture.input("x64");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        fixture.refused_unchanged(
+            &mut fixture.command_with_paths(language, std::slice::from_ref(&inputs)),
+            "Bootstrap",
+        );
+        drop(lock);
+        let directory = inputs.join("unreadable");
+        fs::create_dir(&directory).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS opens the directory handle.
+            .open(&directory)
+            .unwrap();
+        fixture.refused_unchanged(
+            &mut fixture.command_with_paths(language, &[inputs]),
+            "Bootstrap",
+        );
+        drop(lock);
+    }
+}
+
+#[test]
+fn bootstrap_cli_help_uses_the_final_sdk_scoped_name_without_a_legacy_alias() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args(["generate", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--winappsdk-version <MAJOR.MINOR>"));
+    assert!(help.contains("--winappsdk-bootstrap-path <PATH>"));
+    assert!(help.contains("directory to search recursively"));
+    assert!(!help.contains("--bootstrap-dll-path"));
+    succeeded(output);
+    let fixture = Fixture::new();
+    fixture.refused_unchanged(
+        fixture
+            .command("py", false)
+            .args(["--winappsdk-version", "2.5", "--bootstrap-dll-path"])
+            .arg(fixture.input("x64")),
+        "unexpected argument",
+    );
 }
 
 #[test]
@@ -828,7 +1071,7 @@ fn native_command(fixture: &Fixture, winmd: &Path, classes: &str, configured: bo
         .env_remove("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT");
     if configured {
         command
-            .args(["--winappsdk-version", "2.5", "--bootstrap-dll-path"])
+            .args(["--winappsdk-version", "2.5", "--winappsdk-bootstrap-path"])
             .arg(fixture.input("x64"));
     }
     command

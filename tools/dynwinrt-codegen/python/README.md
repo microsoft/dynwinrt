@@ -74,8 +74,8 @@ explicitly inside its apartment.
 | `--dry-run` | Validate metadata and dependencies without writing files. |
 | `--pyi` | Explicitly request the default Python type stubs; retained for compatibility. |
 | `--no-pyi` | Omit `.pyi` files and the `py.typed` marker. |
-| `--winappsdk-version MAJOR.MINOR` | Stable SDK product version for optional package-local Bootstrap configuration; requires `--bootstrap-dll-path`. |
-| `--bootstrap-dll-path PATH` | One concrete Bootstrap DLL source; repeat for multiple files. Requires `--winappsdk-version`. |
+| `--winappsdk-version MAJOR.MINOR` | Stable SDK product version, such as `2.5`, not a NuGet servicing version. Requires `--winappsdk-bootstrap-path`. |
+| `--winappsdk-bootstrap-path PATH` | Bootstrap DLL file or recursively searched directory; repeat for multiple inputs. Requires `--winappsdk-version`. |
 
 Use `--lang py` for every Python generation command. Run
 `dynwinrt-codegen generate --help` for the complete command reference.
@@ -90,16 +90,22 @@ dynwinrt-codegen generate `
   --winmd-list .\winmd-inputs.txt --ref-list .\winmd-references.txt `
   --lang py --output .\app_bindings `
   --winappsdk-version 2.5 `
-  --bootstrap-dll-path '.winapp\bin\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll' `
-  --bootstrap-dll-path '.winapp\bin\arm64\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+  --winappsdk-bootstrap-path '.winapp\bin'
 python -m pip install .\app_bindings
 ```
 
-Supply one path for a single architecture, or repeat the option to include both.
-Architecture is read from each DLL, not inferred from its name or directory.
+Supply a directory to search for `Microsoft.WindowsAppRuntime.Bootstrap.dll`
+within it and its descendants, or concrete DLL files; repeat the option to mix
+inputs. Discovery does not search outside the supplied directories or follow
+directory links/reparse points. Architecture is read from each DLL, not inferred
+from its name or directory. Unsupported directory matches such as x86 are
+reported and ignored; explicit unsupported files still fail. A directory with
+no supported DLL, an unreadable directory, or a corrupt/unreadable matching file
+fails rather than producing a partial bundle.
 Byte-identical duplicates are deduplicated without losing their source licenses;
 different DLL bytes for the same architecture are an error. Reordering paths
-does not change the generated configuration or build-cache digest.
+or combining overlapping files/directories does not change the generated
+configuration or build-cache digest.
 
 The generated package contains `_winappsdk.py`, `_winappsdk.json`, the unchanged
 DLLs under `_native/winappsdk/x64` and/or `arm64`, and redistribution notices.
