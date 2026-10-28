@@ -15,16 +15,23 @@ from pathlib import Path
 
 
 def check_resource_dictionary_keys(resources):
+    from enum import Enum, StrEnum
     from types import SimpleNamespace
     from dynwinrt import DynWinRTValue, to_winrt_object, unbox_object
     from dynwinrt.values import Char16
+
+    class ResourceKey(StrEnum):
+        ACCENT = "AccentButtonStyle"
+
+    class LegacyResourceKey(str, Enum):
+        ACCENT = "AccentButtonStyle"
 
     name = "AccentButtonStyle"
     boxed = to_winrt_object(name)
     identity = boxed.identity_raw()
     style = resources.lookup(boxed)
     assert isinstance(style, DynWinRTValue) and not style.is_null()
-    for key in (name, boxed, SimpleNamespace(_obj=boxed)):
+    for key in (name, boxed, SimpleNamespace(_obj=boxed), ResourceKey.ACCENT, LegacyResourceKey.ACCENT):
         assert resources.lookup(key).identity_raw() == style.identity_raw()
         assert resources[key].identity_raw() == style.identity_raw()
         assert resources.get(key).identity_raw() == style.identity_raw()

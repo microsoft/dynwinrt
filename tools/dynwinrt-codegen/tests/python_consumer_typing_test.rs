@@ -1058,10 +1058,17 @@ fn resource_dictionary_keys_are_scoped_and_typed_in_stubs_and_inline_sources() {
     }
     fs::write(&metadata, file.into_stream()).unwrap();
 
-    let consumer = r#"from typing import assert_type
+    let consumer = r#"from enum import Enum, StrEnum
+from typing import assert_type
 from dynwinrt import DynWinRTValue
 from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
 from views.windows__ui__xaml__resource_dictionary import ResourceDictionary as UwpResourceDictionary
+
+class ResourceKey(StrEnum):
+    STYLE = "AccentButtonStyle"
+
+class LegacyResourceKey(str, Enum):
+    STYLE = "AccentButtonStyle"
 
 class Carrier:
     def __init__(self, value: DynWinRTValue) -> None:
@@ -1091,6 +1098,22 @@ def stock_contract(resources: UwpResourceDictionary) -> None:
     assert_type(resources.lookup("style"), DynWinRTValue | None)
     assert_type(resources["style"], DynWinRTValue | None)
     assert_type(resources.get("style"), DynWinRTValue | None)
+
+def string_enum_keys(resources: ResourceDictionary | UwpResourceDictionary, raw: DynWinRTValue) -> None:
+    for key in (ResourceKey.STYLE, LegacyResourceKey.STYLE):
+        assert_type(resources.lookup(key), DynWinRTValue | None)
+        assert_type(resources[key], DynWinRTValue | None)
+        assert_type(resources.get(key), DynWinRTValue | None)
+        assert_type(resources.get(key, 17), DynWinRTValue | int | None)
+        assert_type(resources.has_key(key), bool)
+        assert_type(resources.insert(key, raw), bool)
+        resources[key] = raw
+        resources.update({key: raw})
+        resources.update([(key, raw)])
+        assert_type(resources.setdefault(key, raw), DynWinRTValue | None)
+        assert_type(resources.pop(key), DynWinRTValue | None)
+        resources.remove(key)
+        del resources[key]
 "#;
     let like_consumer = r#"
 from collections.abc import Iterator
@@ -1159,7 +1182,7 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
         )
         .unwrap();
         assert_eq!(source.matches("def lookup(").count(), 1);
-        assert!(source.contains("_dynwinrt_to_winrt_object(key, _dynwinrt_property_type.String) if isinstance(key, str) else key"));
+        assert!(source.contains("_dynwinrt_to_winrt_object(str.__str__(key), _dynwinrt_property_type.String) if isinstance(key, str) else key"));
         let other = fs::read_to_string(
             fixture
                 .0
@@ -1194,6 +1217,7 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
             let output = Command::new(python())
                 .args(["-B", "-c", r#"
 import ast
+from enum import Enum, StrEnum
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -1202,9 +1226,20 @@ from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTMethodSig, DynWinRTType, DynWinRTValue, RoApartment, WinGUID,
     projected_lifetime_scope, to_winrt_object, unbox_object,
 )
+from dynwinrt.values import Char16
 from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
 from views.contoso__resource_dictionary import ResourceDictionary as Unrelated
 from views.windows.foundation.collections import IMap_Object_Object
+
+class ResourceKey(StrEnum):
+    STYLE = "enum resource"
+
+class LegacyResourceKey(str, Enum):
+    STYLE = "legacy enum resource"
+
+class DisplayKey(str):
+    def __str__(self):
+        return "not the stored key"
 
 source = ast.parse((Path("views") / "microsoft__ui__xaml__resource_dictionary.py").read_text(encoding="utf-8"))
 owner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ResourceDictionary")
@@ -1229,13 +1264,42 @@ with RoApartment(1), projected_lifetime_scope():
     fallback = object()
     assert resources.get("absent", fallback) is fallback
     assert resources.pop("absent", default=fallback) is fallback
-    for mapping in (IMap_Object_Object.from_value(native), Unrelated._from_native(native.cast(WinGUID.parse("00000000-0000-0000-c000-000000000046")))):
+    for string_key in (ResourceKey.STYLE, LegacyResourceKey.STYLE, DisplayKey("stored key"), Char16("x")):
+        assert resources.insert(string_key, value) is False
+        assert resources.insert(string_key, value) is True
+        assert resources.has_key(string_key) and string_key in resources
+        assert resources.lookup(string_key).identity_raw() == identities[1]
+        assert resources.lookup(str.__str__(string_key)).identity_raw() == identities[1]
+        assert resources[string_key].identity_raw() == identities[1]
+        assert resources.get(string_key).identity_raw() == identities[1]
+        assert str.__str__(string_key) in {unbox_object(item) for item in resources}
+        resources.remove(string_key)
+        assert not resources.has_key(string_key)
+        resources[string_key] = value
+        assert resources.setdefault(string_key, None).identity_raw() == identities[1]
+        del resources[string_key]
+        resources.update({string_key: value})
+        assert resources.pop(string_key).identity_raw() == identities[1]
+        resources.update([(string_key, value)])
+        del resources[string_key]
+        assert resources.setdefault(string_key, value).identity_raw() == identities[1]
+        assert resources.pop(string_key).identity_raw() == identities[1]
+        assert resources.get(string_key, fallback) is fallback
+        assert resources.pop(string_key, default=fallback) is fallback
         try:
-            mapping.lookup("raw key")
-        except TypeError as error:
-            assert "DynWinRTValue" in str(error), error
+            resources[string_key]
+        except KeyError as error:
+            assert error.args == (string_key,)
         else:
-            raise AssertionError("unrelated Object-key map auto-boxed a string")
+            raise AssertionError("missing string subclass key was accepted")
+    for mapping in (IMap_Object_Object.from_value(native), Unrelated._from_native(native.cast(WinGUID.parse("00000000-0000-0000-c000-000000000046")))):
+        for string_key in ("raw key", ResourceKey.STYLE, LegacyResourceKey.STYLE):
+            try:
+                mapping.lookup(string_key)
+            except TypeError as error:
+                assert "DynWinRTValue" in str(error), error
+            else:
+                raise AssertionError("unrelated Object-key map auto-boxed a string")
     generic = IMap_Object_Object.from_value(native)
     for invalid in (17, DynWinRTValue.from_i32(17), SimpleNamespace(_obj="not native")):
         errors = []

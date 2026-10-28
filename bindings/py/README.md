@@ -446,8 +446,10 @@ raw_style = resources.get("AccentButtonStyle")
 ```
 
 Their key-taking lookup, membership, insert, update and removal operations box
-`str` as a WinRT string internally. Existing raw or projected-object keys remain
-accepted, and results and enumerated keys remain raw `DynWinRTValue` objects
+`str` as a WinRT string internally. String subclasses, including `StrEnum` and
+`str`/`Enum` members, use their underlying string contents rather than custom
+`__str__()` formatting. Existing raw or projected-object keys remain accepted,
+and results and enumerated keys remain raw `DynWinRTValue` objects
 (or `None` where already supported). `lookup()` preserves native errors;
 missing `[]` keys raise `KeyError`, and `get()` keeps its normal default.
 This is a ResourceDictionary-specific input convenience, not automatic boxing

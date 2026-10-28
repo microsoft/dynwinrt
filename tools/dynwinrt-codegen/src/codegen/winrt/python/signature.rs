@@ -1093,7 +1093,7 @@ pub(crate) fn py_wrap_collection_input_for_receiver(
 ) -> String {
     if input_contract.string_key(typ, role) {
         let key = format!(
-            "{}({name}, {}.String) if isinstance({name}, str) else {name}",
+            "{}(str.__str__({name}), {}.String) if isinstance({name}, str) else {name}",
             context.support_symbol_reference(PythonSupportSymbol::BoxObject),
             context.support_symbol_reference(PythonSupportSymbol::PropertyType),
         );
