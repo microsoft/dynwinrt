@@ -234,7 +234,9 @@ class WindowsCorpusTests(unittest.TestCase):
     def test_restore_verifies_content_and_reuses_only_verified_existing_input(self):
         result = self.restore()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip().splitlines()[-1], str(self.winmd))
+        returned = Path(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(returned.is_absolute())
+        self.assertTrue(returned.samefile(self.winmd), f"{returned} != {self.winmd}")
         self.assertEqual(self.winmd.read_bytes(), self.payload)
         self.nuget.unlink()
         result = self.restore()
