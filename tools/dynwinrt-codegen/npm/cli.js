@@ -53,7 +53,10 @@ for (let i = 0; i < args.length; i++) {
 }
 
 try {
-  execFileSync(exe, exeArgs, { stdio: "inherit" });
+  execFileSync(exe, exeArgs, {
+    stdio: "inherit",
+    env: { ...process.env, DYNWINRT_CODEGEN_NPM_VERSION: pkg.version },
+  });
 } catch (e) {
   process.exit(e.status ?? 1);
 }

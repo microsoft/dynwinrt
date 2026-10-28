@@ -74,9 +74,59 @@ explicitly inside its apartment.
 | `--dry-run` | Validate metadata and dependencies without writing files. |
 | `--pyi` | Explicitly request the default Python type stubs; retained for compatibility. |
 | `--no-pyi` | Omit `.pyi` files and the `py.typed` marker. |
+| `--winappsdk-version MAJOR.MINOR` | Stable SDK product version for optional package-local Bootstrap configuration; requires `--bootstrap-dll-path`. |
+| `--bootstrap-dll-path PATH` | One concrete Bootstrap DLL source; repeat for multiple files. Requires `--winappsdk-version`. |
 
 Use `--lang py` for every Python generation command. Run
 `dynwinrt-codegen generate --help` for the complete command reference.
+
+### Windows App SDK configuration
+
+Pass the paired options when generating bindings for an application with restored
+Windows App SDK inputs:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .\winmd-inputs.txt --ref-list .\winmd-references.txt `
+  --lang py --output .\app_bindings `
+  --winappsdk-version 2.5 `
+  --bootstrap-dll-path '.winapp\bin\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll' `
+  --bootstrap-dll-path '.winapp\bin\arm64\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+python -m pip install .\app_bindings
+```
+
+Supply one path for a single architecture, or repeat the option to include both.
+Architecture is read from each DLL, not inferred from its name or directory.
+Byte-identical duplicates are deduplicated without losing their source licenses;
+different DLL bytes for the same architecture are an error. Reordering paths
+does not change the generated configuration or build-cache digest.
+
+The generated package contains `_winappsdk.py`, `_winappsdk.json`, the unchanged
+DLLs under `_native/winappsdk/x64` and/or `arm64`, and redistribution notices.
+It declares an installed `dynwinrt.winappsdk` entry point. The application can
+call **`dynwinrt.init_winappsdk()`** without passing a project root, version, path,
+or environment variable, even before importing the generated projection.
+Initialization remains an explicit application action.
+
+Normal wheel installs and `pip install -e` work independently of the runtime
+working directory. A generated source folder added only to `sys.path`, without
+installing its distribution metadata, is not automatically discovered; the
+runtime's explicit version/path API remains available. Moving an editable source
+tree requires reinstalling it. Zip imports and frozen-app resource extraction
+are not supported by this configuration provider.
+
+The generated wheel is Windows/platform-specific, with a compressed
+`py3-none-win_amd64.win_arm64` tag when both DLLs are present. A small build-only
+setuptools hook supplies the tag and is retained in sdists, not installed as
+runtime code. Matching `dynwinrt` CPython 3.11-3.14 wheels are still required.
+
+`MAJOR.MINOR` identifies the stable product, not a NuGet patch version or the
+DLL's FileVersion. Metadata/configuration presence does not prove that an
+application has used an App SDK API or that Runtime deployment is ready.
+Repeated generation preserves an omitted configuration, including `--no-pyi`;
+changing its version or bytes requires clean, complete regeneration.
+See [bundle validation, capabilities and licensing](../README.md#packaged-windows-app-sdk-initialization)
+and the [runtime initialization contract](../../../bindings/py/README.md#windows-app-sdk-initialization).
 
 ### More examples
 

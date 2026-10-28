@@ -19,7 +19,7 @@ dynamically at runtime. There is no native build step in the consuming Electron
 or Node project. The same generated bindings can work across compatible
 metadata revisions without rebuilding a native addon.
 
-The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers can initialize the runtime with `initWinappsdk()`; the helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
+The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers initialize the runtime with explicit `initWinappsdk(major, minor)` arguments, or `initWinappsdk()` after importing a configured generated package; see [Windows App SDK initialization](#windows-app-sdk-initialization). The helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
 
 ### System DispatcherQueue loading
 
@@ -95,6 +95,73 @@ Legacy flat paths such as `./generated/Uri.js` are not generated. When metadata
 contains duplicate short names, each canonical module keeps its native symbol
 name while the root barrel uses a namespace-qualified name, such as
 `AIFoundationEmbeddingVector` or `SemanticSearchEmbeddingVector`.
+
+### Windows App SDK initialization
+
+The existing `initWinappsdk` API returns `void`. Explicit version calls keep their
+native/environment behavior; the optional third argument supplies the DLL path
+without setting a process environment variable:
+
+```js
+const { initWinappsdk } = require('@microsoft/dynwinrt');
+initWinappsdk(2, 5, bootstrapDllPath);
+```
+
+Generate bindings with `--winappsdk-version 2.5` and
+[`--bootstrap-dll-path PATH`](../../tools/dynwinrt-codegen/README.md#packaged-windows-app-sdk-initialization)
+once per concrete DLL source to copy the supplied x64/ARM64 DLLs into their
+package. Architecture is read from each PE, and byte-identical duplicates are
+deduplicated. Then the normal generated
+package or type import registers configuration, without initializing anything:
+
+```js
+import { initWinappsdk, roInitialize } from '@microsoft/dynwinrt';
+import { Application } from '@winapp/bindings';
+
+roInitialize(0); // The application selects the UI apartment.
+initWinappsdk();
+// Create and run Application here.
+```
+
+CJS, ESM, proxy barrels and generated type subpaths share registration. Import the
+generated module before calling the no-argument initializer; no extra setup
+function, ROOT or config argument is required. Generated packages declare an
+exact runtime peer dependency so the application and generated modules resolve
+the same runtime installation. `npm pack` includes the DLLs, JSON configuration
+and notices, and registration is marked as a side effect for bundlers. Runtime
+paths are package-relative, independent of the working directory.
+
+Missing imported configuration, partial version arguments, conflicting product
+versions or differing DLL payloads produce explicit errors. Identical bundles
+can be registered by multiple generated packages. The codegen-support
+`@microsoft/dynwinrt/winappsdk` subpath is internal to generated registration;
+applications still call `initWinappsdk`, not a replacement initializer.
+
+Explicit DLL paths take precedence over `WINAPPSDK_BOOTSTRAP_DLL_PATH`.
+No-argument calls use the environment when set, otherwise the generated resource
+for `process.arch`; invalid overrides fail rather than falling back. Existing
+`initWinappsdk(major, minor)` calls do not consult registered packages.
+
+The native process-lifetime cache remains: matching versions return after a
+successful initialization; other versions fail. New explicit/generated DLL
+selections additionally retain their first successful payload digest, accepting
+byte-identical copies but rejecting a later different payload. A process first
+initialized through the legacy two-version-argument path has no recorded DLL
+digest; restart before switching it to explicit/generated DLL selection.
+Initialization failures are not cached. `getWinappsdkResourcePriPath()` remains
+available, and there is no automatic shutdown or Runtime installation.
+
+Importing generated configuration does not initialize COM or Bootstrap, and
+`initWinappsdk` does not choose an apartment. The example's apartment-first order
+is a conservative use of the documented Bootstrap prerequisite, not a claim that
+the existing init-first examples fail on modern Windows. Package identity alone
+does not make initialization a successful no-op.
+
+The Bootstrap DLL is not the complete Windows App Runtime and is governed by the
+Microsoft Windows App SDK license, not dynwinrt's MIT license. Runtime deployment
+and redistribution as part of a qualifying application remain the producer's
+responsibility. Without the generation options, existing Windows SDK-only output
+and calls remain unchanged.
 
 ### Standalone WinRT interface implementations
 

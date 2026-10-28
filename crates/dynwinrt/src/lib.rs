@@ -67,7 +67,10 @@ pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
 pub use crate::value::{ArrayOfIUnknownData, AsyncInfo, WinRTValue};
-pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
+pub use crate::winapp::{
+    WinAppSdkBootstrapOptions, WinAppSdkContext, initialize as initialize_winappsdk_with_options,
+    initialize_winappsdk,
+};
 pub use crate::winrt_implementation::{
     WinRtImplementation, WinRtImplementationCallback, WinRtImplementationPlan,
     WinRtInterfaceDefinition, WinRtMethodDefinition, WinRtThreadingPolicy,

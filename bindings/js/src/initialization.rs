@@ -2,11 +2,13 @@
 // Licensed under the MIT License.
 
 use napi_derive::napi;
-use std::{cell::Cell, sync::OnceLock};
+use sha2::{Digest, Sha256};
+use std::{cell::Cell, io::Read, path::Path, sync::OnceLock};
 
 struct InitializedWinAppSdk {
   major: u32,
   minor: u32,
+  bootstrap_dll_digest: Option<[u8; 32]>,
   context: dynwinrt::WinAppSdkContext,
 }
 
@@ -27,38 +29,93 @@ pub(crate) fn winui_dispatcher_loop_exited() -> bool {
 
 /// Add Windows App SDK to the process package graph without changing the calling thread's apartment.
 #[napi]
-pub fn init_winappsdk(major: u32, minor: u32) -> napi::Result<()> {
+pub fn init_winappsdk(
+  major: u32,
+  minor: u32,
+  bootstrap_dll_path: Option<String>,
+) -> napi::Result<()> {
+  let resolved_path = if let Some(path) = &bootstrap_dll_path {
+    if path.trim().is_empty() || path.contains('\0') || !std::path::Path::new(path).is_file() {
+      return Err(napi::Error::from_reason(
+        "Windows App SDK bootstrapDllPath must name an existing DLL file",
+      ));
+    }
+    Some(std::fs::canonicalize(path).map_err(|error| {
+      napi::Error::from_reason(format!("Cannot resolve Bootstrap DLL {path}: {error}"))
+    })?)
+  } else {
+    None
+  };
+  let dll_digest = resolved_path
+    .as_deref()
+    .map(bootstrap_digest)
+    .transpose()
+    .map_err(|error| napi::Error::from_reason(format!("Cannot read Bootstrap DLL: {error}")))?;
   if let Some(initialized) = WINAPP_SDK.get() {
-    return ensure_winappsdk_version(initialized, major, minor);
+    return ensure_winappsdk_request(initialized, major, minor, dll_digest.as_ref());
   }
 
-  let context = dynwinrt::initialize_winappsdk(major, minor)
-    .map_err(|e| napi::Error::from_reason(e.message()))?;
+  let context = dynwinrt::initialize_winappsdk_with_options(dynwinrt::WinAppSdkBootstrapOptions {
+    major_version: major,
+    minor_version: minor,
+    build_version: 0,
+    revision_version: 0,
+    bootstrap_dll_path: resolved_path
+      .as_ref()
+      .map(|path| path.to_string_lossy().into_owned()),
+  })
+  .map_err(|e| napi::Error::from_reason(e.message()))?;
   let initialized = InitializedWinAppSdk {
     major,
     minor,
+    bootstrap_dll_digest: dll_digest,
     context,
   };
 
   match WINAPP_SDK.set(initialized) {
     Ok(()) => Ok(()),
-    Err(_) => ensure_winappsdk_version(WINAPP_SDK.get().unwrap(), major, minor),
+    Err(_) => {
+      ensure_winappsdk_request(WINAPP_SDK.get().unwrap(), major, minor, dll_digest.as_ref())
+    }
   }
 }
 
-fn ensure_winappsdk_version(
+fn bootstrap_digest(path: &Path) -> std::io::Result<[u8; 32]> {
+  let mut file = std::fs::File::open(path)?;
+  let mut digest = Sha256::new();
+  let mut buffer = [0; 16384];
+  loop {
+    let length = file.read(&mut buffer)?;
+    if length == 0 {
+      break;
+    }
+    digest.update(&buffer[..length]);
+  }
+  Ok(digest.finalize().into())
+}
+
+fn ensure_winappsdk_request(
   initialized: &InitializedWinAppSdk,
   major: u32,
   minor: u32,
+  bootstrap_dll_digest: Option<&[u8; 32]>,
 ) -> napi::Result<()> {
-  if initialized.major == major && initialized.minor == minor {
-    Ok(())
-  } else {
-    Err(napi::Error::from_reason(format!(
+  if initialized.major != major || initialized.minor != minor {
+    return Err(napi::Error::from_reason(format!(
       "Windows App SDK is already initialized for {}.{}; cannot reinitialize for {major}.{minor}",
       initialized.major, initialized.minor
-    )))
+    )));
   }
+  if let Some(digest) = bootstrap_dll_digest {
+    if initialized.bootstrap_dll_digest.as_ref() != Some(digest) {
+      return Err(napi::Error::from_reason(
+        "Windows App SDK is already initialized with another Bootstrap DLL selection; \
+         restart the process to select an explicit/generated DLL path. \
+         Existing two-version-argument calls keep the original initialization.",
+      ));
+    }
+  }
+  Ok(())
 }
 
 /// Return the framework resources.pri path selected by initWinappsdk.
@@ -95,4 +152,36 @@ pub(crate) fn set_winui_dispatcher_loop_active(active: bool) {
     WINUI_DISPATCHER_LOOP_ENTERED.with(|state| state.set(true));
   }
   WINUI_DISPATCHER_LOOP_ACTIVE.with(|state| state.set(active));
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+  use super::*;
+
+  #[test]
+  fn explicit_dll_identity_cannot_bypass_the_native_success_cache() {
+    let initialized = InitializedWinAppSdk {
+      major: 2,
+      minor: 5,
+      bootstrap_dll_digest: Some([1; 32]),
+      context: dynwinrt::WinAppSdkContext {},
+    };
+    assert!(ensure_winappsdk_request(&initialized, 2, 5, Some(&[1; 32])).is_ok());
+    assert!(ensure_winappsdk_request(&initialized, 2, 5, Some(&[2; 32])).is_err());
+    assert!(ensure_winappsdk_request(&initialized, 2, 6, Some(&[1; 32])).is_err());
+    assert!(ensure_winappsdk_request(&initialized, 2, 5, None).is_ok());
+  }
+
+  #[test]
+  fn legacy_calls_keep_version_only_cache_semantics() {
+    let initialized = InitializedWinAppSdk {
+      major: 2,
+      minor: 5,
+      bootstrap_dll_digest: None,
+      context: dynwinrt::WinAppSdkContext {},
+    };
+    assert!(ensure_winappsdk_request(&initialized, 2, 5, None).is_ok());
+    assert!(ensure_winappsdk_request(&initialized, 2, 6, None).is_err());
+    assert!(ensure_winappsdk_request(&initialized, 2, 5, Some(&[1; 32])).is_err());
+  }
 }

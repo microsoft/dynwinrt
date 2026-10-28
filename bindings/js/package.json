@@ -11,6 +11,12 @@
       "require": "./dist/winrt.js",
       "default": "./dist/winrt.js"
     },
+    "./winappsdk": {
+      "types": "./dist/winappsdk-config.d.ts",
+      "import": "./dist/winappsdk-config.js",
+      "require": "./dist/winappsdk-config.js",
+      "default": "./dist/winappsdk-config.js"
+    },
     "./com": {
       "types": "./dist/com.d.ts",
       "import": "./dist/com.js",
@@ -45,6 +51,9 @@
   },
   "typesVersions": {
     "*": {
+      "winappsdk": [
+        "dist/winappsdk-config.d.ts"
+      ],
       "com": [
         "dist/com.d.ts"
       ],
@@ -108,7 +117,8 @@
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "lint": "oxlint",
-    "test": "npm run test:types && ava && npm run test:native-classes && npm run test:interface-inputs",
+    "test": "npm run test:types && ava && npm run test:native-classes && npm run test:interface-inputs && npm run test:winappsdk",
+    "test:winappsdk": "node --test __test__/winappsdk-config.e2e.cjs",
     "test:interface-inputs": "node --test __test__/interface-inputs.e2e.mjs",
     "test:native-classes": "node --test __test__/native-class-boundary.e2e.mjs",
     "test:native-classes:hooks": "node --test __test__/native-class-boundary-hooks.e2e.mjs",

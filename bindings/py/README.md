@@ -785,6 +785,64 @@ mismatches also fail rather than returning fabricated values. `take_error()`
 returns and clears the latest native callback diagnostic; `is_closed` is a
 read-only property.
 
+## Windows App SDK initialization
+
+The existing initializer supports explicit versions, and optionally a DLL path:
+
+```python
+from dynwinrt import init_winappsdk
+
+bootstrap = init_winappsdk(2, 5, bootstrap_dll_path=bootstrap_dll)
+```
+
+`init_winappsdk(2, 5)` retains its existing behavior and uses
+`WINAPPSDK_BOOTSTRAP_DLL_PATH`. Installed generated packages never alter that
+explicit two-version-argument path.
+
+When bindings were generated with the paired
+[`--winappsdk-version` / `--bootstrap-dll-path` options](../../tools/dynwinrt-codegen/python/README.md#windows-app-sdk-configuration),
+install their package normally or editable. The same initializer can then discover
+the installed configuration without application-maintained constants or paths:
+
+```python
+from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
+
+with RoApartment(0):  # The application selects the apartment, not the initializer.
+    bootstrap = init_winappsdk()
+    with projected_lifetime_scope():
+        # Create and run the application here.
+        ...
+```
+
+Discovery uses the generated package's `dynwinrt.winappsdk` entry point; no
+generated-package import is required first. It does not scan application source
+or infer a version from WinMD names. Missing configuration and conflicting
+versions/payloads are errors naming the provider packages; identical bundles can
+coexist. Supplying just one version component is an error.
+
+An explicit `bootstrap_dll_path` overrides the environment, which overrides the
+generated resource path. Invalid overrides fail rather than silently falling
+back. A path override alone still needs a generated version configuration.
+The runtime selects resources for the running Python interpreter, not the OS's
+native architecture, and verifies their generated SHA-256 digests.
+
+Importing a provider does not initialize Bootstrap or COM. The initializer also
+does not select STA/MTA; the explicit apartment-first example follows Bootstrap's
+documented prerequisite for compatibility across its native implementation paths.
+This does not imply that the existing init-first examples fail on modern Windows.
+
+The result remains `WinAppSDKContext`, including `resource_pri_path()`. It is
+**not** a shutdown/RAII context: dropping it does not remove the native package
+graph or unload Bootstrap. Repeated calls retain the existing native behavior,
+and failed calls can be retried. Changing SDK deployment or replacing loaded
+binaries requires a new process.
+
+The bundled Bootstrap DLL is not the complete Windows App Runtime. Deployment
+of a matching Runtime and the SDK's redistribution terms remain the application
+producer's responsibility. This API does not install the Runtime or silently
+skip initialization merely because the process has package identity.
+Ordinary Windows SDK-only generated bindings require none of this configuration.
+
 ## Experimental WinUI support
 
 When the required WinUI metadata is generated, `Application.create()` installs
