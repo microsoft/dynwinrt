@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $expectWasExplicit = $PSBoundParameters.ContainsKey("Expect")
-if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot "generated\__init__.py"))) {
+if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot "generated\src\generated\__init__.py"))) {
     throw "Generated bindings were not found. Run generate.ps1 first."
 }
 if (-not $Image) {

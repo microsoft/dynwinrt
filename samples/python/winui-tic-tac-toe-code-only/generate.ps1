@@ -67,3 +67,5 @@ Copy-Item -LiteralPath $BootstrapDll `
 
 Write-Host "Generated bindings in $output"
 Write-Host "Copied the bootstrap DLL to $runtime"
+
+Write-Host "Install this generated project into the sample interpreter with: python -m pip install -e `"$output`""

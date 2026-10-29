@@ -96,7 +96,7 @@ def load_type(package: str, namespace: str, name: str):
 
 def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None:
     os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(bootstrap_dll)
-    sys.path.insert(0, str(bindings_dir.parent))
+    sys.path.insert(0, str(bindings_dir / "src"))
     package = bindings_dir.name
 
     from dynwinrt import (

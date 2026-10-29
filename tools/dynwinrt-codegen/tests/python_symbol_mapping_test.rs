@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -134,7 +136,11 @@ fn check_consumer(directory: &Path, consumer: &str, strict: bool) {
             ])
             .args(strict.then_some("--strict"))
             .current_dir(directory)
-            .env("MYPYPATH", root().join("bindings").join("py"))
+            .env_remove("PYTHONPATH")
+            .env(
+                "MYPYPATH",
+                common::python_fixture_mypy_path(directory, true),
+            )
             .output()
             .unwrap(),
     );
@@ -161,7 +167,11 @@ fn reject_consumer(directory: &Path, consumer: &str, codes: &[&str]) {
             "negative.py",
         ])
         .current_dir(directory)
-        .env("MYPYPATH", root().join("bindings").join("py"))
+        .env_remove("PYTHONPATH")
+        .env(
+            "MYPYPATH",
+            common::python_fixture_mypy_path(directory, true),
+        )
         .output()
         .unwrap();
     let diagnostics = String::from_utf8_lossy(&output.stdout);
@@ -190,6 +200,7 @@ fn runtime(directory: &Path, source: &str) {
             Command::new(python())
                 .args(["-B", "runtime_probe.py"])
                 .current_dir(directory)
+                .env("PYTHONPATH", common::python_fixture_search_path(directory))
                 .output()
                 .unwrap(),
         );
@@ -197,8 +208,16 @@ fn runtime(directory: &Path, source: &str) {
 }
 
 fn module(package: &Path, name: &str, source: String, stub: String) {
-    fs::write(package.join(format!("{name}.py")), source).unwrap();
-    fs::write(package.join(format!("{name}.pyi")), stub).unwrap();
+    fs::write(
+        common::python_fixture_package(&package).join(format!("{name}.py")),
+        source,
+    )
+    .unwrap();
+    fs::write(
+        common::python_fixture_package(&package).join(format!("{name}.pyi")),
+        stub,
+    )
+    .unwrap();
 }
 
 fn support(package: &Path, interfaces: &[String]) {
@@ -2371,7 +2390,10 @@ fn python_normalized_struct_helpers_round_trip_nested_fields_arrays_and_delegate
         }
         write_structs(&package, &context, &structures);
         let owner_module = context.implementation_module_for_interface(&interface);
-        let source = fs::read_to_string(package.join(format!("{owner_module}.py"))).unwrap();
+        let source = fs::read_to_string(
+            common::python_fixture_package(&package).join(format!("{owner_module}.py")),
+        )
+        .unwrap();
         if packaged {
             for declaration in ["_pack_url_value", "_unpack_url_value"] {
                 let alpha = imported_symbol(
@@ -2783,7 +2805,8 @@ fn python_files(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         }
     }
     let mut files = BTreeMap::new();
-    visit(directory, directory, &mut files);
+    let directory = common::python_fixture_package(directory);
+    visit(&directory, &directory, &mut files);
     files
 }
 
@@ -2876,11 +2899,18 @@ fn python_class_companion_aliases_preserve_cli_and_standalone_contracts() {
             let owner_module =
                 context.implementation_module_for_type(&class_type("Audit", "Widget"));
             let peer_module = context.implementation_module_for_type(&class_type("Audit", peer));
-            let owner_source =
-                fs::read_to_string(package.join(format!("{owner_module}.py"))).unwrap();
-            let owner_stub =
-                fs::read_to_string(package.join(format!("{owner_module}.pyi"))).unwrap();
-            let peer_stub = fs::read_to_string(package.join(format!("{peer_module}.pyi"))).unwrap();
+            let owner_source = fs::read_to_string(
+                common::python_fixture_package(&package).join(format!("{owner_module}.py")),
+            )
+            .unwrap();
+            let owner_stub = fs::read_to_string(
+                common::python_fixture_package(&package).join(format!("{owner_module}.pyi")),
+            )
+            .unwrap();
+            let peer_stub = fs::read_to_string(
+                common::python_fixture_package(&package).join(format!("{peer_module}.pyi")),
+            )
+            .unwrap();
             let peer_alias = imported_symbol(&owner_source, &peer_module, peer);
             assert_eq!(peer_alias, imported_symbol(&owner_stub, &peer_module, peer));
             assert_eq!(peer_alias == peer, peer == "WidgetPeer");
@@ -3198,7 +3228,10 @@ fn python_inline_struct_companions_share_declarations_defaults_and_native_conver
                         if collision { qualified } else { leaf },
                     )
                 };
-                let source = fs::read_to_string(package.join(format!("{owner}.py"))).unwrap();
+                let source = fs::read_to_string(
+                    common::python_fixture_package(&package).join(format!("{owner}.py")),
+                )
+                .unwrap();
                 assert!(source.contains(&format!("DynWinRTType.struct_type('Audit.{leaf}'")));
                 if !packaged {
                     assert!(
@@ -3540,7 +3573,8 @@ fn python_symbol_collisions_incremental_package_matches_clean_generation() {
     let incremental = fixture.0.join("incremental").join("pyviews");
     let clean = fixture.0.join("clean").join("pyviews");
     generate(&winmd, &incremental, "Audit.IAlpha,Enums.IUse");
-    let alpha_before = fs::read(incremental.join("alpha__url_value.py")).unwrap();
+    let alpha_before =
+        fs::read(common::python_fixture_package(&incremental).join("alpha__url_value.py")).unwrap();
     generate(&winmd, &incremental, "Audit.IHelpers,Consumers.IForeign");
     generate(
         &winmd,
@@ -3549,7 +3583,7 @@ fn python_symbol_collisions_incremental_package_matches_clean_generation() {
     );
     assert_eq!(
         alpha_before,
-        fs::read(incremental.join("alpha__url_value.py")).unwrap()
+        fs::read(common::python_fixture_package(&incremental).join("alpha__url_value.py")).unwrap()
     );
     let incremental_files = python_files(&incremental);
     let clean_files = python_files(&clean);

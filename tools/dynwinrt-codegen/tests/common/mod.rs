@@ -9,6 +9,65 @@ use dynwinrt_codegen::meta::{
 };
 use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
+pub fn python_package_dir(project: &std::path::Path) -> std::path::PathBuf {
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.join(".dynwinrt-generator.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["layout"]["version"], 1);
+    project
+        .join("src")
+        .join(metadata["layout"]["import_name"].as_str().unwrap())
+}
+
+// Renderer tests also construct standalone packages without CLI project metadata.
+pub fn python_fixture_package(path: &std::path::Path) -> std::path::PathBuf {
+    if path.join(".dynwinrt-generator.json").is_file() {
+        python_package_dir(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+pub fn python_fixture_search_path(root: &std::path::Path) -> std::ffi::OsString {
+    let mut paths = vec![root.to_path_buf()];
+    if root.join(".dynwinrt-generator.json").is_file() {
+        paths.push(root.join("src"));
+    }
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.join(".dynwinrt-generator.json").is_file() {
+            paths.push(path.join("src"));
+        }
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
+pub fn python_fixture_mypy_path(
+    root: &std::path::Path,
+    source_runtime: bool,
+) -> std::ffi::OsString {
+    let mut paths = std::env::split_paths(&python_fixture_search_path(root)).collect::<Vec<_>>();
+    if source_runtime {
+        paths.push(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("bindings")
+                .join("py"),
+        );
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
+pub fn python_fixture_pyright_config(root: &std::path::Path) {
+    let paths = std::env::split_paths(&python_fixture_search_path(root)).collect::<Vec<_>>();
+    std::fs::write(
+        root.join("pyrightconfig.json"),
+        serde_json::json!({"extraPaths": paths}).to_string(),
+    )
+    .unwrap();
+}
+
 pub fn python_module(identity: TypeIdentity) -> String {
     PythonProjectionContext::packaged([identity.clone()])
         .unwrap()

@@ -128,7 +128,7 @@ def wrap_arg(val):
 
 def run_isolated_apartment_check(generated_dir, package, script, marker, *args):
     env = os.environ.copy()
-    parent = os.path.dirname(os.path.abspath(generated_dir))
+    parent = os.path.join(os.path.abspath(generated_dir), "src")
     env['PYTHONPATH'] = os.pathsep.join(filter(None, (parent, env.get('PYTHONPATH'))))
     env['DYNWINRT_E2E_PACKAGE_PARENT'] = parent
     child = subprocess.run(
@@ -3850,7 +3850,7 @@ async def run_check(
             runtime_module = importlib.import_module(f'{pkg_name}._runtime')
             module_paths = [
                 path
-                for path in sorted(Path(generated_dir).glob('*.py'))
+                for path in sorted((Path(generated_dir) / 'src' / pkg_name).glob('*.py'))
                 if path.name not in ('__init__.py', '_runtime.py')
             ]
             reference_modules = []
@@ -4168,10 +4168,10 @@ def main():
     parser.add_argument('--output', default=None, help='Path to write results.json')
     args = parser.parse_args()
 
-    # Add parent of generated dir to sys.path so package imports work
-    # Generated files use relative imports (from .xxx import), so the dir must be a package
-    gen_parent = os.path.dirname(os.path.abspath(args.generated))
-    gen_pkg = os.path.basename(os.path.abspath(args.generated))
+    # This source-only harness deliberately avoids installing generated projects.
+    gen_parent = os.path.join(os.path.abspath(args.generated), "src")
+    with open(os.path.join(args.generated, ".dynwinrt-generator.json"), encoding="utf-8") as stamp:
+        gen_pkg = json.load(stamp)["layout"]["import_name"]
     sys.path.insert(0, gen_parent)
 
     # Init WinRT

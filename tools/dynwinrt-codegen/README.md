@@ -10,6 +10,12 @@ bindings for [dynwinrt](https://github.com/microsoft/dynwinrt):
 - Contract-driven Win32 DLL exports from `Windows.Win32.winmd` as JavaScript
   and TypeScript
 
+Python output uses an installable `src/<import_name>` project layout. Install the
+`--output` directory normally or editable; do not add its parent to the import
+path. Upgrading from preview.23 or earlier requires clean, complete regeneration
+and reinstallation; installed imports and the runtime ABI are unchanged. See the
+[Python layout and migration guide](python/README.md#generated-output).
+
 The command is available for Windows x64 and ARM64. Generated JavaScript uses
 `@microsoft/dynwinrt`; generated Python uses `dynwinrt`.
 

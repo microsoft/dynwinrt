@@ -19,6 +19,7 @@ if ($root.Length -ne 104) {
     throw "Long-path test root must be 104 characters, got $($root.Length)"
 }
 $source = Join-Path $root "source\generated_bindings"
+$package = Join-Path $source "src\generated_bindings"
 $wheelDirectory = Join-Path $root "wheels"
 $sourceInstall = Join-Path $root "from-source"
 $install = Join-Path $root ("i" * (135 - $root.Length - 1))
@@ -33,15 +34,15 @@ try {
         --output $source
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    $modules = Get-ChildItem -LiteralPath $source -File -Filter *.py
+    $modules = Get-ChildItem -LiteralPath $package -File -Filter *.py
     $tooLong = $modules | Where-Object { $_.BaseName.Length -gt 56 }
     if ($tooLong) {
         throw "Generated Python module exceeds 56 UTF-16 code units: $($tooLong[0].Name)"
     }
-    $tooLong = Get-ChildItem -LiteralPath $source -File -Recurse |
+    $tooLong = Get-ChildItem -LiteralPath $package -File -Recurse |
         Where-Object {
             $_.Extension -in @(".py", ".pyi") -and
-            $_.FullName.Substring($source.Length + 1).Length -gt 60
+            $_.FullName.Substring($package.Length + 1).Length -gt 60
         }
     if ($tooLong) {
         throw "Generated Python relative source path exceeds 60 UTF-16 code units: $($tooLong[0].Name)"
@@ -83,7 +84,7 @@ try {
         New-Item -ItemType Directory -Force -Path $cachedPackage | Out-Null
         foreach ($extension in @("py", "pyi")) {
             Copy-Item `
-                -LiteralPath (Join-Path $source "$($shortModule.BaseName).$extension") `
+                -LiteralPath (Join-Path $package "$($shortModule.BaseName).$extension") `
                 -Destination $cachedPackage
         }
     }
@@ -128,7 +129,7 @@ try {
     }
     foreach ($extension in @("py", "pyi")) {
         if (-not (Test-Path -LiteralPath (
-            Join-Path $source "$($shortModule.BaseName).$extension"))) {
+            Join-Path $package "$($shortModule.BaseName).$extension"))) {
             throw "Unrelated incremental generation removed $($shortModule.BaseName).$extension"
         }
     }

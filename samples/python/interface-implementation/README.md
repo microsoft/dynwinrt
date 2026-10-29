@@ -23,8 +23,8 @@ cargo build -p dynwinrt-codegen
 
 The selected interpreter must have this checkout's runtime installed.
 Generation auto-detects the Windows SDK; `-Winmd` selects an explicit metadata
-file. The generated package is imported from the sample directory and does
-not need to be installed separately.
+file. Install the generated project into that interpreter before running the
+sample (an editable install makes subsequent regeneration visible).
 
 The common pattern is `with IBackgroundTask.implement(handler) as impl:`,
 then `impl.value.run(instance_view)`. The primary view is stable and managed
@@ -44,3 +44,9 @@ another thread fail before entering Python. See
 [the public guide](../../../docs/guides/windows/winrt-interface-implementations.md)
 for the capability matrix, callback errors, native retention, and cycle/shutdown
 semantics.
+
+After generation, install the generated project into the same interpreter used
+to run the sample: `python -m pip install -e .\generated` (use that interpreter's
+full path when needed). The import remains `generated`; sources now live in
+`generated\src\generated`, not directly in `generated`. When upgrading from
+preview.23 or earlier, regenerate the complete output and reinstall it.

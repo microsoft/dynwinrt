@@ -2,7 +2,14 @@
 
 All Python samples use generated bindings and an installed `dynwinrt` runtime.
 Install `dynwinrt` and `dynwinrt-codegen` from PyPI, or build both from this
-checkout, then run each sample's `generate.ps1` before `run.ps1`.
+checkout, then run each sample's `generate.ps1`, install that sample's generated
+project with `python -m pip install -e .\generated`, and run `run.ps1` with the
+same interpreter. Sources are under `generated\src\generated`; installed imports
+remain `generated`. After upgrading from preview.23 or earlier, regenerate the
+complete project and reinstall it instead of adding the old output parent to
+the import path.
+Samples share the import name `generated`; install the selected sample again
+when switching samples in a shared interpreter.
 
 | Sample | Demonstrates |
 | --- | --- |

@@ -37,3 +37,9 @@ For non-interactive validation, synthesize the stream without playing it:
 
 `-Smoke` validates synthesis, not playback. In headless or remote sessions without
 an audio output, playback may time out because Windows cannot create a media sink.
+
+After generation, install the generated project into the same interpreter used
+to run the sample: `python -m pip install -e .\generated` (use that interpreter's
+full path when needed). The import remains `generated`; sources now live in
+`generated\src\generated`, not directly in `generated`. When upgrading from
+preview.23 or earlier, regenerate the complete output and reinstall it.

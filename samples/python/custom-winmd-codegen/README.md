@@ -45,3 +45,9 @@ The default command imports every generated module and prints the first public
 symbols. Activation and method calls require the component that implements the
 WinMD to be installed, registered, or bootstrapped according to that
 component's deployment model.
+
+After generation, install the generated project into the same interpreter used
+to run the sample: `python -m pip install -e .\generated` (use that interpreter's
+full path when needed). The import remains `generated`; sources now live in
+`generated\src\generated`, not directly in `generated`. When upgrading from
+preview.23 or earlier, regenerate the complete output and reinstall it.

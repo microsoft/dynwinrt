@@ -16,6 +16,7 @@ import threading
 
 def run(sample_root, mode, require_owner_hook):
     sys.path.insert(0, str(sample_root))
+    sys.path.insert(0, str(sample_root / "generated" / "src"))
     import dynwinrt as dw
     from dynwinrt import dynwinrt as native
 
