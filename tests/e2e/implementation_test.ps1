@@ -87,13 +87,14 @@ foreach ($language in $Lang) {
         Write-Host "`n--- Implementation .pyi consumer typecheck ---" -ForegroundColor Yellow
         $previousMypyPath = $env:MYPYPATH
         try {
+            $sourceRoot = Join-Path $directory "src"
             # Long generic delegate facade names can exceed MAX_PATH in a
             # shared-worktree checkout. Use extended paths, not registry/OS
             # changes or suppressed import diagnostics.
-            $env:MYPYPATH = if ($env:OS -eq "Windows_NT" -and -not $out.StartsWith('\\?\')) {
-                if ($out.StartsWith('\\')) { '\\?\UNC\' + $out.Substring(2) }
-                else { '\\?\' + $out }
-            } else { $out }
+            $env:MYPYPATH = if ($env:OS -eq "Windows_NT" -and -not $sourceRoot.StartsWith('\\?\')) {
+                if ($sourceRoot.StartsWith('\\')) { '\\?\UNC\' + $sourceRoot.Substring(2) }
+                else { '\\?\' + $sourceRoot }
+            } else { $sourceRoot }
             & $Python -m mypy --strict (Join-Path $PSScriptRoot "typecheck\python_implementation_api.py")
             $typecheckResults[$language] = $LASTEXITCODE -eq 0
             if ($LASTEXITCODE -ne 0) { $failed++ }
