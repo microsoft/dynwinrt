@@ -361,6 +361,8 @@ pub struct ClassMeta {
     pub full_name: String,
     /// Direct WinRT runtime-class base, excluding System.Object.
     pub base_class: Option<TypeRef>,
+    /// Resolved WinMD ancestor classes, nearest first, excluding System.Object.
+    pub ancestor_classes: Vec<TypeRef>,
     pub default_interface: Option<InterfaceMeta>,
     /// Supplemental interfaces, including parameterized and versioned interfaces.
     pub required_interfaces: Vec<InterfaceMeta>,
@@ -1520,6 +1522,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         .map(|e| (e.namespace().to_string(), e.name().to_string()));
     // The documentation lists inherited members under the class declaring them.
     let mut documentation_owners = vec![full_name.clone()];
+    let mut ancestor_classes = Vec::new();
     while let Some((ext_ns, ext_name)) = ancestor_key.take() {
         if ext_ns == "System" && ext_name == "Object" {
             break;
@@ -1528,6 +1531,11 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             Some(d) => d,
             None => break,
         };
+        ancestor_classes.push(TypeRef {
+            namespace: ext_ns.clone(),
+            name: ext_name.clone(),
+            kind: TypeKind::Class,
+        });
         documentation_owners.push(format!("{ext_ns}.{ext_name}"));
         for iface_impl in parent_def.interface_impls() {
             let iface_ty = iface_impl.interface(&[]);
@@ -1693,6 +1701,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         namespace: namespace.to_string(),
         full_name,
         base_class,
+        ancestor_classes,
         default_interface,
         required_interfaces,
         overridable_interfaces,

@@ -15,6 +15,7 @@ on:
       - 'crates/dynwinrt/**'
       - 'crates/dynwinrt-com-contracts/**'
       - 'eng/coverage/**'
+      - 'eng/ci/restore-windows-metadata.ps1'
       - 'tests/e2e/**'
       - 'tools/dynwinrt-codegen/**'
   push:
@@ -56,6 +57,13 @@ jobs:
           cache: pip
 
       - uses: NuGet/setup-nuget@v2
+
+      - name: Restore pinned Windows SDK corpus
+        shell: pwsh
+        run: |
+          $winmd = .\eng\ci\restore-windows-metadata.ps1 `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'windows-sdk-corpus')
+          "DYNWINRT_WINDOWS_WINMD=$winmd" >> $env:GITHUB_ENV
 
       - name: Install cargo-llvm-cov
         shell: pwsh

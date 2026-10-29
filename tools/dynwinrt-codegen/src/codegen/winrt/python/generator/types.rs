@@ -7,9 +7,9 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_identity, non_null_json_collection,
-    observable_collection_identity, observable_map_identity, observable_vector_identity,
-    runtime_mixin,
+    CollectionInputContract, CollectionKind, interface_kind, map_iterable_identity,
+    non_null_json_collection, observable_collection_identity, observable_map_identity,
+    observable_vector_identity, runtime_mixin,
 };
 use crate::codegen::winrt::python::member_plan::{PlannedMember, interface_member_plan};
 use crate::meta::CollectionInputRole;
@@ -299,7 +299,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         &iface.name,
         context,
         super::super::nullability::AnnotationSurface::Runtime,
-        false,
+        CollectionInputContract::General,
         4,
     ));
     out.push_str(&implementation.factory_body);
@@ -659,7 +659,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
                     .iter()
                     .any(|candidate| candidate.name == format!("get_{suffix}"))
             }),
-        stock_json_receiver: false,
+        input_contract: CollectionInputContract::General,
     };
     let members = reorder_getters_before_setters(&iface.methods)
         .into_iter()

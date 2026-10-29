@@ -91,17 +91,15 @@ jobs:
         run: |
           npm install --prefix target/tsc --no-save --ignore-scripts --no-package-lock typescript@5.9.3
           $tsc = (Resolve-Path target/tsc/node_modules/typescript/bin/tsc).Path
-          $windowsWinmd = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\UnionMetadata' `
-            -Filter Windows.winmd -File -Recurse |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if (-not $windowsWinmd) {
-            throw 'Windows SDK metadata is required for declaration tests'
-          }
           "DYNWINRT_TSC=$tsc" >> $env:GITHUB_ENV
-          "DYNWINRT_WINDOWS_WINMD=$($windowsWinmd.FullName)" >> $env:GITHUB_ENV
           "DYNWINRT_REQUIRE_TSC=1" >> $env:GITHUB_ENV
       - uses: NuGet/setup-nuget@v2
+      - name: Restore pinned Windows SDK corpus
+        shell: pwsh
+        run: |
+          $winmd = .\eng\ci\restore-windows-metadata.ps1 `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'windows-sdk-corpus')
+          "DYNWINRT_WINDOWS_WINMD=$winmd" >> $env:GITHUB_ENV
       - name: Install Win32 metadata
         shell: pwsh
         run: |
@@ -578,6 +576,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             reference_array_results_preserve_null_elements -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:DYNWINRT_TEST_INSTALLED_RUNTIME = '1'
+          cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
+            resource_dictionary_keys_are_scoped_and_typed_in_stubs_and_inline_sources -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dynwinrt-codegen --test python_collection_helper_collision_test `
             --test python_collection_member_collision_test -- --nocapture

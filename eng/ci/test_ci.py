@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -189,6 +190,87 @@ class PackageSourceTests(unittest.TestCase):
                         self.assertIn("Package README", result.stdout + result.stderr)
                     finally:
                         readme.write_bytes(original)
+
+
+class WindowsCorpusTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="dynwinrt-ci-corpus-")
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name)
+        self.relative_pin = Path("tools/dynwinrt-codegen/tests/windows_sdk_corpus.json")
+        self.pin = json.loads((ROOT / self.relative_pin).read_text(encoding="utf-8"))
+        self.payload = b"test metadata bytes"
+        self.pin["sha256"] = hashlib.sha256(self.payload).hexdigest()
+        destination = self.repo / self.relative_pin
+        destination.parent.mkdir(parents=True)
+        destination.write_text(json.dumps(self.pin), encoding="utf-8")
+        self.script = self.repo / "eng/ci/restore-windows-metadata.ps1"
+        self.script.parent.mkdir(parents=True)
+        shutil.copyfile(CI / "restore-windows-metadata.ps1", self.script)
+        self.output = self.repo / "packages"
+        self.winmd = (
+            self.output / f"{self.pin['package']}.{self.pin['version']}"
+            / self.pin["relative_path"]
+        )
+        self.nuget = self.repo / "nuget.ps1"
+        self.nuget.write_text(
+            "param([string]$Command, [string]$Id, [string]$Version, "
+            "[string]$OutputDirectory, [switch]$DirectDownload, [switch]$NonInteractive)\n"
+            "if ($Command -ne 'install' -or -not $DirectDownload -or -not $NonInteractive) { exit 2 }\n"
+            f"if ($Id -ne '{self.pin['package']}' -or $Version -ne '{self.pin['version']}') {{ exit 3 }}\n"
+            "$package = Join-Path $OutputDirectory \"$Id.$Version\"\n"
+            f"$path = Join-Path $package '{self.pin['relative_path']}'\n"
+            "New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null\n"
+            "[IO.File]::WriteAllBytes($path, [Text.Encoding]::UTF8.GetBytes('test metadata bytes'))\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+
+    def restore(self):
+        return powershell(
+            self.script, "-OutputDirectory", self.output, "-NuGet", self.nuget,
+        )
+
+    def test_restore_verifies_content_and_reuses_only_verified_existing_input(self):
+        result = self.restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        returned = Path(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(returned.is_absolute())
+        self.assertTrue(returned.samefile(self.winmd), f"{returned} != {self.winmd}")
+        self.assertEqual(self.winmd.read_bytes(), self.payload)
+        self.nuget.unlink()
+        result = self.restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_modified_input_and_failed_restore_are_errors(self):
+        self.winmd.parent.mkdir(parents=True)
+        self.winmd.write_bytes(b"rolling SDK changed in-place")
+        result = self.restore()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("metadata hash mismatch", result.stdout + result.stderr)
+        self.assertEqual(self.winmd.read_bytes(), b"rolling SDK changed in-place")
+        self.winmd.unlink()
+        self.nuget.write_text("exit 7\n", encoding="utf-8")
+        result = self.restore()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Failed to restore", result.stdout + result.stderr)
+
+    def test_build_and_coverage_share_the_pinned_corpus_input(self):
+        coverage = yaml.safe_load(
+            (ROOT / ".github/workflows/coverage.yml").read_text(encoding="utf-8")
+        )
+        triggers = coverage.get("on", coverage.get(True))
+        self.assertIn(
+            "eng/ci/restore-windows-metadata.ps1", triggers["pull_request"]["paths"]
+        )
+        for job in (JOBS["test-rust"], coverage["jobs"]["coverage"]):
+            step, = [
+                step for step in job["steps"]
+                if step.get("name") == "Restore pinned Windows SDK corpus"
+            ]
+            self.assertIn(r".\eng\ci\restore-windows-metadata.ps1", step["run"])
+            self.assertIn("DYNWINRT_WINDOWS_WINMD=$winmd", step["run"])
+            self.assertNotIn("Sort-Object", step["run"])
 
 
 class WorkflowTests(unittest.TestCase):

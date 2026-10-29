@@ -8,8 +8,8 @@ use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, class_interface, interface_kind, map_iterable_identity,
-    non_null_json_collection, runtime_mixin, stock_json_class_contract,
+    CollectionInputContract, CollectionKind, class_interface, interface_kind,
+    map_iterable_identity, non_null_json_collection, runtime_mixin, stock_json_class_contract,
 };
 use crate::codegen::winrt::python::member_plan::{
     ClassMemberPlan, PlannedMember, ScopePlan, class_instance_interfaces, interface_member_plan,
@@ -42,7 +42,7 @@ pub fn generate_class<'a>(
     let context = context.as_ref();
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
-    let stock_json_receiver = stock_json_class_contract(class).is_some();
+    let input_contract = CollectionInputContract::for_class(class);
     let non_null_json = collection_iface
         .zip(collection_kind)
         .and_then(|(iface, kind)| non_null_json_collection(kind, &iface.generic_args));
@@ -102,6 +102,14 @@ pub fn generate_class<'a>(
             .flat_map(|interface| interface.methods.iter()),
         collection_iface.is_some(),
     ));
+    if input_contract == CollectionInputContract::ResourceDictionary {
+        out.push_str(&format!(
+            "from dynwinrt import to_winrt_object as {}\n\
+             from dynwinrt.values import PropertyType as {}\n",
+            context.support_symbol_reference(PythonSupportSymbol::BoxObject),
+            context.support_symbol_reference(PythonSupportSymbol::PropertyType),
+        ));
+    }
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -143,6 +151,11 @@ pub fn generate_class<'a>(
     {
         out.push_str(IREFERENCE_HELPER);
     }
+    out.push_str(&super::super::collections::protocol_helper_typevars(
+        &plan.instance.collection_helpers,
+        context,
+        input_contract,
+    ));
     out.push('\n');
     let mut type_checking_imports = Vec::new();
 
@@ -651,7 +664,7 @@ pub fn generate_class<'a>(
                     .name
                     .strip_prefix("put_")
                     .is_some_and(|suffix| property_getters.contains(suffix)),
-            stock_json_receiver,
+            input_contract,
         }
     };
     // Python evaluates decorators while building the class. Emit every getter
@@ -713,7 +726,7 @@ pub fn generate_class<'a>(
             &context.class_name(class),
             context,
             super::super::nullability::AnnotationSurface::Runtime,
-            stock_json_receiver,
+            input_contract,
             4,
         ));
     }
@@ -926,7 +939,7 @@ pub fn generate_class<'a>(
                         .iter()
                         .any(|candidate| candidate.name == format!("get_{suffix}"))
                 }),
-            stock_json_receiver: false,
+            input_contract: CollectionInputContract::General,
         };
         let members = reorder_getters_before_setters(&req_iface.methods)
             .into_iter()
@@ -972,7 +985,7 @@ pub fn generate_class<'a>(
             &symbol,
             context,
             super::super::nullability::AnnotationSurface::Runtime,
-            false,
+            CollectionInputContract::General,
             4,
         ));
     }
@@ -1347,6 +1360,7 @@ fn generate_python_constructor(
             .map(|candidate| DispatchCandidate {
                 legacy_preservation: None,
                 params: candidate.public_params.clone(),
+                guards: None,
                 body: vec![format!(
                     "return {}",
                     candidate.call_expr.replace("type(self)", "cls")
@@ -1565,6 +1579,7 @@ fn generate_python_constructor(
             DispatchCandidate {
                 legacy_preservation: None,
                 params: candidate.public_params.clone(),
+                guards: None,
                 body,
             }
         })

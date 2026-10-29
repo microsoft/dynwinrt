@@ -14,6 +14,82 @@ from datetime import timedelta
 from pathlib import Path
 
 
+def check_resource_dictionary_keys(resources):
+    from enum import Enum, StrEnum
+    from types import SimpleNamespace
+    from dynwinrt import DynWinRTValue, to_winrt_object, unbox_object
+    from dynwinrt.values import Char16
+
+    class ResourceKey(StrEnum):
+        ACCENT = "AccentButtonStyle"
+
+    class LegacyResourceKey(str, Enum):
+        ACCENT = "AccentButtonStyle"
+
+    name = "AccentButtonStyle"
+    boxed = to_winrt_object(name)
+    identity = boxed.identity_raw()
+    style = resources.lookup(boxed)
+    assert isinstance(style, DynWinRTValue) and not style.is_null()
+    for key in (name, boxed, SimpleNamespace(_obj=boxed), ResourceKey.ACCENT, LegacyResourceKey.ACCENT):
+        assert resources.lookup(key).identity_raw() == style.identity_raw()
+        assert resources[key].identity_raw() == style.identity_raw()
+        assert resources.get(key).identity_raw() == style.identity_raw()
+        assert resources.has_key(key) and key in resources
+
+    missing = "DynWinRT.Missing.Resource.StringKey"
+    errors = []
+    for key in (to_winrt_object(missing), missing):
+        try:
+            resources.lookup(key)
+        except OSError as error:
+            errors.append((error.winerror, str(error)))
+        else:
+            raise AssertionError("missing ResourceDictionary.lookup did not raise")
+    assert errors[0] == errors[1]
+    try:
+        resources[missing]
+    except KeyError as error:
+        assert error.args == (missing,)
+    else:
+        raise AssertionError("missing ResourceDictionary item did not raise")
+    fallback = object()
+    assert resources.get(missing) is None
+    assert resources.get(missing, fallback) is fallback
+    assert resources.pop(missing, fallback) is fallback
+
+    local = type(resources)()
+    assert local.insert("first", style) is False
+    assert local.insert("first", style) is True
+    local["second"] = style
+    local.update(third=style)
+    assert local.setdefault("first", style).identity_raw() == style.identity_raw()
+    assert local.setdefault("fourth", style).identity_raw() == style.identity_raw()
+    # Even tagged str subclasses are keys of the native String contract.
+    local[Char16("x")] = style
+    assert local["x"].identity_raw() == style.identity_raw()
+    keys = list(local)
+    assert len(local) == len(keys) == 5
+    assert all(isinstance(key, DynWinRTValue) for key in keys)
+    assert {unbox_object(key) for key in keys} == {"first", "second", "third", "fourth", "x"}
+    assert local != {unbox_object(key): style for key in keys}
+    local.remove("first")
+    del local["second"]
+    assert local.pop("third").identity_raw() == style.identity_raw()
+    assert len(local) == 2
+    assert boxed.identity_raw() == identity and not boxed.is_released()
+    assert resources.lookup(boxed).identity_raw() == style.identity_raw()
+    released = to_winrt_object(name)
+    released.release()
+    for key in (released, SimpleNamespace(_obj=released)):
+        try:
+            resources.lookup(key)
+        except RuntimeError as error:
+            assert "released" in str(error)
+        else:
+            raise AssertionError("released ResourceDictionary key was accepted")
+
+
 def load_type(package: str, namespace: str, name: str):
     return getattr(importlib.import_module(f"{package}.{namespace}"), name)
 
@@ -207,6 +283,7 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
                             f"{sorted(theme_names)!r}"
                         )
                     state["fluent_theme_names"] = sorted(theme_names)
+                    check_resource_dictionary_keys(resources)
                     if app.requested_theme != ApplicationTheme.Dark:
                         raise RuntimeError(
                             "Application requested theme was not applied"
