@@ -134,6 +134,12 @@ the same runtime installation. `npm pack` includes the DLLs, JSON configuration
 and notices, and registration is marked as a side effect for bundlers. Runtime
 paths are package-relative, independent of the working directory.
 
+Bootstrap bundling requires `--import-name` to name an npm package exposing the
+`/winappsdk` support entry point (the default is `@microsoft/dynwinrt`).
+File imports and package subpaths are rejected, even when a later generation pass
+omits the Bootstrap options. File-based runtime imports remain supported when
+generating without Bootstrap bundling in a clean output directory.
+
 Missing imported configuration, partial version arguments, conflicting product
 versions or differing DLL payloads produce explicit errors. Identical bundles
 can be registered by multiple generated packages. The codegen-support

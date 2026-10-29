@@ -175,6 +175,7 @@ enum Commands {
 
         /// Custom import name for the dynwinrt runtime package in generated JS/TS files.
         /// Defaults to "@microsoft/dynwinrt".
+        /// Bootstrap bundling requires an npm package name, not a file path or package subpath.
         #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
         import_name: String,
 

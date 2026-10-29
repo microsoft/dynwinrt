@@ -341,6 +341,154 @@ fn original_dll_bytes_licenses_and_runtime_configuration_are_packaged() {
 }
 
 #[test]
+fn javascript_bootstrap_accepts_scoped_and_unscoped_package_names() {
+    for runtime in [
+        "@microsoft/dynwinrt",
+        "dynwinrt-local",
+        "@custom-scope/dynwinrt.runtime",
+        "dynwinrt.runtime",
+    ] {
+        let fixture = Fixture::new();
+        succeeded(
+            fixture
+                .command("js", true)
+                .args(["--import-name", runtime])
+                .output()
+                .unwrap(),
+        );
+        let package: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.output.join("package.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            package["peerDependencies"],
+            serde_json::json!({ runtime: env!("CARGO_PKG_VERSION") })
+        );
+        let registration = fs::read_to_string(fixture.output.join("_winappsdk.cjs")).unwrap();
+        assert!(registration.contains(&format!("require(\"{runtime}/winappsdk\")")));
+        let before = files(&fixture.output);
+        succeeded(
+            fixture
+                .command("js", false)
+                .args(["--import-name", runtime])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(files(&fixture.output), before);
+    }
+}
+
+#[test]
+fn javascript_bootstrap_rejects_non_package_imports_before_writing() {
+    let fixture = Fixture::new();
+    for existing in [false, true] {
+        if existing {
+            fixture.generate("js", false);
+        }
+        for runtime in [
+            "../../bindings/js/dist/winrt.js",
+            "./runtime.js",
+            r"..\..\bindings\js\dist\winrt.js",
+            r"C:\runtime\winrt.js",
+            "C:/runtime/winrt.js",
+            "/runtime/winrt.js",
+            r"\\server\share\runtime.js",
+            "file:///C:/runtime/winrt.js",
+            "@microsoft/dynwinrt/dist/winrt.js",
+            "dynwinrt/dist/winrt.js",
+            "@scope",
+            "@scope/",
+            "@scope//runtime",
+            "dynwinrt@0.1.0",
+            "runtime name",
+            "node_modules",
+            ".runtime",
+            "_runtime",
+            "",
+        ] {
+            for dry_run in [false, true] {
+                let mut command = fixture.command("js", true);
+                command.args(["--import-name", runtime]);
+                if dry_run {
+                    command.arg("--dry-run");
+                }
+                let error = fixture.refused_unchanged(
+                    &mut command,
+                    "Bootstrap bundling requires --import-name to be an npm package name",
+                );
+                assert!(error.contains("clean output directory"));
+                assert_eq!(fixture.output.exists(), existing);
+            }
+        }
+    }
+}
+
+#[test]
+fn javascript_file_imports_remain_supported_without_bootstrap() {
+    for runtime in [
+        "../../bindings/js/dist/winrt.js",
+        "./runtime.js",
+        "C:/runtime/winrt.js",
+        "@microsoft/dynwinrt/dist/winrt.js",
+    ] {
+        let fixture = Fixture::new();
+        succeeded(
+            fixture
+                .command("js", false)
+                .args(["--import-name", runtime])
+                .output()
+                .unwrap(),
+        );
+        assert!(!fixture.output.join(MANIFEST).exists());
+        assert!(!fixture.output.join("_winappsdk.cjs").exists());
+        let package: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.output.join("package.json")).unwrap())
+                .unwrap();
+        assert!(package.get("peerDependencies").is_none());
+    }
+}
+
+#[test]
+fn retained_javascript_bootstrap_validates_imports_when_options_are_omitted() {
+    let fixture = Fixture::new();
+    fixture.generate("js", true);
+    let runtime = "../../bindings/js/dist/winrt.js";
+    fixture.refused_unchanged(
+        fixture
+            .command("js", false)
+            .args(["--import-name", runtime]),
+        "Bootstrap bundling requires --import-name to be an npm package name",
+    );
+
+    // Reproduce a bundle created by the old generator with a file-path runtime import.
+    let manifest_path = fixture.output.join(MANIFEST);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["runtime_import"] = runtime.into();
+    let registration = fs::read_to_string(fixture.output.join("_winappsdk.cjs"))
+        .unwrap()
+        .replace("@microsoft/dynwinrt", runtime);
+    manifest["files"]["_winappsdk.cjs"] =
+        format!("{:x}", Sha256::digest(registration.as_bytes())).into();
+    fs::write(fixture.output.join("_winappsdk.cjs"), registration).unwrap();
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    for incremental in [false, true] {
+        let mut command = fixture.command("js", false);
+        command.args(["--import-name", runtime]);
+        if incremental {
+            command.args(["--class-name", "Widget"]);
+        }
+        fixture.refused_unchanged(
+            &mut command,
+            "Bootstrap bundling requires --import-name to be an npm package name",
+        );
+    }
+}
+
+#[test]
 fn same_bundle_survives_full_and_incremental_passes_with_omitted_options() {
     for language in ["py", "js"] {
         let fixture = Fixture::new();

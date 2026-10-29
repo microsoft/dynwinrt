@@ -570,6 +570,30 @@ fn inspect_owned_path(output: &Path, relative: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn is_npm_package_name(name: &str) -> bool {
+    fn component(name: &str) -> bool {
+        !name.is_empty()
+            && !name.starts_with(['.', '_'])
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+            })
+    }
+
+    if name.len() > 214
+        || name.eq_ignore_ascii_case("node_modules")
+        || name.eq_ignore_ascii_case("favicon.ico")
+    {
+        return false;
+    }
+    if let Some(scoped) = name.strip_prefix('@') {
+        scoped
+            .split_once('/')
+            .is_some_and(|(scope, package)| component(scope) && component(package))
+    } else {
+        component(name)
+    }
+}
+
 pub(crate) fn prepare(
     output: &Path,
     language: &str,
@@ -577,6 +601,18 @@ pub(crate) fn prepare(
     inputs: Option<Inputs>,
 ) -> Result<Option<Bundle>, String> {
     let existing = read_manifest(output)?;
+    if language == "js"
+        && (inputs.is_some() || existing.is_some())
+        && !is_npm_package_name(runtime_import)
+    {
+        return Err(format!(
+            "Windows App SDK Bootstrap bundling requires --import-name to be an npm package name \
+             (for example @microsoft/dynwinrt), not a file path or package subpath: \
+             {runtime_import:?}. Install the runtime package and use its package name, or keep \
+             file imports by generating without Bootstrap bundling in a clean output directory. \
+             Existing output has not been changed."
+        ));
+    }
     if existing.is_none()
         && inputs.is_none()
         && [
