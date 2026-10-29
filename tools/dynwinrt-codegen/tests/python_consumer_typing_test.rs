@@ -1056,6 +1056,30 @@ fn resource_dictionary_keys_are_scoped_and_typed_in_stubs_and_inline_sources() {
             &[],
         );
     }
+    for (name, base_namespace, base_name) in [
+        (
+            "DerivedResources",
+            "Microsoft.UI.Xaml",
+            "ResourceDictionary",
+        ),
+        ("GrandchildResources", "Contoso", "DerivedResources"),
+        ("UnrelatedResources", "Contoso", "ResourceDictionary"),
+    ] {
+        let base = file.TypeRef(base_namespace, base_name);
+        let class = file.TypeDef(
+            "Contoso",
+            name,
+            writer::TypeDefOrRef::TypeRef(base),
+            TypeAttributes::Public | TypeAttributes::WindowsRuntime,
+        );
+        let implementation =
+            file.InterfaceImpl(class, &Type::named("Windows.Foundation", "IStringable"));
+        file.Attribute(
+            writer::HasAttribute::InterfaceImpl(implementation),
+            writer::AttributeType::MemberRef(default_constructor),
+            &[],
+        );
+    }
     fs::write(&metadata, file.into_stream()).unwrap();
 
     let consumer = r#"from enum import Enum, StrEnum
@@ -1063,6 +1087,9 @@ from typing import assert_type
 from dynwinrt import DynWinRTValue
 from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
 from views.windows__ui__xaml__resource_dictionary import ResourceDictionary as UwpResourceDictionary
+from views.windows__ui__xaml__color_palette_resources import ColorPaletteResources
+from views.contoso__derived_resources import DerivedResources
+from views.contoso__grandchild_resources import GrandchildResources
 
 class ResourceKey(StrEnum):
     STYLE = "AccentButtonStyle"
@@ -1099,6 +1126,24 @@ def stock_contract(resources: UwpResourceDictionary) -> None:
     assert_type(resources["style"], DynWinRTValue | None)
     assert_type(resources.get("style"), DynWinRTValue | None)
 
+def inherited_keys(
+    resources: DerivedResources | GrandchildResources | ColorPaletteResources, raw: DynWinRTValue
+) -> None:
+    assert_type(resources.lookup("style"), DynWinRTValue | None)
+    assert_type(resources["style"], DynWinRTValue | None)
+    assert_type(resources.get("absent", 17), DynWinRTValue | int | None)
+    assert_type(resources.pop(raw, 17), DynWinRTValue | int | None)
+    assert_type(resources.has_key("style"), bool)
+    assert_type(resources.insert("style", raw), bool)
+    resources.update({"style": raw})
+    resources["style"] = raw
+    resources.remove("style")
+    del resources["style"]
+
+def raw_key_defaults(resources: ResourceDictionary, raw: DynWinRTValue) -> None:
+    assert_type(resources.get(raw, 17), DynWinRTValue | int | None)
+    assert_type(resources.pop(raw, 17), DynWinRTValue | int | None)
+
 def string_enum_keys(resources: ResourceDictionary | UwpResourceDictionary, raw: DynWinRTValue) -> None:
     for key in (ResourceKey.STYLE, LegacyResourceKey.STYLE):
         assert_type(resources.lookup(key), DynWinRTValue | None)
@@ -1118,6 +1163,21 @@ def string_enum_keys(resources: ResourceDictionary | UwpResourceDictionary, raw:
     let like_consumer = r#"
 from collections.abc import Iterator
 from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionaryLike
+from views.windows__ui__xaml__resource_dictionary import ResourceDictionaryLike as UwpResourceDictionaryLike
+
+class PythonChild(ResourceDictionary):
+    pass
+
+def base_contracts(
+    direct: DerivedResources, indirect: GrandchildResources,
+    palette: ColorPaletteResources, python_child: PythonChild
+) -> None:
+    base: ResourceDictionaryLike = direct
+    base = indirect
+    base = python_child
+    assert_type(base.lookup("style"), DynWinRTValue | None)
+    uwp_base: UwpResourceDictionaryLike = palette
+    assert_type(uwp_base.lookup("style"), DynWinRTValue | None)
 
 def like_keys(resources: ResourceDictionaryLike, concrete: ResourceDictionary) -> None:
     resources = concrete
@@ -1131,11 +1191,12 @@ def like_keys(resources: ResourceDictionaryLike, concrete: ResourceDictionary) -
     let invalid = r#"from dynwinrt import DynWinRTValue
 from views.microsoft__ui__xaml__resource_dictionary import ResourceDictionary
 from views.contoso__resource_dictionary import ResourceDictionary as Unrelated
+from views.contoso__unrelated_resources import UnrelatedResources
 from views.windows__foundation__collections__i_map_object_object import IMap_Object_Object
 from views.__MAP_VIEW_MODULE__ import IMapView_Object_Object
 
 def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Object_Object,
-            view: IMapView_Object_Object, raw: DynWinRTValue) -> None:
+            view: IMapView_Object_Object, raw: DynWinRTValue, unrelated_child: UnrelatedResources) -> None:
     resources.lookup(17)
     resources[17]
     resources.insert("style", "not an Object value")
@@ -1143,6 +1204,7 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
     other.lookup("style")
     mapping.lookup("style")
     view.lookup("style")
+    unrelated_child.lookup("style")
 "#;
     let invalid = invalid.replace(
         "__MAP_VIEW_MODULE__",
@@ -1163,7 +1225,8 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
             .arg(format!("{};{}", metadata.display(), winmd.display()))
             .args([
                 "--class-name",
-                "Microsoft.UI.Xaml.ResourceDictionary,Contoso.ResourceDictionary,Windows.UI.Xaml.ResourceDictionary",
+                "Microsoft.UI.Xaml.ResourceDictionary,Contoso.ResourceDictionary,Windows.UI.Xaml.ResourceDictionary,\
+                 Contoso.DerivedResources,Contoso.GrandchildResources,Contoso.UnrelatedResources,Windows.UI.Xaml.ColorPaletteResources",
                 "--lang",
                 "py",
                 "--output",
@@ -1183,6 +1246,19 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
         .unwrap();
         assert_eq!(source.matches("def lookup(").count(), 1);
         assert!(source.contains("_dynwinrt_to_winrt_object(str.__str__(key), _dynwinrt_property_type.String) if isinstance(key, str) else key"));
+        for module in [
+            "contoso__derived_resources",
+            "contoso__grandchild_resources",
+            "windows__ui__xaml__color_palette_resources",
+        ] {
+            let derived =
+                fs::read_to_string(fixture.0.join("views").join(format!("{module}.py"))).unwrap();
+            assert!(derived.contains("def lookup(self, key: str |"));
+            assert!(derived.contains(
+                "_dynwinrt_to_winrt_object(str.__str__(key), _dynwinrt_property_type.String)"
+            ));
+            assert!(derived.contains(".invoke(self._collection_obj,"));
+        }
         let other = fs::read_to_string(
             fixture
                 .0
@@ -1191,12 +1267,25 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
         )
         .unwrap();
         assert!(!other.contains("to_winrt_object"));
+        let unrelated_child = fs::read_to_string(
+            fixture
+                .0
+                .join("views")
+                .join("contoso__unrelated_resources.py"),
+        )
+        .unwrap();
+        assert!(!unrelated_child.contains("to_winrt_object"));
         typecheck_with_imports(
             &fixture,
             if no_pyi { &[] } else { &["views"] },
             &format!("{consumer}{}", if no_pyi { "" } else { like_consumer }),
             &[],
             if no_pyi { "silent" } else { "normal" },
+        );
+        pyright_typecheck(
+            &fixture,
+            &format!("{consumer}{}", if no_pyi { "" } else { like_consumer }),
+            0,
         );
         typecheck_with_imports(
             &fixture,
@@ -1210,6 +1299,7 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
                 "[arg-type]",
                 "[arg-type]",
                 "[arg-type]",
+                "[arg-type]",
             ],
             if no_pyi { "silent" } else { "normal" },
         );
@@ -1220,6 +1310,7 @@ import ast
 from enum import Enum, StrEnum
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_overloads, get_type_hints, get_args
 import threading
 from dynwinrt import (
     DynWinRTArray, DynWinRTImplementation, DynWinRTImplementationMethod,
@@ -1244,6 +1335,12 @@ class DisplayKey(str):
 source = ast.parse((Path("views") / "microsoft__ui__xaml__resource_dictionary.py").read_text(encoding="utf-8"))
 owner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ResourceDictionary")
 assert sum(isinstance(node, ast.FunctionDef) and node.name == "lookup" for node in owner.body) == 1
+for method in (ResourceDictionary.get, ResourceDictionary.pop):
+    overloads = get_overloads(method)
+    assert len(overloads) == 2
+    hints = get_type_hints(overloads[1])
+    assert hints["default"].__name__.startswith("_MapDefaultT")
+    assert hints["default"] in get_args(hints["return"])
 with RoApartment(1), projected_lifetime_scope():
     key = to_winrt_object("raw key")
     value = to_winrt_object("raw value")

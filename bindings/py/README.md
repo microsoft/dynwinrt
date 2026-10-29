@@ -437,7 +437,8 @@ classes with no instance surface are not projection targets.
 ### Explicit boxing and unboxing of `Object` values
 
 Generated `Microsoft.UI.Xaml.ResourceDictionary` and
-`Windows.UI.Xaml.ResourceDictionary` projections accept string keys directly:
+`Windows.UI.Xaml.ResourceDictionary` projections, and their WinMD-derived
+classes such as `Windows.UI.Xaml.ColorPaletteResources`, accept string keys directly:
 
 ```python
 raw_style = resources.lookup("AccentButtonStyle")
@@ -452,6 +453,9 @@ Their key-taking lookup, membership, insert, update and removal operations box
 and results and enumerated keys remain raw `DynWinRTValue` objects
 (or `None` where already supported). `lookup()` preserves native errors;
 missing `[]` keys raise `KeyError`, and `get()` keeps its normal default.
+The `get()` and `pop()` result annotations include the supplied default type
+in both `.pyi` and inline-only (`--no-pyi`) output. WinMD-derived projections
+retain the base dictionary's key contract even with an independent default interface.
 This is a ResourceDictionary-specific input convenience, not automatic boxing
 for generic `IMap<Object, Object>`, `IMapView<Object, Object>` or other
 `Object`/`IInspectable` APIs. Continue boxing their inputs explicitly.

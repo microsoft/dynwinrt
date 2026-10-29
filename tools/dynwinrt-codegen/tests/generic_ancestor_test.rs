@@ -21,6 +21,17 @@ fn sdk_color_palette_resources_projects_inherited_generic_map_interfaces() {
     }
 
     let class = parse_class(WINDOWS_WINMD, "Windows.UI.Xaml", "ColorPaletteResources").unwrap();
+    assert_eq!(
+        class
+            .ancestor_classes
+            .iter()
+            .map(|ancestor| (ancestor.namespace.as_str(), ancestor.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("Windows.UI.Xaml", "ResourceDictionary"),
+            ("Windows.UI.Xaml", "DependencyObject"),
+        ]
+    );
     let map = class
         .required_interfaces
         .iter()
@@ -64,6 +75,11 @@ fn sdk_color_palette_resources_projects_inherited_generic_map_interfaces() {
         py.contains("class ColorPaletteResources(_WinRTMutableMappingMixin):")
             && py.contains("def lookup(")
             && py.contains("def insert("),
+        "{py}"
+    );
+    assert!(py.contains("def lookup(self, key: str |"), "{py}");
+    assert!(
+        py.contains("_dynwinrt_to_winrt_object(str.__str__(key), _dynwinrt_property_type.String)"),
         "{py}"
     );
 }

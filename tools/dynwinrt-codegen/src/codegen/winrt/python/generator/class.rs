@@ -151,6 +151,11 @@ pub fn generate_class<'a>(
     {
         out.push_str(IREFERENCE_HELPER);
     }
+    out.push_str(&super::super::collections::protocol_helper_typevars(
+        &plan.instance.collection_helpers,
+        context,
+        input_contract,
+    ));
     out.push('\n');
     let mut type_checking_imports = Vec::new();
 

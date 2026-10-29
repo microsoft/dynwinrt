@@ -4,7 +4,7 @@
 use crate::meta::{
     ClassMeta, CollectionInputRole, InterfaceMeta, WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
 };
-use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta};
 
 use super::member_plan::CollectionHelperPlan;
 use super::naming::{PythonProjectionContext, PythonSupportSymbol};
@@ -51,11 +51,21 @@ impl CollectionInputContract {
         if stock_json_class_contract(class).is_some() {
             return Self::NonNullJson;
         }
-        if matches!(
-            class.namespace.as_str(),
-            "Microsoft.UI.Xaml" | "Windows.UI.Xaml"
-        ) && class.name == "ResourceDictionary"
-            && class.full_name == format!("{}.{}", class.namespace, class.name)
+        let is_resource_dictionary = |namespace: &str, name: &str| {
+            matches!(namespace, "Microsoft.UI.Xaml" | "Windows.UI.Xaml")
+                && name == "ResourceDictionary"
+        };
+        let inherits_resource_dictionary = class
+            .base_class
+            .iter()
+            .chain(&class.ancestor_classes)
+            .any(|ancestor| {
+                ancestor.kind == TypeKind::Class
+                    && is_resource_dictionary(&ancestor.namespace, &ancestor.name)
+            });
+        if class.full_name == format!("{}.{}", class.namespace, class.name)
+            && (is_resource_dictionary(&class.namespace, &class.name)
+                || inherits_resource_dictionary)
             && class_interface(class).is_some_and(|iface| {
                 iface.namespace == WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE
                     && iface.generic_piid.as_deref() == Some(IMAP_PIID)
@@ -334,6 +344,21 @@ pub(super) fn protocol_helper_imports<'a>(
     }
 }
 
+/// Module scope lets type checkers bind defaults and get_type_hints resolve them.
+pub(super) fn protocol_helper_typevars(
+    helpers: &CollectionHelperPlan,
+    context: &PythonProjectionContext,
+    input_contract: CollectionInputContract,
+) -> String {
+    if input_contract != CollectionInputContract::ResourceDictionary
+        || !(helpers.get || helpers.pop)
+    {
+        return String::new();
+    }
+    let default = context.support_symbol_reference(PythonSupportSymbol::MappingDefault);
+    format!("\n{default} = TypeVar('{default}')\n")
+}
+
 /// Bulk helpers write the same inputs as item assignment, but return only the
 /// read projection (or Self), never the caller's unconverted input.
 pub(super) fn protocol_helper_methods(
@@ -478,14 +503,6 @@ pub(super) fn protocol_helper_methods(
                 if helpers.get || helpers.pop {
                     let default_variable =
                         context.support_symbol_reference(PythonSupportSymbol::MappingDefault);
-                    let default_reference = if is_stub {
-                        default_variable.to_string()
-                    } else {
-                        format!("{owner_name}.{default_variable}")
-                    };
-                    result.push_str(&format!(
-                        "\n{indent}{default_variable} = TypeVar('{default_variable}')\n"
-                    ));
                     for (name, enabled) in [("get", helpers.get), ("pop", helpers.pop)] {
                         if !enabled {
                             continue;
@@ -494,7 +511,7 @@ pub(super) fn protocol_helper_methods(
                             "\n{indent}@overload\n\
                              {indent}def {name}(self, key: {key_input}) -> {value_read}: ...\n\
                              {indent}@overload\n\
-                             {indent}def {name}(self, key: {key_input}, default: {default_reference}) -> {value_read} | {default_reference}: ...\n"
+                             {indent}def {name}(self, key: {key_input}, default: {default_variable}) -> {value_read} | {default_variable}: ...\n"
                         ));
                         if !is_stub {
                             result.push_str(&format!(
@@ -537,6 +554,48 @@ mod tests {
             assert!(!contract.string_key(&TypeMeta::Object, CollectionInputRole::Value));
             assert!(!contract.string_key(&TypeMeta::Object, CollectionInputRole::Element));
             assert!(!contract.string_key(&TypeMeta::String, CollectionInputRole::Key));
+
+            let base = crate::types::TypeRef {
+                namespace: namespace.into(),
+                name: "ResourceDictionary".into(),
+                kind: TypeKind::Class,
+            };
+            let mut derived = ClassMeta {
+                namespace: "Contoso".into(),
+                name: "DerivedResources".into(),
+                full_name: "Contoso.DerivedResources".into(),
+                base_class: Some(base.clone()),
+                default_interface: Some(InterfaceMeta {
+                    namespace: "Contoso".into(),
+                    name: "IDerivedResources".into(),
+                    ..Default::default()
+                }),
+                required_interfaces: vec![class.default_interface.unwrap()],
+                ..Default::default()
+            };
+            assert_eq!(
+                CollectionInputContract::for_class(&derived),
+                CollectionInputContract::ResourceDictionary
+            );
+            derived.base_class = Some(crate::types::TypeRef {
+                namespace: "Contoso".into(),
+                name: "IntermediateResources".into(),
+                kind: TypeKind::Class,
+            });
+            assert_eq!(
+                CollectionInputContract::for_class(&derived),
+                CollectionInputContract::General
+            );
+            derived.ancestor_classes.push(base);
+            assert_eq!(
+                CollectionInputContract::for_class(&derived),
+                CollectionInputContract::ResourceDictionary
+            );
+            derived.required_interfaces[0].generic_args[0] = TypeMeta::String;
+            assert_eq!(
+                CollectionInputContract::for_class(&derived),
+                CollectionInputContract::General
+            );
         }
         let mut controls = vec![resource("Contoso")];
         let mut wrong_full_name = resource("Microsoft.UI.Xaml");
@@ -580,6 +639,67 @@ mod tests {
                 CollectionInputContract::for_class(&class),
                 CollectionInputContract::General
             );
+        }
+    }
+
+    #[test]
+    fn mapping_default_typevars_are_module_scoped_and_collision_aware() {
+        let peer = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "_MapDefaultT".into(),
+            default_interface: None,
+        };
+        let interface = InterfaceMeta {
+            namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+            generic_piid: Some(IMAP_PIID.into()),
+            generic_args: vec![TypeMeta::Object, TypeMeta::Object],
+            methods: vec![crate::meta::MethodMeta {
+                return_type: Some(peer.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            namespace: "Microsoft.UI.Xaml".into(),
+            name: "ResourceDictionary".into(),
+            full_name: "Microsoft.UI.Xaml.ResourceDictionary".into(),
+            default_interface: Some(interface.clone()),
+            ..Default::default()
+        };
+        let context = PythonProjectionContext::standalone([
+            TypeIdentity::named(TypeIdentityKind::Class, &class.namespace, &class.name),
+            peer.type_identity(),
+        ])
+        .unwrap();
+        let local = context.for_class_module(&class, &[]);
+        let symbol = local.support_symbol_reference(PythonSupportSymbol::MappingDefault);
+        assert_ne!(symbol, "_MapDefaultT");
+        let helpers = CollectionHelperPlan {
+            get: true,
+            pop: true,
+            ..Default::default()
+        };
+        let contract = CollectionInputContract::ResourceDictionary;
+        assert_eq!(
+            protocol_helper_typevars(&helpers, &local, contract),
+            format!("\n{symbol} = TypeVar('{symbol}')\n")
+        );
+        assert!(
+            protocol_helper_typevars(&helpers, &local, CollectionInputContract::General).is_empty()
+        );
+        for surface in [AnnotationSurface::Runtime, AnnotationSurface::Stub] {
+            let methods = protocol_helper_methods(
+                &interface,
+                &helpers,
+                &class.name,
+                &local,
+                surface,
+                contract,
+                4,
+            );
+            assert!(methods.contains(&format!("default: {symbol}")));
+            assert!(!methods.contains(&format!("{}.{symbol}", class.name)));
+            assert!(!methods.contains("TypeVar("));
         }
     }
 

@@ -835,6 +835,11 @@ pub fn generate_class_stub<'a>(
         ));
     }
     out.push('\n');
+    out.push_str(&super::collections::protocol_helper_typevars(
+        &plan.instance.collection_helpers,
+        context,
+        input_contract,
+    ));
     if supports_interface_projection {
         out.push_str("_InterfaceT = TypeVar('_InterfaceT')\n\n");
     }
