@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Dict, List, Tuple, assert_type
 from uuid import UUID
 
 from dynwinrt import (
+    AsyncEventScope,
     DynWinRTArray,
     DynWinRtDelegate,
     WinRTAsync,
@@ -329,6 +330,29 @@ def check_map_changed_handlers(properties: PropertySet, strings: StringMap) -> N
     )
     strings.subscribe_map_changed(on_strings)()
     unsubscribe()
+
+
+async def check_async_event_scope(properties: PropertySet, strings: StringMap) -> None:
+    async def changed(
+        sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String,
+    ) -> None:
+        await asyncio.sleep(0)
+        assert_type(sender[args.key], DynWinRTValue | None)
+
+    def awaitable_handler(
+        sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String,
+    ) -> Awaitable[None]:
+        return changed(sender, args)
+
+    def synchronous(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String) -> None:
+        pass
+
+    async with AsyncEventScope(loop=asyncio.get_running_loop()) as events:
+        stop: Callable[[], None] = events.subscribe(properties.subscribe_map_changed, changed)
+        events.subscribe(properties.subscribe_map_changed, awaitable_handler)()
+        events.subscribe(strings.subscribe_map_changed, changed)  # type: ignore[arg-type]
+        events.subscribe(properties.subscribe_map_changed, synchronous)  # type: ignore[arg-type]
+        stop()
 
 
 def check_delegate_callback_parameters() -> None:
