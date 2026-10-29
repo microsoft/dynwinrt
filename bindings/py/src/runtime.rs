@@ -869,10 +869,21 @@ impl RoApartment {
 }
 
 #[pyfunction]
-pub fn init_winappsdk(major: u32, minor: u32) -> PyResult<WinAppSDKContext> {
-    dynwinrt::initialize_winappsdk(major, minor)
-        .map(WinAppSDKContext)
-        .map_err(map_dynwinrt_error)
+#[pyo3(signature = (major, minor, *, bootstrap_dll_path=None))]
+pub fn init_winappsdk(
+    major: u32,
+    minor: u32,
+    bootstrap_dll_path: Option<String>,
+) -> PyResult<WinAppSDKContext> {
+    dynwinrt::initialize_winappsdk_with_options(dynwinrt::WinAppSdkBootstrapOptions {
+        major_version: major,
+        minor_version: minor,
+        build_version: 0,
+        revision_version: 0,
+        bootstrap_dll_path,
+    })
+    .map(WinAppSDKContext)
+    .map_err(map_windows_error)
 }
 
 #[pyfunction]

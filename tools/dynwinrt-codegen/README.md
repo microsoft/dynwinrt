@@ -57,10 +57,12 @@ package.
 | `--ref-list FILE` | Newline-separated reference metadata paths; blank lines and `#` comments are ignored. |
 | `--lang js\|py` | `js` emits CommonJS `.js`, an ESM facade, and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
 | `--output DIR` | Dedicated codegen-owned output directory (default `./generated`). Existing contents may be replaced or removed. |
-| `--import-name NAME` | Runtime package imported by generated JavaScript (default `@microsoft/dynwinrt`). |
+| `--import-name NAME` | Runtime imported by generated JavaScript (default `@microsoft/dynwinrt`). Bootstrap bundling requires an npm package name, not a file path or package subpath. |
 | `--dry-run` | Validate metadata, dependencies, ABI contracts, and layout without writing files. |
 | `--pyi` | With `--lang py`, explicitly request the default type stubs; retained for compatibility. |
 | `--no-pyi` | With `--lang py`, omit `.pyi` files and `py.typed`. |
+| `--winappsdk-version MAJOR.MINOR` | Stable Windows App SDK product version, such as `2.5`, not a NuGet servicing version. Requires `--winappsdk-bootstrap-path`. |
+| `--winappsdk-bootstrap-path PATH` | Bootstrap DLL file or recursively searched directory; repeat for multiple inputs. Requires `--winappsdk-version`. |
 
 ### Examples
 
@@ -145,6 +147,100 @@ machine-readable value per line.
 
 `dynwinrt-codegen com-census --winmd <PATH> [--json]` measures how many eligible
 interfaces in `Windows.Win32.winmd` have complete safe Classic COM generation.
+
+### Packaged Windows App SDK initialization
+
+For framework-dependent applications with already-restored SDK inputs:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .\winmd-inputs.txt --ref-list .\winmd-references.txt `
+  --lang py --output .\app_bindings `
+  --winappsdk-version 2.5 `
+  --winappsdk-bootstrap-path '.winapp\bin'
+```
+
+The same options work with `--lang js`. Each path is a **generation-time input**.
+A directory is searched recursively only for `Microsoft.WindowsAppRuntime.Bootstrap.dll`
+(case-insensitively on Windows), within that directory and its descendants.
+No system directories or global package caches are searched. Directory links and
+reparse points are rejected rather than followed, including links back into the
+tree. An unreadable directory or damaged/unreadable matching DLL fails generation.
+
+The generator validates PE/DLL architecture, bounds and the bootstrap export
+without executing any input, then copies the original bytes into
+`_native/winappsdk/<architecture>/Microsoft.WindowsAppRuntime.Bootstrap.dll`.
+Directory matches for unsupported architectures such as x86 are ignored with a
+warning; each directory must contain at least one supported x64/ARM64 DLL.
+Explicit file inputs still reject unsupported architectures. Repeat the option
+to combine directories or concrete files, including renamed files. Only the
+architectures identified by PE headers are packaged; directory names and the
+generator's architecture do not select or supply DLLs.
+Repeated paths and byte-identical DLLs for the same architecture are deduplicated.
+Different DLL contents for the same architecture are rejected with both sources
+identified, never overwritten. Licenses are checked for every supported source,
+including deduplicated DLLs. Input order and overlapping directory/file inputs do
+not affect the configuration, payloads or build-cache digest. The SDK's
+`win-arm64ec` directory may contain a byte-identical x64 Bootstrap DLL; this is
+deduplicated as x64, not treated as native ARM64EC support.
+
+Concrete files can still be supplied individually:
+
+```powershell
+--winappsdk-bootstrap-path '.winapp\bin\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll' `
+--winappsdk-bootstrap-path '.winapp\bin\arm64\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+```
+
+`MAJOR.MINOR` is the stable SDK **product** version used by Bootstrap, not the
+NuGet servicing version, the DLL's FileVersion, or a minimum Runtime package
+version. Preview/experimental channels and three-component versions are rejected.
+The caller supplies matching restored inputs; WinMD paths and DLL file versions
+do not establish NuGet provenance.
+
+Python packages register a `dynwinrt.winappsdk` entry point for explicit,
+no-argument `dynwinrt.init_winappsdk()`. JavaScript packages register configuration
+when imported, enabling the existing `initWinappsdk()` after the normal generated
+package/type import. Neither registration nor discovery initializes Bootstrap or
+COM automatically. See the [Python runtime](../../bindings/py/README.md#windows-app-sdk-initialization)
+and [Node runtime](../../bindings/js/README.md#windows-app-sdk-initialization) for
+the calling and override contracts.
+
+With JavaScript Bootstrap bundling, `--import-name` must be a scoped or unscoped
+npm package name exposing the runtime's `/winappsdk` support entry point, such as
+the default `@microsoft/dynwinrt`. File paths and package subpaths are rejected
+before generation, including later passes that omit the Bootstrap options.
+To use a file import such as `../../bindings/js/dist/winrt.js`, generate without
+Bootstrap bundling in a clean output directory; that existing mode is unchanged.
+
+Generated Python wheels use `py3-none-win_amd64`, `py3-none-win_arm64`, or the
+compressed `py3-none-win_amd64.win_arm64` tag. The generated setuptools wheel hook
+is build-only; both ordinary and editable installations locate DLLs inside the
+package. JavaScript `files`/`exports`, an exact runtime peer dependency and
+side-effect metadata preserve registration and resources through `npm pack`.
+The generated package never embeds the original machine's absolute input path.
+
+Repeated passes may repeat identical inputs or omit both options to retain the
+bundle. `--no-pyi` does not remove its DLLs. A different product version, DLL
+payload or source license requires cleaning the dedicated output and regenerating
+the complete package; failures leave the original output unchanged. Bundle
+digests participate in Python build-cache identity. A new package generated
+without these options keeps the existing output and has no App SDK requirement.
+
+The copied DLLs remain subject to the **Microsoft Windows App SDK license**, not
+dynwinrt's MIT license. `NOTICE.txt` records the distribution requirements.
+An adjacent/common-directory `license.txt`, or the license in a standard source
+NuGet package, is copied unchanged when present; otherwise generation warns the
+application producer to supply the matching terms before redistribution.
+This is for distributing applications that satisfy the SDK's terms, not for
+redistributing the SDK as a standalone offering. The Bootstrap DLL is **not**
+the complete Windows App Runtime; matching Runtime deployment is still required.
+This feature does not implement MSIX/sparse-identity or self-contained deployment.
+
+Integrators must check `dynwinrt-codegen capabilities` for
+`python.winappsdk-bootstrap-config` or `javascript.winappsdk-bootstrap-config`
+before passing these options. Older published generators, including rc23, do not
+support them. Use the matching runtime version; local source builds are not a
+published upgrade.
 
 ## Generated output
 

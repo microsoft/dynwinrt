@@ -4,6 +4,7 @@
 mod python_output_paths;
 mod win32_census;
 mod win32_output;
+mod winappsdk_output;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -174,6 +175,7 @@ enum Commands {
 
         /// Custom import name for the dynwinrt runtime package in generated JS/TS files.
         /// Defaults to "@microsoft/dynwinrt".
+        /// Bootstrap bundling requires an npm package name, not a file path or package subpath.
         #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
         import_name: String,
 
@@ -188,6 +190,25 @@ enum Commands {
         /// Skip .pyi type stubs and the py.typed marker (requires --lang py).
         #[arg(long, conflicts_with = "pyi")]
         no_pyi: bool,
+
+        /// Stable Windows App SDK product MAJOR.MINOR for an explicit initializer configuration.
+        /// For example, 2.5, not a full NuGet servicing version.
+        #[arg(
+            long,
+            value_name = "MAJOR.MINOR",
+            requires = "winappsdk_bootstrap_path"
+        )]
+        winappsdk_version: Option<String>,
+
+        /// Bootstrap DLL file or directory to search recursively; repeat for multiple inputs.
+        /// Directories match Microsoft.WindowsAppRuntime.Bootstrap.dll; architecture comes from PE.
+        #[arg(
+            long,
+            value_name = "PATH",
+            num_args = 1,
+            requires = "winappsdk_version"
+        )]
+        winappsdk_bootstrap_path: Vec<String>,
     },
 }
 
@@ -389,11 +410,17 @@ fn run() -> Result<(), String> {
             dry_run,
             pyi,
             no_pyi,
+            winappsdk_version,
+            winappsdk_bootstrap_path,
         } => {
             if lang != "py" && (pyi || no_pyi) {
                 return Err("--pyi and --no-pyi require --lang py".into());
             }
             let pyi = lang == "py" && !no_pyi;
+            let bootstrap_inputs = winappsdk_output::parse_inputs(
+                winappsdk_version.as_deref(),
+                &winappsdk_bootstrap_path,
+            )?;
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 
@@ -535,6 +562,16 @@ fn run() -> Result<(), String> {
                 .map(|transaction| transaction.stage_dir().to_path_buf())
                 .unwrap_or_else(|| final_output_dir.to_path_buf());
             let output_dir = effective_output_dir.as_path();
+            let bootstrap = winappsdk_output::prepare(
+                output_dir,
+                &lang,
+                if lang == "py" {
+                    "dynwinrt"
+                } else {
+                    &import_name
+                },
+                bootstrap_inputs,
+            )?;
             if lang == "js" {
                 project::set_import_name(&import_name);
             }
@@ -542,6 +579,10 @@ fn run() -> Result<(), String> {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
                 })?;
+                if bootstrap.is_some() && lang == "js" {
+                    win32_output::wire_winappsdk_registration(output_dir)?;
+                    winappsdk_output::wire_existing_com_files(output_dir)?;
+                }
             }
             if lang == "py" && !dry_run && !pyi && class_name.is_some() {
                 remove_all_generated_python_stubs(output_dir)?;
@@ -638,6 +679,7 @@ fn run() -> Result<(), String> {
                         &win32_namespaces,
                         &import_name,
                         dry_run,
+                        bootstrap.is_some(),
                     )?;
                     if classes.is_empty()
                         && requested_winrt_interfaces.is_empty()
@@ -645,6 +687,9 @@ fn run() -> Result<(), String> {
                         && com_coclasses.is_empty()
                         && !native_audio_completion
                     {
+                        if !dry_run && let Some(bootstrap) = bootstrap {
+                            bootstrap.write(output_dir, pyi)?;
+                        }
                         if let Some(transaction) = output_transaction.take() {
                             transaction.commit()?;
                         }
@@ -869,6 +914,14 @@ fn run() -> Result<(), String> {
                             files.insert("unsafe/runtime.js".into());
                             files.insert("unsafe/runtime.d.ts".into());
                         }
+                        if bootstrap.is_some() {
+                            for (file, content) in &mut planned_files {
+                                *content = winappsdk_output::javascript_registration(
+                                    &Path::new("com").join(file),
+                                    content,
+                                );
+                            }
+                        }
                         let manifest_update = prepare_com_generation_manifest(
                             &com_output_dir,
                             &root_files,
@@ -939,6 +992,9 @@ fn run() -> Result<(), String> {
                         .iter()
                         .filter_map(|output| output.no_callable_error.clone())
                         .collect::<Vec<_>>();
+                    if bootstrap.is_some() && !no_callable_errors.is_empty() {
+                        return Err(no_callable_errors.join("\n"));
+                    }
                     if classes.is_empty() && requested_winrt_interfaces.is_empty() {
                         if !dry_run {
                             finalize_com_generation(output_dir)?;
@@ -948,6 +1004,9 @@ fn run() -> Result<(), String> {
                                 transaction.commit()?;
                             }
                             return Err(no_callable_errors.join("\n"));
+                        }
+                        if !dry_run && let Some(bootstrap) = bootstrap {
+                            bootstrap.write(output_dir, pyi)?;
                         }
                         if let Some(transaction) = output_transaction.take() {
                             transaction.commit()?;
@@ -1076,7 +1135,11 @@ fn run() -> Result<(), String> {
                         &BTreeSet::from([ns.to_string()]),
                         &import_name,
                         dry_run,
+                        bootstrap.is_some(),
                     )?;
+                    if !dry_run && let Some(bootstrap) = bootstrap {
+                        bootstrap.write(output_dir, pyi)?;
+                    }
                     if let Some(transaction) = output_transaction.take() {
                         transaction.commit()?;
                     }
@@ -1244,6 +1307,9 @@ fn run() -> Result<(), String> {
                 }
             }
 
+            if !dry_run && let Some(bootstrap) = bootstrap {
+                bootstrap.write(output_dir, pyi)?;
+            }
             if lang == "py" && !dry_run {
                 write_python_package_manifest(output_dir, final_output_dir)?;
                 write_python_generator_metadata(output_dir)?;
@@ -6772,13 +6838,16 @@ fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> 
     let distribution_name = import_name.replace('_', "-");
     let version = env!("CARGO_PKG_VERSION");
     let namespace_packages = collect_python_namespace_packages(output_dir)?;
-    let manifest = package::render_python_pyproject(&package::PythonPackageManifestInput {
-        distribution_name: &distribution_name,
-        import_name: &import_name,
-        package_version: version,
-        runtime_version: version,
-        namespace_packages: &namespace_packages,
-    });
+    let manifest = package::render_python_pyproject_with_winappsdk(
+        &package::PythonPackageManifestInput {
+            distribution_name: &distribution_name,
+            import_name: &import_name,
+            package_version: version,
+            runtime_version: version,
+            namespace_packages: &namespace_packages,
+        },
+        output_dir.join(winappsdk_output::MANIFEST).is_file(),
+    );
     let build_cache_key = python_build_cache_key(output_dir, &import_name)?;
     let setup = package::render_python_setup_cfg(&build_cache_key);
     write_file(&manifest_path, &manifest)?;
@@ -6803,6 +6872,15 @@ fn python_build_cache_key(output_dir: &Path, import_name: &str) -> Result<String
             .collect::<Vec<_>>()
             .join("/");
         for byte in normalized.bytes().chain(std::iter::once(b'\n')) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    let bundle_manifest = output_dir.join(winappsdk_output::MANIFEST);
+    if bundle_manifest.is_file() {
+        for byte in fs::read(&bundle_manifest)
+            .map_err(|error| format!("Failed to read {}: {error}", bundle_manifest.display()))?
+        {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x100000001b3);
         }
@@ -7137,7 +7215,9 @@ fn collect_generated_python_files(
         include_root_marker,
         &mut files,
     )?;
+    files.extend(winappsdk_output::owned_files(output_dir)?);
     files.sort();
+    files.dedup();
     Ok(files)
 }
 
@@ -7168,6 +7248,9 @@ fn is_generator_owned_python_source_file(
     let path = output_dir.join(relative);
     if !path.is_file() {
         return Ok(false);
+    }
+    if winappsdk_output::owns(output_dir, relative)? {
+        return Ok(true);
     }
     let parent = relative
         .parent()
@@ -7272,6 +7355,8 @@ fn print_capabilities() {
         "generate",
         "lang.js",
         "lang.py",
+        "python.winappsdk-bootstrap-config",
+        "javascript.winappsdk-bootstrap-config",
         "input.winmd",
         "input.ref",
         "input.winmd-list",

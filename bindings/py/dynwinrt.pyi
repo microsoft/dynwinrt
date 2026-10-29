@@ -1,5 +1,6 @@
 from collections.abc import Coroutine
 from datetime import datetime, timedelta
+from os import PathLike
 from typing import Any, Awaitable, Callable, Final, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
@@ -703,7 +704,15 @@ class DynWinRtElementFactory:
     def __repr__(self) -> str: ...
 
 
-def init_winappsdk(major: int, minor: int) -> WinAppSDKContext: ...
+@overload
+def init_winappsdk(*, bootstrap_dll_path: str | PathLike[str] | None = ...) -> WinAppSDKContext: ...
+@overload
+def init_winappsdk(
+    major: int,
+    minor: int,
+    *,
+    bootstrap_dll_path: str | PathLike[str] | None = ...,
+) -> WinAppSDKContext: ...
 def ro_initialize(apartment_type: Optional[int]) -> None: ...
 def ro_uninitialize() -> None: ...
 def retry_pending_apartment_close() -> None: ...

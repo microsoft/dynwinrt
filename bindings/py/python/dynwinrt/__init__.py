@@ -4,6 +4,7 @@
 from . import dynwinrt as dynwinrt
 from .dynwinrt import *
 from . import values as values
+from ._winappsdk import init_winappsdk as init_winappsdk
 
 __doc__ = dynwinrt.__doc__
 __all__ = dynwinrt.__all__

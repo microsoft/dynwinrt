@@ -49,6 +49,13 @@ pub fn render_bindings_package_json_with_win32(
 }
 
 pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String {
+    render_python_pyproject_with_winappsdk(input, false)
+}
+
+pub fn render_python_pyproject_with_winappsdk(
+    input: &PythonPackageManifestInput<'_>,
+    winappsdk: bool,
+) -> String {
     let mut packages = vec![format!("\"{}\"", input.import_name)];
     packages.extend(
         input
@@ -56,8 +63,13 @@ pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String
             .iter()
             .map(|namespace| format!("\"{}.{}\"", input.import_name, namespace)),
     );
+    let resources = if winappsdk {
+        ", \"_winappsdk.json\", \"_native/winappsdk/*/*.dll\", \"_native/winappsdk/*.txt\""
+    } else {
+        ""
+    };
     let mut package_data = vec![format!(
-        "\"{}\" = [\"py.typed\", \"*.pyi\"]",
+        "\"{}\" = [\"py.typed\", \"*.pyi\"{resources}]",
         input.import_name
     )];
     package_data.extend(
@@ -66,9 +78,34 @@ pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String
             .iter()
             .map(|namespace| format!("\"{}.{}\" = [\"*.pyi\"]", input.import_name, namespace)),
     );
+    let build_requirements = if winappsdk {
+        "\"setuptools>=68\", \"wheel>=0.43\""
+    } else {
+        "\"setuptools>=68\""
+    };
+    let entry_points = if winappsdk {
+        format!(
+            "[project.entry-points.\"dynwinrt.winappsdk\"]\n\
+             configuration = \"{}._winappsdk:get_config\"\n\n",
+            input.import_name
+        )
+    } else {
+        String::new()
+    };
+    let build_commands = if winappsdk {
+        "[tool.setuptools.cmdclass]\n\
+         bdist_wheel = \"_dynwinrt_build.wheel.BootstrapWheel\"\n\n"
+    } else {
+        ""
+    };
+    let explicit_package_data = if winappsdk {
+        "include-package-data = false\n"
+    } else {
+        ""
+    };
     format!(
         "[build-system]\n\
-         requires = [\"setuptools>=68\"]\n\
+         requires = [{build_requirements}]\n\
          build-backend = \"setuptools.build_meta\"\n\
          \n\
          [project]\n\
@@ -77,10 +114,13 @@ pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String
          requires-python = \">=3.11,<3.15\"\n\
          dependencies = [\"dynwinrt=={runtime_version}\"]\n\
          \n\
+         {entry_points}\
          [tool.setuptools]\n\
+         {explicit_package_data}\
          packages = [{packages}]\n\
          package-dir = {{ \"{import_name}\" = \".\" }}\n\
          \n\
+         {build_commands}\
          [tool.setuptools.package-data]\n\
          {package_data}\n",
         distribution_name = input.distribution_name,

@@ -2,7 +2,9 @@
 # Licensed under the MIT License.
 
 import argparse
+import hashlib
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -24,7 +26,7 @@ def generated_source_files(root: Path) -> set[Path]:
     files = {
         Path(line)
         for line in inventory.read_text(encoding="utf-8").splitlines()
-        if Path(line).suffix in {".py", ".pyi"}
+        if Path(line).suffix in {".py", ".pyi"} and Path(line).parts[0] != "_dynwinrt_build"
     }
     invalid = [path for path in files if path.is_absolute() or ".." in path.parts]
     if invalid:
@@ -128,6 +130,20 @@ def main() -> None:
             f"Installed package has {len(unexpected)} unexpected generated files: "
             f"{unexpected[:10]}"
         )
+    bundle_manifest = source / ".dynwinrt-winappsdk.json"
+    if bundle_manifest.is_file():
+        bundle = json.loads(bundle_manifest.read_text(encoding="utf-8"))
+        for name, expected_digest in bundle["files"].items():
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise RuntimeError(f"Invalid Bootstrap inventory path: {name}")
+            if relative.parts[0] == "_dynwinrt_build" or name == "MANIFEST.in":
+                if (installed / relative).exists():
+                    raise RuntimeError(f"Build-only file was installed: {name}")
+                continue
+            actual_digest = hashlib.sha256((installed / relative).read_bytes()).hexdigest()
+            if actual_digest != expected_digest:
+                raise RuntimeError(f"Installed Bootstrap resource differs from generation: {name}")
 
     sys.path.insert(0, str(args.install.resolve()))
     modules = {
