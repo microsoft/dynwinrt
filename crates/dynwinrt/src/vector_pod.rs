@@ -194,4 +194,58 @@ mod tests {
         drop(table);
         assert!(weak.upgrade().is_none());
     }
+
+    #[test]
+    fn concurrent_pod_preparation_shares_one_immutable_table() {
+        const WORKERS: usize = 8;
+        let barrier = Arc::new(std::sync::Barrier::new(WORKERS));
+        let workers = (0..WORKERS)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let table = crate::MetadataTable::new();
+                    let weak = Arc::downgrade(&table);
+                    let typ = table.struct_type("Test.ConcurrentPod", &vec![table.f64_type(); 3]);
+                    barrier.wait();
+                    let plan = PodVectorVtables::for_type(&typ).unwrap();
+                    drop(typ);
+                    drop(table);
+                    assert!(weak.upgrade().is_none());
+                    plan
+                })
+            })
+            .collect::<Vec<_>>();
+        let plans = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        for plan in &plans[1..] {
+            assert!(Arc::ptr_eq(&plans[0], plan));
+        }
+    }
+
+    #[test]
+    fn same_size_pods_with_different_field_abis_do_not_share_callbacks() {
+        let floating = crate::MetadataTable::new();
+        let floating_type = floating.struct_type("Test.SameSizePod", &vec![floating.f64_type(); 2]);
+        let integer = crate::MetadataTable::new();
+        let integer_type = integer.struct_type("Test.SameSizePod", &vec![integer.u64_type(); 2]);
+        assert_eq!(floating_type.size_of(), integer_type.size_of());
+        assert_eq!(floating_type.align_of(), integer_type.align_of());
+        let floating = PodVectorVtables::for_type(&floating_type).unwrap();
+        let integer = PodVectorVtables::for_type(&integer_type).unwrap();
+        assert!(!Arc::ptr_eq(&floating, &integer));
+        assert_ne!(
+            floating.vector.append as usize,
+            integer.vector.append as usize
+        );
+        assert_ne!(
+            floating.live.index_of as usize,
+            integer.live.index_of as usize
+        );
+        assert_ne!(
+            floating.snapshot.index_of as usize,
+            integer.snapshot.index_of as usize
+        );
+    }
 }

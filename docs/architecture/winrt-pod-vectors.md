@@ -62,6 +62,14 @@ RAII owners until all inputs are validated. Mutation copies borrowed native
 values into owned storage; removal and destruction deallocate with the same
 layout. No closure or vtable is allocated per element.
 
+This deliberately favors ownership correctness over allocation throughput.
+Each non-word POD element has its own allocation, and snapshots and iterators
+copy their elements; this is not a zero-copy projection. Contiguous aligned
+storage should be considered separately if measured collection workloads
+justify it. Callback caches grow with distinct closed type signatures, not
+element or vector counts. Eviction would require proving that no native caller
+can still enter a cached callback, so it is not part of this phase.
+
 Vector, live view, and observable views share canonical identity and storage.
 `GetView` and `First` retain the existing independent snapshot semantics.
 Snapshots and iterators own their copied POD allocations and remain usable
@@ -96,6 +104,18 @@ bulk buffer guards, snapshots, metadata lifetime, numerical equality,
 observable reentrancy/final release, and unchanged map/rejection boundaries.
 Additional metadata-layout tests cover nested padding. These names are test
 examples, not a production allowlist.
+
+The Build workflow's required `test-pod-vectors` matrix executes optimized
+collection, map, element-plan, and callback regressions for all three targets:
+x64 on `windows-latest`, i686 under WOW64 on an x64 host, and native ARM64 on
+`windows-11-arm`. An explicit target and host-architecture guard prevent
+emulated x64/i686 execution on ARM64 from being counted as those native-host
+lanes. This is execution, not `--no-run` cross-compilation, and requires no
+optional WinAppSDK, AI, or UI inputs. It gates `test`, `ci-success`, and final
+artifact assembly while leaving production E2E consumers parallel.
+The same selectors include concurrent cache preparation, distinct same-size
+field ABIs, and a native POD callback that panics, returns an HRESULT failure,
+and remains callable after its source metadata is dropped.
 
 The standard E2E specs exercise generated Point arrays/lists through
 `InkStrokeBuilder.CreateStroke` and BasicGeoposition arrays/lists through all

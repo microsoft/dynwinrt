@@ -73,6 +73,47 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           python eng\release\python\verify_python_release.py source
 
+  test-pod-vectors:
+    if: needs.changes.outputs.docs_only == 'false'
+    needs: [changes, format]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            host: X64
+          - target: i686-pc-windows-msvc
+            runner: windows-latest
+            host: X64
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            host: Arm64
+    env:
+      POD_TEST_TARGET: ${{ matrix.target }}
+      POD_TEST_HOST: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Verify native POD test host
+        shell: pwsh
+        run: |
+          $hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          if ($hostArchitecture -ne $env:POD_TEST_HOST) {
+            throw "POD tests require a native $env:POD_TEST_HOST host, found $hostArchitecture"
+          }
+          Write-Host "POD vectors: host=$hostArchitecture, target=$env:POD_TEST_TARGET"
+      - name: Execute optimized collection and callback regressions
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo test --locked --release -p dynwinrt --target $env:POD_TEST_TARGET --lib -- `
+            vector:: collection_element:: native_callback:: map::
+
   # Rust test programs are independent builds, not reusable runtime packages.
   test-rust:
     if: needs.changes.outputs.docs_only == 'false'
@@ -645,16 +686,16 @@ jobs:
   # Stable check identities also complete on intentional documentation-only skips.
   test:
     if: ${{ always() }}
-    needs: [changes, format, test-rust]
+    needs: [changes, format, test-rust, test-pod-vectors]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Require Rust validation
         env:
           NEEDS: ${{ toJSON(needs) }}
-          REQUIRED_JOBS: changes,format,test-rust
+          REQUIRED_JOBS: changes,format,test-rust,test-pod-vectors
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          DOCS_SKIPPABLE_JOBS: test-rust
+          DOCS_SKIPPABLE_JOBS: test-rust,test-pod-vectors
         run: |
           .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
             -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
@@ -794,6 +835,7 @@ jobs:
         changes,
         format,
         test-rust,
+        test-pod-vectors,
         test,
         build-codegen-x64,
         build-bindings-x64,
@@ -811,9 +853,9 @@ jobs:
       - name: Require every Build job
         env:
           NEEDS: ${{ toJSON(needs) }}
-          REQUIRED_JOBS: changes,format,test-rust,test,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native,e2e,dynwinrt,dynwinrt-codegen
+          REQUIRED_JOBS: changes,format,test-rust,test-pod-vectors,test,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native,e2e,dynwinrt,dynwinrt-codegen
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          DOCS_SKIPPABLE_JOBS: test-rust,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native
+          DOCS_SKIPPABLE_JOBS: test-rust,test-pod-vectors,build-codegen-x64,build-bindings-x64,build-js-test-hooks,build-arm64,e2e-runtime,e2e-native
         run: |
           .\eng\ci\assert-success.ps1 -NeedsJson $env:NEEDS -RequiredJobs ($env:REQUIRED_JOBS -split ',') `
             -DocsOnly $env:DOCS_ONLY -SkippableJobs ($env:DOCS_SKIPPABLE_JOBS -split ',')
