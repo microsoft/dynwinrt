@@ -5,10 +5,12 @@ use std::mem::size_of;
 use std::path::Path;
 
 use windows::ApplicationModel::PackageVersion;
-use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, FreeLibrary};
+use windows::Win32::Foundation::{
+    APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, FreeLibrary,
+};
 use windows::Win32::Storage::Packaging::Appx::{
-    GetCurrentPackageInfo2, PACKAGE_FILTER_DIRECT, PACKAGE_FILTER_DYNAMIC, PACKAGE_INFO,
-    PackagePathType_Install,
+    GetCurrentPackageFullName, GetCurrentPackageInfo2, PACKAGE_FILTER_DIRECT,
+    PACKAGE_FILTER_DYNAMIC, PACKAGE_INFO, PackagePathType_Install,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::PCSTR;
@@ -16,6 +18,17 @@ use windows::core::PCWSTR;
 use windows_core::{Error, HRESULT, HSTRING};
 
 pub struct WinAppSdkContext;
+
+/// Query process identity without activating WinRT or requiring a COM apartment.
+pub fn has_package_identity() -> windows::core::Result<bool> {
+    let mut length = 0;
+    let status = unsafe { GetCurrentPackageFullName(&mut length, None) };
+    match status {
+        APPMODEL_ERROR_NO_PACKAGE => Ok(false),
+        ERROR_INSUFFICIENT_BUFFER => Ok(true),
+        _ => status.ok().map(|()| true),
+    }
+}
 
 const E_FAIL: HRESULT = HRESULT(0x80004005_u32 as i32);
 const E_INVALIDARG: HRESULT = HRESULT(0x80070057_u32 as i32);

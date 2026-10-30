@@ -172,6 +172,45 @@ and redistribution as part of a qualifying application remain the producer's
 responsibility. Without the generation options, existing Windows SDK-only output
 and calls remain unchanged.
 
+### Opt-in automatic Bootstrap
+
+`@microsoft/dynwinrt/auto-init` checks Windows package identity before doing any
+Bootstrap work. With identity it skips configuration discovery and Bootstrap DLL
+lookup, reading, loading, and initialization. Without identity it calls the
+existing no-argument `initWinappsdk()`, using the configuration registered by a
+previously imported generated package. Configuration and native errors propagate.
+
+CommonJS preserves the preparation order:
+
+```js
+const { roInitialize } = require('@microsoft/dynwinrt');
+roInitialize(0); // The application chooses STA here.
+require('@winapp/bindings'); // Registers the generated Bootstrap configuration.
+require('@microsoft/dynwinrt/auto-init');
+// Create and run the application here.
+```
+
+For ESM, use dynamic import after apartment/configuration preparation; static
+imports run before the module body:
+
+```js
+import { roInitialize } from '@microsoft/dynwinrt';
+roInitialize(0);
+await import('@winapp/bindings');
+await import('@microsoft/dynwinrt/auto-init');
+// Create and run the application here.
+```
+
+With package identity, no generated configuration is needed just to skip.
+The skip does not validate SDK deployment or readiness. Ordinary runtime and
+generated-package imports remain passive (configuration registration is unchanged).
+Explicit `initWinappsdk(...)`, including its no-argument form, never skips because
+of identity. CJS and ESM share the same entry point, native runtime and registered
+configuration; normal module caching applies, not initialization on every import
+or a custom retry mechanism. Neither initializer chooses STA/MTA, initializes COM,
+creates threads/message loops, or forces an SDK reload/version switch. The
+application remains responsible for apartment and runtime lifetimes.
+
 ### Standalone WinRT interface implementations
 
 Metadata-generated standalone WinRT interfaces expose `implementation(handlers)`

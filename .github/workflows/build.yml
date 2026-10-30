@@ -535,7 +535,7 @@ jobs:
         run: |
           .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
+          .\bindings\py\.venv\Scripts\python.exe bindings\py\tests\run_stubtest.py dynwinrt --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
       - name: Test generated Python long paths
         run: |
           .\eng\release\python\test_generated_python_long_paths.ps1 `

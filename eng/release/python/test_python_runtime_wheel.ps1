@@ -28,7 +28,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $venvPython -m pip install --disable-pip-version-check "pytest>=8.3.5" --quiet
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $venvPython -m pytest (Join-Path $repoRoot 'bindings\py\tests\test_async_event_scope.py') -q
+& $venvPython -m pytest (Join-Path $repoRoot 'bindings\py\tests\test_async_event_scope.py') `
+    (Join-Path $repoRoot 'bindings\py\tests\test_winappsdk.py') -q
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $native = @(Get-ChildItem (Join-Path $root 'venv\Lib\site-packages\dynwinrt') -Filter *.pyd -File)

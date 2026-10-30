@@ -685,7 +685,7 @@ try {
             & $script:pythonExe -m pytest bindings\py\tests -q
         }
         Invoke-Step "Python stubtest" {
-            & $script:pythonExe -m mypy.stubtest dynwinrt `
+            & $script:pythonExe bindings\py\tests\run_stubtest.py dynwinrt `
                 --allowlist bindings\py\stubtest_allowlist.txt `
                 --ignore-disjoint-bases
         }
