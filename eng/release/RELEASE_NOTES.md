@@ -34,6 +34,10 @@ python -m pip install --pre "dynwinrt==0.1.0rc24" "dynwinrt-codegen==0.1.0rc24"
 
 - Generated Python and Node.js packages can include Bootstrap DLLs and SDK configuration for initialization without hard-coded versions or DLL paths. ([#225](https://github.com/microsoft/dynwinrt/pull/225))
 
+### Opt-in automatic Bootstrap
+
+- Python `dynwinrt.auto_init` and Node.js `@microsoft/dynwinrt/auto-init` skip Bootstrap for processes with package identity and otherwise use generated SDK configuration.
+
 ### Python AsyncEventScope notifications
 
 - `AsyncEventScope` manages async handlers for same-thread notifications and cleans up their subscriptions and tasks. ([#229](https://github.com/microsoft/dynwinrt/pull/229))

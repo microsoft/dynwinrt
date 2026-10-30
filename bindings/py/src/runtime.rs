@@ -3915,9 +3915,8 @@ impl DynWinRtElementFactory {
 // ======================================================================
 
 #[pyfunction]
-pub fn has_package_identity() -> bool {
-    use windows::ApplicationModel::AppInfo;
-    AppInfo::Current().is_ok()
+pub fn has_package_identity() -> PyResult<bool> {
+    dynwinrt::has_package_identity().map_err(map_windows_error)
 }
 
 /// Return the framework resources.pri path selected by init_winappsdk.

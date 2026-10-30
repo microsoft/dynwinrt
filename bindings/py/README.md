@@ -1029,6 +1029,37 @@ producer's responsibility. This API does not install the Runtime or silently
 skip initialization merely because the process has package identity.
 Ordinary Windows SDK-only generated bindings require none of this configuration.
 
+### Opt-in automatic Bootstrap
+
+Import `dynwinrt.auto_init` on the application's chosen COM thread after preparing
+its apartment:
+
+```python
+from dynwinrt import RoApartment, projected_lifetime_scope
+
+with RoApartment(0):  # The application chooses STA here.
+    import dynwinrt.auto_init
+
+    with projected_lifetime_scope():
+        # Import generated bindings and create/run the application here.
+        ...
+```
+
+The module checks Windows package identity first, without WinRT activation. With
+identity it skips Bootstrap entirely: no generated configuration discovery or
+Bootstrap DLL lookup, read, load, or initialization. Without identity it calls
+the existing no-argument `init_winappsdk()`, so install a generated package with
+Bootstrap configuration as described above; configuration and native errors
+propagate unchanged. The skip does not verify SDK deployment or readiness.
+
+This is opt-in: ordinary `import dynwinrt` and generated-package imports remain
+passive. Explicit `init_winappsdk(...)`, including its no-argument form, never
+skips because of identity and still returns `WinAppSDKContext`. The automatic
+module exposes no context API. Normal import caching applies, not initialization
+on every import or a custom retry mechanism. Neither entry point initializes COM,
+chooses STA/MTA, creates threads/message loops, or forces an SDK reload/version
+switch; the application owns those lifetimes.
+
 ## Experimental WinUI support
 
 When the required WinUI metadata is generated, `Application.create()` installs

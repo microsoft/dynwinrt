@@ -42,6 +42,14 @@ function artifactFile(target) {
 for (const [name, target] of Object.entries(manifest.exports)) {
   if (name === './package.json') continue
   artifactFile(target.types)
+  if (name === './auto-init' && !modules.get('.').hasPackageIdentity()) {
+    // Unlike passive facades, this entry requires application configuration without identity.
+    const missingConfiguration = /No generated Windows App SDK configuration/
+    assert.throws(() => require(artifactFile(target.require)), missingConfiguration)
+    await assert.rejects(import(pathToFileURL(artifactFile(target.import)).href), missingConfiguration)
+    console.log('Verified opt-in auto-init reports missing application configuration in CJS and ESM')
+    continue
+  }
   const commonjs = require(artifactFile(target.require))
   const esm = await import(pathToFileURL(artifactFile(target.import)).href)
   for (const key of Object.keys(commonjs)) {

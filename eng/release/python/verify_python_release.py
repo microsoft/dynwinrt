@@ -153,6 +153,7 @@ def verify_wheel(args: argparse.Namespace) -> None:
         )
         names = archive.namelist()
         if args.package == "dynwinrt":
+            assert "dynwinrt/auto_init.py" in names, "Missing opt-in Bootstrap module"
             assert any(name.endswith(".pyd") for name in names)
             assert any(name.endswith("/py.typed") for name in names)
             assert any(name.endswith(".pyi") for name in names)

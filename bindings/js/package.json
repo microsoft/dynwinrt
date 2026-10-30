@@ -17,6 +17,12 @@
       "require": "./dist/winappsdk-config.js",
       "default": "./dist/winappsdk-config.js"
     },
+    "./auto-init": {
+      "types": "./dist/auto-init.d.ts",
+      "import": "./dist/auto-init.js",
+      "require": "./dist/auto-init.js",
+      "default": "./dist/auto-init.js"
+    },
     "./com": {
       "types": "./dist/com.d.ts",
       "import": "./dist/com.js",
@@ -51,6 +57,9 @@
   },
   "typesVersions": {
     "*": {
+      "auto-init": [
+        "dist/auto-init.d.ts"
+      ],
       "winappsdk": [
         "dist/winappsdk-config.d.ts"
       ],
@@ -90,6 +99,7 @@
     "LICENSE",
     "README.md"
   ],
+  "sideEffects": true,
   "napi": {
     "binaryName": "dynwinrt",
     "targets": [
@@ -118,7 +128,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint",
     "test": "npm run test:types && ava && npm run test:native-classes && npm run test:interface-inputs && npm run test:winappsdk",
-    "test:winappsdk": "node --test __test__/winappsdk-config.e2e.cjs",
+    "test:winappsdk": "node --test __test__/winappsdk-config.e2e.cjs __test__/auto-init.e2e.cjs",
     "test:interface-inputs": "node --test __test__/interface-inputs.e2e.mjs",
     "test:native-classes": "node --test __test__/native-class-boundary.e2e.mjs",
     "test:native-classes:hooks": "node --test __test__/native-class-boundary-hooks.e2e.mjs",

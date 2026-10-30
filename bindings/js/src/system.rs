@@ -4,12 +4,8 @@
 use napi_derive::napi;
 
 #[napi]
-pub fn has_package_identity() -> bool {
-  use windows::ApplicationModel::AppInfo;
-  match AppInfo::Current() {
-    Ok(_) => true,
-    Err(_) => false,
-  }
+pub fn has_package_identity() -> napi::Result<bool> {
+  dynwinrt::has_package_identity().map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 
 #[napi]

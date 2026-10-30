@@ -3,6 +3,8 @@
 
 from pathlib import Path
 import inspect
+import subprocess
+import sys
 
 import dynwinrt
 
@@ -12,6 +14,18 @@ def test_wheel_contains_typing_metadata():
 
     assert (package_dir / "__init__.pyi").is_file()
     assert (package_dir / "py.typed").is_file()
+    assert (package_dir / "auto_init.py").is_file()
+
+
+def test_installed_auto_init_module_is_typed(tmp_path):
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text("import dynwinrt.auto_init\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "mypy", "--strict", "--no-incremental",
+         "--cache-dir", str(tmp_path / "cache"), str(consumer)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_wheel_exports_async_event_scope_without_changing_native_exports():

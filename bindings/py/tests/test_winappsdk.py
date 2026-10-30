@@ -3,7 +3,10 @@
 
 import copy
 import hashlib
+import importlib
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -230,7 +233,7 @@ def test_native_failure_propagates_and_can_retry(monkeypatch, tmp_path):
     assert count == 2
 
 
-def test_real_native_missing_input_errors_and_return_type_contract(monkeypatch, tmp_path):
+def test_real_native_missing_input_errors_and_return_type_contract(monkeypatch, tmp_path, auto_import):
     import ctypes
 
     monkeypatch.delenv(ENVIRONMENT, raising=False)
@@ -247,6 +250,10 @@ def test_real_native_missing_input_errors_and_return_type_contract(monkeypatch, 
     try:
         with pytest.raises(OSError):
             dynwinrt.init_winappsdk(2, 5, bootstrap_dll_path=not_a_dll)
+        providers(monkeypatch, bundle(tmp_path / "generated"))
+        monkeypatch.setattr(dynwinrt, "has_package_identity", lambda: False)
+        with pytest.raises(OSError):
+            auto_import()
     finally:
         kernel.SetErrorMode(previous)
     assert hasattr(dynwinrt.WinAppSDKContext, "resource_pri_path")
@@ -254,3 +261,121 @@ def test_real_native_missing_input_errors_and_return_type_contract(monkeypatch, 
     stub = (Path(dynwinrt.__file__).parent / "__init__.pyi").read_text(encoding="utf-8")
     assert "def init_winappsdk(*, bootstrap_dll_path:" in stub
     assert ") -> WinAppSDKContext:" in stub
+
+
+@pytest.fixture
+def auto_import(monkeypatch):
+    monkeypatch.delitem(sys.modules, "dynwinrt.auto_init", raising=False)
+    monkeypatch.delattr(dynwinrt, "auto_init", raising=False)
+    yield lambda: importlib.import_module("dynwinrt.auto_init")
+    sys.modules.pop("dynwinrt.auto_init", None)
+    if hasattr(dynwinrt, "auto_init"):
+        del dynwinrt.auto_init
+
+
+def test_auto_identity_skips_before_discovery_or_dll_access(
+    monkeypatch, tmp_path, native_calls, auto_import
+):
+    monkeypatch.setattr(dynwinrt, "has_package_identity", lambda: True)
+    monkeypatch.setenv(ENVIRONMENT, str(tmp_path / "does-not-exist.dll"))
+    monkeypatch.setattr(_winappsdk, "entry_points", lambda **_: pytest.fail("must not discover"))
+    monkeypatch.setattr(_winappsdk, "_explicit_path", lambda _: pytest.fail("must not read DLL"))
+    monkeypatch.setattr(_winappsdk, "_resource_path", lambda _: pytest.fail("must not read DLL"))
+    module = auto_import()
+    assert auto_import() is module
+    assert module.__all__ == []
+    assert native_calls[0] == []
+
+
+def test_auto_no_identity_uses_existing_discovery_and_import_cache(
+    monkeypatch, tmp_path, native_calls, auto_import
+):
+    providers(monkeypatch, bundle(tmp_path / "package"))
+    calls = []
+    monkeypatch.setattr(dynwinrt, "has_package_identity", lambda: calls.append("identity") or False)
+    module = auto_import()
+    assert auto_import() is module
+    assert calls == ["identity"]
+    assert native_calls[0] == [
+        ((2, 5), {"bootstrap_dll_path": str(tmp_path / "package" / "_native" / "winappsdk" / "x64" / DLL)})
+    ]
+    assert dynwinrt.init_winappsdk() is native_calls[1]
+    assert len(native_calls[0]) == 2  # Explicit calls are not suppressed by an imported module.
+
+
+@pytest.mark.parametrize("failure", ["missing", "conflict", "path", "native", "identity"])
+def test_auto_errors_propagate(monkeypatch, tmp_path, native_calls, auto_import, failure):
+    monkeypatch.setattr(dynwinrt, "has_package_identity", lambda: False)
+    expected = RuntimeError
+    match = "No generated"
+    if failure == "missing":
+        providers(monkeypatch)
+    else:
+        providers(monkeypatch, bundle(tmp_path / "package"))
+    if failure == "conflict":
+        providers(monkeypatch, bundle(tmp_path / "one"), bundle(tmp_path / "two", minor=6))
+        match = "Conflicting generated"
+    elif failure == "path":
+        monkeypatch.setenv(ENVIRONMENT, str(tmp_path / "missing.dll"))
+        expected, match = FileNotFoundError, "bootstrap DLL not found"
+    elif failure in ("native", "identity"):
+        error = OSError(f"{failure} failure")
+
+        def fail(*args, **kwargs):
+            raise error
+
+        if failure == "native":
+            monkeypatch.setattr(_winappsdk._native, "init_winappsdk", fail)
+        else:
+            monkeypatch.setattr(dynwinrt, "has_package_identity", fail)
+            monkeypatch.setattr(_winappsdk, "entry_points", lambda **_: pytest.fail("must not discover"))
+        expected, match = OSError, f"{failure} failure"
+    with pytest.raises(expected, match=match) as caught:
+        auto_import()
+    if failure in ("native", "identity"):
+        assert caught.value is error
+    assert "dynwinrt.auto_init" not in sys.modules
+    assert native_calls[0] == []
+
+
+def test_explicit_initializers_do_not_skip_for_identity(
+    monkeypatch, tmp_path, native_calls, auto_import
+):
+    monkeypatch.setattr(dynwinrt, "has_package_identity", lambda: True)
+    providers(monkeypatch, bundle(tmp_path / "package"))
+    auto_import()
+    explicit = tmp_path / "explicit.dll"
+    explicit.touch()
+    assert dynwinrt.init_winappsdk() is native_calls[1]
+    assert dynwinrt.init_winappsdk(2, 5) is native_calls[1]
+    assert dynwinrt.init_winappsdk(2, 5, bootstrap_dll_path=explicit) is native_calls[1]
+    assert len(native_calls[0]) == 3
+
+
+def test_fresh_import_and_native_identity_are_passive(tmp_path):
+    script = r"""
+import ctypes
+import sys
+kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel.GetCurrentPackageFullName.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_void_p]
+kernel.GetCurrentPackageFullName.restype = ctypes.c_long
+kernel.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+kernel.GetModuleHandleW.restype = ctypes.c_void_p
+ole = ctypes.WinDLL("ole32")
+ole.CoGetApartmentType.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+ole.CoGetApartmentType.restype = ctypes.c_long
+apartment, qualifier = ctypes.c_int(), ctypes.c_int()
+assert ole.CoGetApartmentType(ctypes.byref(apartment), ctypes.byref(qualifier)) == -2147221008
+length = ctypes.c_uint()
+status = kernel.GetCurrentPackageFullName(ctypes.byref(length), None)
+assert status in (122, 15700), status
+import dynwinrt
+assert "dynwinrt.auto_init" not in sys.modules
+assert dynwinrt.has_package_identity() == (status == 122)
+assert ole.CoGetApartmentType(ctypes.byref(apartment), ctypes.byref(qualifier)) == -2147221008
+assert not kernel.GetModuleHandleW("Microsoft.WindowsAppRuntime.Bootstrap.dll")
+"""
+    child = subprocess.run(
+        [sys.executable, "-I", "-c", script], cwd=tmp_path, capture_output=True, text=True, timeout=30
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
