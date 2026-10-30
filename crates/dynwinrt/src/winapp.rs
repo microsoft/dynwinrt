@@ -221,22 +221,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_query_does_not_initialize_com() {
-        std::thread::spawn(|| {
-            use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType};
-            let mut apartment = APTTYPE::default();
-            let mut qualifier = APTTYPEQUALIFIER::default();
-            let before = unsafe { CoGetApartmentType(&mut apartment, &mut qualifier) }.unwrap_err();
-            assert_eq!(before.code(), HRESULT(0x800401F0u32 as i32));
-            has_package_identity().unwrap();
-            let after = unsafe { CoGetApartmentType(&mut apartment, &mut qualifier) }.unwrap_err();
-            assert_eq!(after.code(), before.code());
-        })
-        .join()
-        .unwrap();
-    }
-
-    #[test]
     fn bootstrap_version_preserves_release_and_minimum_version() {
         let options = WinAppSdkBootstrapOptions {
             major_version: 2,

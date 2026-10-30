@@ -28,6 +28,16 @@ def test_installed_auto_init_module_is_typed(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_installed_public_stubs_include_auto_init():
+    tests = Path(__file__).parent
+    result = subprocess.run(
+        [sys.executable, str(tests / "run_stubtest.py"), "dynwinrt",
+         "--allowlist", str(tests.parent / "stubtest_allowlist.txt"), "--ignore-disjoint-bases"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_wheel_exports_async_event_scope_without_changing_native_exports():
     stub = (Path(dynwinrt.__file__).parent / "__init__.pyi").read_text(encoding="utf-8")
     assert "class AsyncEventScope:" in stub
