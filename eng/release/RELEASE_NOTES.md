@@ -60,15 +60,14 @@ python -m pip install --pre "dynwinrt==0.1.0rc24" "dynwinrt-codegen==0.1.0rc24"
 
 ## Upgrade notes
 
-Upgrade runtime and codegen together. Regenerate the complete bindings selection, including `.py` and `.pyi` files together, and rebuild/reinstall generated packages. Do not mix old bindings or stubs with the new runtime.
+Upgrade runtime and codegen together, then regenerate and reinstall all bindings.
 
-- **Python layout migration:** Clean the dedicated output directory or generate into a fresh one. Old flat-layout output is rejected even if its producer version matches; do not move selected files or edit/remove the producer stamp to bypass this check.
-- **Installation and imports:** Continue installing the outer project, for example `python -m pip install .\generated` or `python -m pip install -e .\generated`. Keep imports such as `from generated.windows.foundation import Uri`; do not add `src` to the import name. Select the installation's environment in your editor/type checker.
-- **Direct source imports:** Prefer a normal or editable installation over old `sys.path`/`PYTHONPATH` adjustments. Deliberate uninstalled imports now need `<output>\src`, not `<output>` or its parent. Source-only imports do not register the distribution metadata needed for Python Bootstrap discovery.
-- **Nullable streams:** Save each `detach_stream()` result and check `is not None` before calling stream methods.
-- **Cleanup ordering:** Keep COM apartments and captured projected lifetimes alive until `AsyncEventScope` has finished task cleanup. Closing a stream with `with` or `close()` closes its native resource; it does not replace projection release or apartment teardown.
+- **Python layout:** Use a fresh or cleaned codegen-owned output directory; install the outer project, not `src`. Import names stay unchanged.
+- **Direct source imports:** Point them at `<output>\src`; Bootstrap discovery still requires installing the package.
+- **Nullable streams:** Check `detach_stream()` results for `None`.
+- **Async cleanup:** Keep COM apartments and projected lifetimes alive until `AsyncEventScope` exits.
 
-See the [Python layout migration contract](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#breaking-layout-upgrade-from-preview23-and-earlier) for full regeneration, editable-install, and path guidance.
+See the [Python layout migration contract](https://github.com/microsoft/dynwinrt/blob/main/tools/dynwinrt-codegen/python/README.md#breaking-layout-upgrade-from-preview23-and-earlier) for details.
 
 ## Known boundaries
 
