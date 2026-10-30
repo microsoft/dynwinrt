@@ -51,12 +51,12 @@ use super::collections::{
 };
 use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
+use super::shared::{ICLOSABLE_IID, is_closable, requires_closable};
 use super::signature::{
     LegacyGuardOverlap, LegacyPreservationPredicate, legacy_guard_overlap,
     py_dispatch_type_sort_key, py_has_permissive_guard,
 };
 
-const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 const ITHREAD_POOL_STATICS_IID: &str = "b6bf67dd-84bd-44f8-ac1c-93ebcb9dba91";
 const WORK_ITEM_HANDLER_IID: &str = "1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa";
 
@@ -202,8 +202,48 @@ pub(crate) struct ScopePlan<'a> {
     previous_attributes: HashMap<*const MethodMeta, String>,
     defined_names: HashSet<String>,
     pub(crate) collection_helpers: CollectionHelperPlan,
+    pub(crate) closable_helpers: ClosableHelperPlan,
     #[cfg(test)]
     fallbacks: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClosableHelperPlan {
+    pub(crate) close: bool,
+    pub(crate) context: bool,
+}
+
+impl ClosableHelperPlan {
+    fn new(interface: &InterfaceMeta, names: &HashSet<String>) -> Self {
+        if !requires_closable(interface)
+            || ["__enter__", "__exit__", "_closed"]
+                .iter()
+                .any(|name| names.contains(*name))
+        {
+            return Self::default();
+        }
+        if is_closable(interface) {
+            // Keep IClosable.Close's metadata projection and native repeat-call semantics.
+            let native_close = interface.methods.len() == 1
+                && interface.methods.iter().any(|method| {
+                    method.name == "Close"
+                        && method.vtable_index == 6
+                        && method.params.is_empty()
+                        && method.return_type.is_none()
+                        && !is_accessor(method)
+                })
+                && names.contains("close");
+            return Self {
+                close: false,
+                context: native_close,
+            };
+        }
+        let available = !names.contains("close");
+        Self {
+            close: available,
+            context: available,
+        }
+    }
 }
 
 /// Refine inherited helpers only when no native member owns their Python name.
@@ -450,6 +490,7 @@ pub(crate) fn interface_member_plan<'a>(
     .pop()
     .expect("interface scope");
     plan.collection_helpers = CollectionHelperPlan::new(Some(interface), &plan.defined_names);
+    plan.closable_helpers = ClosableHelperPlan::new(interface, &plan.defined_names);
     plan
 }
 
@@ -1137,6 +1178,7 @@ fn plan_scopes_with_context<'a>(
                 previous_attributes,
                 defined_names,
                 collection_helpers: CollectionHelperPlan::default(),
+                closable_helpers: ClosableHelperPlan::default(),
                 #[cfg(test)]
                 fallbacks: fallback
                     .iter()
