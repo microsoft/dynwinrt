@@ -15,11 +15,11 @@ import threading
 import warnings
 
 
-async def check_native(g, dw, mode, *, temp_root):
+async def check_native(g, dw, mode):
     collections = importlib.import_module(f"{g.__name__}.windows.foundation.collections")
     owner = threading.current_thread()
     context = ContextVar("async-event-context")
-    with tempfile.TemporaryDirectory(prefix="dynwinrt-event-test-", dir=temp_root) as directory:
+    with tempfile.TemporaryDirectory(prefix="dynwinrt-event-test-") as directory:
         with dw.RoApartment(mode), dw.projected_lifetime_scope() as lifetime:
             folder = await g.StorageFolder.get_folder_from_path_async(directory)
             properties = g.PropertySet()
@@ -233,7 +233,10 @@ async def check_native(g, dw, mode, *, temp_root):
             captured = []
             inner = dw.projected_lifetime_scope()
             with inner:
-                captured_folder = await g.StorageFolder.get_folder_from_path_async(directory)
+                # Exercise an equivalent spelling without dot segments, which
+                # StorageFolder does not support on all Windows versions.
+                lookup_path = str(Path(directory).with_name(Path(directory).name.upper()))
+                captured_folder = await g.StorageFolder.get_folder_from_path_async(lookup_path)
                 async with dw.AsyncEventScope(loop=asyncio.get_running_loop()) as events:
                     async def observe_scope(sender, args):
                         await asyncio.sleep(0)
@@ -285,16 +288,13 @@ def main():
 
     async def run():
         loop = asyncio.get_running_loop()
-        with tempfile.TemporaryDirectory(prefix="dynwinrt-event-root-") as root:
-            # Exercise native path normalization without requiring NTFS 8.3 names.
-            temp_root = str(Path(root) / ".." / Path(root).name)
-            await check_native(g, dw, options.mode, temp_root=temp_root)
-            if hasattr(asyncio, "eager_task_factory"):
-                loop.set_task_factory(asyncio.eager_task_factory)
-                try:
-                    await check_native(g, dw, options.mode, temp_root=temp_root)
-                finally:
-                    loop.set_task_factory(None)
+        await check_native(g, dw, options.mode)
+        if hasattr(asyncio, "eager_task_factory"):
+            loop.set_task_factory(asyncio.eager_task_factory)
+            try:
+                await check_native(g, dw, options.mode)
+            finally:
+                loop.set_task_factory(None)
 
     asyncio.run(run())
     print(f"PASS async-events apartment={options.mode}")
