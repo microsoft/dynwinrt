@@ -22,7 +22,7 @@ CI = ROOT / "eng" / "ci"
 WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8"))
 JOBS = WORKFLOW["jobs"]
 HEAVY = {
-    "test-rust", "build-codegen-x64", "build-bindings-x64", "build-js-test-hooks",
+    "test-rust", "test-pod-vectors", "build-codegen-x64", "build-bindings-x64", "build-js-test-hooks",
     "build-arm64", "e2e-runtime", "e2e-native",
 }
 GATES = {"test", "e2e", "dynwinrt", "dynwinrt-codegen", "ci-success"}
@@ -292,10 +292,78 @@ class WorkflowTests(unittest.TestCase):
         for producer in ("build-codegen-x64", "build-bindings-x64", "build-js-test-hooks", "build-arm64"):
             self.assertEqual(set(JOBS[producer]["needs"]), {"format", "changes"})
         for consumer in ("e2e-runtime", "e2e-native"):
-            self.assertTrue(self.ancestors(consumer).isdisjoint({"test", "test-rust", "build-arm64"}))
+            self.assertTrue(self.ancestors(consumer).isdisjoint({
+                "test", "test-rust", "test-pod-vectors", "build-arm64",
+            }))
         for final in ("dynwinrt", "dynwinrt-codegen"):
-            self.assertTrue({"test", "e2e", "build-arm64"} <= self.ancestors(final))
+            self.assertTrue({"test", "test-pod-vectors", "e2e", "build-arm64"} <= self.ancestors(final))
         self.assertEqual(set(JOBS["ci-success"]["needs"]), set(JOBS) - {"ci-success"})
+
+    def test_pod_vectors_execute_every_supported_target_on_native_hosts(self):
+        job = JOBS["test-pod-vectors"]
+        self.assertEqual(set(job["needs"]), {"changes", "format"})
+        self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
+        self.assertFalse(job["strategy"]["fail-fast"])
+        targets = job["strategy"]["matrix"]["include"]
+        self.assertEqual(len(targets), 3)
+        self.assertEqual(
+            {item["target"]: (item["runner"], item["host"]) for item in targets},
+            {
+                "x86_64-pc-windows-msvc": ("windows-latest", "X64"),
+                "i686-pc-windows-msvc": ("windows-latest", "X64"),
+                "aarch64-pc-windows-msvc": ("windows-11-arm", "Arm64"),
+            },
+        )
+        self.assertEqual(job["env"]["POD_TEST_TARGET"], "${{ matrix.target }}")
+        self.assertEqual(job["env"]["POD_TEST_HOST"], "${{ matrix.host }}")
+        toolchain, = [
+            step for step in job["steps"]
+            if step.get("uses") == "dtolnay/rust-toolchain@stable"
+        ]
+        self.assertEqual(toolchain["with"]["targets"], "${{ matrix.target }}")
+        execution, = [
+            step for step in job["steps"]
+            if step.get("name") == "Execute optimized collection and callback regressions"
+        ]
+        self.assertEqual(execution["shell"], "pwsh")
+        self.assertIn("$PSNativeCommandUseErrorActionPreference = $true", execution["run"])
+        self.assertIn(
+            "cargo test --locked --release -p dynwinrt --target $env:POD_TEST_TARGET --lib --",
+            execution["run"],
+        )
+        for selected in ("vector::", "collection_element::", "native_callback::", "map::"):
+            self.assertIn(selected, execution["run"])
+        self.assertNotIn("--no-run", execution["run"])
+        for config in (job, *job["steps"]):
+            self.assertNotIn("continue-on-error", config)
+        self.assertIn("test-pod-vectors", JOBS["test"]["needs"])
+
+    def test_pod_host_guard_rejects_an_emulated_host(self):
+        guard, = [
+            step for step in JOBS["test-pod-vectors"]["steps"]
+            if step.get("name") == "Verify native POD test host"
+        ]
+        self.assertEqual(guard["shell"], "pwsh")
+        with tempfile.TemporaryDirectory(prefix="dynwinrt-ci-pod-host-") as directory:
+            step = Path(directory) / "guard.ps1"
+            step.write_text(guard["run"], encoding="utf-8")
+            harness = Path(directory) / "check.ps1"
+            harness.write_text(
+                "param([string]$Step)\n"
+                "$ErrorActionPreference = 'Stop'\n"
+                "$hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()\n"
+                "$env:POD_TEST_TARGET = 'test-target'\n"
+                "foreach ($expected in @($true, $false)) {\n"
+                "  $env:POD_TEST_HOST = if ($expected) { $hostArchitecture } "
+                "elseif ($hostArchitecture -eq 'Arm64') { 'X64' } else { 'Arm64' }\n"
+                "  $passed = $true\n"
+                "  try { & $Step } catch { $passed = $false }\n"
+                "  if ($passed -ne $expected) { throw 'Native POD host guard admitted the wrong host' }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            result = powershell(harness, step)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_current_run_artifacts_and_no_consumer_rebuilds(self):
         uploads = {}

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::sync::Arc;
+use std::{alloc::Layout, sync::Arc};
 use windows_core::{HSTRING, IUnknown, Interface};
 
 use crate::{Error, Result, TypeHandle, TypeKind, WinRTValue};
@@ -12,11 +12,12 @@ pub(crate) enum CollectionStorage {
     HString,
     Object,
     EmptyOnly(usize),
+    Pod(Layout),
 }
 
 impl CollectionStorage {
     pub(crate) fn is_value_type(self) -> bool {
-        matches!(self, Self::Word(_) | Self::EmptyOnly(_))
+        matches!(self, Self::Word(_) | Self::EmptyOnly(_) | Self::Pod(_))
     }
 
     pub(crate) fn is_hstring(self) -> bool {
@@ -30,6 +31,7 @@ impl CollectionStorage {
     pub(crate) fn element_size(self) -> usize {
         match self {
             Self::Word(size) | Self::EmptyOnly(size) => size,
+            Self::Pod(layout) => layout.size(),
             Self::HString | Self::Object => size_of::<usize>(),
         }
     }
@@ -205,6 +207,7 @@ enum ScalarEqualityKind {
     U64,
     F32,
     F64,
+    Guid,
 }
 
 impl StructEqualityField {
@@ -232,6 +235,7 @@ impl StructEqualityField {
             ScalarEqualityKind::F64 => {
                 f64::from_ne_bytes(self.read(left)) == f64::from_ne_bytes(self.read(right))
             }
+            ScalarEqualityKind::Guid => self.read::<16>(left) == self.read::<16>(right),
         }
     }
 }
@@ -285,6 +289,7 @@ impl CollectionEquality {
             TypeKind::I64 | TypeKind::U64 => ScalarEqualityKind::U64,
             TypeKind::F32 => ScalarEqualityKind::F32,
             TypeKind::F64 => ScalarEqualityKind::F64,
+            TypeKind::Guid => ScalarEqualityKind::Guid,
             _ => return Err(unsupported()),
         };
         if fields.len() >= size {
@@ -295,12 +300,14 @@ impl CollectionEquality {
     }
 
     pub(crate) fn struct_words_equal(&self, left: usize, right: usize) -> Option<bool> {
+        self.struct_bytes_equal(&left.to_ne_bytes(), &right.to_ne_bytes())
+    }
+
+    pub(crate) fn struct_bytes_equal(&self, left: &[u8], right: &[u8]) -> Option<bool> {
         let Self::Struct(fields) = self else {
             return None;
         };
-        let left = left.to_ne_bytes();
-        let right = right.to_ne_bytes();
-        Some(fields.iter().all(|field| field.equal(&left, &right)))
+        Some(fields.iter().all(|field| field.equal(left, right)))
     }
 }
 
@@ -311,8 +318,38 @@ pub(crate) struct CollectionElementPlan {
 }
 
 impl CollectionElementPlan {
-    pub(crate) fn new(typ: &TypeHandle, allow_empty: bool) -> Result<Self> {
+    // Maps still use only the original word/reference ABI and storage.
+    pub(crate) fn for_map(typ: &TypeHandle) -> Result<Self> {
+        Self::new(typ, false)
+    }
+
+    fn new(typ: &TypeHandle, allow_empty: bool) -> Result<Self> {
         Self::for_target(typ, allow_empty, CollectionTarget::current())
+    }
+
+    pub(crate) fn for_vector(typ: &TypeHandle) -> Result<Self> {
+        if !matches!(typ.kind(), TypeKind::Struct(_)) {
+            return Self::new(typ, false);
+        }
+        let target = CollectionTarget::current();
+        let unsupported = || Error::UnsupportedCollectionElement(typ.kind());
+        if target == CollectionTarget::Unsupported {
+            return Err(unsupported());
+        }
+        let layout = pod_layout(typ, 0)?;
+        // Keep the existing single-word ABI fast path. All other checked PODs
+        // require a metadata-prepared callback, even when the vector is empty.
+        if aggregate_storage(target, layout.size, layout.homogeneous.is_some(), false).is_some() {
+            return Self::new(typ, false);
+        }
+        typ.table().try_closed_signature_string_kind(typ.kind())?;
+        let storage =
+            Layout::from_size_align(layout.size, layout.align).map_err(|_| unsupported())?;
+        Ok(Self {
+            typ: typ.clone(),
+            storage: CollectionStorage::Pod(storage),
+            equality: CollectionEquality::for_struct(typ, layout.size)?,
+        })
     }
 
     fn for_target(typ: &TypeHandle, allow_empty: bool, target: CollectionTarget) -> Result<Self> {
@@ -420,6 +457,11 @@ impl CollectionElementPlan {
                         "the exact declared struct layout",
                     ));
                 }
+                if let CollectionStorage::Pod(layout) = self.storage {
+                    return Ok(PreparedCollectionItem::Pod(unsafe {
+                        OwnedPod::copy(layout, data.as_ptr())
+                    }));
+                }
                 let mut word = 0usize;
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -444,15 +486,18 @@ pub(crate) enum PreparedCollectionItem {
     Word(usize),
     HString(HSTRING),
     Object(Option<IUnknown>),
+    Pod(OwnedPod),
 }
 
 impl PreparedCollectionItem {
-    /// Borrow the ABI word without transferring ownership.
+    /// Borrow the storage word without transferring ownership. POD words
+    /// address full value storage; they are not by-value native argument bits.
     pub(crate) fn as_raw(&self) -> usize {
         match self {
             Self::Word(word) => *word,
             Self::HString(value) => unsafe { std::mem::transmute_copy::<HSTRING, usize>(value) },
             Self::Object(object) => object.as_ref().map_or(0, |object| object.as_raw() as usize),
+            Self::Pod(value) => value.ptr as usize,
         }
     }
 
@@ -464,7 +509,45 @@ impl PreparedCollectionItem {
                 raw as usize
             }
             Self::Object(object) => object.map_or(0, |object| object.into_raw() as usize),
+            Self::Pod(value) => value.into_raw(),
         }
+    }
+}
+
+pub(crate) struct OwnedPod {
+    ptr: *mut u8,
+    layout: Layout,
+}
+
+impl OwnedPod {
+    /// `source` must hold one readable POD value with the validated layout.
+    pub(crate) unsafe fn copy(layout: Layout, source: *const u8) -> Self {
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        unsafe { std::ptr::copy_nonoverlapping(source, ptr, layout.size()) };
+        Self { ptr, layout }
+    }
+
+    pub(crate) fn into_raw(self) -> usize {
+        let raw = self.ptr as usize;
+        std::mem::forget(self);
+        raw
+    }
+
+    /// `raw` must be an owned allocation previously detached with `into_raw`.
+    pub(crate) unsafe fn from_raw(layout: Layout, raw: usize) -> Self {
+        Self {
+            ptr: raw as *mut u8,
+            layout,
+        }
+    }
+}
+
+impl Drop for OwnedPod {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.ptr, self.layout) };
     }
 }
 
@@ -827,6 +910,78 @@ mod tests {
                 .prepare(&WinRTValue::Struct(expected.default_value()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn pod_vectors_reject_inexact_identity_before_preparing_storage() {
+        let table = MetadataTable::new();
+        let other = MetadataTable::new();
+        let expected = table.struct_type("Test.Large", &vec![table.f64_type(); 3]);
+        let good = WinRTValue::Struct(expected.default_value());
+        for actual in [
+            table.struct_type("Test.OtherLarge", &vec![table.f64_type(); 3]),
+            table.struct_type("Test.Smaller", &[table.f64_type()]),
+            other.struct_type("Test.Large", &vec![other.f64_type(); 3]),
+        ] {
+            assert!(
+                create_vector_from_values(
+                    &[good.clone(), WinRTValue::Struct(actual.default_value())],
+                    &expected,
+                    table.vector_iids(&expected),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn large_nested_pod_equality_compiles_fields_not_padding() {
+        let table = MetadataTable::new();
+        let inner = table.struct_type("Test.PaddedInner", &[table.u8_type(), table.u32_type()]);
+        let outer = table.struct_type(
+            "Test.PaddedOuter",
+            &[table.u8_type(), inner, table.f64_type()],
+        );
+        assert_eq!(outer.size_of(), 24);
+        let plan = CollectionElementPlan::for_vector(&outer).unwrap();
+        let mut left = vec![0; outer.size_of()];
+        left[0] = 7;
+        left[4] = 8;
+        left[8..12].copy_from_slice(&123u32.to_ne_bytes());
+        left[16..24].copy_from_slice(&0.0f64.to_ne_bytes());
+        let mut right = left.clone();
+        for offset in [1, 2, 3, 5, 6, 7, 12, 13, 14, 15] {
+            right[offset] = 0xff;
+        }
+        right[16..24].copy_from_slice(&(-0.0f64).to_ne_bytes());
+        assert_eq!(plan.equality.struct_bytes_equal(&left, &right), Some(true));
+        for offset in [0, 4, 8] {
+            let mut different = right.clone();
+            different[offset] ^= 1;
+            assert_eq!(
+                plan.equality.struct_bytes_equal(&left, &different),
+                Some(false)
+            );
+        }
+        left[16..24].copy_from_slice(&f64::NAN.to_ne_bytes());
+        right[16..24].copy_from_slice(&f64::NAN.to_ne_bytes());
+        assert_eq!(plan.equality.struct_bytes_equal(&left, &right), Some(false));
+    }
+
+    #[test]
+    fn pod_guid_fields_do_not_admit_top_level_guids_or_map_aggregates() {
+        let table = MetadataTable::new();
+        let typ = table.struct_type("Test.GuidRecord", &[table.u8_type(), table.guid_type()]);
+        let plan = CollectionElementPlan::for_vector(&typ).unwrap();
+        assert_eq!(typ.size_of(), 20);
+        let left = vec![1; typ.size_of()];
+        let mut right = left.clone();
+        right[1..4].fill(0xff);
+        assert_eq!(plan.equality.struct_bytes_equal(&left, &right), Some(true));
+        right[19] = 2;
+        assert_eq!(plan.equality.struct_bytes_equal(&left, &right), Some(false));
+        assert!(CollectionElementPlan::for_vector(&table.guid_type()).is_err());
+        assert!(CollectionElementPlan::for_map(&typ).is_err());
     }
 
     #[test]
