@@ -325,6 +325,10 @@ M:Windows.Storage.StorageFolder.GetThumbnailAsync(Windows.Storage.FileProperties
 M:Windows.Storage.StorageFolder.GetThumbnailAsync(Windows.Storage.FileProperties.ThumbnailMode,System.UInt32,Windows.Storage.FileProperties.ThumbnailOptions)
 M:Windows.Storage.StorageFolder.TryGetItemAsync(System.String)
 M:Windows.Storage.StorageLibrary.RequestAddFolderAsync
+M:Windows.Storage.Streams.DataReader.DetachStream
+M:Windows.Storage.Streams.DataWriter.DetachStream
+M:Windows.Storage.Streams.IDataReader.DetachStream
+M:Windows.Storage.Streams.IDataWriter.DetachStream
 M:Windows.System.AppDiagnosticInfo.LaunchAsync
 M:Windows.System.AppUriHandlerRegistrationManager.TryGetRegistration(System.String)
 M:Windows.System.DispatcherQueue.GetForCurrentThread

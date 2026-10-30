@@ -357,6 +357,44 @@ mod tests {
     }
 
     #[test]
+    fn detach_stream_null_facts_match_only_exact_owners_and_signatures() {
+        let mut method = MethodMeta {
+            name: "DetachStream".into(),
+            raw_name: "DetachStream".into(),
+            ..Default::default()
+        };
+        for owner in [
+            "Windows.Storage.Streams.DataWriter",
+            "Windows.Storage.Streams.IDataWriter",
+            "Windows.Storage.Streams.DataReader",
+            "Windows.Storage.Streams.IDataReader",
+        ] {
+            assert!(documents_null_result(owner, &method), "{owner}");
+        }
+        for owner in [
+            "Contoso.DataWriter",
+            "Windows.Storage.Streams.IOutputStream",
+        ] {
+            assert!(!documents_null_result(owner, &method), "{owner}");
+        }
+        method.params.push(ParamMeta {
+            name: "stream".into(),
+            typ: TypeMeta::Object,
+            direction: ParamDirection::In,
+        });
+        assert!(!documents_null_result(
+            "Windows.Storage.Streams.DataWriter",
+            &method
+        ));
+        method.params.clear();
+        method.raw_name = "DetachBuffer".into();
+        assert!(!documents_null_result(
+            "Windows.Storage.Streams.DataWriter",
+            &method
+        ));
+    }
+
+    #[test]
     fn xml_null_facts_do_not_match_other_owners_or_parameter_types() {
         let getter = MethodMeta {
             name: "get_ParentNode".into(),
