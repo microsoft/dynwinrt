@@ -15,6 +15,99 @@ import threading
 import warnings
 
 
+async def check_cleanup_cancellation(g, dw):
+    def leaves(error):
+        if isinstance(error, BaseExceptionGroup):
+            return [leaf for child in error.exceptions for leaf in leaves(child)]
+        return [(type(error).__name__, str(error))]
+
+    async def exercise(use_scope, failure):
+        properties = g.PropertySet()
+        started = asyncio.Event()
+        fail_handler = asyncio.Event()
+        finalized = []
+        removals = 0
+
+        def subscribe(callback):
+            native_stop = properties.subscribe_map_changed(callback)
+
+            def stop():
+                nonlocal removals
+                removals += 1
+                if removals == 1:
+                    raise OSError("induced native unsubscribe failure")
+                native_stop()
+
+            return stop
+
+        async def changed(sender, args):
+            try:
+                started.set()
+                await fail_handler.wait()
+                assert args.key == "trigger" and args.key in sender
+                raise ValueError("native handler failed")
+            finally:
+                finalized.append(args.key)
+
+        async def owner():
+            task = asyncio.current_task()
+            try:
+                if use_scope:
+                    async with dw.AsyncEventScope(loop=asyncio.get_running_loop()) as events:
+                        stop = events.subscribe(subscribe, changed)
+                        properties["trigger"] = None
+                        await asyncio.Event().wait()
+                else:
+                    async with asyncio.TaskGroup() as group:
+                        stop = subscribe(
+                            lambda sender, args: group.create_task(changed(sender, args))
+                        )
+                        try:
+                            properties["trigger"] = None
+                            await asyncio.Event().wait()
+                        finally:
+                            stop()
+            except BaseException as error:
+                result = {
+                    "exception": type(error).__name__,
+                    "leaves": sorted(leaves(error)),
+                    "ordinary_exception": isinstance(error, Exception),
+                    "cancelling": task.cancelling(),
+                }
+            else:
+                raise AssertionError("expected notification/cleanup errors")
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                result["next_await_cancelled"] = True
+            else:
+                result["next_await_cancelled"] = False
+            assert finalized == ["trigger"] and removals == 1
+            stop()
+            properties["unsubscribed"] = None
+            assert finalized == ["trigger"] and removals == 2
+            return result
+
+        task = asyncio.create_task(owner())
+        await started.wait()
+        if failure != "external":
+            fail_handler.set()
+        if failure in ("external", "both"):
+            task.cancel()
+        return await task
+
+    comparisons = []
+    for failure in ("handler", "external", "both"):
+        expected = await exercise(False, failure)
+        actual = await exercise(True, failure)
+        assert actual == expected, (failure, actual, expected)
+        assert actual["ordinary_exception"], actual
+        assert ("OSError", "induced native unsubscribe failure") in actual["leaves"]
+        assert all(name != "CancelledError" for name, _ in actual["leaves"]), actual
+        comparisons.append({"failure": failure, "actual": actual, "expected": expected})
+    return comparisons
+
+
 async def check_native(g, dw, mode):
     collections = importlib.import_module(f"{g.__name__}.windows.foundation.collections")
     owner = threading.current_thread()
@@ -268,6 +361,7 @@ async def check_native(g, dw, mode):
                 assert "released" in str(error.exceptions[0])
             else:
                 raise AssertionError("AsyncEventScope extended a released projection lifetime")
+            await check_cleanup_cancellation(g, dw)
         try:
             _ = retained[0][1].key
         except RuntimeError as error:

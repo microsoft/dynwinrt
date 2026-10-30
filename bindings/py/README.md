@@ -334,10 +334,14 @@ does not cancel accepted tasks. A native removal failure is raised to its
 caller, leaves delivery disabled, and can be retried with the same callable
 on the owner loop/thread while native owners are still live. Scope exit
 attempts **every** remaining removal in reverse registration order. Removal
-failures (and any body exception) are preserved in an exception group passed
-to TaskGroup, cancelling outstanding work rather than hanging in a normal
-drain. Save unsubscribe callables if your application needs to recover from
-native removal failures; recovery must happen before closing native lifetimes.
+failures (and non-cancellation body exceptions) are preserved in an exception
+group passed to TaskGroup, cancelling outstanding work rather than hanging in
+a normal drain. A body's `CancelledError` is TaskGroup control flow, not an
+extra leaf added to that cleanup error group. When cancellation coincides with
+other errors, their propagation and cancellation bookkeeping follow the running
+Python version's TaskGroup semantics. Save unsubscribe callables if your
+application needs to recover from native removal failures; recovery must happen
+before closing native lifetimes.
 
 The scope is single-use and must exit in the task that entered it. Its
 constructor binds it to the creating OS thread; entry, subscription, callbacks,

@@ -270,14 +270,16 @@ def test_exit_attempts_all_removals_and_preserves_errors_for_retry(body_error):
         async def changed(value):
             await asyncio.sleep(0)
 
-        with pytest.raises(BaseExceptionGroup) as failure:
+        with pytest.raises(ExceptionGroup) as failure:
             async with AsyncEventScope(loop=asyncio.get_running_loop()) as scope:
                 stops.extend(scope.subscribe(event.subscribe, changed) for event in events)
                 if body_error:
                     raise body_error
         errors = leaves(failure.value)
         assert sum(isinstance(error, OSError) for error in errors) == 2
-        if body_error:
+        if isinstance(body_error, asyncio.CancelledError):
+            assert not any(isinstance(error, asyncio.CancelledError) for error in errors)
+        elif body_error:
             assert body_error in errors
         assert [event.removals for event in events] == [1, 1, 1]
         for event, stop in zip(events, stops):
@@ -312,6 +314,88 @@ def test_cleanup_error_cancels_tasks_instead_of_hanging():
         stop()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["handler", "external", "both", "cancel_during_cleanup"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_cleanup_and_cancellation_match_taskgroup(task_factory, failure, cleanup_fails):
+    async def exercise(use_scope):
+        event = Notification(failures=int(cleanup_fails))
+        started = asyncio.Event()
+        fail_handler = asyncio.Event()
+        finalized = []
+
+        async def changed(value):
+            try:
+                started.set()
+                await fail_handler.wait()
+                raise ValueError("handler failed")
+            finally:
+                finalized.append(value)
+
+        async def owner():
+            task = asyncio.current_task()
+            if failure == "cancel_during_cleanup":
+                event.removing = task.cancel
+            result = {}
+            try:
+                if use_scope:
+                    async with AsyncEventScope(loop=asyncio.get_running_loop()) as scope:
+                        stop = scope.subscribe(event.subscribe, changed)
+                        event.emit(1)
+                        await asyncio.Event().wait()
+                else:
+                    async with asyncio.TaskGroup() as group:
+                        stop = event.subscribe(lambda value: group.create_task(changed(value)))
+                        try:
+                            event.emit(1)
+                            await asyncio.Event().wait()
+                        finally:
+                            stop()
+            except BaseException as error:
+                result["exception"] = type(error)
+                result["leaves"] = sorted(
+                    (type(leaf).__name__, str(leaf)) for leaf in leaves(error)
+                )
+                result["ordinary_exception"] = isinstance(error, Exception)
+            else:
+                raise AssertionError("expected handler failure or cancellation")
+            result["cancelling"] = task.cancelling()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                result["next_await_cancelled"] = True
+            else:
+                result["next_await_cancelled"] = False
+            assert finalized == [1]
+            assert event.removals == 1
+            event.removing = lambda: None
+            if cleanup_fails:
+                stop()
+                assert event.removals == 2
+            assert event.callback is None
+            return result
+
+        task = asyncio.create_task(owner())
+        await started.wait()
+        if failure != "external":
+            fail_handler.set()
+        if failure in ("external", "both"):
+            task.cancel()
+        return await task
+
+    async def run():
+        expected = await exercise(False)
+        actual = await exercise(True)
+        assert actual == expected
+        if cleanup_fails:
+            assert actual["ordinary_exception"]
+            assert ("OSError", "native removal failed") in actual["leaves"]
+            assert all(name != "CancelledError" for name, _ in actual["leaves"])
+        elif failure == "external":
+            assert actual["exception"] is asyncio.CancelledError
+
+    run_with_factory(run(), task_factory)
 
 
 def test_registration_failure_disables_its_callback_and_drains_accepted_work():

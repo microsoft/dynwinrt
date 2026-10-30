@@ -125,7 +125,8 @@ class AsyncEventScope:
             except BaseException as error:
                 errors.append(error)
         if errors:
-            if exc_value is not None:
+            # TaskGroup handles cancellation separately from ordinary errors.
+            if exc_value is not None and not isinstance(exc_value, _asyncio.CancelledError):
                 errors.insert(0, exc_value)
             exc_value = BaseExceptionGroup("AsyncEventScope unsubscribe failed", errors)
             exc_type = type(exc_value)
