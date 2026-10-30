@@ -426,6 +426,16 @@ composition, raise a class-named `TypeError` on normal construction and their
 stubs expose no public constructor. Native return values still use the internal
 `_from_native`/`DynWinRTValue` wrapping path.
 
+When no constructor matches, the `TypeError` lists the supplied argument types
+and keyword names, followed by all candidate signatures using the same Python
+names and types as the stubs. For example, `Uri(url="https://example.com")`
+reports `Uri(url=str)`, while `Uri(42)` reports `Uri(int)`; both list
+`Uri(uri: str)` and `Uri(base_uri: str, relative_uri: str)`. Use `uri=`, or supply
+both `base_uri=` and `relative_uri=` for the two-argument overload. Argument
+values are not included in this diagnostic. Matching calls and errors from
+native activation or argument conversion are unchanged; named factories such
+as `Uri.create_uri(uri=...)` also retain their explicit signatures.
+
 ### Creating WinRT collections
 
 `DynWinRTValue.create_vector(items, element_type)` and

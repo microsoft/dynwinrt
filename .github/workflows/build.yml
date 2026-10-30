@@ -572,6 +572,7 @@ jobs:
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
           cargo test -p dynwinrt-codegen `
             --test implementation_naming_test `
+            --test python_constructor_diagnostics_test `
             --test python_overload_legacy_compat_test `
             --test python_released_implementation_test
       - name: Test generated collection protocols

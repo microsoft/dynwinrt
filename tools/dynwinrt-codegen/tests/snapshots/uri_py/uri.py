@@ -103,7 +103,9 @@ class Uri:
         if _bound is not None and isinstance(_bound[0], str) and isinstance(_bound[1], str):
             self._set_native(type(self).create_with_relative_uri(_bound[0], _bound[1])._obj)
             return
-        raise TypeError("No matching constructor for Uri")
+        _type_name = type.__dict__['__name__'].__get__
+        _received = ', '.join([_type_name(type(arg)) for arg in args] + ['='.join((name, _type_name(type(value)))) for name, value in kwargs.items()])
+        raise TypeError("No matching constructor for Uri(" + _received + "). Expected one of: Uri(uri: str); Uri(base_uri: str, relative_uri: str)")
 
     @staticmethod
     def _get_f_IUriRuntimeClassFactory():
