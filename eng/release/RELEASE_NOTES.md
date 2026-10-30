@@ -28,36 +28,35 @@ python -m pip install --pre "dynwinrt==0.1.0rc24" "dynwinrt-codegen==0.1.0rc24"
 
 ### Python src package layout
 
-- Generate standard `src/<import_name>` packages so editable installations expose modules and type stubs to editors and static type checkers without custom import hooks. The outer `--output` directory remains the installable project; installed import names do not change. ([#228](https://github.com/microsoft/dynwinrt/pull/228))
+- Generated Python packages use a standard `src` layout so editable installs work with static type checkers. ([#228](https://github.com/microsoft/dynwinrt/pull/228))
 
 ### Windows App SDK Bootstrap packaging
 
-- Include Bootstrap DLLs, SDK configuration, and redistribution notices in generated Python and Node.js packages using `--winappsdk-version` and repeatable `--winappsdk-bootstrap-path` options. Inputs may be DLL files or directories; directories are searched recursively. The version is the stable SDK product `MAJOR.MINOR`, not a NuGet servicing version. ([#225](https://github.com/microsoft/dynwinrt/pull/225))
-- Call `init_winappsdk()` without version or DLL path arguments after installing the generated Python package, or `initWinappsdk()` after importing the generated Node.js package. Resources are package-relative, independent of the working directory. Existing explicit-version initialization remains available.
+- Generated Python and Node.js packages can include Bootstrap DLLs and SDK configuration for initialization without hard-coded versions or DLL paths. ([#225](https://github.com/microsoft/dynwinrt/pull/225))
 
 ### Python AsyncEventScope notifications
 
-- Add `AsyncEventScope` for async handlers attached through existing `subscribe_*` methods to same-thread notifications. Normal exit removes subscriptions and waits for accepted tasks without cancelling them; handler/body failures cancel sibling tasks and wait for cleanup using `asyncio.TaskGroup` semantics. Unsubscribing does not cancel already accepted tasks. ([#229](https://github.com/microsoft/dynwinrt/pull/229))
+- `AsyncEventScope` manages async handlers for same-thread notifications and cleans up their subscriptions and tasks. ([#229](https://github.com/microsoft/dynwinrt/pull/229))
 
 ### Python interface close() and with support
 
-- Add `close()` and `with` helpers to interfaces with an `IClosable` requirement, including `IInputStream`, `IOutputStream`, and `IRandomAccessStream`, without replacing native members. Context entry preserves the wrapper type; exit closes the resource without suppressing application exceptions. Existing concrete-class cleanup behavior is unchanged. ([#233](https://github.com/microsoft/dynwinrt/pull/233))
+- Closable stream interfaces such as `IRandomAccessStream` now support `close()` and `with` for resource cleanup. ([#233](https://github.com/microsoft/dynwinrt/pull/233))
 
 ### Python XAML string keys
 
-- WinUI and UWP `ResourceDictionary` bindings accept Python strings for key operations, for example `resources.lookup("AccentButtonStyle")`, with matching type hints. Object results and enumerated keys remain raw; this is not general implicit Object boxing. ([#221](https://github.com/microsoft/dynwinrt/pull/221))
+- WinUI and UWP `ResourceDictionary` bindings now accept Python string keys, with matching type hints. ([#221](https://github.com/microsoft/dynwinrt/pull/221))
 
 ### Python constructor error diagnostics
 
-- Failed constructor matching reports supplied argument types and keyword names alongside candidate signatures using the generated Python names and types. Argument values are not included, and native activation/conversion failures keep their existing behavior. ([#230](https://github.com/microsoft/dynwinrt/pull/230))
+- Python constructor matching errors now show supplied argument types and accepted signatures. ([#230](https://github.com/microsoft/dynwinrt/pull/230))
 
 ### Nullable Python DetachStream return types
 
-- `DataWriter.detach_stream()` and `DataReader.detach_stream()` are accurately typed as `IOutputStream | None` and `IInputStream | None`, including their declaring-interface projections. An unbound writer, a buffer-backed reader, or a repeated detach can return `None`; native behavior is unchanged. ([#231](https://github.com/microsoft/dynwinrt/pull/231))
+- Type hints for `DataWriter.detach_stream()` and `DataReader.detach_stream()` now correctly allow `None`. ([#231](https://github.com/microsoft/dynwinrt/pull/231))
 
 ### Python from_bytes() crash fix after apartment teardown
 
-- Fix a crash when `from_bytes()` is used again after complete COM apartment teardown. Buffer creation no longer retains a stale activation factory across apartments; copied-byte semantics are unchanged. ([#232](https://github.com/microsoft/dynwinrt/pull/232))
+- Fix a `from_bytes()` crash when COM is uninitialized and initialized again before creating another buffer. ([#232](https://github.com/microsoft/dynwinrt/pull/232))
 
 ## Upgrade notes
 
