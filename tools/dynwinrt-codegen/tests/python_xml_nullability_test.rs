@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,9 +35,7 @@ fn class_and_standalone_interface_stubs_use_exact_xml_null_facts() {
     };
     let stub = |name: &str| {
         fs::read_to_string(
-            fixture
-                .0
-                .join("xml_generated")
+            common::python_package_dir(&fixture.0.join("xml_generated"))
                 .join(format!("windows__data__xml__dom__{name}.pyi")),
         )
         .unwrap()
@@ -86,9 +86,7 @@ fn class_and_standalone_interface_stubs_use_exact_xml_null_facts() {
         }
     }
     let runtime = fs::read_to_string(
-        fixture
-            .0
-            .join("xml_generated")
+        common::python_package_dir(&fixture.0.join("xml_generated"))
             .join("windows__data__xml__dom__xml_document.py"),
     )
     .unwrap();
@@ -177,6 +175,7 @@ impl Fixture {
                 .unwrap(),
         );
 
+        let package = common::python_package_dir(&package);
         // Exclusive interfaces are not public CLI roots. Resolve their actual
         // declarations independently, then exercise the standalone renderer.
         let declarations = ["XmlDocument", "XmlElement"].map(|name| {
@@ -261,7 +260,8 @@ fn guarded_xml_reads_pass_and_unguarded_reads_fail_strict_typechecking() {
         .join("bindings")
         .join("py");
     assert!(source_stubs.join("dynwinrt.pyi").is_file());
-    let mut stub_paths = vec![source_stubs];
+    let source_path = fixture.0.join("xml_generated").join("src");
+    let mut stub_paths = vec![source_stubs, source_path.clone()];
     if let Some(paths) = std::env::var_os("MYPYPATH") {
         stub_paths.extend(std::env::split_paths(&paths));
     }
@@ -292,7 +292,7 @@ fn guarded_xml_reads_pass_and_unguarded_reads_fail_strict_typechecking() {
                 ])
                 .arg(name)
                 .current_dir(&fixture.0)
-                .env_remove("MYPYPATH");
+                .env("MYPYPATH", &source_path);
             if *use_source_stubs {
                 command.env("MYPYPATH", &source_stub_path);
             }
@@ -320,6 +320,14 @@ fn guarded_xml_reads_pass_and_unguarded_reads_fail_strict_typechecking() {
         }
 
         if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
+            fs::write(
+                fixture.0.join("pyrightconfig.json"),
+                serde_json::json!({
+                    "extraPaths": [source_path],
+                })
+                .to_string(),
+            )
+            .unwrap();
             let output = Command::new(pyright)
                 .args(["--pythonpath"])
                 .arg(python())
@@ -374,7 +382,9 @@ fn generated_xml_results_match_native_null_and_non_null_states() {
     };
     let output = Command::new(python())
         .args(["-B", "-c"])
-        .arg(format!("import sys; sys.path.insert(0, '.')\n{NATIVE}"))
+        .arg(format!(
+            "import sys; sys.path.insert(0, 'xml_generated/src')\n{NATIVE}"
+        ))
         .current_dir(&fixture.0)
         .output()
         .unwrap();

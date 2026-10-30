@@ -12,7 +12,7 @@ from pathlib import Path
 from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
 
 generated = Path(sys.argv[1]).resolve()
-sys.path.insert(0, str(generated.parent))
+sys.path.insert(0, str(generated / "src"))
 package = importlib.import_module(generated.name)
 callbacks = 0
 failure = None

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -579,6 +581,7 @@ fn native_collection_members_keep_their_names_dispatch_and_aliases_in_both_outpu
                 Command::new(python())
                     .args(["-B", "runtime.py"])
                     .current_dir(&fixture.0)
+                    .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
                     .output()
                     .unwrap(),
             );
@@ -605,13 +608,17 @@ fn native_collection_members_keep_their_names_dispatch_and_aliases_in_both_outpu
                     "--no-incremental",
                     "consumer.py",
                 ])
-                .current_dir(&fixture.0);
+                .current_dir(&fixture.0)
+                .env_remove("PYTHONPATH");
             if std::env::var("DYNWINRT_TEST_INSTALLED_RUNTIME").as_deref() == Ok("1") {
-                command.env_remove("MYPYPATH");
+                command.env(
+                    "MYPYPATH",
+                    common::python_fixture_mypy_path(&fixture.0, false),
+                );
             } else {
                 command.env(
                     "MYPYPATH",
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join(r"..\..\bindings\py"),
+                    common::python_fixture_mypy_path(&fixture.0, true),
                 );
             }
             // Main already reports these exact nominal ABC overrides.

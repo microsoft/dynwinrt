@@ -62,7 +62,8 @@ impl Output {
 
     fn read(&self, module: &str, extension: &str) -> String {
         let file = format!("{module}.{extension}");
-        fs::read_to_string(self.0.join(&file)).unwrap_or_else(|error| panic!("{file}: {error}"))
+        fs::read_to_string(common::python_package_dir(&self.0).join(&file))
+            .unwrap_or_else(|error| panic!("{file}: {error}"))
     }
 }
 
@@ -233,7 +234,9 @@ fn nested_delegate_callback_argument_preserves_native_null() {
         &metadata,
         &generated,
     );
-    let stub = fs::read_to_string(generated.join("audit__i_emitter.pyi")).unwrap();
+    let stub =
+        fs::read_to_string(common::python_package_dir(&generated).join("audit__i_emitter.pyi"))
+            .unwrap();
     let signature = stub
         .lines()
         .rev()
@@ -248,7 +251,9 @@ fn nested_delegate_callback_argument_preserves_native_null() {
         !stub.contains("from .audit__inner_handler import IID_InnerHandler, InnerHandler"),
         "{stub}"
     );
-    let runtime = fs::read_to_string(generated.join("audit__i_emitter.py")).unwrap();
+    let runtime =
+        fs::read_to_string(common::python_package_dir(&generated).join("audit__i_emitter.py"))
+            .unwrap();
     let null_projection =
         "lambda __p0__: ((lambda value: None if value.is_null() else value)(__p0__),)";
     assert!(runtime.contains(null_projection), "{runtime}");
@@ -256,14 +261,18 @@ fn nested_delegate_callback_argument_preserves_native_null() {
     if let Some(main_codegen) = std::env::var_os("DYNWINRT_MAIN_CODEGEN") {
         let baseline = fixture.0.join("main");
         generate_nested_delegate_views(Path::new(&main_codegen), &metadata, &baseline);
-        let main_stub = fs::read_to_string(baseline.join("audit__i_emitter.pyi")).unwrap();
+        let main_stub =
+            fs::read_to_string(common::python_package_dir(&baseline).join("audit__i_emitter.pyi"))
+                .unwrap();
         let main_signature = main_stub
             .lines()
             .rev()
             .find(|line| line.contains("def set_handler("))
             .expect("main IEmitter.set_handler signature");
         assert_eq!(signature, main_signature);
-        let main_runtime = fs::read_to_string(baseline.join("audit__i_emitter.py")).unwrap();
+        let main_runtime =
+            fs::read_to_string(common::python_package_dir(&baseline).join("audit__i_emitter.py"))
+                .unwrap();
         assert!(main_runtime.contains(null_projection), "{main_runtime}");
         eprintln!("#191 main and #190 IEmitter stubs: {signature}");
     }
@@ -351,11 +360,7 @@ def invalid(emitter: IEmitter) -> None:
                 .current_dir(&fixture.0)
                 .env(
                     "MYPYPATH",
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("..")
-                        .join("..")
-                        .join("bindings")
-                        .join("py"),
+                    common::python_fixture_mypy_path(&fixture.0, true),
                 )
                 .output()
                 .unwrap();
@@ -379,6 +384,7 @@ def invalid(emitter: IEmitter) -> None:
             }
         }
         if let Some(pyright) = std::env::var_os("DYNWINRT_PYRIGHT") {
+            common::python_fixture_pyright_config(&fixture.0);
             let output = Command::new(pyright)
                 .args(["--pythonpath"])
                 .arg(&python)
@@ -478,6 +484,7 @@ print("delegate-typed-native-null-ok", received)
     let output = Command::new(&python)
         .args(["-B", "native.py"])
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     let diagnostics = format!(
@@ -558,15 +565,15 @@ fn runtime_delegate_annotations_resolve_and_stubs_remain_precise() {
     ) else {
         return;
     };
-    let property_runtime = output
-        .0
+    let property_runtime = common::python_package_dir(&output.0)
         .join("windows__foundation__collections__property_set.py");
     let bespoke_module = common::python_module(TypeIdentity::named(
         TypeIdentityKind::Class,
         "Windows.ApplicationModel.Background",
         "BackgroundTaskRegistration",
     ));
-    let bespoke_runtime = output.0.join(format!("{bespoke_module}.py"));
+    let bespoke_runtime =
+        common::python_package_dir(&output.0).join(format!("{bespoke_module}.py"));
     let property_stub = output.read("windows__foundation__collections__property_set", "pyi");
     let bespoke_stub = output.read(&bespoke_module, "pyi");
     assert!(

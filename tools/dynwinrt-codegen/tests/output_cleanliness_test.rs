@@ -5,6 +5,8 @@
 //! generated type-identity inventory. No transient cache files
 //! (e.g. `.index.ts`), temp files, or raw `.ts` sources may leak.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -349,13 +351,18 @@ fn python_emits_stubs_by_default_and_supports_opt_out() {
         .status()
         .expect("spawn dynwinrt-codegen (Python defaults)");
     assert!(default_status.success());
-    let default_namespace = default_dir.join("windows").join("foundation");
+    let default_package = common::python_package_dir(&default_dir);
+    let default_namespace = default_package.join("windows").join("foundation");
     assert!(default_namespace.join("uri.py").exists());
     assert!(default_namespace.join("uri.pyi").exists());
-    assert!(default_dir.join("windows__foundation__uri.py").exists());
-    assert!(default_dir.join("windows__foundation__uri.pyi").exists());
-    assert!(default_dir.join("__init__.pyi").exists());
-    assert!(default_dir.join("py.typed").exists());
+    assert!(default_package.join("windows__foundation__uri.py").exists());
+    assert!(
+        default_package
+            .join("windows__foundation__uri.pyi")
+            .exists()
+    );
+    assert!(default_package.join("__init__.pyi").exists());
+    assert!(default_package.join("py.typed").exists());
     assert!(default_dir.join("pyproject.toml").exists());
 
     let opt_out_status = Command::new(exe)
@@ -374,13 +381,18 @@ fn python_emits_stubs_by_default_and_supports_opt_out() {
         .status()
         .expect("spawn dynwinrt-codegen (Python stub opt-out)");
     assert!(opt_out_status.success());
-    let opt_out_namespace = opt_out_dir.join("windows").join("foundation");
+    let opt_out_package = common::python_package_dir(&opt_out_dir);
+    let opt_out_namespace = opt_out_package.join("windows").join("foundation");
     assert!(opt_out_namespace.join("uri.py").exists());
     assert!(!opt_out_namespace.join("uri.pyi").exists());
-    assert!(opt_out_dir.join("windows__foundation__uri.py").exists());
-    assert!(!opt_out_dir.join("windows__foundation__uri.pyi").exists());
-    assert!(!opt_out_dir.join("__init__.pyi").exists());
-    assert!(!opt_out_dir.join("py.typed").exists());
+    assert!(opt_out_package.join("windows__foundation__uri.py").exists());
+    assert!(
+        !opt_out_package
+            .join("windows__foundation__uri.pyi")
+            .exists()
+    );
+    assert!(!opt_out_package.join("__init__.pyi").exists());
+    assert!(!opt_out_package.join("py.typed").exists());
 
     let _ = fs::remove_dir_all(&default_dir);
     let _ = fs::remove_dir_all(&opt_out_dir);

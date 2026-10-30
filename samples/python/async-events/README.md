@@ -9,9 +9,15 @@ installed in your Python environment:
 
 ```powershell
 dynwinrt-codegen generate --class-name "Windows.Foundation.Collections.PropertySet,Windows.Storage.StorageFolder,Windows.Storage.FileIO" --lang py --output .\generated
+python -m pip install -e .\generated
 python .\app.py
 python .\app.py --fail
 ```
+
+`generated` is the installable project; Python sources are in
+`generated\src\generated`. Use the same interpreter for installation and running.
+After upgrading from preview.23 or earlier, clean and regenerate the complete
+output and reinstall it; the import name remains `generated`.
 
 The application owns the asyncio loop. Inside its COM apartment and projection
 scope, it registers an async `PropertySet.MapChanged` handler, mutates the map

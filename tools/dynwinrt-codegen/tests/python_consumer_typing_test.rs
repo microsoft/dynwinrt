@@ -120,21 +120,18 @@ fn typecheck_with_imports(
                 "--cache-dir",
                 ".mypy_cache",
             ])
-            .args(packages)
+            .args(
+                packages
+                    .iter()
+                    .map(|name| common::python_fixture_package(&fixture.0.join(name))),
+            )
             .arg("consumer.py")
-            .current_dir(&fixture.0);
-        if *source_stubs {
-            command.env(
-                "MYPYPATH",
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("bindings")
-                    .join("py"),
-            );
-        } else {
-            command.env_remove("MYPYPATH");
-        }
+            .current_dir(&fixture.0)
+            .env_remove("PYTHONPATH");
+        command.env(
+            "MYPYPATH",
+            common::python_fixture_mypy_path(&fixture.0, *source_stubs),
+        );
         let output = command.output().unwrap();
         let text = diagnostics(&output);
         if errors.is_empty() {
@@ -163,11 +160,13 @@ fn pyright_typecheck(fixture: &Fixture, consumer: &str, expected_errors: usize) 
         format!("# pyright: strict\n{consumer}"),
     )
     .unwrap();
+    common::python_fixture_pyright_config(&fixture.0);
     let output = Command::new(pyright)
         .args(["--pythonpath"])
         .arg(python())
         .arg("pyright_consumer.py")
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     let text = diagnostics(&output);
@@ -737,7 +736,10 @@ fn reference_array_results_preserve_null_elements() {
     }
     let fixture = Fixture::new();
     generate_fixture(&fixture, "views");
-    let source = fs::read_to_string(fixture.0.join("views").join("contoso__content.py")).unwrap();
+    let source = fs::read_to_string(
+        common::python_fixture_package(&fixture.0.join("views")).join("contoso__content.py"),
+    )
+    .unwrap();
     assert!(source.contains("def get_resources(self) -> list[Resource | None]:"));
     assert!(source.contains("_dynwinrt_wrap_values('contoso__resource', 'Resource'"));
     assert!(source.contains("def get_items(self) -> list[IItem | None]:"));
@@ -811,6 +813,7 @@ print("nullable-reference-array-native-ok", flush=True)
         let output = Command::new(python())
             .args(["-B", "reference_array_runtime.py"])
             .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
@@ -997,6 +1000,7 @@ print("subclass-factory-native-ok", flush=True)
         let output = Command::new(python())
             .args(["-B", "factory_runtime.py"])
             .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
@@ -1238,9 +1242,7 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
         let output = command.output().unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
         let source = fs::read_to_string(
-            fixture
-                .0
-                .join("views")
+            common::python_fixture_package(&fixture.0.join("views"))
                 .join("microsoft__ui__xaml__resource_dictionary.py"),
         )
         .unwrap();
@@ -1251,8 +1253,11 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
             "contoso__grandchild_resources",
             "windows__ui__xaml__color_palette_resources",
         ] {
-            let derived =
-                fs::read_to_string(fixture.0.join("views").join(format!("{module}.py"))).unwrap();
+            let derived = fs::read_to_string(
+                common::python_fixture_package(&fixture.0.join("views"))
+                    .join(format!("{module}.py")),
+            )
+            .unwrap();
             assert!(derived.contains("def lookup(self, key: str |"));
             assert!(derived.contains(
                 "_dynwinrt_to_winrt_object(str.__str__(key), _dynwinrt_property_type.String)"
@@ -1260,17 +1265,13 @@ def invalid(resources: ResourceDictionary, other: Unrelated, mapping: IMap_Objec
             assert!(derived.contains(".invoke(self._collection_obj,"));
         }
         let other = fs::read_to_string(
-            fixture
-                .0
-                .join("views")
+            common::python_fixture_package(&fixture.0.join("views"))
                 .join("contoso__resource_dictionary.py"),
         )
         .unwrap();
         assert!(!other.contains("to_winrt_object"));
         let unrelated_child = fs::read_to_string(
-            fixture
-                .0
-                .join("views")
+            common::python_fixture_package(&fixture.0.join("views"))
                 .join("contoso__unrelated_resources.py"),
         )
         .unwrap();
@@ -1332,7 +1333,7 @@ class DisplayKey(str):
     def __str__(self):
         return "not the stored key"
 
-source = ast.parse((Path("views") / "microsoft__ui__xaml__resource_dictionary.py").read_text(encoding="utf-8"))
+source = ast.parse((Path("views") / "src" / "views" / "microsoft__ui__xaml__resource_dictionary.py").read_text(encoding="utf-8"))
 owner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ResourceDictionary")
 assert sum(isinstance(node, ast.FunctionDef) and node.name == "lookup" for node in owner.body) == 1
 for method in (ResourceDictionary.get, ResourceDictionary.pop):
@@ -1458,6 +1459,7 @@ with RoApartment(1), projected_lifetime_scope():
 print("resource-key-fixture-ok")
 "#])
                 .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{}", diagnostics(&output));
@@ -1769,6 +1771,7 @@ print("collection-subscript-native-ok", flush=True)
         let output = Command::new(python())
             .args(["-B", "collections_runtime.py"])
             .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
@@ -2081,6 +2084,7 @@ print("collection-comparison-native-ok", flush=True)
     let output = Command::new(python())
         .args(["-B", "comparison_runtime.py"])
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", diagnostics(&output));
@@ -2348,6 +2352,7 @@ print("map-changed-native-ok", changes, string_changes, flush=True)
         let output = Command::new(python())
             .args(["-B", "map_events_runtime.py"])
             .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
@@ -2599,41 +2604,37 @@ fn mutable_collection_mutators_accept_none() {
     .unwrap();
     let stringable_module = stringable_context.implementation_module_for_interface(&stringable_map);
     fs::write(
-        fixture
-            .0
-            .join("sdk")
+        common::python_fixture_package(&fixture.0.join("sdk"))
             .join(format!("{stringable_module}.py")),
         python::generate_interface(&stringable_context, &stringable_map),
     )
     .unwrap();
     fs::write(
-        fixture
-            .0
-            .join("sdk")
+        common::python_fixture_package(&fixture.0.join("sdk"))
             .join(format!("{stringable_module}.pyi")),
         python_stub::generate_interface_stub(&stringable_context, &stringable_map),
     )
     .unwrap();
     let object_map_stub = fs::read_to_string(
-        fixture
-            .0
-            .join("sdk")
+        common::python_fixture_package(&fixture.0.join("sdk"))
             .join("windows__foundation__collections__i_map_object_object.pyi"),
     )
     .unwrap();
     assert!(object_map_stub.contains("MutableMapping[DynWinRTValue | None, DynWinRTValue | None]"));
-    let pair_stub = fs::read_to_string(fixture.0.join("sdk").join(format!(
-        "{}.pyi",
-        common::python_module(TypeIdentity::closed_generic(
-            TypeIdentityKind::Interface,
-            "Windows.Foundation.Collections",
-            "IKeyValuePair`2",
-            [
-                TypeMeta::Object.type_identity(),
-                TypeMeta::Object.type_identity()
-            ],
-        ))
-    )))
+    let pair_stub = fs::read_to_string(
+        common::python_fixture_package(&fixture.0.join("sdk")).join(format!(
+            "{}.pyi",
+            common::python_module(TypeIdentity::closed_generic(
+                TypeIdentityKind::Interface,
+                "Windows.Foundation.Collections",
+                "IKeyValuePair`2",
+                [
+                    TypeMeta::Object.type_identity(),
+                    TypeMeta::Object.type_identity()
+                ],
+            ))
+        )),
+    )
     .unwrap();
     assert!(pair_stub.contains("def key(self) -> DynWinRTValue | None: ..."));
     assert!(pair_stub.contains("def value(self) -> DynWinRTValue | None: ..."));
@@ -2751,7 +2752,8 @@ def string_keys(values: IMap_String_String) -> None:
         assert!(nested_source.contains("_dynwinrt_map(value, lambda item:"));
         assert!(nested_source.contains("_dynwinrt_box_reference("));
         fs::write(
-            fixture.0.join("sdk").join(format!("{nested_module}.py")),
+            common::python_fixture_package(&fixture.0.join("sdk"))
+                .join(format!("{nested_module}.py")),
             nested_source,
         )
         .unwrap();
@@ -2927,6 +2929,7 @@ print("nullable-collection-native-ok", flush=True)
         let output = Command::new(python())
             .args(["-B", "nullable_collections.py"])
             .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", diagnostics(&output));
@@ -3044,6 +3047,7 @@ with RoApartment(1), projected_lifetime_scope():
     let output = Command::new(python())
         .args(["-B", "runtime.py"])
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", diagnostics(&output));

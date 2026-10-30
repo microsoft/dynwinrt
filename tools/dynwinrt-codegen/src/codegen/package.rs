@@ -118,13 +118,12 @@ pub fn render_python_pyproject_with_winappsdk(
          [tool.setuptools]\n\
          {explicit_package_data}\
          packages = [{packages}]\n\
-         package-dir = {{ \"{import_name}\" = \".\" }}\n\
+         package-dir = {{ \"\" = \"src\" }}\n\
          \n\
          {build_commands}\
          [tool.setuptools.package-data]\n\
          {package_data}\n",
         distribution_name = input.distribution_name,
-        import_name = input.import_name,
         packages = packages.join(", "),
         package_data = package_data.join("\n"),
         package_version = input.package_version,
@@ -395,6 +394,7 @@ mod tests {
              \"contoso_winrt.windows.foundation\"]"
         ));
         assert!(out.contains("dependencies = [\"dynwinrt==0.4.5\"]"));
+        assert!(out.contains("package-dir = { \"\" = \"src\" }"));
         assert!(out.contains("\"contoso_winrt\" = [\"py.typed\", \"*.pyi\"]"));
         assert!(out.contains("\"contoso_winrt.windows\" = [\"*.pyi\"]"));
         assert!(out.contains("\"contoso_winrt.windows.foundation\" = [\"*.pyi\"]"));

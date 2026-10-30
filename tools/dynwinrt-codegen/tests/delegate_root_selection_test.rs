@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -179,7 +181,8 @@ fn module_file(output: &Path, name: &str, language: &str, extension: &str) -> Pa
             .join(format!("{name}.{extension}"))
     } else {
         let module = dynwinrt_codegen::codegen::python::to_snake_case_filename(name);
-        output.join(format!("windows__system__threading__{module}.{extension}"))
+        common::python_package_dir(output)
+            .join(format!("windows__system__threading__{module}.{extension}"))
     }
 }
 
@@ -212,7 +215,7 @@ fn assert_delegate(output: &Path, name: &str, language: &str, no_pyi: bool) {
         );
     } else {
         assert!(!module_file(output, name, language, "pyi").exists());
-        assert!(!output.join("py.typed").exists());
+        assert!(!common::python_package_dir(output).join("py.typed").exists());
     }
 }
 
@@ -678,7 +681,7 @@ fn standalone_namespace_delegates_are_emitted_without_referencing_classes() {
                 .join("standalone-delegate")
                 .join("Handler.js")
         } else {
-            output.join("tests__standalone_delegate__handler.py")
+            common::python_package_dir(&output).join("tests__standalone_delegate__handler.py")
         };
         let source = fs::read_to_string(module).unwrap();
         assert!(source.contains("IID_Handler = "), "{source}");
@@ -1055,8 +1058,14 @@ fn explicitly_selected_delegate_callables_pass_strict_mypy_and_pyright() {
             )
             .unwrap();
             if !negative {
-                let legacy =
-                    mypy_consumer(&fixture, &[incomplete_source.clone(), extra_stubs.clone()]);
+                let legacy = mypy_consumer(
+                    &fixture,
+                    &[
+                        incomplete_source.clone(),
+                        extra_stubs.clone(),
+                        output.join("src"),
+                    ],
+                );
                 let text = diagnostics(&legacy);
                 assert_eq!(legacy.status.code(), Some(1), "{text}");
                 assert!(
@@ -1069,8 +1078,9 @@ fn explicitly_selected_delegate_callables_pass_strict_mypy_and_pyright() {
             } else {
                 &[true][..]
             } {
-                let stub_paths =
+                let mut stub_paths =
                     consumer_stub_paths(use_source.then_some(source_stubs.as_path()), &paths);
+                stub_paths.push(output.join("src"));
                 assert!(stub_paths.contains(&extra_stubs));
                 assert!(!stub_paths.contains(&incomplete_source));
                 eprintln!(

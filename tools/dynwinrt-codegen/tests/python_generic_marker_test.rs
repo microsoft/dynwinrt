@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -475,13 +477,20 @@ def ordinary_control(use: AlphaUse, payload: BetaPayload) -> AlphaPayload:
                 "--show-error-codes",
                 "--cache-dir",
                 ".mypy_cache",
-                "alpha",
-                "beta",
-                "alpha_copy",
+                "alpha/src/alpha",
+                "beta/src/beta",
+                "alpha_copy/src/alpha_copy",
                 &consumer,
             ])
             .current_dir(&fixture.0)
-            .env("MYPYPATH", &runtime)
+            .env_remove("PYTHONPATH")
+            .env(
+                "MYPYPATH",
+                std::env::join_paths(std::iter::once(runtime.clone()).chain(
+                    std::env::split_paths(&common::python_fixture_search_path(&fixture.0)),
+                ))
+                .unwrap(),
+            )
             .output()
             .unwrap();
         let text = diagnostics(&output);

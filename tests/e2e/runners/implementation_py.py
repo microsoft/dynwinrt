@@ -1298,8 +1298,9 @@ def run_one(case_id, generated):
         )
         # Generated generic facade names can otherwise exceed Windows
         # MAX_PATH in this worktree even though codegen emitted valid files.
-        sys.path.insert(0, import_search_path(generated.parent))
-        g = importlib.import_module(generated.name)
+        sys.path.insert(0, import_search_path(generated / "src"))
+        name = json.loads((generated / ".dynwinrt-generator.json").read_text())["layout"]["import_name"]
+        g = importlib.import_module(name)
         with dw.RoApartment(1), ExitStack() as cleanup:
             if case_id not in PUBLIC_VIEW_GC_CASES:
                 cleanup.enter_context(dw.projected_lifetime_scope())

@@ -47,6 +47,11 @@ $generated = Join-Path $root 'generated_uri'
     --lang py --output $generated
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$generatedInstall = Join-Path $root 'consumer'
+New-Item $generatedInstall -ItemType Directory -Force | Out-Null
+& $venvPython -m pip install --disable-pip-version-check --no-deps $generated
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 $test = @'
 import importlib.metadata
 import pathlib
@@ -74,10 +79,18 @@ with RoApartment(1), projected_lifetime_scope():
 print("isolated runtime consumer OK")
 '@
 
-Push-Location $root
+Push-Location $generatedInstall
 try {
     & $venvPython -c $test $Architecture $PythonMinor $PythonPackageVersion
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $venvPython -m pip install --disable-pip-version-check --no-deps --editable $generated
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $venvPython -c $test $Architecture $PythonMinor $PythonPackageVersion
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $pth = @(Get-ChildItem (Join-Path $root 'venv\Lib\site-packages') -Filter '*generated_uri*.pth')
+    if ($pth.Count -ne 1 -or (Get-Content $pth[0].FullName -Raw).Trim() -ne (Join-Path $generated 'src')) {
+        throw 'Generated Python editable install must use a plain src path .pth'
+    }
     foreach ($mode in @(0, 1)) {
         & $venvPython -I (Join-Path $repoRoot 'tests\e2e\runners\py_async_events.py') `
             --generated $generated --mode $mode
