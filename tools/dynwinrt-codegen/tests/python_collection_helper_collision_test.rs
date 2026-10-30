@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -193,7 +195,11 @@ fn modules(context: &PythonProjectionContext) -> Modules {
 fn write_standalone(root: &Path, classes: &[ClassMeta]) -> Modules {
     let package = root.join("pyviews");
     fs::create_dir_all(&package).unwrap();
-    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        common::python_fixture_package(&package).join("__init__.py"),
+        "",
+    )
+    .unwrap();
     fs::write(
         package.join("_runtime.py"),
         python::generate_runtime_support_module(),
@@ -205,7 +211,11 @@ fn write_standalone(root: &Path, classes: &[ClassMeta]) -> Modules {
         let module = context.implementation_module(&class_identity(class));
         let source = python::generate_class(&context, class, &Default::default());
         assert_collision_safe(&source, &module);
-        fs::write(package.join(format!("{module}.py")), source).unwrap();
+        fs::write(
+            common::python_fixture_package(&package).join(format!("{module}.py")),
+            source,
+        )
+        .unwrap();
     }
     modules(&context)
 }
@@ -234,7 +244,10 @@ fn generate_packaged(root: &Path, custom: &Path, classes: &[ClassMeta], no_pyi: 
         (&modules.vector_class, "vector operations"),
         (&modules.map_class, "map operations"),
     ] {
-        let source = fs::read_to_string(package.join(format!("{module}.py"))).unwrap();
+        let source = fs::read_to_string(
+            common::python_fixture_package(&package).join(format!("{module}.py")),
+        )
+        .unwrap();
         assert_collision_safe(&source, operation);
     }
     modules
@@ -329,6 +342,7 @@ print("collection-helper-collision-ok")
     let output = Command::new(python())
         .args(["-B", "probe.py"])
         .current_dir(root)
+        .env("PYTHONPATH", common::python_fixture_search_path(root))
         .output()
         .unwrap();
     assert!(
@@ -342,7 +356,8 @@ print("collection-helper-collision-ok")
 
 fn old_hardcoded_binding_fails(root: &Path, modules: &Modules) {
     for module in [&modules.vector_class, &modules.map_class] {
-        let path = root.join("pyviews").join(format!("{module}.py"));
+        let path =
+            common::python_fixture_package(&root.join("pyviews")).join(format!("{module}.py"));
         let source = fs::read_to_string(&path).unwrap();
         let old = source
             .replace(
@@ -355,6 +370,7 @@ fn old_hardcoded_binding_fails(root: &Path, modules: &Modules) {
     let output = Command::new(python())
         .args(["-B", "probe.py"])
         .current_dir(root)
+        .env("PYTHONPATH", common::python_fixture_search_path(root))
         .env("DYNWINRT_EXPECT_OLD_COLLECTION_HELPER", "1")
         .output()
         .unwrap();
@@ -461,14 +477,18 @@ def invalid(vector: Vector, mapping: Map, value: DynWinRTValue) -> None:
                 "--cache-dir",
                 "mypy-cache",
             ])
-            .current_dir(root);
+            .current_dir(root)
+            .env_remove("PYTHONPATH");
         if *source_stubs {
             command.env(
                 "MYPYPATH",
-                std::env::join_paths([binding_stubs.clone(), root.to_path_buf()]).unwrap(),
+                std::env::join_paths(std::iter::once(binding_stubs.clone()).chain(
+                    std::env::split_paths(&common::python_fixture_search_path(root)),
+                ))
+                .unwrap(),
             );
         } else {
-            command.env_remove("MYPYPATH");
+            command.env("MYPYPATH", common::python_fixture_mypy_path(root, false));
         }
         success(command.arg("typing_probe.py").output().unwrap());
         let output = command.arg("invalid_probe.py").output().unwrap();
@@ -504,6 +524,7 @@ def invalid(vector: Vector, mapping: Map, value: DynWinRTValue) -> None:
                 .arg(python())
                 .arg("pyright_probe.py")
                 .current_dir(root)
+                .env("PYTHONPATH", common::python_fixture_search_path(root))
                 .output()
                 .unwrap(),
         );
@@ -536,7 +557,7 @@ fn assert_incremental_parity(complete: &Path, root: &Path, custom: &Path, no_pyi
         success(command.output().unwrap());
     }
     let modules = |directory: &Path| {
-        let mut files = fs::read_dir(directory)
+        let mut files = fs::read_dir(common::python_package_dir(directory))
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .filter(|name| {
@@ -552,8 +573,8 @@ fn assert_incremental_parity(complete: &Path, root: &Path, custom: &Path, no_pyi
     assert_eq!(modules(&incremental), files);
     for file in files {
         assert_eq!(
-            fs::read(complete.join("pyviews").join(&file)).unwrap(),
-            fs::read(incremental.join(&file)).unwrap(),
+            fs::read(common::python_package_dir(&complete.join("pyviews")).join(&file)).unwrap(),
+            fs::read(common::python_package_dir(&incremental).join(&file)).unwrap(),
             "incremental helper surface drift: {}",
             file.to_string_lossy()
         );
@@ -595,13 +616,17 @@ fn collection_helper_aliases_execute_for_packaged_and_standalone_outputs() {
         &custom,
         true,
     );
-    assert!(fs::read_dir(no_pyi.join("pyviews")).unwrap().all(|entry| {
-        entry
+    assert!(
+        fs::read_dir(common::python_package_dir(&no_pyi.join("pyviews")))
             .unwrap()
-            .path()
-            .extension()
-            .is_none_or(|ext| ext != "pyi")
-    }));
+            .all(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_none_or(|ext| ext != "pyi")
+            })
+    );
     strict_typecheck(&no_pyi, &modules, true);
     if runtime_available() {
         runtime_probe(&no_pyi, &modules);

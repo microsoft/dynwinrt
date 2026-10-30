@@ -181,6 +181,43 @@ The output is an installable Python package. Its generated `pyproject.toml` pins
 `dynwinrt` to the generator's exact version and requires CPython 3.11–3.14.
 `.pyi` files and a `py.typed` marker are emitted by default.
 
+`--output` is the **installable project root**, not the import package directory:
+
+```text
+generated_uri/
+  pyproject.toml
+  setup.cfg
+  .dynwinrt-generator.json
+  .dynwinrt-generated-files
+  .dynwinrt-generated-types
+  src/
+    generated_uri/
+      __init__.py
+      __init__.pyi
+      py.typed
+      _runtime.py
+      _typing.pyi
+      windows/
+      windows__foundation__uri.py
+      windows__foundation__uri.pyi
+```
+
+The import/distribution names still come from the normalized final output leaf
+(`My Bindings` becomes import `my_bindings` and distribution `my-bindings`).
+Setuptools uses the global `package-dir = { "" = "src" }` mapping. A default
+editable install adds the source directory through an ordinary path `.pth`;
+no dynamic editable finder, custom import hook, or strict/compat mode is needed.
+Use `python -m pip install -e .\generated_uri` for development. uv supports
+`uv pip install -e .\generated_uri` or a local editable dependency with `uv sync`;
+Poetry supports a local path dependency with `develop = true`. Select that
+environment in the editor and type checker.
+
+Bootstrap projects additionally keep `MANIFEST.in` and
+`.dynwinrt-winappsdk.json` at the project root, and the build-only hook at
+`src/_dynwinrt_build/wheel.py`. The provider, JSON configuration, DLLs and notices
+are inside `src/<import_name>`. The hook is included in sdists but excluded from
+runtime wheels; neither `src` nor the hook becomes an installed runtime package.
+
 Transitive metadata dependencies are resolved automatically. Namespace packages
 and imports mirror the metadata hierarchy, while public members use Python
 snake_case naming. XML documentation found beside the input metadata is
@@ -238,7 +275,8 @@ No runtime API change or consumer cast is required.
 
 ### Producer version and regeneration
 
-`.dynwinrt-generator.json` records `generator_version`, the complete generator
+`.dynwinrt-generator.json` records the package layout/import identity and
+`generator_version`, the complete generator
 package version, including any prerelease/preview suffix. This is a producer
 stamp, not the generated distribution version, runtime dependency version, or
 the type inventory's `schema_version`.
@@ -255,8 +293,32 @@ or migrates incompatible output.
 
 Every generator upgrade therefore requires full regeneration, followed by
 rebuilding/reinstalling the affected packages with the matching runtime.
-Unversioned development changes with the same package version are not detected
-by this check; use fresh output for those changes too.
+Unversioned development changes other than recorded layout changes are not
+detected by this check; use fresh output for those changes too.
+
+### Breaking layout upgrade from preview.23 and earlier
+
+Older releases placed Python modules directly in `--output` and mapped a named
+package to `"."`. Clean that dedicated output and regenerate the **whole**
+selection with the new generator, then reinstall it with the matching runtime.
+Old-layout output is rejected even when its producer version string matches;
+do not move only some files or edit/remove the producer stamp to bypass the guard.
+Installed namespace, flat-module and root imports, the installation command,
+runtime version pin and native ABI are unchanged.
+
+Replace old examples that add `output.parent` to `sys.path`/`PYTHONPATH` with a
+normal or editable installation. For deliberate uninstalled source use, the
+search directory is now `<output>/src`, not `<output>` or its parent. Source-only
+imports still do not provide distribution metadata for Bootstrap discovery.
+
+Regeneration at the same project path is atomic. An existing editable install
+sees added types in a **new Python process** and in a new checker run without
+reinstallation; already imported modules are not hot-reloaded. Reinstall after
+moving/renaming the project, changing package/dependency versions, or adding or
+changing entry points. If the output leaf is renamed, the next generation
+relocates only recorded package files inside the transaction, rejects destination
+conflicts, updates manifests and retains the semantic type inventory. It does
+not leave a runtime alias under the previous import name.
 
 ### Closed-generic stub migration
 

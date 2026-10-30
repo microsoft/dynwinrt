@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -65,13 +67,13 @@ impl Generated {
     }
 
     fn module(&self, name: &str) -> String {
-        fs::read_to_string(self.root.join(name)).expect(name)
+        fs::read_to_string(common::python_package_dir(&self.root).join(name)).expect(name)
     }
 
     fn run(&self, script: &str) -> Output {
         Command::new(self.python())
             .args(["-B", "-c", &script.replace("PY_PACKAGE", &self.package)])
-            .env("PYTHONPATH", self.root.parent().unwrap())
+            .env("PYTHONPATH", self.root.join("src"))
             .output()
             .expect("run isolated constructor consumer")
     }
@@ -277,7 +279,7 @@ fn interface_projection_typing_keeps_raw_values_explicit() {
         command.arg(generated.root.join("mypy-cache"));
         command
             .args(["-c", &source])
-            .current_dir(generated.root.parent().unwrap());
+            .current_dir(generated.root.join("src"));
         command.env(
             "MYPYPATH",
             std::env::join_paths([repo.join(r"bindings\py"), repo.join("target")])
@@ -314,7 +316,7 @@ fn interface_projection_typing_keeps_raw_values_explicit() {
                 .args(["--pythonpath"])
                 .arg(generated.python())
                 .arg(&path)
-                .env("PYTHONPATH", generated.root.parent().unwrap())
+                .env("PYTHONPATH", generated.root.join("src"))
                 .output()
                 .expect("run pyright");
             let diagnostics = format!(

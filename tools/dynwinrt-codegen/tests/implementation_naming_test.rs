@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -294,7 +296,8 @@ IComplexImplementationSplitResult.from_value
 import pyviews as g
 for name in ('IComplexImplementationDelegate0', 'IComplexImplementationDelegate0Result', 'IComplexImplementationSplitResult'):
     assert hasattr(getattr(g, name), 'from_value'), name
-"#]).current_dir(&fixture.0).output().unwrap());
+"#]).current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
         }
     }
 }
@@ -432,10 +435,10 @@ fn typecheck_py(directory: &Path, source: &str) {
                 "consumer.py",
             ])
             .current_dir(directory)
+            .env_remove("PYTHONPATH")
             .env(
                 "MYPYPATH",
-                std::env::join_paths([root().join("bindings").join("py"), directory.to_path_buf()])
-                    .unwrap(),
+                common::python_fixture_mypy_path(directory, true),
             )
             .output()
             .unwrap(),
@@ -465,15 +468,14 @@ fn typecheck_py_package(directory: &Path) {
     {
         success(
             Command::new(python())
-                .args([
-                    "-m",
-                    "mypy",
-                    "--no-incremental",
-                    "--follow-imports=silent",
-                    "pyviews",
-                ])
+                .args(["-m", "mypy", "--no-incremental", "--follow-imports=silent"])
+                .arg(common::python_fixture_package(&directory.join("pyviews")))
                 .current_dir(directory)
-                .env("MYPYPATH", root().join("bindings").join("py"))
+                .env_remove("PYTHONPATH")
+                .env(
+                    "MYPYPATH",
+                    common::python_fixture_mypy_path(directory, true),
+                )
                 .output()
                 .unwrap(),
         );
@@ -481,8 +483,16 @@ fn typecheck_py_package(directory: &Path) {
 }
 
 fn write_python_module(package: &Path, module: &str, source: String, stub: String) {
-    fs::write(package.join(format!("{module}.py")), source).unwrap();
-    fs::write(package.join(format!("{module}.pyi")), stub).unwrap();
+    fs::write(
+        common::python_fixture_package(&package).join(format!("{module}.py")),
+        source,
+    )
+    .unwrap();
+    fs::write(
+        common::python_fixture_package(&package).join(format!("{module}.pyi")),
+        stub,
+    )
+    .unwrap();
 }
 
 fn write_python_support(package: &Path, implementation_modules: &[String]) {
@@ -657,12 +667,12 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
             };
             let module = context.implementation_module_for_interface(&metadata);
             fs::write(
-                package.join(format!("{module}.py")),
+                common::python_fixture_package(&package).join(format!("{module}.py")),
                 python::generate_interface(&context, &metadata),
             )
             .unwrap();
             fs::write(
-                package.join(format!("{module}.pyi")),
+                common::python_fixture_package(&package).join(format!("{module}.pyi")),
                 python_stub::generate_interface_stub(&context, &metadata),
             )
             .unwrap();
@@ -697,7 +707,11 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
             assert!(source.contains("    owner: IValue | None\n"));
             assert!(source.contains(&format!("    result: list[{namespace}_Payload_struct]\n")));
             assert!(!source.contains(&format!("{namespace}_IValue_interface")));
-            fs::write(package.join(format!("{module}.{extension}")), source).unwrap();
+            fs::write(
+                common::python_fixture_package(&package).join(format!("{module}.{extension}")),
+                source,
+            )
+            .unwrap();
         }
         let peer = if namespace == "Alpha" {
             "Beta"
@@ -726,12 +740,12 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
     for structure in &structs {
         let module = context.implementation_module_for_type(structure);
         fs::write(
-            package.join(format!("{module}.py")),
+            common::python_fixture_package(&package).join(format!("{module}.py")),
             python::generate_struct(&context, structure).unwrap(),
         )
         .unwrap();
         fs::write(
-            package.join(format!("{module}.pyi")),
+            common::python_fixture_package(&package).join(format!("{module}.pyi")),
             python_stub::generate_struct_stub(&context, structure).unwrap(),
         )
         .unwrap();
@@ -779,7 +793,11 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
         assert!(source.contains("class Envelope:"));
         assert!(!source.contains("Alpha_Payload_struct"));
         assert!(!source.contains("Alpha_Envelope_struct"));
-        fs::write(package.join(format!("alpha__host.{extension}")), source).unwrap();
+        fs::write(
+            common::python_fixture_package(&package).join(format!("alpha__host.{extension}")),
+            source,
+        )
+        .unwrap();
     }
     for (extension, source) in [
         (
@@ -794,7 +812,8 @@ fn python_handler_annotations_resolve_colliding_struct_and_interface_names() {
         assert!(!source.contains("class Payload:"));
         assert!(source.contains("from .alpha__payload import Payload as Alpha_Payload_struct"));
         fs::write(
-            package.join(format!("alpha__standalone_envelope.{extension}")),
+            common::python_fixture_package(&package)
+                .join(format!("alpha__standalone_envelope.{extension}")),
             source,
         )
         .unwrap();
@@ -831,7 +850,8 @@ for path in pathlib.Path('pyviews').glob('*__*.py'):
         assert type(module.Envelope().item).__name__ == 'Payload'
     if path.stem == 'alpha__host':
         assert type(module.Envelope().item) is module.Payload
-"#]).current_dir(&fixture.0).output().unwrap());
+"#]).current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
     }
 
     for source in [
@@ -1031,6 +1051,7 @@ for name in ('contoso__host', 'contoso__i_host'):
 "#,
                     ])
                     .current_dir(&fixture.0)
+                    .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
                     .output()
                     .unwrap(),
             );
@@ -1137,7 +1158,8 @@ for method, expected in ((box.echo_self, box), (box.echo_peer, peer), (box.echo_
     hints = typing.get_type_hints(method)
     assert hints['value'] is expected
     assert hints['return'] == expected | None
-"#)]).current_dir(&fixture.0).output().unwrap());
+"#)]).current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
         }
     }
 }
@@ -1230,7 +1252,8 @@ with dw.RoApartment(1), g.IValue.implement(Handler(), interfaces=[(IValueHandler
     other = IValueHandlers.from_implementation(impl)
     try: assert other.read_real_interface() == 2
     finally: dw.release_projected(other)
-"#]).current_dir(&fixture.0).output().unwrap());
+"#]).current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
         success(Command::new("node").args(["-e", r#"
 const assert = require('node:assert/strict');
 const g = require('./js');
@@ -1242,7 +1265,8 @@ try {
     const other = deep.IValueHandlers.fromImplementation(impl);
     try { assert.equal(other.readRealInterface(), 2); } finally { g.releaseProjected(other); }
 } finally { impl.dispose(); }
-"#]).current_dir(&fixture.0).output().unwrap());
+"#]).current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
     }
 }
 
@@ -1271,11 +1295,11 @@ fn incremental_helper_aliases_match_clean_generation_and_retain_unrelated_module
             &[],
         ));
         let retained = if lang == "js" {
-            "control\\IWidget.js"
+            incremental.join("control\\IWidget.js")
         } else {
-            "control__i_widget.py"
+            common::python_package_dir(&incremental).join("control__i_widget.py")
         };
-        let original = fs::read(incremental.join(retained)).unwrap();
+        let original = fs::read(&retained).unwrap();
         // New manifests retain helper identity and eligibility without old WinMD.
         success(generate(
             &extra,
@@ -1284,7 +1308,7 @@ fn incremental_helper_aliases_match_clean_generation_and_retain_unrelated_module
             "Alpha.Beta.IWidget",
             &[],
         ));
-        assert_eq!(original, fs::read(incremental.join(retained)).unwrap());
+        assert_eq!(original, fs::read(&retained).unwrap());
         success(generate(
             &combined,
             &clean,
@@ -1301,8 +1325,12 @@ fn incremental_helper_aliases_match_clean_generation_and_retain_unrelated_module
             typecheck_js(&clean);
         } else {
             assert_eq!(
-                fs::read(incremental.join("_implementation_types.pyi")).unwrap(),
-                fs::read(clean.join("_implementation_types.pyi")).unwrap()
+                fs::read(
+                    common::python_fixture_package(&incremental).join("_implementation_types.pyi")
+                )
+                .unwrap(),
+                fs::read(common::python_fixture_package(&clean).join("_implementation_types.pyi"))
+                    .unwrap()
             );
             let exports = |path: &Path| {
                 python_inventory(path)
@@ -1416,7 +1444,8 @@ with IValue.implement(First(), interfaces=[(IValueHandlers, Second())]) as impl:
             );
             if runtime_available() {
                 success(Command::new(python()).args(["-c", "import pyviews as g; from pyviews.contoso.i_value_handlers import IValueHandlers; assert g.IValueHandlers is IValueHandlers; assert hasattr(g.IValueHandlers, 'from_value')"])
-                    .current_dir(&fixture.0).output().unwrap());
+                    .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0)).output().unwrap());
             }
         }
         let previous = snapshot(&output);
@@ -1462,7 +1491,11 @@ fn python_inventory_migration_uses_metadata_not_stub_text_and_fails_atomically()
                 "Extra.ISecond",
                 &["--no-pyi"],
             ));
-            assert!(!output.join("_implementation_types.pyi").exists());
+            assert!(
+                !common::python_fixture_package(&output)
+                    .join("_implementation_types.pyi")
+                    .exists()
+            );
         } else {
             let before = snapshot(&output);
             let rejected = generate(&extra, &output, "py", "Extra.ISecond", &[]);
@@ -1486,10 +1519,12 @@ fn python_inventory_migration_uses_metadata_not_stub_text_and_fails_atomically()
                     .all(|record| record["schema_version"] == 2)
             );
             assert_eq!(
-                fs::read_to_string(output.join("_implementation_types.pyi"))
-                    .unwrap()
-                    .matches(" import _ImplementationPair")
-                    .count(),
+                fs::read_to_string(
+                    common::python_fixture_package(&output).join("_implementation_types.pyi")
+                )
+                .unwrap()
+                .matches(" import _ImplementationPair")
+                .count(),
                 2
             );
         }
@@ -1544,7 +1579,7 @@ fn check_root_owner_visibility(first: &str, unrelated: &str, pyi: bool, regenera
         options,
     ));
     assert!(
-        fs::read_to_string(output.join("__init__.py"))
+        fs::read_to_string(common::python_fixture_package(&output).join("__init__.py"))
             .unwrap()
             .contains("\"IWidgetHandlers\"")
     );
@@ -1566,7 +1601,9 @@ fn check_root_owner_visibility(first: &str, unrelated: &str, pyi: bool, regenera
         .unwrap()["implementation"]["module"]
         .as_str()
         .unwrap();
-    let unchanged_source = fs::read(output.join(format!("{unchanged_module}.py"))).unwrap();
+    let unchanged_source =
+        fs::read(common::python_fixture_package(&output).join(format!("{unchanged_module}.py")))
+            .unwrap();
     let selected = if regenerate_first {
         "Alpha.IWidget,Beta.IWidget".to_string()
     } else {
@@ -1602,7 +1639,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
-sys.path.insert(0, sys.argv[1])
+sys.path[:0] = [str(Path(sys.argv[1]) / name / "src") for name in ("incremental", "clean")]
 import incremental
 import clean
 namespace = {}
@@ -1640,21 +1677,26 @@ with RoApartment(1), views["Alpha"].implement(Alpha(), interfaces=[(views["Beta"
 "#]).arg(&fixture.0).arg(unrelated).output().unwrap());
     }
     assert_eq!(
-        fs::read_to_string(output.join("__init__.py")).unwrap(),
-        fs::read_to_string(clean.join("__init__.py")).unwrap()
+        fs::read_to_string(common::python_fixture_package(&output).join("__init__.py")).unwrap(),
+        fs::read_to_string(common::python_fixture_package(&clean).join("__init__.py")).unwrap()
     );
     assert_eq!(
         unchanged_source,
-        fs::read(output.join(format!("{unchanged_module}.py"))).unwrap()
+        fs::read(common::python_fixture_package(&output).join(format!("{unchanged_module}.py")))
+            .unwrap()
     );
     if pyi {
         assert_eq!(
-            fs::read_to_string(output.join("__init__.pyi")).unwrap(),
-            fs::read_to_string(clean.join("__init__.pyi")).unwrap()
+            fs::read_to_string(common::python_fixture_package(&output).join("__init__.pyi"))
+                .unwrap(),
+            fs::read_to_string(common::python_fixture_package(&clean).join("__init__.pyi"))
+                .unwrap()
         );
         assert_eq!(
-            fs::read(output.join("_implementation_types.pyi")).unwrap(),
-            fs::read(clean.join("_implementation_types.pyi")).unwrap()
+            fs::read(common::python_fixture_package(&output).join("_implementation_types.pyi"))
+                .unwrap(),
+            fs::read(common::python_fixture_package(&clean).join("_implementation_types.pyi"))
+                .unwrap()
         );
         let handler = |ns: &str| {
             after
@@ -1690,8 +1732,16 @@ with {unrelated}.implement(Third()) as third:
             ),
         );
     } else {
-        assert!(!output.join("__init__.pyi").exists());
-        assert!(!output.join("_implementation_types.pyi").exists());
+        assert!(
+            !common::python_fixture_package(&output)
+                .join("__init__.pyi")
+                .exists()
+        );
+        assert!(
+            !common::python_fixture_package(&output)
+                .join("_implementation_types.pyi")
+                .exists()
+        );
     }
     let repeated = snapshot(&output);
     success(generate(&extra, &output, "py", &selected, &extra_options));
@@ -1713,7 +1763,11 @@ fn typed_append_after_no_pyi_requires_regenerating_missing_declarations() {
         "Original.IFirst",
         &["--no-pyi"],
     ));
-    assert!(!output.join("original__i_first.pyi").exists());
+    assert!(
+        !common::python_fixture_package(&output)
+            .join("original__i_first.pyi")
+            .exists()
+    );
     let before = snapshot(&output);
     let rejected = generate(&second, &output, "py", "Extra.ISecond", &[]);
     assert!(!rejected.status.success());
@@ -1730,12 +1784,18 @@ fn typed_append_after_no_pyi_requires_regenerating_missing_declarations() {
         "Original.IFirst,Extra.ISecond",
         &["--ref", first.to_str().unwrap()],
     ));
-    assert!(output.join("original__i_first.pyi").is_file());
+    assert!(
+        common::python_fixture_package(&output)
+            .join("original__i_first.pyi")
+            .is_file()
+    );
     assert_eq!(
-        fs::read_to_string(output.join("_implementation_types.pyi"))
-            .unwrap()
-            .matches(" import _ImplementationPair")
-            .count(),
+        fs::read_to_string(
+            common::python_fixture_package(&output).join("_implementation_types.pyi")
+        )
+        .unwrap()
+        .matches(" import _ImplementationPair")
+        .count(),
         2
     );
 }
@@ -1784,20 +1844,27 @@ fn legacy_interface_facade_cannot_override_a_current_runtime_class() {
     );
     for extension in ["py", "pyi"] {
         assert!(
-            !fs::read_to_string(output.join(format!("__init__.{extension}")))
-                .unwrap()
-                .contains("IValueHandlers")
+            !fs::read_to_string(
+                common::python_fixture_package(&output).join(format!("__init__.{extension}"))
+            )
+            .unwrap()
+            .contains("IValueHandlers")
         );
         assert!(
-            !fs::read_to_string(output.join(format!("contoso__i_value.{extension}")))
-                .unwrap()
-                .contains("def implement(")
+            !fs::read_to_string(
+                common::python_fixture_package(&output)
+                    .join(format!("contoso__i_value.{extension}"))
+            )
+            .unwrap()
+            .contains("def implement(")
         );
     }
     assert!(
-        !fs::read_to_string(output.join("_implementation_types.pyi"))
-            .unwrap()
-            .contains("contoso__i_value")
+        !fs::read_to_string(
+            common::python_fixture_package(&output).join("_implementation_types.pyi")
+        )
+        .unwrap()
+        .contains("contoso__i_value")
     );
 }
 
@@ -1828,7 +1895,8 @@ fn legacy_migration_reuses_records_already_present_without_their_metadata() {
         lines.join("\n") + "\n",
     )
     .unwrap();
-    let retained = fs::read(output.join("extra__i_second.py")).unwrap();
+    let retained =
+        fs::read(common::python_fixture_package(&output).join("extra__i_second.py")).unwrap();
     success(generate(
         &third,
         &output,
@@ -1838,7 +1906,7 @@ fn legacy_migration_reuses_records_already_present_without_their_metadata() {
     ));
     assert_eq!(
         retained,
-        fs::read(output.join("extra__i_second.py")).unwrap()
+        fs::read(common::python_fixture_package(&output).join("extra__i_second.py")).unwrap()
     );
     assert!(
         python_inventory(&output)

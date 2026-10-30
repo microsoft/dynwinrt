@@ -401,6 +401,7 @@ print("as-interface-collision-ok")
     let output = Command::new(python())
         .args(["-B", "as_interface_probe.py"])
         .current_dir(directory)
+        .env("PYTHONPATH", common::python_fixture_search_path(directory))
         .output()
         .unwrap();
     assert!(
@@ -466,7 +467,10 @@ fn colliding_metadata_declarations_alias_the_as_interface_helper() {
             .output()
             .unwrap(),
     );
-    let source = fs::read_to_string(packaged.join("pyviews").join("audit__widget.py")).unwrap();
+    let source = fs::read_to_string(
+        common::python_package_dir(&packaged.join("pyviews")).join("audit__widget.py"),
+    )
+    .unwrap();
     assert_aliased_as_interface(&source, 2);
     if run_runtime {
         probe(&packaged, "audit__widget");

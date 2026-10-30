@@ -556,6 +556,18 @@ jobs:
           $env:DYNWINRT_TEST_INSTALLED_RUNTIME = '1'
           cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
             detach_stream_results_require_none_guards_on_classes_and_interfaces -- --exact
+      - name: Test generated Python packaging frontends and src imports
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv target\python-layout-tools
+          $python = (Resolve-Path target\python-layout-tools\Scripts\python.exe).Path
+          & $python -m pip install build mypy pyright poetry uv setuptools wheel --quiet
+          $wheel = @(Get-ChildItem artifacts\python-x64\payload -Filter *.whl -File)
+          & $python eng\release\python\test_generated_python_layout.py `
+            --codegen $env:DYNWINRT_CODEGEN --runtime-wheel $wheel[0].FullName `
+            --uv (Resolve-Path target\python-layout-tools\Scripts\uv.exe).Path `
+            --work-dir (Join-Path $env:RUNNER_TEMP 'python-src-layout')
       - name: Test generated implementation and overload identities
         shell: pwsh
         run: |
@@ -563,6 +575,7 @@ jobs:
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
           cargo test -p dynwinrt-codegen `
             --test implementation_naming_test `
+            --test python_constructor_diagnostics_test `
             --test python_overload_legacy_compat_test `
             --test python_released_implementation_test
       - name: Test generated collection protocols

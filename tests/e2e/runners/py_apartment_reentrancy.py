@@ -21,7 +21,7 @@ def blocked_close(action):
 
 
 def run_case(generated, mode, scenario):
-    sys.path.insert(0, os.path.dirname(os.path.abspath(generated)))
+    sys.path.insert(0, os.path.join(os.path.abspath(generated), "src"))
     import dynwinrt as dw
     from dynwinrt.dynwinrt import _dynwinrt_track_native
     from python_bindings import PropertySet

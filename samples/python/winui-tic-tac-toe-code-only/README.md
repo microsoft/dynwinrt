@@ -48,3 +48,9 @@ projected objects deterministically.
 
 `generated\`, `.runtime\`, and Python caches are local artifacts and are not
 tracked.
+
+After generation, install the generated project into the same interpreter used
+to run the sample: `python -m pip install -e .\generated` (use that interpreter's
+full path when needed). The import remains `generated`; sources now live in
+`generated\src\generated`, not directly in `generated`. When upgrading from
+preview.23 or earlier, regenerate the complete output and reinstall it.
