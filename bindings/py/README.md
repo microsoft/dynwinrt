@@ -221,6 +221,21 @@ Both directions copy exactly `Length` bytes. Mutating the input or releasing
 the WinRT object does not change the returned `bytes`, and no native buffer
 pointer is exposed.
 
+Byte conversion can be repeated in independent `RoApartment` scopes. Buffer
+creation uses a call-local activation factory, so it does not retain a stale
+factory across apartment teardown. Release native values before leaving their
+apartment, or let `RoApartment` release its tracked owners:
+
+```python
+from dynwinrt import DynWinRTValue, RoApartment
+
+for _ in range(2):
+    with RoApartment():
+        value = DynWinRTValue.from_bytes(b"abc")
+        data = value.to_bytes()
+        value.release()
+```
+
 Exceptions raised by Python event or delegate callbacks are reported through
 `sys.unraisablehook`. The originating WinRT invocation receives
 `0xA0EE4005` (`PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION`) instead of unconditional
