@@ -532,7 +532,8 @@ impl Output {
     }
 
     fn read(&self, file: &str) -> String {
-        fs::read_to_string(self.0.join(file)).unwrap_or_else(|error| panic!("{file}: {error}"))
+        fs::read_to_string(common::python_package_dir(&self.0).join(file))
+            .unwrap_or_else(|error| panic!("{file}: {error}"))
     }
 }
 

@@ -74,9 +74,65 @@ explicitly inside its apartment.
 | `--dry-run` | Validate metadata and dependencies without writing files. |
 | `--pyi` | Explicitly request the default Python type stubs; retained for compatibility. |
 | `--no-pyi` | Omit `.pyi` files and the `py.typed` marker. |
+| `--winappsdk-version MAJOR.MINOR` | Stable SDK product version, such as `2.5`, not a NuGet servicing version. Requires `--winappsdk-bootstrap-path`. |
+| `--winappsdk-bootstrap-path PATH` | Bootstrap DLL file or recursively searched directory; repeat for multiple inputs. Requires `--winappsdk-version`. |
 
 Use `--lang py` for every Python generation command. Run
 `dynwinrt-codegen generate --help` for the complete command reference.
+
+### Windows App SDK configuration
+
+Pass the paired options when generating bindings for an application with restored
+Windows App SDK inputs:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .\winmd-inputs.txt --ref-list .\winmd-references.txt `
+  --lang py --output .\app_bindings `
+  --winappsdk-version 2.5 `
+  --winappsdk-bootstrap-path '.winapp\bin'
+python -m pip install .\app_bindings
+```
+
+Supply a directory to search for `Microsoft.WindowsAppRuntime.Bootstrap.dll`
+within it and its descendants, or concrete DLL files; repeat the option to mix
+inputs. Discovery does not search outside the supplied directories or follow
+directory links/reparse points. Architecture is read from each DLL, not inferred
+from its name or directory. Unsupported directory matches such as x86 are
+reported and ignored; explicit unsupported files still fail. A directory with
+no supported DLL, an unreadable directory, or a corrupt/unreadable matching file
+fails rather than producing a partial bundle.
+Byte-identical duplicates are deduplicated without losing their source licenses;
+different DLL bytes for the same architecture are an error. Reordering paths
+or combining overlapping files/directories does not change the generated
+configuration or build-cache digest.
+
+The generated package contains `_winappsdk.py`, `_winappsdk.json`, the unchanged
+DLLs under `_native/winappsdk/x64` and/or `arm64`, and redistribution notices.
+It declares an installed `dynwinrt.winappsdk` entry point. The application can
+call **`dynwinrt.init_winappsdk()`** without passing a project root, version, path,
+or environment variable, even before importing the generated projection.
+Initialization remains an explicit application action.
+
+Normal wheel installs and `pip install -e` work independently of the runtime
+working directory. A generated source folder added only to `sys.path`, without
+installing its distribution metadata, is not automatically discovered; the
+runtime's explicit version/path API remains available. Moving an editable source
+tree requires reinstalling it. Zip imports and frozen-app resource extraction
+are not supported by this configuration provider.
+
+The generated wheel is Windows/platform-specific, with a compressed
+`py3-none-win_amd64.win_arm64` tag when both DLLs are present. A small build-only
+setuptools hook supplies the tag and is retained in sdists, not installed as
+runtime code. Matching `dynwinrt` CPython 3.11-3.14 wheels are still required.
+
+`MAJOR.MINOR` identifies the stable product, not a NuGet patch version or the
+DLL's FileVersion. Metadata/configuration presence does not prove that an
+application has used an App SDK API or that Runtime deployment is ready.
+Repeated generation preserves an omitted configuration, including `--no-pyi`;
+changing its version or bytes requires clean, complete regeneration.
+See [bundle validation, capabilities and licensing](../README.md#packaged-windows-app-sdk-initialization)
+and the [runtime initialization contract](../../../bindings/py/README.md#windows-app-sdk-initialization).
 
 ### More examples
 
@@ -124,6 +180,43 @@ dynwinrt-codegen generate `
 The output is an installable Python package. Its generated `pyproject.toml` pins
 `dynwinrt` to the generator's exact version and requires CPython 3.11–3.14.
 `.pyi` files and a `py.typed` marker are emitted by default.
+
+`--output` is the **installable project root**, not the import package directory:
+
+```text
+generated_uri/
+  pyproject.toml
+  setup.cfg
+  .dynwinrt-generator.json
+  .dynwinrt-generated-files
+  .dynwinrt-generated-types
+  src/
+    generated_uri/
+      __init__.py
+      __init__.pyi
+      py.typed
+      _runtime.py
+      _typing.pyi
+      windows/
+      windows__foundation__uri.py
+      windows__foundation__uri.pyi
+```
+
+The import/distribution names still come from the normalized final output leaf
+(`My Bindings` becomes import `my_bindings` and distribution `my-bindings`).
+Setuptools uses the global `package-dir = { "" = "src" }` mapping. A default
+editable install adds the source directory through an ordinary path `.pth`;
+no dynamic editable finder, custom import hook, or strict/compat mode is needed.
+Use `python -m pip install -e .\generated_uri` for development. uv supports
+`uv pip install -e .\generated_uri` or a local editable dependency with `uv sync`;
+Poetry supports a local path dependency with `develop = true`. Select that
+environment in the editor and type checker.
+
+Bootstrap projects additionally keep `MANIFEST.in` and
+`.dynwinrt-winappsdk.json` at the project root, and the build-only hook at
+`src/_dynwinrt_build/wheel.py`. The provider, JSON configuration, DLLs and notices
+are inside `src/<import_name>`. The hook is included in sdists but excluded from
+runtime wheels; neither `src` nor the hook becomes an installed runtime package.
 
 Transitive metadata dependencies are resolved automatically. Namespace packages
 and imports mirror the metadata hierarchy, while public members use Python
@@ -182,7 +275,8 @@ No runtime API change or consumer cast is required.
 
 ### Producer version and regeneration
 
-`.dynwinrt-generator.json` records `generator_version`, the complete generator
+`.dynwinrt-generator.json` records the package layout/import identity and
+`generator_version`, the complete generator
 package version, including any prerelease/preview suffix. This is a producer
 stamp, not the generated distribution version, runtime dependency version, or
 the type inventory's `schema_version`.
@@ -199,8 +293,32 @@ or migrates incompatible output.
 
 Every generator upgrade therefore requires full regeneration, followed by
 rebuilding/reinstalling the affected packages with the matching runtime.
-Unversioned development changes with the same package version are not detected
-by this check; use fresh output for those changes too.
+Unversioned development changes other than recorded layout changes are not
+detected by this check; use fresh output for those changes too.
+
+### Breaking layout upgrade from preview.23 and earlier
+
+Older releases placed Python modules directly in `--output` and mapped a named
+package to `"."`. Clean that dedicated output and regenerate the **whole**
+selection with the new generator, then reinstall it with the matching runtime.
+Old-layout output is rejected even when its producer version string matches;
+do not move only some files or edit/remove the producer stamp to bypass the guard.
+Installed namespace, flat-module and root imports, the installation command,
+runtime version pin and native ABI are unchanged.
+
+Replace old examples that add `output.parent` to `sys.path`/`PYTHONPATH` with a
+normal or editable installation. For deliberate uninstalled source use, the
+search directory is now `<output>/src`, not `<output>` or its parent. Source-only
+imports still do not provide distribution metadata for Bootstrap discovery.
+
+Regeneration at the same project path is atomic. An existing editable install
+sees added types in a **new Python process** and in a new checker run without
+reinstallation; already imported modules are not hot-reloaded. Reinstall after
+moving/renaming the project, changing package/dependency versions, or adding or
+changing entry points. If the output leaf is renamed, the next generation
+relocates only recorded package files inside the transaction, rejects destination
+conflicts, updates manifests and retains the semantic type inventory. It does
+not leave a runtime alias under the previous import name.
 
 ### Closed-generic stub migration
 

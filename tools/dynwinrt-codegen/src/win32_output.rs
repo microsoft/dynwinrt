@@ -226,12 +226,43 @@ fn write_javascript(output: &Path, relative: &Path, content: &str) -> Result<(),
     super::write_generated_javascript_file(output, &output.join(relative), content)
 }
 
+pub(super) fn wire_winappsdk_registration(output: &Path) -> Result<(), String> {
+    let Some(mut manifest) = read_manifest(output)? else {
+        return Ok(());
+    };
+    for (namespace, record) in &mut manifest.namespaces {
+        let directory = Path::new("win32").join(namespace_directory(namespace)?);
+        for (file, hash) in std::iter::once(("Apis.js", &mut record.javascript_sha256)).chain(
+            record
+                .extra_files
+                .iter_mut()
+                .filter(|(file, _)| file.ends_with(".js"))
+                .map(|(file, extra)| (file.as_str(), &mut extra.sha256)),
+        ) {
+            let relative = directory.join(file);
+            let bytes = read_file(output, &relative)?.ok_or_else(|| {
+                format!("Win32 manifest references missing {}", relative.display())
+            })?;
+            let text = String::from_utf8(bytes).map_err(|error| {
+                format!("Invalid Win32 JavaScript {}: {error}", relative.display())
+            })?;
+            let registered = super::winappsdk_output::javascript_registration(&relative, &text);
+            if registered != text {
+                write_javascript(output, &relative, &registered)?;
+                *hash = digest(registered.as_bytes());
+            }
+        }
+    }
+    write_manifest(output, &manifest)
+}
+
 pub(super) fn generate(
     output: &Path,
     winmd: &str,
     namespaces: &BTreeSet<String>,
     import_name: &str,
     dry_run: bool,
+    winappsdk: bool,
 ) -> Result<(), String> {
     let existing = read_manifest(output)?;
     let root = output.join("win32");
@@ -257,8 +288,19 @@ pub(super) fn generate(
     let mut stale_files = Vec::new();
     for namespace in namespaces {
         let directory = namespace_directory(namespace)?;
-        let generated_namespace =
+        let mut generated_namespace =
             win32::generate_namespace(winmd, namespace, &runtime_import(import_name, &directory))?;
+        if winappsdk {
+            let relative = Path::new("win32").join(&directory);
+            generated_namespace.js = super::winappsdk_output::javascript_registration(
+                &relative.join("Apis.js"),
+                &generated_namespace.js,
+            );
+            for (file, content) in &mut generated_namespace.extra_files {
+                *content =
+                    super::winappsdk_output::javascript_registration(&relative.join(file), content);
+            }
+        }
         if generated_namespace.namespace != *namespace {
             return Err(format!("Win32 projection changed namespace `{namespace}`"));
         }
@@ -358,13 +400,17 @@ pub(super) fn generate(
         })?;
     }
     write_indexes(output, &manifest)?;
-    let path = root.join(MANIFEST);
+    write_manifest(output, &manifest)?;
+    super::write_bindings_manifest(output)
+}
+
+fn write_manifest(output: &Path, manifest: &Manifest) -> Result<(), String> {
+    let path = output.join("win32").join(MANIFEST);
     super::ensure_safe_generated_destination(output, &path)?;
-    let content = serde_json::to_string_pretty(&manifest)
+    let content = serde_json::to_string_pretty(manifest)
         .map_err(|error| format!("Failed to serialize Win32 generation manifest: {error}"))?;
     fs::write(&path, format!("{content}\n"))
-        .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
-    super::write_bindings_manifest(output)
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 
 fn write_indexes(output: &Path, manifest: &Manifest) -> Result<(), String> {

@@ -16,3 +16,9 @@ and every subscription is removed before the apartment exits.
 The exact devices vary by machine. A successful run prints
 `python-device-watcher-ok` and counts by device kind. Pass `-ShowNames` to
 `run.ps1` to also print up to ten discovered device names.
+
+After generation, install the generated project into the same interpreter used
+to run the sample: `python -m pip install -e .\generated` (use that interpreter's
+full path when needed). The import remains `generated`; sources now live in
+`generated\src\generated`, not directly in `generated`. When upgrading from
+preview.23 or earlier, regenerate the complete output and reinstall it.

@@ -68,6 +68,18 @@ Class documentation facts also have exact declaring-interface aliases for
 standalone rendering; this does not enable exclusive interfaces such as
 `IXmlDocument` or `IXmlElement` as public CLI roots.
 
+`DataWriter.detach_stream()` and `DataReader.detach_stream()` return
+`IOutputStream | None` and `IInputStream | None`, respectively, including their
+declaring-interface projections. An unbound `DataWriter()` or a
+`DataReader.from_buffer(...)` has no stream to detach; a second detach also
+returns `None`. Save the result and check it before calling stream methods:
+
+```python
+stream = writer.detach_stream()
+if stream is not None:
+    await stream.flush_async()
+```
+
 Reference-type elements read from WinRT collection interfaces are always typed
 `T | None`, including vectors, views, iterables, iterators, map keys and values,
 and key-value-pair keys and values. Here reference means the projection's
@@ -221,6 +233,21 @@ Both directions copy exactly `Length` bytes. Mutating the input or releasing
 the WinRT object does not change the returned `bytes`, and no native buffer
 pointer is exposed.
 
+Byte conversion can be repeated in independent `RoApartment` scopes. Buffer
+creation uses a call-local activation factory, so it does not retain a stale
+factory across apartment teardown. Release native values before leaving their
+apartment, or let `RoApartment` release its tracked owners:
+
+```python
+from dynwinrt import DynWinRTValue, RoApartment
+
+for _ in range(2):
+    with RoApartment():
+        value = DynWinRTValue.from_bytes(b"abc")
+        data = value.to_bytes()
+        value.release()
+```
+
 Exceptions raised by Python event or delegate callbacks are reported through
 `sys.unraisablehook`. The originating WinRT invocation receives
 `0xA0EE4005` (`PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION`) instead of unconditional
@@ -283,6 +310,94 @@ def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_Str
 unsubscribe = properties.subscribe_map_changed(changed)
 ```
 
+### Async notification handlers
+
+Use the public `AsyncEventScope` to attach an async handler to an existing
+`subscribe_*` method:
+
+```python
+import asyncio
+from dynwinrt import AsyncEventScope, RoApartment, projected_lifetime_scope
+from generated.windows.foundation.collections import (
+    IMapChangedEventArgs_String, IObservableMap_String_Object, PropertySet,
+)
+
+async def on_changed(
+    sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String,
+) -> None:
+    await asyncio.sleep(0)
+    print(args.key, len(sender))
+
+async def main() -> None:
+    with RoApartment(), projected_lifetime_scope():
+        properties = PropertySet()
+        async with AsyncEventScope(loop=asyncio.get_running_loop()) as events:
+            unsubscribe = events.subscribe(properties.subscribe_map_changed, on_changed)
+            properties["first"] = None
+            unsubscribe()  # Stop future notifications; the accepted task still runs.
+            properties["not-delivered"] = None
+        # Subscriptions are removed and all accepted tasks have finished here.
+        # Only now may the projection scope and COM apartment close.
+
+asyncio.run(main())
+```
+
+The [async-events sample](../../samples/python/async-events/) runs real
+`PropertySet.MapChanged` notifications and native asynchronous file I/O,
+including an optional handler-failure path.
+
+`AsyncEventScope` composes `asyncio.TaskGroup`: normal exit first stops
+accepting notifications and removes subscriptions, then **waits for accepted
+tasks without cancelling them**. A handler failure or exception in the body
+cancels siblings and waits for their `finally` blocks before propagating the
+standard task-group exception; external cancellation also waits for cleanup.
+A handler's own `CancelledError` has the standard TaskGroup meaning, not an
+instruction to cancel all siblings. Handlers run concurrently; completion
+order is not guaranteed, and there is no backpressure, throttling or retry
+policy. Handlers must cooperate with cancellation.
+
+The returned unsubscribe callable is idempotent after successful removal and
+does not cancel accepted tasks. A native removal failure is raised to its
+caller, leaves delivery disabled, and can be retried with the same callable
+on the owner loop/thread while native owners are still live. Scope exit
+attempts **every** remaining removal in reverse registration order. Removal
+failures (and non-cancellation body exceptions) are preserved in an exception
+group passed to TaskGroup, cancelling outstanding work rather than hanging in
+a normal drain. A body's `CancelledError` is TaskGroup control flow, not an
+extra leaf added to that cleanup error group. When cancellation coincides with
+other errors, their propagation and cancellation bookkeeping follow the running
+Python version's TaskGroup semantics. Save unsubscribe callables if your
+application needs to recover from native removal failures; recovery must happen
+before closing native lifetimes.
+
+The scope is single-use and must exit in the task that entered it. Its
+constructor binds it to the creating OS thread; entry, subscription, callbacks,
+task execution, and unsubscription require that thread and the supplied
+**actually running** loop. Keep the outer `RoApartment` and any captured
+`projected_lifetime_scope()` alive through task cleanup. Existing subscription
+context-variable and projection-lifetime behavior is preserved, not bypassed.
+Wrong-thread delivery fails through the existing synchronous native callback
+error path (`sys.unraisablehook` and a failing delegate HRESULT); the event
+source decides whether that HRESULT fails the originating invocation. No
+native arguments are marshalled or queued to another thread. Registration and
+task-creation failures likewise remain synchronous callback/subscription errors.
+
+This is only for ordinary same-thread notifications whose work may be deferred.
+The application must drive asyncio: the scope does not create a loop, start a
+thread, integrate a WinUI message pump, or make a blocking `Application.start()`
+advance asyncio. It does not implement synchronous return values, `Handled`,
+`Cancel`, or deferral semantics, and is not a general async adapter for WinUI
+buttons or all Windows events. With an eager task factory, a handler may start
+before the native callback returns, including during subscription.
+Native reentrancy restrictions still apply: for example, yield before mutating
+the same `PropertySet` from its handler when using an eager factory.
+
+The handler may be an `async def` or a callable returning an awaitable; it is
+called inside an owned task and its result is awaited. Passing a bare
+`async def` directly to the old `subscribe_*` API instead merely creates an
+unawaited coroutine. Existing synchronous callbacks, native delegates, and
+synchronous callbacks returning an already TaskGroup-owned task are unchanged.
+
 Async-operation arguments deliberately stay raw. A work item can inspect its
 `IAsyncInfo` status without installing another completion handler:
 
@@ -337,6 +452,16 @@ without that metadata, including system-returned classes and protected-only
 composition, raise a class-named `TypeError` on normal construction and their
 stubs expose no public constructor. Native return values still use the internal
 `_from_native`/`DynWinRTValue` wrapping path.
+
+When no constructor matches, the `TypeError` lists the supplied argument types
+and keyword names, followed by all candidate signatures using the same Python
+names and types as the stubs. For example, `Uri(url="https://example.com")`
+reports `Uri(url=str)`, while `Uri(42)` reports `Uri(int)`; both list
+`Uri(uri: str)` and `Uri(base_uri: str, relative_uri: str)`. Use `uri=`, or supply
+both `base_uri=` and `relative_uri=` for the two-argument overload. Argument
+values are not included in this diagnostic. Matching calls and errors from
+native activation or argument conversion are unchanged; named factories such
+as `Uri.create_uri(uri=...)` also retain their explicit signatures.
 
 ### Creating WinRT collections
 
@@ -679,9 +804,46 @@ WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
 explains how to open one.
 
-Generated runtime classes that implement `IClosable` support `with` and an
-idempotent `close()` method. Prefer deterministic cleanup instead of relying on
-Python garbage collection.
+Generated runtime classes that implement `IClosable`, and interfaces whose
+WinMD required-interface closure includes it, support `with` and an idempotent
+`close()` helper. This includes `IRandomAccessStream`, `IInputStream`,
+`IOutputStream`, and `IRandomAccessStreamWithContentType`; regenerate bindings
+to use the interface helpers. Existing concrete classes such as `DataWriter`
+and `InMemoryRandomAccessStream` keep the same behavior.
+
+Generate and install the project before using this example:
+
+```powershell
+dynwinrt-codegen generate --lang py --class-name Windows.Storage.StorageFile --output generated
+python -m pip install .\generated
+```
+
+```python
+from generated import FileAccessMode, StorageFile
+
+async def read_size(path: str) -> int:
+    file = await StorageFile.get_file_from_path_async(path)
+    with await file.open_async(FileAccessMode.Read) as stream:
+        return stream.size
+```
+
+Exiting the context calls native `IClosable.Close` through QueryInterface,
+including when the body raises; it does not suppress application exceptions.
+Successful helper calls mark that projection closed, repeated `close()` calls
+are no-ops, and entering it again raises `RuntimeError`. A failed close remains
+retryable. Native aliases can observe closure even though their Python
+projections are distinct.
+
+`IClosable` itself also supports `with`; its existing metadata-defined `close()`
+keeps its native repeat-call behavior. Helpers never replace an interface's
+own projected members. If a native member owns `close` or a context-helper name,
+use `with stream.as_interface(IClosable):` instead.
+
+These operations close the native resource; they do not release the projection
+or substitute for `release_projected()` / `projected_lifetime_scope()`.
+Interfaces without an explicit `IClosable` requirement and arbitrary `Object`
+values do not gain closing methods. Prefer deterministic cleanup instead of
+relying on Python garbage collection.
 
 ## Standalone WinRT interface implementations
 
@@ -808,6 +970,64 @@ to `sys.unraisablehook` and fail the native call with
 mismatches also fail rather than returning fabricated values. `take_error()`
 returns and clears the latest native callback diagnostic; `is_closed` is a
 read-only property.
+
+## Windows App SDK initialization
+
+The existing initializer supports explicit versions, and optionally a DLL path:
+
+```python
+from dynwinrt import init_winappsdk
+
+bootstrap = init_winappsdk(2, 5, bootstrap_dll_path=bootstrap_dll)
+```
+
+`init_winappsdk(2, 5)` retains its existing behavior and uses
+`WINAPPSDK_BOOTSTRAP_DLL_PATH`. Installed generated packages never alter that
+explicit two-version-argument path.
+
+When bindings were generated with the paired
+[`--winappsdk-version` / `--winappsdk-bootstrap-path` options](../../tools/dynwinrt-codegen/python/README.md#windows-app-sdk-configuration),
+install their package normally or editable. The same initializer can then discover
+the installed configuration without application-maintained constants or paths:
+
+```python
+from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
+
+with RoApartment(0):  # The application selects the apartment, not the initializer.
+    bootstrap = init_winappsdk()
+    with projected_lifetime_scope():
+        # Create and run the application here.
+        ...
+```
+
+Discovery uses the generated package's `dynwinrt.winappsdk` entry point; no
+generated-package import is required first. It does not scan application source
+or infer a version from WinMD names. Missing configuration and conflicting
+versions/payloads are errors naming the provider packages; identical bundles can
+coexist. Supplying just one version component is an error.
+
+An explicit `bootstrap_dll_path` overrides the environment, which overrides the
+generated resource path. Invalid overrides fail rather than silently falling
+back. A path override alone still needs a generated version configuration.
+The runtime selects resources for the running Python interpreter, not the OS's
+native architecture, and verifies their generated SHA-256 digests.
+
+Importing a provider does not initialize Bootstrap or COM. The initializer also
+does not select STA/MTA; the explicit apartment-first example follows Bootstrap's
+documented prerequisite for compatibility across its native implementation paths.
+This does not imply that the existing init-first examples fail on modern Windows.
+
+The result remains `WinAppSDKContext`, including `resource_pri_path()`. It is
+**not** a shutdown/RAII context: dropping it does not remove the native package
+graph or unload Bootstrap. Repeated calls retain the existing native behavior,
+and failed calls can be retried. Changing SDK deployment or replacing loaded
+binaries requires a new process.
+
+The bundled Bootstrap DLL is not the complete Windows App Runtime. Deployment
+of a matching Runtime and the SDK's redistribution terms remain the application
+producer's responsibility. This API does not install the Runtime or silently
+skip initialization merely because the process has package identity.
+Ordinary Windows SDK-only generated bindings require none of this configuration.
 
 ## Experimental WinUI support
 

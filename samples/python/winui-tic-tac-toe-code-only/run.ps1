@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$generated = Join-Path $PSScriptRoot "generated\__init__.py"
+$generated = Join-Path $PSScriptRoot "generated\src\generated\__init__.py"
 $bootstrap = Join-Path $PSScriptRoot ".runtime\Microsoft.WindowsAppRuntime.Bootstrap.dll"
 
 if (-not (Test-Path -LiteralPath $generated -PathType Leaf)) {

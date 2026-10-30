@@ -2,11 +2,20 @@
 
 All Python samples use generated bindings and an installed `dynwinrt` runtime.
 Install `dynwinrt` and `dynwinrt-codegen` from PyPI, or build both from this
-checkout, then run each sample's `generate.ps1` before `run.ps1`.
+checkout, then follow the sample's README. Most samples use `generate.ps1`, then
+`python -m pip install -e .\generated`, then `run.ps1` with the same interpreter;
+the async-events README provides direct generation and run commands.
+Sources are under `generated\src\generated`; installed imports
+remain `generated`. After upgrading from preview.23 or earlier, regenerate the
+complete project and reinstall it instead of adding the old output parent to
+the import path.
+Samples share the import name `generated`; install the selected sample again
+when switching samples in a shared interpreter.
 
 | Sample | Demonstrates |
 | --- | --- |
 | [`async-file-io`](async-file-io/) | Temporary files, storage interfaces, and native `asyncio` |
+| [`async-events`](async-events/) | Same-thread notifications, TaskGroup cleanup, and native async file I/O |
 | [`ocr-image`](ocr-image/) | Self-contained image creation, bitmap decoding, and Windows OCR |
 | [`app-lifecycle-single-instance`](app-lifecycle-single-instance/) | Multi-process activation redirection with Windows App SDK AppLifecycle |
 | [`cryptography`](cryptography/) | SHA-256, `IBuffer`, text encoding, and hex conversion |

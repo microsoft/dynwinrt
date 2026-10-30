@@ -7,6 +7,14 @@
 # The source must be documented at the pin; Windows.winmd tests validate the
 # target's declaring interface, ExclusiveTo owner and native signature.
 
+# Stock Windows streams: an unbound writer or buffer-backed reader has no
+# stream to detach; detaching an attached stream a second time also returns
+# null. Both classes and declaring interfaces are documented at the pin.
++M:Windows.Storage.Streams.DataWriter.DetachStream
++M:Windows.Storage.Streams.IDataWriter.DetachStream
++M:Windows.Storage.Streams.DataReader.DetachStream
++M:Windows.Storage.Streams.IDataReader.DetachStream
+
 # Stock Windows XML native evidence: an empty document has no root or DTD.
 # The pinned reference documents these properties under the runtime class.
 +P:Windows.Data.Xml.Dom.XmlDocument.DocumentElement => P:Windows.Data.Xml.Dom.IXmlDocument.DocumentElement

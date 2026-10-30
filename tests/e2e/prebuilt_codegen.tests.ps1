@@ -24,7 +24,15 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $scripts
     }
     Set-Content -LiteralPath (Join-Path $scratch "metadata.winmd") -Value "external metadata boundary"
-    Set-Content -LiteralPath $python -Value '$global:LASTEXITCODE = 0'
+    @'
+if ($env:TYPECHECK_TRACE) {
+    @{ arguments = @($args); mypyPath = $env:MYPYPATH } | ConvertTo-Json -Compress |
+        Add-Content -LiteralPath $env:TYPECHECK_TRACE
+}
+$global:LASTEXITCODE = if ($args.Count -ge 2 -and $args[0] -eq "-m" -and $args[1] -eq "mypy") {
+    [int]$env:TYPECHECK_EXIT
+} else { 0 }
+'@ | Set-Content -LiteralPath $python
     @'
 @{ kind = "prebuilt"; arguments = @($args) } | ConvertTo-Json -Compress |
     Add-Content -LiteralPath $env:CODEGEN_TRACE
@@ -45,6 +53,11 @@ $env:DYNWINRT_WIN32_WINMD = Join-Path $PSScriptRoot "metadata.winmd"
 $env:DYNWINRT_WINDOWS_WINMD = $env:DYNWINRT_WIN32_WINMD
 $env:CODEGEN_TRACE = Join-Path $PSScriptRoot "trace.jsonl"
 $env:CODEGEN_STOP = $case.stop
+$env:TYPECHECK_TRACE = if ($case.ContainsKey("typecheckExit")) {
+    Join-Path $PSScriptRoot "typecheck-trace.jsonl"
+} else { $null }
+$env:TYPECHECK_EXIT = $case.typecheckExit
+$env:MYPYPATH = "preserved-mypy-path"
 $parameters = $case.parameters
 & (Join-Path $PSScriptRoot "tests\e2e\$($case.script)") @parameters
 exit $LASTEXITCODE
@@ -112,6 +125,46 @@ exit $LASTEXITCODE
     if ($fallback.kind -ne "cargo" -or ($fallback.arguments -join " ") -notlike
         "run -p dynwinrt-codegen --profile coverage --target x86_64-pc-windows-msvc --quiet -- generate *") {
         throw "Omitted prebuilt override changed the developer/profile fallback"
+    }
+
+    # Trace the real orchestrators past generation, including typecheck failure.
+    # Native calls remain stubs here; actual generated-package checks run in E2E.
+    foreach ($script in @("e2e_test.ps1", "implementation_test.ps1")) {
+        foreach ($typecheckExit in @(0, 29)) {
+            $typecheckTrace = Join-Path $scratch "typecheck-trace.jsonl"
+            if (Test-Path $typecheckTrace) { Remove-Item -LiteralPath $typecheckTrace }
+            $parameters = @{ Lang = @("py"); Python = $python; Codegen = $prebuilt; KeepGenerated = $true }
+            if ($script -eq "e2e_test.ps1") {
+                $parameters.Suite = "standard"
+                $parameters.SkipBuild = $true
+            }
+            $caseFile = Join-Path $scratch "typecheck-case.json"
+            @{
+                script = $script; parameters = $parameters; stop = 0
+                typecheckExit = $typecheckExit
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $caseFile
+            $output = & $shell -NoProfile -File (Join-Path $scratch "harness.ps1") $caseFile 2>&1 | Out-String
+            $expectedExit = if ($typecheckExit -eq 0) { 0 } else { 1 }
+            if ($LASTEXITCODE -ne $expectedExit) {
+                throw "Unexpected $script typecheck exit $LASTEXITCODE (expected $expectedExit): $output"
+            }
+            $records = @(Get-Content -LiteralPath $typecheckTrace | ForEach-Object { $_ | ConvertFrom-Json })
+            $checks = @($records | Where-Object { $_.arguments[0] -eq "-m" -and $_.arguments[1] -eq "mypy" })
+            $prefix = if ($script -eq "implementation_test.ps1") { "implementations\" } else { "" }
+            $expectedSource = Join-Path $scripts "e2e_generated\${prefix}python_bindings\src"
+            if ($checks.Count -ne 1 -or $checks[0].mypyPath.Replace('\\?\', '') -ne $expectedSource) {
+                throw "$script must check the generated project's src directory: $($checks | ConvertTo-Json -Depth 5)"
+            }
+            $native = @($records | Where-Object { $_.arguments[0] -like "*\runners\*.py" })
+            if ($typecheckExit -eq 0 -or $script -eq "implementation_test.ps1") {
+                if ($native.Count -eq 0) { throw "$script did not reach the expected native runner boundary" }
+                if (@($native | Where-Object { $_.mypyPath -ne "preserved-mypy-path" }).Count -ne 0) {
+                    throw "$script did not restore MYPYPATH after its typecheck"
+                }
+            } elseif ($native.Count -ne 0) {
+                throw "$script continued past its failing static typecheck"
+            }
+        }
     }
     Write-Host "Prebuilt WinRT/COM/Win32/implementation generation and Cargo fallback regressions passed."
 } finally {

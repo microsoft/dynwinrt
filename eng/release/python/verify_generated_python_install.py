@@ -2,7 +2,9 @@
 # Licensed under the MIT License.
 
 import argparse
+import hashlib
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -19,12 +21,14 @@ def package_files(root: Path) -> set[Path]:
     }
 
 
-def generated_source_files(root: Path) -> set[Path]:
+def generated_source_files(root: Path, package: str) -> set[Path]:
     inventory = root / ".dynwinrt-generated-files"
+    prefix = Path("src") / package
     files = {
         Path(line)
         for line in inventory.read_text(encoding="utf-8").splitlines()
         if Path(line).suffix in {".py", ".pyi"}
+        and Path(line).is_relative_to(prefix)
     }
     invalid = [path for path in files if path.is_absolute() or ".." in path.parts]
     if invalid:
@@ -32,7 +36,7 @@ def generated_source_files(root: Path) -> set[Path]:
     missing = [path for path in files if not (root / path).is_file()]
     if missing:
         raise RuntimeError(f"Generated inventory references missing files: {missing[:10]}")
-    return files
+    return {path.relative_to(prefix) for path in files}
 
 
 def module_name(package: str, relative: Path) -> str:
@@ -115,7 +119,7 @@ def main() -> None:
 
     source = args.source.resolve()
     installed = (args.install.resolve() / args.package)
-    expected = generated_source_files(source)
+    expected = generated_source_files(source, args.package)
     actual = package_files(installed)
     missing = sorted(expected - actual)
     if missing:
@@ -128,6 +132,21 @@ def main() -> None:
             f"Installed package has {len(unexpected)} unexpected generated files: "
             f"{unexpected[:10]}"
         )
+    bundle_manifest = source / ".dynwinrt-winappsdk.json"
+    if bundle_manifest.is_file():
+        bundle = json.loads(bundle_manifest.read_text(encoding="utf-8"))
+        for name, expected_digest in bundle["files"].items():
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise RuntimeError(f"Invalid Bootstrap inventory path: {name}")
+            if relative.is_relative_to(Path("src") / "_dynwinrt_build") or name == "MANIFEST.in":
+                if (args.install / "_dynwinrt_build").exists() or (installed / relative).exists():
+                    raise RuntimeError(f"Build-only file was installed: {name}")
+                continue
+            relative = relative.relative_to(Path("src") / args.package)
+            actual_digest = hashlib.sha256((installed / relative).read_bytes()).hexdigest()
+            if actual_digest != expected_digest:
+                raise RuntimeError(f"Installed Bootstrap resource differs from generation: {name}")
 
     sys.path.insert(0, str(args.install.resolve()))
     modules = {

@@ -46,7 +46,9 @@ def check(name):
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
+    root = Path(sys.argv[1]).resolve()
+    for package in ("windows_py", "winui_py"):
+        sys.path.insert(0, str(root / package / "src"))
     with RoApartment(1):
         results = [check(name) for name in sys.argv[2].split(",")]
     print(json.dumps({

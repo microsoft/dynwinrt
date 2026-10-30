@@ -35,7 +35,7 @@ use super::member_plan::{
 use super::naming::{PythonProjectionContext, PythonSupportSymbol, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
 use super::nullability::{AnnotationSurface, ElementContainer};
-use super::shared::reorder_getters_before_setters;
+use super::shared::{CLOSE_STUB, CONTEXT_MANAGER_STUB, reorder_getters_before_setters};
 use super::signature::py_dynwinrt_type;
 use super::stub_helpers::{
     emit_method_stub, emit_method_stub_named, emit_static_method_stub,
@@ -272,6 +272,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         return out;
     }
     let implementation = super::implementation::project(context, iface);
+    let plan = interface_member_plan(iface, context);
     let collection_kind = projected_interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     let has_projection = !iface.iid.is_empty() || iface.generic_piid.is_some();
@@ -299,6 +300,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         }
     }
     out.push_str("from typing import Protocol, Self, TypeVar\n");
+    if plan.closable_helpers.context {
+        out.push_str("from typing import Literal\n");
+    }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
@@ -494,7 +498,6 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
-    let plan = interface_member_plan(iface, context);
     out.push_str(&collection_protocol_stubs(
         iface,
         &plan.collection_helpers,
@@ -626,6 +629,13 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         collection_kind == Some(CollectionKind::MutableSequence),
         CollectionInputContract::General,
     ));
+    if plan.closable_helpers.context {
+        out.push('\n');
+        if plan.closable_helpers.close {
+            out.push_str(CLOSE_STUB);
+        }
+        out.push_str(CONTEXT_MANAGER_STUB);
+    }
 
     out
 }
@@ -1288,11 +1298,8 @@ fn emit_class_instance_stubs<'a>(
     ));
     if has_closable {
         out.push('\n');
-        out.push_str("    def close(self) -> None: ...\n");
-        out.push_str("    def __enter__(self) -> Self: ...\n");
-        out.push_str(
-            "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
-        );
+        out.push_str(CLOSE_STUB);
+        out.push_str(CONTEXT_MANAGER_STUB);
     }
 
     if super::has_projectable_default_interface(class) || !class.required_interfaces.is_empty() {

@@ -363,6 +363,9 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     } else {
         out.push_str("        raise TypeError('Cannot construct an interface without an IID')\n");
     }
+    if plan.closable_helpers.close {
+        out.push_str("        self._closed = False\n");
+    }
     out.push_str("        self._dynwinrt_native_ready = True\n");
     out.push_str(&format!(
         "        _dynwinrt_track_projected(self, '{}.{}')\n",
@@ -685,6 +688,12 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     if !aliases.is_empty() {
         out.push('\n');
         out.push_str(&aliases);
+    }
+    if plan.closable_helpers.context {
+        out.push_str(&generate_closable_methods(
+            context,
+            plan.closable_helpers.close,
+        ));
     }
 
     out

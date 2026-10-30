@@ -738,28 +738,7 @@ pub fn generate_class<'a>(
         .iter()
         .any(|ri| ri.iid == ICLOSABLE_IID)
     {
-        out.push('\n');
-        out.push_str("    def close(self):\n");
-        out.push_str("        if self._closed:\n            return\n");
-        out.push_str(&format!(
-            "        {}.from_value(self._obj).close()\n",
-            py_runtime_named_symbol(
-                context,
-                TypeIdentityKind::Interface,
-                "Windows.Foundation",
-                "IClosable",
-                "IClosable",
-            )
-        ));
-        out.push_str("        self._closed = True\n\n");
-        out.push_str("    def __enter__(self):\n");
-        out.push_str(
-            "        if self._closed:\n\
-             \x20           raise RuntimeError('cannot enter a closed WinRT object')\n\
-             \x20       return self\n\n",
-        );
-        out.push_str("    def __exit__(self, _exc_type, _exc_value, _traceback):\n");
-        out.push_str("        self.close()\n        return False\n");
+        out.push_str(&generate_closable_methods(context, true));
     }
 
     // IStringable → __str__ / __repr__ delegates to the runtime IStringable.
@@ -1591,8 +1570,31 @@ fn generate_python_constructor(
             context.class_name(class)
         ));
     } else {
+        let mut seen = HashSet::new();
+        let signatures = candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{}({})",
+                    context.class_name(class),
+                    super::super::type_helpers::py_constructor_param_list(
+                        &candidate.public_params,
+                        context,
+                    )
+                )
+            })
+            .filter(|signature| seen.insert(signature.clone()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let expected = serde_json::to_string(&format!("). Expected one of: {signatures}"))
+            .expect("constructor signature string");
+        // Avoid user-defined metaclass and string-formatting hooks on the failure path.
+        out.push_str(
+            "        _type_name = type.__dict__['__name__'].__get__\n\
+             \x20       _received = ', '.join([_type_name(type(arg)) for arg in args] + ['='.join((name, _type_name(type(value)))) for name, value in kwargs.items()])\n",
+        );
         out.push_str(&format!(
-            "        raise TypeError(\"No matching constructor for {}\")\n\n",
+            "        raise TypeError(\"No matching constructor for {}(\" + _received + {expected})\n\n",
             context.class_name(class)
         ));
     }

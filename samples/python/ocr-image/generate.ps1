@@ -52,3 +52,5 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Generated OCR bindings in $output"
+
+Write-Host "Install this generated project into the sample interpreter with: python -m pip install -e `"$output`""

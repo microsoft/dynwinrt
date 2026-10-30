@@ -4,6 +4,7 @@
 mod python_output_paths;
 mod win32_census;
 mod win32_output;
+mod winappsdk_output;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -168,12 +169,14 @@ enum Commands {
         lang: String,
 
         /// Dedicated codegen-owned output directory.
+        /// For Python, this is the installable project root; package sources are in src/<import_name>.
         /// Existing contents may be replaced or removed; do not store handwritten files here.
         #[arg(long, default_value = "./generated", value_name = "DIR")]
         output: String,
 
         /// Custom import name for the dynwinrt runtime package in generated JS/TS files.
         /// Defaults to "@microsoft/dynwinrt".
+        /// Bootstrap bundling requires an npm package name, not a file path or package subpath.
         #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
         import_name: String,
 
@@ -188,6 +191,25 @@ enum Commands {
         /// Skip .pyi type stubs and the py.typed marker (requires --lang py).
         #[arg(long, conflicts_with = "pyi")]
         no_pyi: bool,
+
+        /// Stable Windows App SDK product MAJOR.MINOR for an explicit initializer configuration.
+        /// For example, 2.5, not a full NuGet servicing version.
+        #[arg(
+            long,
+            value_name = "MAJOR.MINOR",
+            requires = "winappsdk_bootstrap_path"
+        )]
+        winappsdk_version: Option<String>,
+
+        /// Bootstrap DLL file or directory to search recursively; repeat for multiple inputs.
+        /// Directories match Microsoft.WindowsAppRuntime.Bootstrap.dll; architecture comes from PE.
+        #[arg(
+            long,
+            value_name = "PATH",
+            num_args = 1,
+            requires = "winappsdk_version"
+        )]
+        winappsdk_bootstrap_path: Vec<String>,
     },
 }
 
@@ -389,11 +411,17 @@ fn run() -> Result<(), String> {
             dry_run,
             pyi,
             no_pyi,
+            winappsdk_version,
+            winappsdk_bootstrap_path,
         } => {
             if lang != "py" && (pyi || no_pyi) {
                 return Err("--pyi and --no-pyi require --lang py".into());
             }
             let pyi = lang == "py" && !no_pyi;
+            let bootstrap_inputs = winappsdk_output::parse_inputs(
+                winappsdk_version.as_deref(),
+                &winappsdk_bootstrap_path,
+            )?;
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 
@@ -535,6 +563,19 @@ fn run() -> Result<(), String> {
                 .map(|transaction| transaction.stage_dir().to_path_buf())
                 .unwrap_or_else(|| final_output_dir.to_path_buf());
             let output_dir = effective_output_dir.as_path();
+            if lang == "py" && !dry_run {
+                prepare_python_output_layout(output_dir, final_output_dir)?;
+            }
+            let bootstrap = winappsdk_output::prepare(
+                output_dir,
+                &lang,
+                if lang == "py" {
+                    "dynwinrt"
+                } else {
+                    &import_name
+                },
+                bootstrap_inputs,
+            )?;
             if lang == "js" {
                 project::set_import_name(&import_name);
             }
@@ -542,6 +583,10 @@ fn run() -> Result<(), String> {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
                 })?;
+                if bootstrap.is_some() && lang == "js" {
+                    win32_output::wire_winappsdk_registration(output_dir)?;
+                    winappsdk_output::wire_existing_com_files(output_dir)?;
+                }
             }
             if lang == "py" && !dry_run && !pyi && class_name.is_some() {
                 remove_all_generated_python_stubs(output_dir)?;
@@ -638,6 +683,7 @@ fn run() -> Result<(), String> {
                         &win32_namespaces,
                         &import_name,
                         dry_run,
+                        bootstrap.is_some(),
                     )?;
                     if classes.is_empty()
                         && requested_winrt_interfaces.is_empty()
@@ -645,6 +691,9 @@ fn run() -> Result<(), String> {
                         && com_coclasses.is_empty()
                         && !native_audio_completion
                     {
+                        if !dry_run && let Some(bootstrap) = bootstrap {
+                            bootstrap.write(output_dir, pyi)?;
+                        }
                         if let Some(transaction) = output_transaction.take() {
                             transaction.commit()?;
                         }
@@ -869,6 +918,14 @@ fn run() -> Result<(), String> {
                             files.insert("unsafe/runtime.js".into());
                             files.insert("unsafe/runtime.d.ts".into());
                         }
+                        if bootstrap.is_some() {
+                            for (file, content) in &mut planned_files {
+                                *content = winappsdk_output::javascript_registration(
+                                    &Path::new("com").join(file),
+                                    content,
+                                );
+                            }
+                        }
                         let manifest_update = prepare_com_generation_manifest(
                             &com_output_dir,
                             &root_files,
@@ -939,6 +996,9 @@ fn run() -> Result<(), String> {
                         .iter()
                         .filter_map(|output| output.no_callable_error.clone())
                         .collect::<Vec<_>>();
+                    if bootstrap.is_some() && !no_callable_errors.is_empty() {
+                        return Err(no_callable_errors.join("\n"));
+                    }
                     if classes.is_empty() && requested_winrt_interfaces.is_empty() {
                         if !dry_run {
                             finalize_com_generation(output_dir)?;
@@ -948,6 +1008,9 @@ fn run() -> Result<(), String> {
                                 transaction.commit()?;
                             }
                             return Err(no_callable_errors.join("\n"));
+                        }
+                        if !dry_run && let Some(bootstrap) = bootstrap {
+                            bootstrap.write(output_dir, pyi)?;
                         }
                         if let Some(transaction) = output_transaction.take() {
                             transaction.commit()?;
@@ -1076,7 +1139,11 @@ fn run() -> Result<(), String> {
                         &BTreeSet::from([ns.to_string()]),
                         &import_name,
                         dry_run,
+                        bootstrap.is_some(),
                     )?;
+                    if !dry_run && let Some(bootstrap) = bootstrap {
+                        bootstrap.write(output_dir, pyi)?;
+                    }
                     if let Some(transaction) = output_transaction.take() {
                         transaction.commit()?;
                     }
@@ -1244,6 +1311,9 @@ fn run() -> Result<(), String> {
                 }
             }
 
+            if !dry_run && let Some(bootstrap) = bootstrap {
+                bootstrap.write(output_dir, pyi)?;
+            }
             if lang == "py" && !dry_run {
                 write_python_package_manifest(output_dir, final_output_dir)?;
                 write_python_generator_metadata(output_dir)?;
@@ -1546,7 +1616,7 @@ fn generate_for_types(
         public_types
             .retain(|identity| !python_type_shadowed_by_class(identity, &class_identities_all));
         python_output_paths::warn(
-            final_output_dir,
+            &PythonOutputLayout::new(final_output_dir, final_output_dir)?.package_root(),
             &python_output_paths::dry_run_source_files(
                 context,
                 &implementations,
@@ -4069,6 +4139,10 @@ fn generate_py_files(
     use dynwinrt_codegen::codegen::python_stub;
 
     let previous = read_python_type_inventory(output_dir)?;
+    let layout = python_output_layout(output_dir)?;
+    let package_root = layout.package_root();
+    ensure_safe_generated_parent(output_dir, &package_root.join("__init__.py"))?;
+    let output_dir = package_root.as_path();
     let mut struct_interfaces = all_interfaces.to_vec();
     struct_interfaces.extend_from_slice(shared_interfaces);
     let mut current = python_generated_types(all_classes, &struct_interfaces, all_enums);
@@ -4241,7 +4315,7 @@ fn generate_py_files(
         write_file(&marker, "")?;
     }
     reconcile_python_implementation_root_exports(context, output_dir, &previous, &types, pyi)?;
-    write_python_type_inventory(output_dir, &types)?;
+    write_python_type_inventory(&layout.project_root, &types)?;
     Ok(())
 }
 
@@ -4360,6 +4434,9 @@ fn migrate_python_implementation_inventory(
     supplemental: &[meta::InterfaceMeta],
 ) -> Result<Vec<(meta::InterfaceMeta, bool)>, String> {
     let mut types = read_python_type_inventory(output_dir)?;
+    let layout = python_output_layout(output_dir)?;
+    let package_root = layout.package_root();
+    let output_dir = package_root.as_path();
     let class_names = classes
         .iter()
         .map(|class| (class.namespace.clone(), class.name.clone()))
@@ -4445,7 +4522,7 @@ fn migrate_python_implementation_inventory(
             missing.join(", ")
         ));
     }
-    write_python_type_inventory(output_dir, &types)?;
+    write_python_type_inventory(&layout.project_root, &types)?;
     Ok(upgrades)
 }
 
@@ -4644,6 +4721,10 @@ fn write_python_package_indexes(
     } else {
         Vec::new()
     };
+    let layout = python_output_layout(output_dir)?;
+    let package_root = layout.package_root();
+    ensure_safe_generated_parent(output_dir, &package_root.join("__init__.py"))?;
+    let output_dir = package_root.as_path();
     all_types = merge_python_generated_types(all_types, current_types);
 
     let module_identities = all_types
@@ -4784,7 +4865,7 @@ fn write_python_package_indexes(
     for (namespace, group) in groups {
         write_python_namespace_group(&context, output_dir, &namespace, &group, pyi, append)?;
     }
-    write_python_type_inventory(output_dir, &all_types)?;
+    write_python_type_inventory(&layout.project_root, &all_types)?;
     Ok(())
 }
 
@@ -6759,26 +6840,25 @@ fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> 
             ));
         }
     }
-    let leaf = final_output_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            format!(
-                "Cannot derive Python package name from '{}'",
-                final_output_dir.display()
-            )
-        })?;
-    let import_name = normalize_python_package_name(leaf);
+    let layout = PythonOutputLayout::new(output_dir, final_output_dir)?;
+    let import_name = &layout.import_name;
     let distribution_name = import_name.replace('_', "-");
     let version = env!("CARGO_PKG_VERSION");
-    let namespace_packages = collect_python_namespace_packages(output_dir)?;
-    let manifest = package::render_python_pyproject(&package::PythonPackageManifestInput {
-        distribution_name: &distribution_name,
-        import_name: &import_name,
-        package_version: version,
-        runtime_version: version,
-        namespace_packages: &namespace_packages,
-    });
+    let namespace_packages = if layout.package_root().is_dir() {
+        collect_python_namespace_packages(&layout.package_root())?
+    } else {
+        Vec::new()
+    };
+    let manifest = package::render_python_pyproject_with_winappsdk(
+        &package::PythonPackageManifestInput {
+            distribution_name: &distribution_name,
+            import_name: &import_name,
+            package_version: version,
+            runtime_version: version,
+            namespace_packages: &namespace_packages,
+        },
+        output_dir.join(winappsdk_output::MANIFEST).is_file(),
+    );
     let build_cache_key = python_build_cache_key(output_dir, &import_name)?;
     let setup = package::render_python_setup_cfg(&build_cache_key);
     write_file(&manifest_path, &manifest)?;
@@ -6807,6 +6887,15 @@ fn python_build_cache_key(output_dir: &Path, import_name: &str) -> Result<String
             hash = hash.wrapping_mul(0x100000001b3);
         }
     }
+    let bundle_manifest = output_dir.join(winappsdk_output::MANIFEST);
+    if bundle_manifest.is_file() {
+        for byte in fs::read(&bundle_manifest)
+            .map_err(|error| format!("Failed to read {}: {error}", bundle_manifest.display()))?
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
     Ok(format!("{hash:016x}"))
 }
 
@@ -6818,6 +6907,163 @@ const PYTHON_GENERATOR_METADATA: &str = ".dynwinrt-generator.json";
 #[serde(deny_unknown_fields)]
 struct PythonGeneratorMetadata {
     generator_version: String,
+    #[serde(default)]
+    layout: Option<PythonPackageLayout>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PythonPackageLayout {
+    version: u32,
+    import_name: String,
+}
+
+struct PythonOutputLayout {
+    project_root: PathBuf,
+    import_name: String,
+}
+
+impl PythonOutputLayout {
+    fn new(project_root: &Path, final_output: &Path) -> Result<Self, String> {
+        let leaf = final_output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "Cannot derive Python package name from '{}'",
+                    final_output.display()
+                )
+            })?;
+        Ok(Self {
+            project_root: project_root.into(),
+            import_name: normalize_python_package_name(leaf),
+        })
+    }
+
+    fn package_prefix(&self) -> PathBuf {
+        Path::new("src").join(&self.import_name)
+    }
+
+    fn package_root(&self) -> PathBuf {
+        self.project_root.join(self.package_prefix())
+    }
+}
+
+fn python_output_layout(output_dir: &Path) -> Result<PythonOutputLayout, String> {
+    let path = output_dir.join(PYTHON_GENERATOR_METADATA);
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            let metadata: PythonGeneratorMetadata = serde_json::from_str(&content)
+                .map_err(|error| format!("Invalid {}: {error}", path.display()))?;
+            let layout = metadata.layout.ok_or_else(|| {
+                python_regeneration_error(
+                    output_dir,
+                    "Python output predates the src package layout",
+                )
+            })?;
+            if layout.version != 1
+                || layout.import_name.is_empty()
+                || normalize_python_package_name(&layout.import_name) != layout.import_name
+            {
+                return Err(python_regeneration_error(
+                    output_dir,
+                    "Invalid Python src package layout",
+                ));
+            }
+            Ok(PythonOutputLayout {
+                project_root: output_dir.into(),
+                import_name: layout.import_name,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            PythonOutputLayout::new(output_dir, output_dir)
+        }
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
+}
+
+fn prepare_python_output_layout(output_dir: &Path, final_output: &Path) -> Result<(), String> {
+    let layout = PythonOutputLayout::new(output_dir, final_output)?;
+    if output_dir.join(PYTHON_GENERATOR_METADATA).is_file() {
+        let previous = python_output_layout(output_dir)?;
+        if previous.import_name != layout.import_name {
+            // Validate retained resources before relocating their ownership records.
+            winappsdk_output::prepare(output_dir, "py", "dynwinrt", None)?;
+            let inventory = output_dir.join(PYTHON_GENERATED_INVENTORY);
+            let content = fs::read_to_string(&inventory)
+                .map_err(|error| format!("Failed to read {}: {error}", inventory.display()))?;
+            let mut relocated = Vec::new();
+            let mut moves = Vec::new();
+            for line in content.lines() {
+                let relative = Path::new(line);
+                if !is_safe_relative_path(relative) {
+                    return Err(format!("Invalid generated inventory path: {line}"));
+                }
+                if let Ok(suffix) = relative.strip_prefix(previous.package_prefix()) {
+                    let target = layout.package_prefix().join(suffix);
+                    if !is_generator_owned_python_source_file(output_dir, relative)?
+                        || path_entry_exists(&output_dir.join(&target))
+                    {
+                        return Err(format!(
+                            "Cannot relocate generated Python file `{line}` to '{}': source is not owned or destination already exists",
+                            target.display()
+                        ));
+                    }
+                    ensure_safe_generated_destination(output_dir, &output_dir.join(&target))?;
+                    moves.push((relative.to_path_buf(), target.clone()));
+                    relocated.push(target);
+                } else {
+                    relocated.push(relative.to_path_buf());
+                }
+            }
+            for (source, target) in &moves {
+                fs::rename(output_dir.join(source), output_dir.join(target))
+                    .map_err(|error| format!("Failed to relocate {}: {error}", source.display()))?;
+            }
+            winappsdk_output::relocate_python_package(output_dir, &previous, &layout)?;
+            write_file(
+                &inventory,
+                &format!(
+                    "{}\n",
+                    relocated
+                        .iter()
+                        .map(|path| path.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            )?;
+            let mut directories = moves
+                .iter()
+                .filter_map(|(source, _)| source.parent())
+                .flat_map(|parent| parent.ancestors())
+                .filter(|parent| parent.starts_with(previous.package_prefix()))
+                .map(Path::to_path_buf)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+            for relative in directories {
+                let path = output_dir.join(relative);
+                match fs::remove_dir(&path) {
+                    Ok(()) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                        ) => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Failed to remove old package directory {}: {error}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    fs::create_dir_all(output_dir)
+        .map_err(|error| format!("Failed to create {}: {error}", output_dir.display()))?;
+    write_python_layout_metadata(&layout)
 }
 
 fn python_regeneration_error(output_dir: &Path, reason: &str) -> String {
@@ -6881,6 +7127,7 @@ fn validate_python_generator_version_against(
                     ),
                 ));
             }
+            python_output_layout(output_dir)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if path_entry_exists(&output_dir.join(PYTHON_GENERATED_INVENTORY))
@@ -6901,13 +7148,21 @@ fn validate_python_generator_version_against(
 }
 
 fn write_python_generator_metadata(output_dir: &Path) -> Result<(), String> {
+    write_python_layout_metadata(&python_output_layout(output_dir)?)
+}
+
+fn write_python_layout_metadata(layout: &PythonOutputLayout) -> Result<(), String> {
     let metadata = PythonGeneratorMetadata {
         generator_version: env!("CARGO_PKG_VERSION").into(),
+        layout: Some(PythonPackageLayout {
+            version: 1,
+            import_name: layout.import_name.clone(),
+        }),
     };
     let content = serde_json::to_string_pretty(&metadata)
         .map_err(|error| format!("Failed to serialize Python generator metadata: {error}"))?;
     write_file(
-        &output_dir.join(PYTHON_GENERATOR_METADATA),
+        &layout.project_root.join(PYTHON_GENERATOR_METADATA),
         &format!("{content}\n"),
     )
 }
@@ -6983,7 +7238,12 @@ fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
         }
         Ok(())
     }
-    visit(output_dir)
+    visit(output_dir)?;
+    let package_root = python_output_layout(output_dir)?.package_root();
+    if package_root.is_dir() {
+        visit(&package_root)?;
+    }
+    Ok(())
 }
 
 fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
@@ -7015,7 +7275,7 @@ fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
 
     let mut parent_dirs = HashSet::new();
     for (relative, owned) in files {
-        if !owned {
+        if !owned || relative == Path::new(PYTHON_GENERATOR_METADATA) {
             continue;
         }
         let path = output_dir.join(&relative);
@@ -7082,6 +7342,7 @@ fn collect_generated_python_files(
     fn visit(
         root: &Path,
         current: &Path,
+        package_root: &Path,
         include_root_manifest: bool,
         include_root_marker: bool,
         files: &mut Vec<PathBuf>,
@@ -7096,10 +7357,14 @@ fn collect_generated_python_files(
                 .file_type()
                 .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
             if file_type.is_dir() {
-                if is_generated_python_namespace(&path)? {
+                if path == package_root
+                    || is_generated_python_namespace(&path)?
+                    || (current == root && entry.file_name() == "src")
+                {
                     visit(
                         root,
                         &path,
+                        package_root,
                         include_root_manifest,
                         include_root_marker,
                         files,
@@ -7112,7 +7377,9 @@ fn collect_generated_python_files(
             }
 
             let generated = match entry.file_name().to_str() {
-                Some("py.typed") => include_root_marker && current == root,
+                Some("py.typed") => {
+                    include_root_marker && (current == root || current == package_root)
+                }
                 Some("pyproject.toml" | "setup.cfg") => include_root_manifest && current == root,
                 Some(PYTHON_GENERATOR_METADATA) => include_root_manifest && current == root,
                 Some(name) if name.ends_with(".py") || name.ends_with(".pyi") => {
@@ -7133,11 +7400,14 @@ fn collect_generated_python_files(
     visit(
         output_dir,
         output_dir,
+        &python_output_layout(output_dir)?.package_root(),
         include_root_manifest,
         include_root_marker,
         &mut files,
     )?;
+    files.extend(winappsdk_output::owned_files(output_dir)?);
     files.sort();
+    files.dedup();
     Ok(files)
 }
 
@@ -7168,6 +7438,13 @@ fn is_generator_owned_python_source_file(
     let path = output_dir.join(relative);
     if !path.is_file() {
         return Ok(false);
+    }
+    if winappsdk_output::owns(output_dir, relative)? {
+        return Ok(true);
+    }
+    let package_prefix = python_output_layout(output_dir)?.package_prefix();
+    if relative == package_prefix.join("py.typed") {
+        return Ok(true);
     }
     let parent = relative
         .parent()
@@ -7200,6 +7477,9 @@ fn is_generator_owned_python_source_file(
             return Ok(false);
         };
         current.push(component);
+        if current == output_dir.join("src") || current == output_dir.join(&package_prefix) {
+            continue;
+        }
         if !is_generated_python_namespace(&current)? {
             return Ok(false);
         }
@@ -7272,6 +7552,8 @@ fn print_capabilities() {
         "generate",
         "lang.js",
         "lang.py",
+        "python.winappsdk-bootstrap-config",
+        "javascript.winappsdk-bootstrap-config",
         "input.winmd",
         "input.ref",
         "input.winmd-list",
@@ -9142,6 +9424,7 @@ mod tests {
     #[test]
     fn python_duplicate_short_names_use_namespace_facades() {
         let output = test_directory("namespace-facades");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let classes = vec![
             meta::ClassMeta {
@@ -9161,10 +9444,10 @@ mod tests {
         write_python_package_indexes(&output, &classes, &[], &[], &HashSet::new(), true, false)
             .unwrap();
 
-        let root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let root = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(!root.contains("ResourceManager"));
         let contoso = fs::read_to_string(
-            output
+            package
                 .join("contoso")
                 .join("resources")
                 .join("resource_manager.py"),
@@ -9174,7 +9457,7 @@ mod tests {
             contoso.contains("from ...contoso__resources__resource_manager import ResourceManager")
         );
         let fabrikam = fs::read_to_string(
-            output
+            package
                 .join("fabrikam")
                 .join("resources")
                 .join("resource_manager.py"),
@@ -9191,6 +9474,7 @@ mod tests {
     #[test]
     fn incremental_python_generation_removes_ambiguous_root_export() {
         let output = test_directory("incremental-root");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let contoso = meta::ClassMeta {
             name: "ResourceManager".into(),
@@ -9216,7 +9500,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            fs::read_to_string(output.join("__init__.py"))
+            fs::read_to_string(package.join("__init__.py"))
                 .unwrap()
                 .contains("ResourceManager")
         );
@@ -9232,19 +9516,19 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !fs::read_to_string(output.join("__init__.py"))
+            !fs::read_to_string(package.join("__init__.py"))
                 .unwrap()
                 .contains("ResourceManager")
         );
         assert!(
-            output
+            package
                 .join("contoso")
                 .join("resources")
                 .join("resource_manager.py")
                 .is_file()
         );
         assert!(
-            output
+            package
                 .join("fabrikam")
                 .join("resources")
                 .join("resource_manager.py")
@@ -9257,6 +9541,7 @@ mod tests {
     #[test]
     fn incremental_python_generation_removes_disambiguated_generic_root_export() {
         let output = test_directory("incremental-generic-root");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let interface = |namespace: &str| meta::InterfaceMeta {
             name: "IBox_Point".into(),
@@ -9285,7 +9570,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let first_root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let first_root = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(
             first_root.contains("IBox_Example_Left_Point_struct"),
             "{first_root}"
@@ -9301,7 +9586,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let final_root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let final_root = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(!final_root.contains("IBox_"), "{final_root}");
 
         fs::remove_dir_all(output).unwrap();
@@ -9372,13 +9657,19 @@ mod tests {
         }
 
         let mut output = BTreeMap::new();
-        visit(root, root, &mut output);
+        let package = python_output_layout(root).unwrap().package_root();
+        visit(&package, &package, &mut output);
+        output.insert(
+            PYTHON_TYPE_INVENTORY.into(),
+            fs::read_to_string(root.join(PYTHON_TYPE_INVENTORY)).unwrap(),
+        );
         output
     }
 
     #[test]
     fn same_short_interfaces_and_delegates_use_semantic_identity() {
         let output = test_directory("same-short-python-identities");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let left_delegate =
             colliding_delegate("Example.Left", "11111111-1111-1111-1111-111111111111");
@@ -9459,8 +9750,8 @@ mod tests {
         write_python_package_indexes(&output, &classes, &interfaces, &[], &ambiguity, true, false)
             .unwrap();
 
-        let left = fs::read_to_string(output.join("example__left__i_value.py")).unwrap();
-        let right = fs::read_to_string(output.join("example__right__i_value.py")).unwrap();
+        let left = fs::read_to_string(package.join("example__left__i_value.py")).unwrap();
+        let right = fs::read_to_string(package.join("example__right__i_value.py")).unwrap();
         assert!(
             left.contains(
                 "_dynwinrt_symbol('example__left__changed_handler', 'IID_ChangedHandler')"
@@ -9472,7 +9763,7 @@ mod tests {
             )
         );
         let cross =
-            fs::read_to_string(output.join("example__cross__i_cross_namespace.py")).unwrap();
+            fs::read_to_string(package.join("example__cross__i_cross_namespace.py")).unwrap();
         assert!(
             cross.contains("IValue as Example_Left_IValue_interface"),
             "{cross}"
@@ -9495,7 +9786,7 @@ mod tests {
             cross.contains("44444444-4444-4444-4444-444444444444"),
             "{cross}"
         );
-        let combined = fs::read_to_string(output.join("example__cross__combined.py")).unwrap();
+        let combined = fs::read_to_string(package.join("example__cross__combined.py")).unwrap();
         assert!(
             combined.contains("IID_Example_Left_IValue_interface"),
             "{combined}"
@@ -9512,12 +9803,12 @@ mod tests {
             combined.contains("_Example_Right_IValue_interface = DynWinRTType.register_interface"),
             "{combined}"
         );
-        let root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let root = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(!root.contains("IValue"), "{root}");
         assert!(!root.contains("ChangedHandler"), "{root}");
         for namespace in ["left", "right"] {
             let facade =
-                fs::read_to_string(output.join("example").join(namespace).join("__init__.py"))
+                fs::read_to_string(package.join("example").join(namespace).join("__init__.py"))
                     .unwrap();
             assert!(facade.contains("\"IValue\""), "{facade}");
             assert!(facade.contains("\"IID_ChangedHandler\""), "{facade}");
@@ -9640,6 +9931,7 @@ mod tests {
     #[test]
     fn python_implementation_pair_union_tracks_incremental_support_and_indexes() {
         let output = test_directory("implementation-pair-incremental");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let interface = |namespace: &str, iid: &str| meta::InterfaceMeta {
             namespace: namespace.into(),
@@ -9677,32 +9969,32 @@ mod tests {
                 .unwrap();
         };
         emit(std::slice::from_ref(&left));
-        let first = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        let first = fs::read_to_string(package.join("_implementation_types.pyi")).unwrap();
         assert!(first.contains(".example__left__i_value import _ImplementationPair"));
         assert!(!first.contains("example__right__i_value"));
         fs::write(
-            output.join("unrelated.pyi"),
+            package.join("unrelated.pyi"),
             format!(
                 "{GENERATED_PYTHON_HEADER}_ImplementationPair: TypeAlias = tuple[object, object]\n"
             ),
         )
         .unwrap();
         emit(std::slice::from_ref(&right));
-        let complete = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        let complete = fs::read_to_string(package.join("_implementation_types.pyi")).unwrap();
         assert!(
             !complete.contains("unrelated"),
             "pair membership must come from validated inventory, never stub text"
         );
         assert!(complete.contains(".example__left__i_value import _ImplementationPair"));
         assert!(complete.contains(".example__right__i_value import _ImplementationPair"));
-        assert!(!output.join("_implementation_types.py").exists());
+        assert!(!package.join("_implementation_types.py").exists());
         assert!(
-            !fs::read_to_string(output.join("__init__.py"))
+            !fs::read_to_string(package.join("__init__.py"))
                 .unwrap()
                 .contains("_Pair")
         );
         for namespace in ["left", "right"] {
-            let stub = output.join("example").join(namespace).join("__init__.pyi");
+            let stub = package.join("example").join(namespace).join("__init__.pyi");
             let inventory = read_python_type_inventory(&output).unwrap();
             let handler = inventory
                 .iter()
@@ -9728,11 +10020,11 @@ mod tests {
             .diagnostics
             .push("Unsupported contract".into());
         emit(std::slice::from_ref(&unsupported));
-        let reduced = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        let reduced = fs::read_to_string(package.join("_implementation_types.pyi")).unwrap();
         assert!(!reduced.contains("example__left__i_value"));
         assert!(reduced.contains("example__right__i_value"));
         for extension in ["py", "pyi"] {
-            let namespace = output.join("example").join("left");
+            let namespace = package.join("example").join("left");
             for module in ["__init__", "i_value"] {
                 let text =
                     fs::read_to_string(namespace.join(format!("{module}.{extension}"))).unwrap();
@@ -9743,16 +10035,16 @@ mod tests {
         emit(std::slice::from_ref(&left));
         assert_eq!(
             complete,
-            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+            fs::read_to_string(package.join("_implementation_types.pyi")).unwrap()
         );
         emit(std::slice::from_ref(&right));
         assert_eq!(
             complete,
-            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+            fs::read_to_string(package.join("_implementation_types.pyi")).unwrap()
         );
         remove_all_generated_python_stubs(&output).unwrap();
-        assert!(!output.join("_implementation_types.pyi").exists());
-        assert!(output.join("example__left__i_value.py").exists());
+        assert!(!package.join("_implementation_types.pyi").exists());
+        assert!(package.join("example__left__i_value.py").exists());
         fs::remove_dir_all(output).unwrap();
     }
 
@@ -10616,21 +10908,28 @@ mod tests {
     #[test]
     fn python_generation_emits_shared_runtime_and_typing_support() {
         let output = test_directory("python-shared-support");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let context = python::PythonProjectionContext::packaged([]).unwrap();
 
         generate_py_files(&context, &output, &[], &[], &[], &[], &HashSet::new(), true).unwrap();
 
-        assert!(output.join("_runtime.py").is_file());
-        assert!(output.join("_runtime.pyi").is_file());
-        assert!(output.join("_typing.pyi").is_file());
-        assert!(output.join("py.typed").is_file());
+        assert!(package.join("_runtime.py").is_file());
+        assert!(package.join("_runtime.pyi").is_file());
+        assert!(package.join("_typing.pyi").is_file());
+        assert!(package.join("py.typed").is_file());
+        let files = collect_generated_python_files(&output, false, true).unwrap();
+        let prefix = python_output_layout(&output).unwrap().package_prefix();
+        for file in ["_runtime.py", "_runtime.pyi", "_typing.pyi", "py.typed"] {
+            assert!(files.contains(&prefix.join(file)), "{file}");
+        }
         fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
     fn python_generation_uses_one_canonical_struct_module() {
         let output = test_directory("python-canonical-struct");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let point = TypeMeta::Struct {
             namespace: "Windows.Foundation".into(),
@@ -10684,9 +10983,9 @@ mod tests {
         )
         .unwrap();
 
-        let class_py = fs::read_to_string(output.join("contoso__widget.py")).unwrap();
-        let class_pyi = fs::read_to_string(output.join("contoso__widget.pyi")).unwrap();
-        let struct_py = fs::read_to_string(output.join("windows__foundation__point.py")).unwrap();
+        let class_py = fs::read_to_string(package.join("contoso__widget.py")).unwrap();
+        let class_pyi = fs::read_to_string(package.join("contoso__widget.pyi")).unwrap();
+        let struct_py = fs::read_to_string(package.join("windows__foundation__point.py")).unwrap();
         assert!(class_py.contains("from .windows__foundation__point import Point"));
         assert!(class_pyi.contains("from .windows__foundation__point import Point"));
         assert!(!class_py.contains("\nclass Point:"));
@@ -10703,27 +11002,27 @@ mod tests {
             false,
         )
         .unwrap();
-        let point_facade = fs::read_to_string(output.join("windows/foundation/point.py")).unwrap();
+        let point_facade = fs::read_to_string(package.join("windows/foundation/point.py")).unwrap();
         assert!(point_facade.contains("Point.__module__ = __name__"));
         assert!(point_facade.contains("Point_TYPE"));
         assert!(point_facade.contains("pack_point"));
         assert!(point_facade.contains("unpack_point"));
-        let point_stub = fs::read_to_string(output.join("windows/foundation/point.pyi")).unwrap();
+        let point_stub = fs::read_to_string(package.join("windows/foundation/point.pyi")).unwrap();
         assert!(point_stub.contains("Point_TYPE as Point_TYPE"));
         assert!(point_stub.contains("pack_point as pack_point"));
         assert!(point_stub.contains("unpack_point as unpack_point"));
         let foundation_index =
-            fs::read_to_string(output.join("windows/foundation/__init__.py")).unwrap();
+            fs::read_to_string(package.join("windows/foundation/__init__.py")).unwrap();
         assert!(foundation_index.contains("def __getattr__(name):"));
         assert!(!foundation_index.contains("from .point import"));
         assert!(foundation_index.contains("\"Point\": (\".point\", \"Point\")"));
         assert!(!foundation_index.contains("Point_TYPE"));
-        let root_index = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let root_index = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(root_index.contains("\"Point\": (\".windows.foundation.point\", \"Point\")"));
         assert!(root_index.contains("\"Widget\": (\".contoso.widget\", \"Widget\")"));
         assert!(!root_index.contains("windows__foundation__point"));
         assert!(
-            !fs::read_to_string(output.join("contoso/widget.py"))
+            !fs::read_to_string(package.join("contoso/widget.py"))
                 .unwrap()
                 .contains("Point")
         );
@@ -10915,7 +11214,7 @@ mod tests {
         let preview = "0.1.0-preview.21";
         fs::write(
             output.join(PYTHON_GENERATOR_METADATA),
-            format!(r#"{{"generator_version":"{preview}"}}"#),
+            format!(r#"{{"generator_version":"{preview}","layout":{{"version":1,"import_name":"bindings"}}}}"#),
         )
         .unwrap();
         validate_python_generator_version_against(&output, preview).unwrap();
@@ -11096,6 +11395,7 @@ mod tests {
     #[test]
     fn type_facades_keep_abi_symbols_while_public_indexes_export_types_only() {
         let output = test_directory("stub-reexports");
+        let package = python_output_layout(&output).unwrap().package_root();
         fs::create_dir_all(&output).unwrap();
         let interface = meta::InterfaceMeta {
             name: "IWidget".into(),
@@ -11116,7 +11416,7 @@ mod tests {
         .unwrap();
 
         let facade = fs::read_to_string(
-            output
+            package
                 .join("contoso")
                 .join("foundation")
                 .join("i_widget.pyi"),
@@ -11124,17 +11424,17 @@ mod tests {
         .unwrap();
         assert!(facade.contains("IID_IWidget as IID_IWidget"));
         assert!(facade.contains("IWidget as IWidget"));
-        let root_runtime = fs::read_to_string(output.join("__init__.py")).unwrap();
+        let root_runtime = fs::read_to_string(package.join("__init__.py")).unwrap();
         assert!(root_runtime.contains("def __getattr__(name):"));
         assert!(
             root_runtime.contains("\"IWidget\": (\".contoso.foundation.i_widget\", \"IWidget\")")
         );
         assert!(!root_runtime.contains("contoso__foundation__i_widget"));
-        let root_stub = fs::read_to_string(output.join("__init__.pyi")).unwrap();
+        let root_stub = fs::read_to_string(package.join("__init__.pyi")).unwrap();
         assert!(root_stub.contains("from .contoso.foundation.i_widget import IWidget as IWidget"));
         assert!(!root_stub.contains("IID_IWidget"));
         let namespace_stub =
-            fs::read_to_string(output.join("contoso/foundation/__init__.pyi")).unwrap();
+            fs::read_to_string(package.join("contoso/foundation/__init__.pyi")).unwrap();
         assert!(namespace_stub.contains("from .i_widget import IWidget as IWidget"));
         assert!(!namespace_stub.contains("IID_IWidget"));
         fs::remove_dir_all(output).unwrap();

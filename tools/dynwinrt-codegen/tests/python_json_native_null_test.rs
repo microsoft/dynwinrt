@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -82,29 +84,29 @@ impl Generated {
     }
 
     fn module(&self, name: &str) -> String {
-        fs::read_to_string(self.root.join(name)).expect(name)
+        fs::read_to_string(common::python_package_dir(&self.root).join(name)).expect(name)
     }
 
     fn python(&self, script: &str) -> Output {
         Command::new(python())
             .args(["-B", "-c", &script.replace("JSON_PACKAGE", &self.package)])
-            .env("PYTHONPATH", self.root.parent().unwrap())
+            .env("PYTHONPATH", self.root.join("src"))
             .output()
             .expect("execute isolated Python consumer")
     }
 
     fn typing_environment(&self, command: &mut Command) {
         command
-            .current_dir(self.root.parent().unwrap())
+            .current_dir(self.root.join("src"))
             .env(
                 "MYPYPATH",
                 std::env::join_paths([
                     repo_root().join(r"bindings\py"),
-                    self.root.parent().unwrap().to_path_buf(),
+                    self.root.join("src").to_path_buf(),
                 ])
                 .expect("MYPYPATH"),
             )
-            .env("PYTHONPATH", self.root.parent().unwrap());
+            .env_remove("PYTHONPATH");
     }
 }
 
@@ -237,14 +239,12 @@ fn stock_json_no_pyi_runtime_annotations_match_the_native_input_contract() {
         return;
     }
     assert!(
-        !generated
-            .root
+        !common::python_package_dir(&generated.root)
             .join("windows__data__json__json_array.pyi")
             .exists()
     );
     assert!(
-        !generated
-            .root
+        !common::python_package_dir(&generated.root)
             .join("windows__data__json__json_object.pyi")
             .exists()
     );

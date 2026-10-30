@@ -338,6 +338,8 @@ fn only_referenced_public_factory_metadata_becomes_a_constructor() {
 
     assert!(py.contains("type(self).create_result(_bound[0])"));
     assert!(!py.contains("self._set_native(type(self).create()._obj)"));
+    assert!(py.contains("Expected one of: SystemResult(value: str)"));
+    assert!(!py.contains("Expected one of: SystemResult()"));
     assert!(pyi.contains("def __init__(self, value: str) -> None: ..."));
     assert!(!pyi.contains("def __init__(self) -> None: ..."));
 }
@@ -407,6 +409,79 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
         "I8 and I32 both project as one typed `int` constructor signature:\n{pyi}"
     );
     assert_eq!(pyi.matches("    @overload\n").count(), 0, "{pyi}");
+    assert_eq!(py.matches("SystemResult(value: int)").count(), 1, "{py}");
+}
+
+#[test]
+fn constructor_diagnostics_use_public_python_parameters_and_types() {
+    let mut activation_factory = factory(
+        "ISystemResultFactory",
+        "Create",
+        Some(ParamMeta {
+            name: "baseUri".into(),
+            typ: TypeMeta::String,
+            direction: ParamDirection::In,
+        }),
+    );
+    activation_factory.methods[0].params.extend([
+        ParamMeta {
+            name: "outer".into(),
+            typ: TypeMeta::Object,
+            direction: ParamDirection::In,
+        },
+        ParamMeta {
+            name: "inner".into(),
+            typ: TypeMeta::Object,
+            direction: ParamDirection::Out,
+        },
+    ]);
+    let class = ClassMeta {
+        name: "SystemResult".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.SystemResult".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "ISystemResult".into(),
+            namespace: "Contoso".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+            ..Default::default()
+        }),
+        factory_interfaces: vec![activation_factory],
+        constructors: vec![
+            ConstructorMeta {
+                kind: ConstructorKind::DefaultActivation,
+                factory_interface: None,
+            },
+            ConstructorMeta {
+                kind: ConstructorKind::PublicComposition,
+                factory_interface: Some(TypeRef {
+                    namespace: "Contoso".into(),
+                    name: "ISystemResultFactory".into(),
+                    kind: TypeKind::Interface,
+                }),
+            },
+        ],
+        ..Default::default()
+    };
+    let known = HashSet::from(["SystemResult".into()]);
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let diagnostic = py
+        .lines()
+        .find(|line| line.contains("No matching constructor"))
+        .expect("constructor diagnostic");
+    assert!(diagnostic.contains("SystemResult()"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("SystemResult(base_uri: str)"),
+        "{diagnostic}"
+    );
+    for hidden in ["baseUri", "outer", "inner", "Create", "IActivationFactory"] {
+        assert!(!diagnostic.contains(hidden), "{diagnostic}");
+    }
+    assert!(pyi.contains("def __init__(self) -> None: ..."), "{pyi}");
+    assert!(
+        pyi.contains("def __init__(self, base_uri: str) -> None: ..."),
+        "{pyi}"
+    );
 }
 
 #[test]

@@ -80,6 +80,8 @@ CASES = {
 
 def import_generated(directory):
     directory = directory.resolve()
+    name = json.loads((directory / ".dynwinrt-generator.json").read_text())["layout"]["import_name"]
+    directory = directory / "src" / name
     assert (directory / "__init__.py").is_file(), f"Not a generated package: {directory}"
     # Support the same long-path generated facades as the regular E2E runner.
     parent = str(directory.parent)

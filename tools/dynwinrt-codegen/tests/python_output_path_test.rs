@@ -3,6 +3,8 @@
 
 #![cfg(windows)]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
@@ -179,8 +181,8 @@ fn python_path_diagnostic_uses_actual_final_files_not_transactional_paths() {
         return;
     }
     let fixture = Fixture::new();
-    let deep = fixture.output("deep", 201);
-    let shallow = fixture.output("short", 194);
+    let deep = fixture.output("deep", 201 - 23);
+    let shallow = fixture.output("short", 194 - 23);
     let output = device_command(&deep).output().unwrap();
     successful(&output);
     let generated = files(&deep);
@@ -220,7 +222,7 @@ fn python_path_diagnostic_uses_actual_final_files_not_transactional_paths() {
         "the no-warning control must exercise over-budget staging paths"
     );
 
-    let unpublished = fixture.output("failure", 201);
+    let unpublished = fixture.output("failure", 201 - 23);
     let failure = device_command(&unpublished)
         .env("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT", "before_publish")
         .output()
@@ -242,7 +244,7 @@ fn python_path_diagnostic_respects_relative_dry_run_and_no_pyi_boundary() {
         return;
     }
     let fixture = Fixture::new();
-    let output = fixture.output("boundary-\u{1f642}", 199);
+    let output = fixture.output("boundary-\u{1f642}", 199 - 23);
     let relative = output.strip_prefix(&fixture.0).unwrap();
     let dry_run = device_command(relative)
         .current_dir(&fixture.0)
@@ -279,7 +281,11 @@ fn python_path_diagnostic_respects_relative_dry_run_and_no_pyi_boundary() {
             .keys()
             .all(|path| path.extension().is_none_or(|ext| ext != "pyi"))
     );
-    assert!(!output.join("py.typed").exists());
+    assert!(
+        !common::python_package_dir(&output)
+            .join("py.typed")
+            .exists()
+    );
     for (path, content) in typed_files
         .iter()
         .filter(|(path, _)| path.extension().is_some_and(|ext| ext == "py"))
@@ -354,7 +360,9 @@ fn same_version_incremental_output_matches_fresh_typed_and_untyped_union() {
                     path.extension()
                         .is_some_and(|extension| extension == "py" || extension == "pyi")
                 })
-                .all(|path| path_length(path) <= 60)
+                .all(
+                    |path| path_length(path.strip_prefix("src/generated_bindings").unwrap()) <= 60
+                )
         );
         let stamp: serde_json::Value =
             serde_json::from_slice(&expected[Path::new(".dynwinrt-generator.json")]).unwrap();
@@ -419,7 +427,7 @@ fn synthetic_long_metadata_installs_through_a_utf16_output_root() {
                 path.extension()
                     .is_some_and(|extension| extension == "py" || extension == "pyi")
             })
-            .all(|path| path_length(path) <= 60)
+            .all(|path| path_length(path.strip_prefix("src/generated_bindings").unwrap()) <= 60)
     );
     for name in &names {
         let identity = dynwinrt_codegen::types::TypeIdentity::named(
@@ -428,7 +436,10 @@ fn synthetic_long_metadata_installs_through_a_utf16_output_root() {
             name,
         );
         let implementation = context.implementation_module(&identity);
-        let source = fs::read_to_string(output.join(format!("{implementation}.py"))).unwrap();
+        let source = fs::read_to_string(
+            common::python_package_dir(&output).join(format!("{implementation}.py")),
+        )
+        .unwrap();
         assert!(source.contains(&format!("class {name}(")), "{source}");
     }
 

@@ -14,6 +14,12 @@ Classic COM and flat Win32 have separate JavaScript/TypeScript projections and
 runtime subpaths. Flat Win32 uses its own native ABI, resource, and contract
 model; see [the Win32 architecture](../docs/architecture/flat-win32-contracts.md).
 
+## Pull request writing
+
+When preparing, writing, or revising a PR title or body, follow
+[`pr-writing`](skills/pr-writing/SKILL.md) and use the
+[PR template](PULL_REQUEST_TEMPLATE.md) for the body structure.
+
 ## Build & Test Commands
 
 ```bash
