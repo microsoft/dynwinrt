@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -61,8 +63,9 @@ fn generated_constructor_errors_preserve_valid_calls_and_native_failures() {
             .output()
             .expect("generate constructor test package"),
     );
-    let uri = fs::read_to_string(generated.0.join("windows__foundation__uri.py")).unwrap();
-    let stub = fs::read_to_string(generated.0.join("windows__foundation__uri.pyi")).unwrap();
+    let package_dir = common::python_package_dir(&generated.0);
+    let uri = fs::read_to_string(package_dir.join("windows__foundation__uri.py")).unwrap();
+    let stub = fs::read_to_string(package_dir.join("windows__foundation__uri.pyi")).unwrap();
     for params in ["uri: str", "base_uri: str, relative_uri: str"] {
         assert!(uri.contains(&format!("Uri({params})")), "{uri}");
         assert!(
@@ -202,7 +205,10 @@ print("constructor-diagnostics-native-ok")
     let output = assert_success(
         Command::new(python)
             .args(["-B", "-c", &script.replace("PY_PACKAGE", &package)])
-            .env("PYTHONPATH", &target)
+            .env(
+                "PYTHONPATH",
+                common::python_fixture_search_path(&generated.0),
+            )
             .output()
             .expect("run native constructor diagnostics"),
     );

@@ -738,28 +738,7 @@ pub fn generate_class<'a>(
         .iter()
         .any(|ri| ri.iid == ICLOSABLE_IID)
     {
-        out.push('\n');
-        out.push_str("    def close(self):\n");
-        out.push_str("        if self._closed:\n            return\n");
-        out.push_str(&format!(
-            "        {}.from_value(self._obj).close()\n",
-            py_runtime_named_symbol(
-                context,
-                TypeIdentityKind::Interface,
-                "Windows.Foundation",
-                "IClosable",
-                "IClosable",
-            )
-        ));
-        out.push_str("        self._closed = True\n\n");
-        out.push_str("    def __enter__(self):\n");
-        out.push_str(
-            "        if self._closed:\n\
-             \x20           raise RuntimeError('cannot enter a closed WinRT object')\n\
-             \x20       return self\n\n",
-        );
-        out.push_str("    def __exit__(self, _exc_type, _exc_value, _traceback):\n");
-        out.push_str("        self.close()\n        return False\n");
+        out.push_str(&generate_closable_methods(context, true));
     }
 
     // IStringable → __str__ / __repr__ delegates to the runtime IStringable.

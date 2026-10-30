@@ -792,9 +792,46 @@ WinRT is never initialized implicitly. A call on a thread without an apartment
 raises `OSError` with `CO_E_NOTINITIALIZED` in `error.winerror`; its message
 explains how to open one.
 
-Generated runtime classes that implement `IClosable` support `with` and an
-idempotent `close()` method. Prefer deterministic cleanup instead of relying on
-Python garbage collection.
+Generated runtime classes that implement `IClosable`, and interfaces whose
+WinMD required-interface closure includes it, support `with` and an idempotent
+`close()` helper. This includes `IRandomAccessStream`, `IInputStream`,
+`IOutputStream`, and `IRandomAccessStreamWithContentType`; regenerate bindings
+to use the interface helpers. Existing concrete classes such as `DataWriter`
+and `InMemoryRandomAccessStream` keep the same behavior.
+
+Generate and install the project before using this example:
+
+```powershell
+dynwinrt-codegen generate --lang py --class-name Windows.Storage.StorageFile --output generated
+python -m pip install .\generated
+```
+
+```python
+from generated import FileAccessMode, StorageFile
+
+async def read_size(path: str) -> int:
+    file = await StorageFile.get_file_from_path_async(path)
+    with await file.open_async(FileAccessMode.Read) as stream:
+        return stream.size
+```
+
+Exiting the context calls native `IClosable.Close` through QueryInterface,
+including when the body raises; it does not suppress application exceptions.
+Successful helper calls mark that projection closed, repeated `close()` calls
+are no-ops, and entering it again raises `RuntimeError`. A failed close remains
+retryable. Native aliases can observe closure even though their Python
+projections are distinct.
+
+`IClosable` itself also supports `with`; its existing metadata-defined `close()`
+keeps its native repeat-call behavior. Helpers never replace an interface's
+own projected members. If a native member owns `close` or a context-helper name,
+use `with stream.as_interface(IClosable):` instead.
+
+These operations close the native resource; they do not release the projection
+or substitute for `release_projected()` / `projected_lifetime_scope()`.
+Interfaces without an explicit `IClosable` requirement and arbitrary `Object`
+values do not gain closing methods. Prefer deterministic cleanup instead of
+relying on Python garbage collection.
 
 ## Standalone WinRT interface implementations
 

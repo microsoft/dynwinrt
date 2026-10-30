@@ -565,16 +565,18 @@ jobs:
             --codegen $env:DYNWINRT_CODEGEN --runtime-wheel $wheel[0].FullName `
             --uv (Resolve-Path target\python-layout-tools\Scripts\uv.exe).Path `
             --work-dir (Join-Path $env:RUNNER_TEMP 'python-src-layout')
-      - name: Test generated implementation and overload identities
+      - name: Test generated implementations, overloads, and stream contexts
         shell: pwsh
         run: |
           $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
           $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
+          $env:DYNWINRT_REQUIRE_MYPY = '1'
           cargo test -p dynwinrt-codegen `
             --test implementation_naming_test `
             --test python_constructor_diagnostics_test `
             --test python_overload_legacy_compat_test `
-            --test python_released_implementation_test
+            --test python_released_implementation_test `
+            --test python_context_manager_typing_test
       - name: Test generated collection protocols
         shell: pwsh
         run: |

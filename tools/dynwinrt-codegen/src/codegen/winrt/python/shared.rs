@@ -4,7 +4,37 @@
 //! Shared Python codegen helpers used by both `python` (implementation) and
 //! `python_stub` (.pyi stub) emitters.
 
-use crate::meta::MethodMeta;
+use crate::meta::{InterfaceMeta, MethodMeta};
+use crate::types::TypeMeta;
+
+pub(super) const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
+
+pub(super) fn is_closable(interface: &InterfaceMeta) -> bool {
+    interface.generic_piid.is_none() && interface.iid.eq_ignore_ascii_case(ICLOSABLE_IID)
+}
+
+pub(super) fn requires_closable(interface: &InterfaceMeta) -> bool {
+    if interface.implementation_metadata.is_generic_definition
+        || interface.is_delegate()
+        || (interface.iid.is_empty() && interface.generic_piid.is_none())
+    {
+        return false;
+    }
+    is_closable(interface)
+        || interface
+            .base_interfaces
+            .iter()
+            // The parser records the substituted, transitive WinMD requirements here.
+            .chain(&interface.implementation_metadata.required_interfaces)
+            .any(|typ| {
+                matches!(typ, TypeMeta::Interface { iid, .. } if iid.eq_ignore_ascii_case(ICLOSABLE_IID))
+            })
+}
+
+pub(super) const CLOSE_STUB: &str = "    def close(self) -> None: ...\n";
+pub(super) const CONTEXT_MANAGER_STUB: &str = "\
+    \x20   def __enter__(self) -> Self: ...\n\
+    \x20   def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n";
 
 pub(super) const NATIVE_OBJECT_PROTOCOL: &str = "
 
