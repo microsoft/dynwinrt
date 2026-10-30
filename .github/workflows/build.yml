@@ -541,7 +541,7 @@ jobs:
           .\eng\release\python\test_generated_python_long_paths.ps1 `
             -Python .\bindings\py\.venv\Scripts\python.exe `
             -Codegen $env:DYNWINRT_CODEGEN
-      - name: Test generated Python XML null results
+      - name: Test generated Python nullable results
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -553,6 +553,9 @@ jobs:
           $env:DYNWINRT_REQUIRE_MYPY = '1'
           $env:DYNWINRT_REQUIRE_XML_NULLABILITY = '1'
           cargo test -p dynwinrt-codegen --test python_xml_nullability_test
+          $env:DYNWINRT_TEST_INSTALLED_RUNTIME = '1'
+          cargo test -p dynwinrt-codegen --test python_consumer_typing_test `
+            detach_stream_results_require_none_guards_on_classes_and_interfaces -- --exact
       - name: Test generated Python packaging frontends and src imports
         shell: pwsh
         run: |

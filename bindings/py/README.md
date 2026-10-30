@@ -68,6 +68,18 @@ Class documentation facts also have exact declaring-interface aliases for
 standalone rendering; this does not enable exclusive interfaces such as
 `IXmlDocument` or `IXmlElement` as public CLI roots.
 
+`DataWriter.detach_stream()` and `DataReader.detach_stream()` return
+`IOutputStream | None` and `IInputStream | None`, respectively, including their
+declaring-interface projections. An unbound `DataWriter()` or a
+`DataReader.from_buffer(...)` has no stream to detach; a second detach also
+returns `None`. Save the result and check it before calling stream methods:
+
+```python
+stream = writer.detach_stream()
+if stream is not None:
+    await stream.flush_async()
+```
+
 Reference-type elements read from WinRT collection interfaces are always typed
 `T | None`, including vectors, views, iterables, iterators, map keys and values,
 and key-value-pair keys and values. Here reference means the projection's

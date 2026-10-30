@@ -2476,6 +2476,137 @@ async def storage_demo(path: str) -> list[str]:
 }
 
 #[test]
+fn detach_stream_results_require_none_guards_on_classes_and_interfaces() {
+    let winmd = r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
+    if !Path::new(winmd).is_file() {
+        assert_ne!(
+            std::env::var("DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME").as_deref(),
+            Ok("1"),
+            "DetachStream regression requires native Windows.winmd",
+        );
+        eprintln!("Skipping DetachStream regression: Windows.winmd unavailable.");
+        return;
+    }
+    let fixture = Fixture::new();
+    let package = fixture.0.join("streams_generated");
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            winmd,
+            "--class-name",
+            "Windows.Storage.Streams.DataWriter,Windows.Storage.Streams.DataReader,\
+             Windows.Storage.Streams.InMemoryRandomAccessStream",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(&package)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", diagnostics(&output));
+
+    let package = common::python_package_dir(&package);
+    // Exclusive interfaces are not CLI roots. Resolve their declarations
+    // independently so the class facts cannot hide a missing interface fact.
+    let declarations = ["DataWriter", "DataReader"].map(|name| {
+        dynwinrt_codegen::meta::parse_class(winmd, "Windows.Storage.Streams", name)
+            .unwrap()
+            .default_interface
+            .unwrap()
+    });
+    let seed = interface(
+        "IDetachDeclarations",
+        1,
+        declarations
+            .iter()
+            .map(|declaration| MethodMeta {
+                name: format!("Get{}", declaration.name),
+                return_type: Some(TypeMeta::Interface {
+                    namespace: declaration.namespace.clone(),
+                    name: declaration.name.clone(),
+                    iid: declaration.iid.clone(),
+                }),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let resolved = dynwinrt_codegen::meta::resolve_python_dependencies(winmd, &[], &[seed], &[]);
+    let context = python::PythonProjectionContext::new(
+        resolved
+            .classes
+            .iter()
+            .map(|class| {
+                TypeIdentity::named(TypeIdentityKind::Class, &class.namespace, &class.name)
+            })
+            .chain(resolved.interfaces.iter().map(InterfaceMeta::type_identity))
+            .chain(resolved.enums.iter().map(TypeMeta::type_identity)),
+        true,
+    )
+    .unwrap();
+    for (declaration, result) in declarations.iter().zip(["IOutputStream", "IInputStream"]) {
+        let interface = resolved
+            .interfaces
+            .iter()
+            .find(|interface| interface.type_identity() == declaration.type_identity())
+            .unwrap();
+        assert_eq!(interface.iid, declaration.iid);
+        let detach = interface
+            .methods
+            .iter()
+            .find(|method| method.raw_name == "DetachStream")
+            .unwrap();
+        assert!(detach.documented_null_result, "{}", interface.name);
+        let module = context.implementation_module(&interface.type_identity());
+        let stub = python_stub::generate_interface_stub(&context, interface);
+        assert!(stub.contains(&format!("def detach_stream(self) -> {result} | None: ...")));
+        assert!(stub.contains("def detach_buffer(self) -> IBuffer: ..."));
+        fs::write(package.join(format!("{module}.pyi")), stub).unwrap();
+        fs::write(
+            package.join(format!("{module}.py")),
+            python::generate_interface(&context, interface),
+        )
+        .unwrap();
+    }
+    for (module, result) in [
+        ("data_writer", "IOutputStream"),
+        ("data_reader", "IInputStream"),
+    ] {
+        let path = package.join(format!("windows__storage__streams__{module}"));
+        let stub = fs::read_to_string(path.with_extension("pyi")).unwrap();
+        assert!(stub.contains(&format!("def detach_stream(self) -> {result} | None: ...")));
+        assert!(stub.contains("def detach_buffer(self) -> IBuffer: ..."));
+        let runtime = fs::read_to_string(path.with_extension("py")).unwrap();
+        assert!(runtime.contains(&format!("def detach_stream(self) -> {result} | None:")));
+    }
+
+    if has_mypy() {
+        let valid = include_str!("fixtures/python_detach_stream_valid.py");
+        let invalid = include_str!("fixtures/python_detach_stream_invalid.py");
+        typecheck(&fixture, &["streams_generated"], valid, &[]);
+        typecheck(
+            &fixture,
+            &["streams_generated"],
+            invalid,
+            &["[union-attr]"; 8],
+        );
+        pyright_typecheck(&fixture, valid, 0);
+        pyright_typecheck(&fixture, invalid, 8);
+    }
+    if has_implementation_runtime() {
+        let output = Command::new(python())
+            .args(["-B", "-c"])
+            .arg(include_str!("fixtures/python_detach_stream_native.py"))
+            .current_dir(&fixture.0)
+            .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
+            .output()
+            .unwrap();
+        println!("{}", diagnostics(&output));
+        assert!(output.status.success(), "{}", diagnostics(&output));
+    }
+}
+
+#[test]
 fn mutable_collection_mutators_accept_none() {
     let winmd = Path::new(
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
