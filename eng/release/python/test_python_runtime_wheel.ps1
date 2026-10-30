@@ -26,6 +26,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $venvPython -m pip install --disable-pip-version-check --no-index `
     --find-links $CodegenWheelDirectory "dynwinrt-codegen==$Version"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $venvPython -m pip install --disable-pip-version-check "pytest>=8.3.5" --quiet
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $venvPython -m pytest (Join-Path $repoRoot 'bindings\py\tests\test_async_event_scope.py') -q
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $native = @(Get-ChildItem (Join-Path $root 'venv\Lib\site-packages\dynwinrt') -Filter *.pyd -File)
 if ($native.Count -ne 1) { throw 'Expected exactly one installed production Python extension' }
@@ -38,7 +42,8 @@ $env:PATH = "$scripts;$env:SystemRoot\System32;$env:SystemRoot"
 $env:PYTHONPATH = ''
 $codegen = Join-Path $scripts 'dynwinrt-codegen.exe'
 $generated = Join-Path $root 'generated_uri'
-& $codegen generate --namespace Windows.Foundation --class-name Uri `
+& $codegen generate `
+    --class-name "Windows.Foundation.Uri,Windows.Foundation.Collections.PropertySet,Windows.Storage.StorageFolder" `
     --lang py --output $generated
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -85,6 +90,11 @@ try {
     $pth = @(Get-ChildItem (Join-Path $root 'venv\Lib\site-packages') -Filter '*generated_uri*.pth')
     if ($pth.Count -ne 1 -or (Get-Content $pth[0].FullName -Raw).Trim() -ne (Join-Path $generated 'src')) {
         throw 'Generated Python editable install must use a plain src path .pth'
+    }
+    foreach ($mode in @(0, 1)) {
+        & $venvPython -I (Join-Path $repoRoot 'tests\e2e\runners\py_async_events.py') `
+            --generated $generated --mode $mode
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 } finally {
     Pop-Location

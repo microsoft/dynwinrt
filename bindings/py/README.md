@@ -283,6 +283,94 @@ def changed(sender: IObservableMap_String_Object, args: IMapChangedEventArgs_Str
 unsubscribe = properties.subscribe_map_changed(changed)
 ```
 
+### Async notification handlers
+
+Use the public `AsyncEventScope` to attach an async handler to an existing
+`subscribe_*` method:
+
+```python
+import asyncio
+from dynwinrt import AsyncEventScope, RoApartment, projected_lifetime_scope
+from generated.windows.foundation.collections import (
+    IMapChangedEventArgs_String, IObservableMap_String_Object, PropertySet,
+)
+
+async def on_changed(
+    sender: IObservableMap_String_Object, args: IMapChangedEventArgs_String,
+) -> None:
+    await asyncio.sleep(0)
+    print(args.key, len(sender))
+
+async def main() -> None:
+    with RoApartment(), projected_lifetime_scope():
+        properties = PropertySet()
+        async with AsyncEventScope(loop=asyncio.get_running_loop()) as events:
+            unsubscribe = events.subscribe(properties.subscribe_map_changed, on_changed)
+            properties["first"] = None
+            unsubscribe()  # Stop future notifications; the accepted task still runs.
+            properties["not-delivered"] = None
+        # Subscriptions are removed and all accepted tasks have finished here.
+        # Only now may the projection scope and COM apartment close.
+
+asyncio.run(main())
+```
+
+The [async-events sample](../../samples/python/async-events/) runs real
+`PropertySet.MapChanged` notifications and native asynchronous file I/O,
+including an optional handler-failure path.
+
+`AsyncEventScope` composes `asyncio.TaskGroup`: normal exit first stops
+accepting notifications and removes subscriptions, then **waits for accepted
+tasks without cancelling them**. A handler failure or exception in the body
+cancels siblings and waits for their `finally` blocks before propagating the
+standard task-group exception; external cancellation also waits for cleanup.
+A handler's own `CancelledError` has the standard TaskGroup meaning, not an
+instruction to cancel all siblings. Handlers run concurrently; completion
+order is not guaranteed, and there is no backpressure, throttling or retry
+policy. Handlers must cooperate with cancellation.
+
+The returned unsubscribe callable is idempotent after successful removal and
+does not cancel accepted tasks. A native removal failure is raised to its
+caller, leaves delivery disabled, and can be retried with the same callable
+on the owner loop/thread while native owners are still live. Scope exit
+attempts **every** remaining removal in reverse registration order. Removal
+failures (and non-cancellation body exceptions) are preserved in an exception
+group passed to TaskGroup, cancelling outstanding work rather than hanging in
+a normal drain. A body's `CancelledError` is TaskGroup control flow, not an
+extra leaf added to that cleanup error group. When cancellation coincides with
+other errors, their propagation and cancellation bookkeeping follow the running
+Python version's TaskGroup semantics. Save unsubscribe callables if your
+application needs to recover from native removal failures; recovery must happen
+before closing native lifetimes.
+
+The scope is single-use and must exit in the task that entered it. Its
+constructor binds it to the creating OS thread; entry, subscription, callbacks,
+task execution, and unsubscription require that thread and the supplied
+**actually running** loop. Keep the outer `RoApartment` and any captured
+`projected_lifetime_scope()` alive through task cleanup. Existing subscription
+context-variable and projection-lifetime behavior is preserved, not bypassed.
+Wrong-thread delivery fails through the existing synchronous native callback
+error path (`sys.unraisablehook` and a failing delegate HRESULT); the event
+source decides whether that HRESULT fails the originating invocation. No
+native arguments are marshalled or queued to another thread. Registration and
+task-creation failures likewise remain synchronous callback/subscription errors.
+
+This is only for ordinary same-thread notifications whose work may be deferred.
+The application must drive asyncio: the scope does not create a loop, start a
+thread, integrate a WinUI message pump, or make a blocking `Application.start()`
+advance asyncio. It does not implement synchronous return values, `Handled`,
+`Cancel`, or deferral semantics, and is not a general async adapter for WinUI
+buttons or all Windows events. With an eager task factory, a handler may start
+before the native callback returns, including during subscription.
+Native reentrancy restrictions still apply: for example, yield before mutating
+the same `PropertySet` from its handler when using an eager factory.
+
+The handler may be an `async def` or a callable returning an awaitable; it is
+called inside an owned task and its result is awaited. Passing a bare
+`async def` directly to the old `subscribe_*` API instead merely creates an
+unawaited coroutine. Existing synchronous callbacks, native delegates, and
+synchronous callbacks returning an already TaskGroup-owned task are unchanged.
+
 Async-operation arguments deliberately stay raw. A work item can inspect its
 `IAsyncInfo` status without installing another completion handler:
 
