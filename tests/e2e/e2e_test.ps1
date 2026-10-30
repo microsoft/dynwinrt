@@ -403,7 +403,7 @@ if ("py" -in $Lang) {
     Write-Host "`n--- Python static type check ---" -ForegroundColor Yellow
     $previousMypyPath = $env:MYPYPATH
     try {
-        $env:MYPYPATH = $e2eDir
+        $env:MYPYPATH = Join-Path $pyBindingsDir "src"
         & $pythonExe -m mypy --strict (Join-Path $PSScriptRoot "typecheck\python_generated_api.py")
         if ($LASTEXITCODE -ne 0) { Write-Error "Python static type check failed"; exit 1 }
     } finally {

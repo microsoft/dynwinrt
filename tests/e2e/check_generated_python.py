@@ -19,6 +19,7 @@ Usage: python check_generated_python.py PACKAGE_DIR [PACKAGE_DIR ...]
 import argparse
 import ast
 import builtins
+import json
 import os
 import sys
 
@@ -352,6 +353,10 @@ class NameChecker:
 
 class PackageChecker:
     def __init__(self, root):
+        stamp = os.path.join(root, ".dynwinrt-generator.json")
+        if os.path.isfile(stamp):
+            with open(stamp, encoding="utf-8") as file:
+                root = os.path.join(root, "src", json.load(file)["layout"]["import_name"])
         self.root = long_path(root)
         self.modules = {}
         self.problems = []
@@ -488,10 +493,11 @@ def main():
 
     problems = []
     for package in args.packages:
-        if not os.path.isfile(os.path.join(long_path(package), "_runtime.py")):
+        checker = PackageChecker(package)
+        if not os.path.isfile(os.path.join(checker.root, "_runtime.py")):
             print(f"{package}: not a generated Python package (no _runtime.py)", file=sys.stderr)
             return 2
-        problems.extend(f"{package}: {problem}" for problem in PackageChecker(package).check())
+        problems.extend(f"{package}: {problem}" for problem in checker.check())
     for problem in problems[: args.limit]:
         print(problem)
     if len(problems) > args.limit:

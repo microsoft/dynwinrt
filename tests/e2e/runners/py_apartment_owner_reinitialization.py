@@ -34,7 +34,7 @@ def run_case(generated, mode, scenario):
         parameter_types = []
         uri_type = None
     else:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(generated)))
+        sys.path.insert(0, os.path.join(os.path.abspath(generated), "src"))
         package = os.path.basename(os.path.abspath(generated))
         metadata = importlib.import_module(
             f"{package}.windows__foundation__deferral_completed_handler"

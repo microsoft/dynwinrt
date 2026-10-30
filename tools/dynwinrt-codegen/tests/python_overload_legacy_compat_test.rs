@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -630,11 +632,13 @@ fn raw_async_interface_arguments_dispatch_to_their_native_slot() {
             .output()
             .unwrap(),
     );
-    let source =
-        fs::read_to_string(package.join("tests__overload_compatibility__async_input_probe.py"))
-            .unwrap();
+    let source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__async_input_probe.py"),
+    )
+    .unwrap();
     assert!(
-        package
+        common::python_fixture_package(&package)
             .join("windows__foundation__i_async_info.py")
             .is_file(),
         "known-interface guards require their projected interface dependency"
@@ -774,6 +778,7 @@ print("async-interface-input-ok")
     let output = Command::new(python())
         .args(["-B", "async_probe.py"])
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     success(output.clone());
@@ -848,13 +853,14 @@ fn colliding_legacy_support_names_keep_metadata_types_and_native_targets() {
             for class in &classes {
                 let identity = TypeIdentity::named(TypeIdentityKind::Class, NAMESPACE, &class.name);
                 fs::write(
-                    package.join(format!("{}.py", context.implementation_module(&identity))),
+                    common::python_fixture_package(&package)
+                        .join(format!("{}.py", context.implementation_module(&identity))),
                     python::generate_class(&context, class, &Default::default()),
                 )
                 .unwrap();
             }
             fs::write(
-                package.join(format!(
+                common::python_fixture_package(&package).join(format!(
                     "{}.py",
                     context.implementation_module(&interface.type_identity())
                 )),
@@ -884,8 +890,10 @@ fn colliding_legacy_support_names_keep_metadata_types_and_native_targets() {
                 "_dynwinrt_can_cast",
             ),
         ] {
-            let source =
-                fs::read_to_string(package.join(format!("{}.py", module(name, kind)))).unwrap();
+            let source = fs::read_to_string(
+                common::python_fixture_package(&package).join(format!("{}.py", module(name, kind))),
+            )
+            .unwrap();
             assert!(
                 source.contains(&format!("\nclass {name}:")),
                 "{flavor}: {source}"
@@ -896,11 +904,12 @@ fn colliding_legacy_support_names_keep_metadata_types_and_native_targets() {
                 "{flavor}: {source}"
             );
         }
-        let interface_source = fs::read_to_string(package.join(format!(
-            "{}.py",
-            module(&interface.name, TypeIdentityKind::Interface)
-        )))
-        .unwrap();
+        let interface_source =
+            fs::read_to_string(common::python_fixture_package(&package).join(format!(
+                "{}.py",
+                module(&interface.name, TypeIdentityKind::Interface)
+            )))
+            .unwrap();
         assert!(
             interface_source.contains("_dynwinrt_legacy_int_guard as _dynwinrt_legacy_int_guard_2")
                 && interface_source.contains("_dynwinrt_legacy_int_guard_2(")
@@ -909,7 +918,8 @@ fn colliding_legacy_support_names_keep_metadata_types_and_native_targets() {
         );
         let iid_name = "IID_ARG_Tests_OverloadCompatibility_IAliasCanonical";
         let iid_source = fs::read_to_string(
-            package.join(format!("{}.py", module(iid_name, TypeIdentityKind::Class))),
+            common::python_fixture_package(&package)
+                .join(format!("{}.py", module(iid_name, TypeIdentityKind::Class))),
         )
         .unwrap();
         assert!(
@@ -921,11 +931,12 @@ fn colliding_legacy_support_names_keep_metadata_types_and_native_targets() {
                 && iid_source.contains(&format!("_dynwinrt_can_cast(_bound[0], {iid_name}_2)")),
             "{flavor}: {iid_source}"
         );
-        let registration_source = fs::read_to_string(package.join(format!(
-            "{}.py",
-            module(class_names[4], TypeIdentityKind::Class)
-        )))
-        .unwrap();
+        let registration_source =
+            fs::read_to_string(common::python_fixture_package(&package).join(format!(
+                "{}.py",
+                module(class_names[4], TypeIdentityKind::Class)
+            )))
+            .unwrap();
         assert!(
             registration_source.contains(&format!(
                 "{iid_name} = WinGUID.parse('51931917-6281-4900-b782-040302010910')"
@@ -1101,6 +1112,7 @@ print("overload-support-collisions-ok")
         let output = Command::new(python())
             .args(["-B", "collision_probe.py"])
             .current_dir(&parent)
+            .env("PYTHONPATH", common::python_fixture_search_path(&parent))
             .output()
             .unwrap();
         success(output.clone());
@@ -1127,8 +1139,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             .output()
             .unwrap(),
     );
-    let alias_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__alias_probe.py")).unwrap();
+    let alias_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__alias_probe.py"),
+    )
+    .unwrap();
     let alias_class = alias_source
         .split("\nclass IAliasLegacyString:")
         .next()
@@ -1139,8 +1154,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             && !alias_class.contains("    foo_version = foo\n"),
         "{alias_source}"
     );
-    let enum_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__enum_probe.py")).unwrap();
+    let enum_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__enum_probe.py"),
+    )
+    .unwrap();
     assert!(
         enum_source.contains(
             "not (_legacy_bound is not None and (type(_legacy_bound[0]) not in (str,) or _dynwinrt_legacy_int_guard(_legacy_bound[0], -2147483648, 2147483647)))"
@@ -1149,15 +1167,21 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         ),
         "{enum_source}"
     );
-    let pair_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__pair_probe.py")).unwrap();
+    let pair_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__pair_probe.py"),
+    )
+    .unwrap();
     assert!(
         !pair_source.contains("_dynwinrt_legacy_int_guard")
             && pair_source.contains("return self._bar_6_0(*_bound)"),
         "{pair_source}"
     );
-    let bool_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__bool_probe.py")).unwrap();
+    let bool_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__bool_probe.py"),
+    )
+    .unwrap();
     assert!(
         bool_source.contains("not (_legacy_bound is not None) and isinstance(_bound[0], bool)")
             && bool_source.contains(
@@ -1167,18 +1191,22 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         "{bool_source}"
     );
     for name in ["bool_pair_probe", "bool_arity_probe"] {
-        let source =
-            fs::read_to_string(package.join(format!("tests__overload_compatibility__{name}.py")))
-                .unwrap();
+        let source = fs::read_to_string(
+            common::python_fixture_package(&package)
+                .join(format!("tests__overload_compatibility__{name}.py")),
+        )
+        .unwrap();
         assert!(
             !source.contains("_legacy_bound")
                 && !source.contains("and not (_legacy_bound is not None"),
             "{source}"
         );
     }
-    let numeric_domain_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__numeric_domain_probe.py"))
-            .unwrap();
+    let numeric_domain_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__numeric_domain_probe.py"),
+    )
+    .unwrap();
     assert!(
         numeric_domain_source.contains(
             "-2147483648 <= int.__index__(_legacy_bound[1]) <= 2147483647"
@@ -1187,9 +1215,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         ),
         "{numeric_domain_source}"
     );
-    let qi_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__qi_dispatch_probe.py"))
-            .unwrap();
+    let qi_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__qi_dispatch_probe.py"),
+    )
+    .unwrap();
     assert_eq!(
         qi_source
             .matches("_dynwinrt_can_cast(_legacy_bound[0], IID_ARG_Tests_OverloadCompatibility_IAliasCanonical)")
@@ -1197,9 +1227,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
         2,
         "{qi_source}"
     );
-    let index_string_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__index_string_probe.py"))
-            .unwrap();
+    let index_string_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__index_string_probe.py"),
+    )
+    .unwrap();
     assert!(
         index_string_source
             .contains("type(_legacy_bound[0]) not in (str,)) and isinstance(_bound[0], str)")
@@ -1208,9 +1240,11 @@ fn old_dispatchers_and_guard_free_conversions_keep_their_exact_targets() {
             ),
         "{index_string_source}"
     );
-    let enum_comparison_source =
-        fs::read_to_string(package.join("tests__overload_compatibility__enum_comparison_probe.py"))
-            .unwrap();
+    let enum_comparison_source = fs::read_to_string(
+        common::python_fixture_package(&package)
+            .join("tests__overload_compatibility__enum_comparison_probe.py"),
+    )
+    .unwrap();
     assert!(
         enum_comparison_source.contains("-128 <= int.__index__(_legacy_bound[0]) <= 127")
             && !enum_comparison_source.contains("-128 <= _legacy_bound[0] <= 127"),
@@ -1548,6 +1582,7 @@ print(json.dumps({"results": results, "calls": calls}))
     let output = Command::new(python())
         .args(["-B", "probe.py"])
         .current_dir(&fixture.0)
+        .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
         .output()
         .unwrap();
     success(output.clone());

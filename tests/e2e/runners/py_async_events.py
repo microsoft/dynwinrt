@@ -8,6 +8,7 @@ import asyncio
 from contextvars import ContextVar
 import gc
 import importlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -376,8 +377,9 @@ def main():
     parser.add_argument("--mode", type=int, choices=(0, 1), required=True)
     options = parser.parse_args()
     generated = Path(options.generated).resolve()
-    sys.path.insert(0, str(generated.parent))
-    g = importlib.import_module(generated.name)
+    sys.path.insert(0, str(generated / "src"))
+    name = json.loads((generated / ".dynwinrt-generator.json").read_text())["layout"]["import_name"]
+    g = importlib.import_module(name)
     import dynwinrt as dw
 
     async def run():

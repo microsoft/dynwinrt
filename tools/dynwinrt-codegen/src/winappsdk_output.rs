@@ -499,22 +499,22 @@ fn read_manifest(output: &Path) -> Result<Option<Manifest>, String> {
             "Unsupported Windows App SDK bundle manifest",
         ));
     }
-    let allowed = allowed_files(&manifest.language, config);
+    let allowed = allowed_files(output, &manifest.language, config)?;
+    let mapped = |path: &str| resource_path(output, &manifest.language, path);
     if manifest
         .files
         .iter()
         .any(|(path, hash)| !allowed.contains(path) || !valid_hash(hash))
         || ![CONFIG, NOTICE]
             .iter()
-            .all(|path| manifest.files.contains_key(*path))
-        || config
-            .dlls
-            .iter()
-            .any(|(arch, hash)| manifest.files.get(&dll_path(arch)) != Some(hash))
+            .all(|path| mapped(path).is_ok_and(|path| manifest.files.contains_key(&path)))
+        || config.dlls.iter().any(|(arch, hash)| {
+            !mapped(&dll_path(arch)).is_ok_and(|path| manifest.files.get(&path) == Some(hash))
+        })
         || (manifest.language == "py"
             && !["_winappsdk.py", WHEEL_HOOK, "MANIFEST.in"]
                 .iter()
-                .all(|path| manifest.files.contains_key(*path)))
+                .all(|path| mapped(path).is_ok_and(|path| manifest.files.contains_key(&path))))
         || (manifest.language == "js" && !manifest.files.contains_key("_winappsdk.cjs"))
     {
         return Err(regeneration_error(
@@ -531,7 +531,22 @@ fn valid_hash(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn allowed_files(language: &str, config: &Configuration) -> BTreeSet<String> {
+fn resource_path(output: &Path, language: &str, relative: &str) -> Result<String, String> {
+    if language != "py" || relative == "MANIFEST.in" {
+        return Ok(relative.into());
+    }
+    if relative == WHEEL_HOOK {
+        return Ok(format!("src/{WHEEL_HOOK}"));
+    }
+    let layout = super::python_output_layout(output)?;
+    Ok(format!("src/{}/{relative}", layout.import_name))
+}
+
+fn allowed_files(
+    output: &Path,
+    language: &str,
+    config: &Configuration,
+) -> Result<BTreeSet<String>, String> {
     [CONFIG, NOTICE, LICENSE]
         .into_iter()
         .map(String::from)
@@ -545,7 +560,40 @@ fn allowed_files(language: &str, config: &Configuration) -> BTreeSet<String> {
             .into_iter()
             .map(String::from),
         )
+        .map(|path| resource_path(output, language, &path))
         .collect()
+}
+
+pub(super) fn relocate_python_package(
+    output: &Path,
+    previous: &super::PythonOutputLayout,
+    layout: &super::PythonOutputLayout,
+) -> Result<(), String> {
+    let Some(mut manifest) = read_manifest(output)? else {
+        return Ok(());
+    };
+    let old = format!("src/{}/", previous.import_name);
+    let new = format!("src/{}/", layout.import_name);
+    manifest.files = manifest
+        .files
+        .into_iter()
+        .map(|(path, hash)| {
+            (
+                path.strip_prefix(&old)
+                    .map(|suffix| format!("{new}{suffix}"))
+                    .unwrap_or(path),
+                hash,
+            )
+        })
+        .collect();
+    super::write_file(
+        &output.join(MANIFEST),
+        &format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|error| format!("Cannot serialize Bootstrap manifest: {error}"))?
+        ),
+    )
 }
 
 fn inspect_owned_path(output: &Path, relative: &str) -> Result<(), String> {
@@ -601,6 +649,12 @@ pub(crate) fn prepare(
     inputs: Option<Inputs>,
 ) -> Result<Option<Bundle>, String> {
     let existing = read_manifest(output)?;
+    if language == "py"
+        && (inputs.is_some() || existing.is_some())
+        && super::python_output_layout(output)?.import_name == "_dynwinrt_build"
+    {
+        return Err("Python Bootstrap output name `_dynwinrt_build` conflicts with the build-only helper; choose a different --output leaf name".into());
+    }
     if language == "js"
         && (inputs.is_some() || existing.is_some())
         && !is_npm_package_name(runtime_import)
@@ -621,6 +675,9 @@ pub(crate) fn prepare(
             "_winappsdk.cjs",
             "_native/winappsdk",
         ]
+        .iter()
+        .map(|name| resource_path(output, language, name))
+        .collect::<Result<Vec<_>, _>>()?
         .iter()
         .any(|name| super::path_entry_exists(&output.join(name)))
     {
@@ -645,8 +702,20 @@ pub(crate) fn prepare(
                     path.display()
                 )));
             }
-            if relative == LICENSE || relative.ends_with(".dll") {
-                retained.insert(relative.clone(), bytes);
+            if relative == &resource_path(output, language, LICENSE)? || relative.ends_with(".dll")
+            {
+                let logical = if language == "py" {
+                    relative
+                        .strip_prefix(&format!(
+                            "src/{}/",
+                            super::python_output_layout(output)?.import_name
+                        ))
+                        .ok_or("Invalid Python Bootstrap resource prefix")?
+                        .to_string()
+                } else {
+                    relative.clone()
+                };
+                retained.insert(logical, bytes);
             }
         }
     }
@@ -670,7 +739,7 @@ pub(crate) fn prepare(
         return Ok(None);
     };
     // Keep every currently-owned helper in the reservation set, including optional stubs.
-    let reservations = allowed_files(language, &bundle.manifest.configuration);
+    let reservations = allowed_files(output, language, &bundle.manifest.configuration)?;
     let prior = read_manifest(output)?;
     for relative in reservations {
         inspect_owned_path(output, &relative)?;
@@ -727,7 +796,11 @@ impl Bundle {
                 .insert(WHEEL_HOOK.into(), self.python_wheel_hook().into_bytes());
             self.contents.insert(
                 "MANIFEST.in".into(),
-                format!("{}include {WHEEL_HOOK}\n", super::GENERATED_PYTHON_HEADER).into_bytes(),
+                format!(
+                    "{}include src/{WHEEL_HOOK}\n",
+                    super::GENERATED_PYTHON_HEADER
+                )
+                .into_bytes(),
             );
             if pyi {
                 self.contents.insert(
@@ -753,7 +826,21 @@ impl Bundle {
                 .into_bytes(),
             );
         }
-        for relative in allowed_files(&self.manifest.language, &self.manifest.configuration) {
+        self.contents = self
+            .contents
+            .into_iter()
+            .map(|(relative, bytes)| {
+                Ok((
+                    resource_path(output, &self.manifest.language, &relative)?,
+                    bytes,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        for relative in allowed_files(
+            output,
+            &self.manifest.language,
+            &self.manifest.configuration,
+        )? {
             inspect_owned_path(output, &relative)?;
             let path = output.join(&relative);
             match fs::symlink_metadata(&path) {

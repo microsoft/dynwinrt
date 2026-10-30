@@ -1135,7 +1135,7 @@ fn implementation_cli_emits_background_instance_public_views() {
                 .join("application-model")
                 .join("background")
         } else {
-            output
+            common::python_package_dir(&output)
         };
         let stem = if language == "js" {
             "IBackgroundTaskInstance".to_string()
@@ -1218,6 +1218,7 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
         "{}",
         String::from_utf8_lossy(&generated.stderr)
     );
+    let package = common::python_package_dir(&package);
     let foundation = package.join("windows").join("foundation");
     let delegate_facade = std::fs::read_dir(&foundation)
         .unwrap()
@@ -1445,8 +1446,10 @@ assert_type(
             .env("PYTHONUTF8", "1")
             .env(
                 "MYPYPATH",
-                std::env::join_paths([binding_stubs.clone(), std::path::PathBuf::from(".")])
-                    .unwrap(),
+                std::env::join_paths(std::iter::once(binding_stubs.clone()).chain(
+                    std::env::split_paths(&common::python_fixture_search_path(&scratch)),
+                ))
+                .unwrap(),
             )
             .output()
             .expect("run the existing mypy checker")

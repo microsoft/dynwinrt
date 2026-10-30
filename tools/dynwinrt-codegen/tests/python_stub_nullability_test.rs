@@ -65,7 +65,8 @@ impl Generated {
     }
 
     fn module(&self, name: &str) -> String {
-        fs::read_to_string(self.0.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
+        fs::read_to_string(common::python_package_dir(&self.0).join(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
     }
 
     fn identity_module(&self, identity: TypeIdentity, extension: &str) -> String {

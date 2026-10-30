@@ -1570,8 +1570,31 @@ fn generate_python_constructor(
             context.class_name(class)
         ));
     } else {
+        let mut seen = HashSet::new();
+        let signatures = candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{}({})",
+                    context.class_name(class),
+                    super::super::type_helpers::py_constructor_param_list(
+                        &candidate.public_params,
+                        context,
+                    )
+                )
+            })
+            .filter(|signature| seen.insert(signature.clone()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let expected = serde_json::to_string(&format!("). Expected one of: {signatures}"))
+            .expect("constructor signature string");
+        // Avoid user-defined metaclass and string-formatting hooks on the failure path.
+        out.push_str(
+            "        _type_name = type.__dict__['__name__'].__get__\n\
+             \x20       _received = ', '.join([_type_name(type(arg)) for arg in args] + ['='.join((name, _type_name(type(value)))) for name, value in kwargs.items()])\n",
+        );
         out.push_str(&format!(
-            "        raise TypeError(\"No matching constructor for {}\")\n\n",
+            "        raise TypeError(\"No matching constructor for {}(\" + _received + {expected})\n\n",
             context.class_name(class)
         ));
     }

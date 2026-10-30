@@ -221,6 +221,21 @@ Both directions copy exactly `Length` bytes. Mutating the input or releasing
 the WinRT object does not change the returned `bytes`, and no native buffer
 pointer is exposed.
 
+Byte conversion can be repeated in independent `RoApartment` scopes. Buffer
+creation uses a call-local activation factory, so it does not retain a stale
+factory across apartment teardown. Release native values before leaving their
+apartment, or let `RoApartment` release its tracked owners:
+
+```python
+from dynwinrt import DynWinRTValue, RoApartment
+
+for _ in range(2):
+    with RoApartment():
+        value = DynWinRTValue.from_bytes(b"abc")
+        data = value.to_bytes()
+        value.release()
+```
+
 Exceptions raised by Python event or delegate callbacks are reported through
 `sys.unraisablehook`. The originating WinRT invocation receives
 `0xA0EE4005` (`PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION`) instead of unconditional
@@ -425,6 +440,16 @@ without that metadata, including system-returned classes and protected-only
 composition, raise a class-named `TypeError` on normal construction and their
 stubs expose no public constructor. Native return values still use the internal
 `_from_native`/`DynWinRTValue` wrapping path.
+
+When no constructor matches, the `TypeError` lists the supplied argument types
+and keyword names, followed by all candidate signatures using the same Python
+names and types as the stubs. For example, `Uri(url="https://example.com")`
+reports `Uri(url=str)`, while `Uri(42)` reports `Uri(int)`; both list
+`Uri(uri: str)` and `Uri(base_uri: str, relative_uri: str)`. Use `uri=`, or supply
+both `base_uri=` and `relative_uri=` for the two-argument overload. Argument
+values are not included in this diagnostic. Matching calls and errors from
+native activation or argument conversion are unchanged; named factories such
+as `Uri.create_uri(uri=...)` also retain their explicit signatures.
 
 ### Creating WinRT collections
 
@@ -773,6 +798,13 @@ WinMD required-interface closure includes it, support `with` and an idempotent
 `IOutputStream`, and `IRandomAccessStreamWithContentType`; regenerate bindings
 to use the interface helpers. Existing concrete classes such as `DataWriter`
 and `InMemoryRandomAccessStream` keep the same behavior.
+
+Generate and install the project before using this example:
+
+```powershell
+dynwinrt-codegen generate --lang py --class-name Windows.Storage.StorageFile --output generated
+python -m pip install .\generated
+```
 
 ```python
 from generated import FileAccessMode, StorageFile

@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 use windows_metadata::{FieldAttributes, Type, TypeAttributes, Value, writer};
 
+mod common;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const DLL: &str = "Microsoft.WindowsAppRuntime.Bootstrap.dll";
 const MANIFEST: &str = ".dynwinrt-winappsdk.json";
@@ -105,6 +107,14 @@ impl Fixture {
                 .arg(self.input("arm64"));
         }
         command
+    }
+
+    fn package(&self, language: &str) -> PathBuf {
+        if language == "py" {
+            common::python_fixture_package(&self.output)
+        } else {
+            self.output.clone()
+        }
     }
 
     fn input(&self, architecture: &str) -> PathBuf {
@@ -250,7 +260,7 @@ fn bundle_generation_is_opt_in_and_exposes_precise_capabilities() {
         let fixture = Fixture::new();
         fixture.generate(language, false);
         assert!(!fixture.output.join(MANIFEST).exists());
-        assert!(!fixture.output.join("_winappsdk.json").exists());
+        assert!(!fixture.package(language).join("_winappsdk.json").exists());
         assert!(!fixture.output.join("_dynwinrt_build").exists());
         let before = files(&fixture.output);
         succeeded(
@@ -273,7 +283,7 @@ fn original_dll_bytes_licenses_and_runtime_configuration_are_packaged() {
             assert_eq!(
                 fs::read(
                     fixture
-                        .output
+                        .package(language)
                         .join("_native")
                         .join("winappsdk")
                         .join(arch)
@@ -284,15 +294,24 @@ fn original_dll_bytes_licenses_and_runtime_configuration_are_packaged() {
             );
         }
         assert_eq!(
-            fs::read_to_string(fixture.output.join("_native/winappsdk/LICENSE.txt")).unwrap(),
+            fs::read_to_string(
+                fixture
+                    .package(language)
+                    .join("_native/winappsdk/LICENSE.txt")
+            )
+            .unwrap(),
             "SDK test license\n"
         );
         assert!(
-            fs::read_to_string(fixture.output.join("_native/winappsdk/NOTICE.txt"))
-                .unwrap()
-                .contains("NOT licensed under dynwinrt's MIT")
+            fs::read_to_string(
+                fixture
+                    .package(language)
+                    .join("_native/winappsdk/NOTICE.txt")
+            )
+            .unwrap()
+            .contains("NOT licensed under dynwinrt's MIT")
         );
-        let config = fs::read_to_string(fixture.output.join("_winappsdk.json")).unwrap();
+        let config = fs::read_to_string(fixture.package(language).join("_winappsdk.json")).unwrap();
         assert!(!config.contains(&fixture.root.to_string_lossy().to_string()));
         if language == "py" {
             let project = fs::read_to_string(fixture.output.join("pyproject.toml")).unwrap();
@@ -300,7 +319,7 @@ fn original_dll_bytes_licenses_and_runtime_configuration_are_packaged() {
             assert!(project.contains("bindings._winappsdk:get_config"));
             assert!(project.contains("_native/winappsdk/*/*.dll"));
             assert!(
-                fs::read_to_string(fixture.output.join("_dynwinrt_build/wheel.py"))
+                fs::read_to_string(fixture.output.join("src/_dynwinrt_build/wheel.py"))
                     .unwrap()
                     .contains("win_amd64.win_arm64")
             );
@@ -507,7 +526,7 @@ fn same_bundle_survives_full_and_incremental_passes_with_omitted_options() {
         );
         assert!(
             fixture
-                .output
+                .package(language)
                 .join("_native/winappsdk/x64")
                 .join(DLL)
                 .is_file()
@@ -520,14 +539,14 @@ fn same_bundle_survives_full_and_incremental_passes_with_omitted_options() {
                     command.args(["--class-name", "Widget"]);
                 }
                 succeeded(command.output().unwrap());
-                assert!(!fixture.output.join("_winappsdk.pyi").exists());
+                assert!(!fixture.package(language).join("_winappsdk.pyi").exists());
                 let inventory =
                     fs::read_to_string(fixture.output.join(".dynwinrt-generated-files")).unwrap();
                 assert!(inventory.contains(DLL));
                 assert!(fixture.output.join(MANIFEST).is_file());
             }
             fixture.generate(language, false);
-            assert!(fixture.output.join("_winappsdk.pyi").is_file());
+            assert!(fixture.package(language).join("_winappsdk.pyi").is_file());
         }
     }
 }
@@ -601,21 +620,22 @@ fn concrete_input_selects_its_pe_architecture_without_using_codegen_host_archite
                     .output()
                     .unwrap(),
             );
-            let config: serde_json::Value =
-                serde_json::from_slice(&fs::read(fixture.output.join("_winappsdk.json")).unwrap())
-                    .unwrap();
+            let config: serde_json::Value = serde_json::from_slice(
+                &fs::read(fixture.package(language).join("_winappsdk.json")).unwrap(),
+            )
+            .unwrap();
             assert_eq!(config["dlls"].as_object().unwrap().len(), 1);
             assert!(config["dlls"].get(architecture).is_some());
             assert!(
                 !fixture
-                    .output
+                    .package(language)
                     .join("_native/winappsdk")
                     .join(other)
                     .exists()
             );
             if language == "py" {
-                let setup =
-                    fs::read_to_string(fixture.output.join("_dynwinrt_build/wheel.py")).unwrap();
+                let setup = fs::read_to_string(fixture.output.join("src/_dynwinrt_build/wheel.py"))
+                    .unwrap();
                 let expected = if architecture == "x64" {
                     "win_amd64"
                 } else {
@@ -692,12 +712,12 @@ fn invalid_flags_manual_collisions_and_publication_failures_are_atomic() {
     ] {
         fixture.refused_unchanged(fixture.command("py", false).arg(field), "required");
     }
-    fs::write(fixture.output.join("_winappsdk.json"), "user-owned").unwrap();
+    fs::write(fixture.package("py").join("_winappsdk.json"), "user-owned").unwrap();
     fixture.refused_unchanged(
         &mut fixture.command("py", true),
         "Refusing to overwrite non-generated",
     );
-    fs::remove_file(fixture.output.join("_winappsdk.json")).unwrap();
+    fs::remove_file(fixture.package("py").join("_winappsdk.json")).unwrap();
     fixture.refused_unchanged(
         fixture
             .command("py", true)
@@ -706,7 +726,10 @@ fn invalid_flags_manual_collisions_and_publication_failures_are_atomic() {
     );
     fixture.generate("py", true);
     fs::write(
-        fixture.output.join("_native/winappsdk/x64").join(DLL),
+        fixture
+            .package("py")
+            .join("_native/winappsdk/x64")
+            .join(DLL),
         "modified",
     )
     .unwrap();
@@ -739,11 +762,130 @@ fn projected_namespace_and_private_build_hook_remain_distinct() {
             .output()
             .unwrap(),
     );
-    let projected = fs::read_to_string(fixture.output.join("dynwinrt_build/wheel.py")).unwrap();
-    let build_hook = fs::read_to_string(fixture.output.join("_dynwinrt_build/wheel.py")).unwrap();
+    let projected =
+        fs::read_to_string(fixture.package("py").join("dynwinrt_build/wheel.py")).unwrap();
+    let build_hook =
+        fs::read_to_string(fixture.output.join("src/_dynwinrt_build/wheel.py")).unwrap();
     assert!(projected.contains(" import Wheel"));
     assert!(!projected.contains("class BootstrapWheel"));
     assert!(build_hook.contains("class BootstrapWheel"));
+}
+
+#[test]
+fn python_project_rename_relocates_owned_package_and_bundle_without_changing_type_identity() {
+    for bundled in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.generate("py", bundled);
+        let types = fs::read(fixture.output.join(".dynwinrt-generated-types")).unwrap();
+        let old_source = fs::read(
+            fixture
+                .package("py")
+                .join("windows__bootstrap_test__widget.py"),
+        )
+        .unwrap();
+        fs::write(
+            fixture.package("py").join("manual.txt"),
+            "preserve user content",
+        )
+        .unwrap();
+        let renamed = fixture.root.join("Renamed Bindings");
+        fs::rename(&fixture.output, &renamed).unwrap();
+        fixture.output = renamed;
+        succeeded(
+            fixture
+                .command("py", false)
+                .args(["--class-name", "Widget"])
+                .output()
+                .unwrap(),
+        );
+        let package = fixture.package("py");
+        assert!(package.ends_with("src/renamed_bindings"));
+        assert_eq!(
+            fs::read(package.join("windows__bootstrap_test__widget.py")).unwrap(),
+            old_source
+        );
+        assert_eq!(
+            fs::read(fixture.output.join(".dynwinrt-generated-types")).unwrap(),
+            types
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.output.join("src/bindings/manual.txt")).unwrap(),
+            "preserve user content"
+        );
+        assert!(!fixture.output.join("src/bindings/__init__.py").exists());
+        let inventory =
+            fs::read_to_string(fixture.output.join(".dynwinrt-generated-files")).unwrap();
+        assert!(!inventory.replace('\\', "/").contains("src/bindings/"));
+        assert!(
+            inventory
+                .replace('\\', "/")
+                .contains("src/renamed_bindings/py.typed")
+        );
+        let project = fs::read_to_string(fixture.output.join("pyproject.toml")).unwrap();
+        assert!(project.contains("name = \"renamed-bindings\""));
+        assert!(project.contains("package-dir = { \"\" = \"src\" }"));
+        if bundled {
+            assert!(project.contains("renamed_bindings._winappsdk:get_config"));
+            assert_eq!(
+                fs::read(package.join("_native/winappsdk/x64").join(DLL)).unwrap(),
+                fs::read(fixture.input("x64")).unwrap()
+            );
+            assert!(
+                !fs::read_to_string(fixture.output.join(MANIFEST))
+                    .unwrap()
+                    .contains("src/bindings/")
+            );
+        }
+        let before = files(&fixture.output);
+        succeeded(
+            fixture
+                .command("py", false)
+                .args(["--class-name", "Widget"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(files(&fixture.output), before);
+    }
+}
+
+#[test]
+fn python_project_rename_conflicts_and_publication_failures_preserve_both_layouts() {
+    let mut fixture = Fixture::new();
+    fixture.generate("py", true);
+    let renamed = fixture.root.join("renamed_bindings");
+    fs::rename(&fixture.output, &renamed).unwrap();
+    fixture.output = renamed;
+    let destination = fixture.output.join("src/renamed_bindings/__init__.py");
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::write(&destination, "user-owned").unwrap();
+    fixture.refused_unchanged(
+        &mut fixture.command("py", false),
+        "destination already exists",
+    );
+    fs::remove_file(destination).unwrap();
+    fixture.refused_unchanged(
+        fixture
+            .command("py", false)
+            .env("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT", "before_publish"),
+        "Injected output transaction failure",
+    );
+    assert!(fixture.output.join("src/bindings/__init__.py").is_file());
+    assert!(
+        !fixture
+            .output
+            .join("src/renamed_bindings/__init__.py")
+            .exists()
+    );
+}
+
+#[test]
+fn python_bootstrap_rejects_build_helper_as_runtime_package_name() {
+    let mut fixture = Fixture::new();
+    fixture.output = fixture.root.join("_dynwinrt_build");
+    fixture.refused_unchanged(
+        &mut fixture.command("py", true),
+        "conflicts with the build-only helper",
+    );
 }
 
 #[test]
@@ -772,7 +914,12 @@ fn input_order_and_identical_duplicates_preserve_payloads_licenses_and_cache() {
                 .unwrap(),
         );
         assert_eq!(
-            fs::read_to_string(fixture.output.join("_native/winappsdk/LICENSE.txt")).unwrap(),
+            fs::read_to_string(
+                fixture
+                    .package(language)
+                    .join("_native/winappsdk/LICENSE.txt")
+            )
+            .unwrap(),
             "License from a duplicate payload's source\n"
         );
         let before = files(&fixture.output);
@@ -1181,12 +1328,18 @@ fn input_paths_are_literal_without_architecture_placeholder_expansion() {
                 .output()
                 .unwrap(),
         );
-        let config: serde_json::Value =
-            serde_json::from_slice(&fs::read(fixture.output.join("_winappsdk.json")).unwrap())
-                .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture.package(language).join("_winappsdk.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(config["dlls"].as_object().unwrap().len(), 1);
         assert!(config["dlls"].get("x64").is_some());
-        assert!(!fixture.output.join("_native/winappsdk/arm64").exists());
+        assert!(
+            !fixture
+                .package(language)
+                .join("_native/winappsdk/arm64")
+                .exists()
+        );
     }
 }
 

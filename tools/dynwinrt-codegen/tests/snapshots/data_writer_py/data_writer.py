@@ -145,7 +145,9 @@ class DataWriter:
         if _bound is not None and (isinstance(_bound[0], _dynwinrt_symbol('windows__storage__streams__i_output_stream', 'IOutputStream')) or _dynwinrt_can_cast(_bound[0], IID_ARG_Windows_Storage_Streams_IOutputStream)):
             self._set_native(type(self).create_data_writer(_bound[0])._obj)
             return
-        raise TypeError("No matching constructor for DataWriter")
+        _type_name = type.__dict__['__name__'].__get__
+        _received = ', '.join([_type_name(type(arg)) for arg in args] + ['='.join((name, _type_name(type(value)))) for name, value in kwargs.items()])
+        raise TypeError("No matching constructor for DataWriter(" + _received + "). Expected one of: DataWriter(); DataWriter(output_stream: 'IOutputStream')")
 
     @staticmethod
     def _get_f_IDataWriterFactory():

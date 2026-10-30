@@ -884,18 +884,15 @@ async def streams(source: InMemoryRandomAccessStream, target: InMemoryRandomAcce
             "--show-error-codes",
             "--cache-dir",
             ".mypy_cache",
-            "sdk",
+            "sdk/src/sdk",
             "consumer.py",
         ])
         .env(
             "MYPYPATH",
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("bindings")
-                .join("py"),
+            common::python_fixture_mypy_path(&fixture.0, true),
         )
         .current_dir(&fixture.0)
+        .env_remove("PYTHONPATH")
         .output()
         .unwrap();
     let text = format!(

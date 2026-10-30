@@ -463,11 +463,17 @@ fn generate_streams(fixture: &Fixture, no_pyi: bool) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
     command.args(["generate", "--lang", "py", "--winmd", WINDOWS_WINMD, "--class-name",
         "Windows.Storage.StorageFile,Windows.Storage.Streams.InMemoryRandomAccessStream,Windows.Storage.Streams.DataWriter,Windows.Storage.Streams.Buffer,Windows.Storage.Streams.IRandomAccessStreamWithContentType"]);
-    command.arg("--output").arg(fixture.0.join("views"));
+    let project = fixture.0.join("views");
+    command.arg("--output").arg(&project);
     if no_pyi {
         command.arg("--no-pyi");
     }
     success(command.output().unwrap());
+    let package = common::python_package_dir(&project);
+    assert_eq!(package, project.join("src").join("views"));
+    assert!(package.join("__init__.py").is_file());
+    assert_eq!(package.join("__init__.pyi").is_file(), !no_pyi);
+    assert!(!project.join("__init__.py").exists());
 }
 
 #[test]
@@ -488,6 +494,7 @@ fn generated_stream_contexts_close_real_native_resources() {
             Command::new(python())
                 .arg("-B")
                 .arg("probe.py")
+                .env("PYTHONPATH", common::python_fixture_search_path(&fixture.0))
                 .current_dir(&fixture.0)
                 .output()
                 .unwrap(),
@@ -502,6 +509,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from dynwinrt import RoApartment, projected_lifetime_scope
 import views as g
+
+assert Path(g.__file__).resolve() == (Path('views') / 'src' / 'views' / '__init__.py').resolve()
 
 async def expect_closed(action):
     try:
@@ -677,11 +686,7 @@ def interfaces(input: IInputStream, output: IOutputStream, content: IRandomAcces
             ])
             .env(
                 "MYPYPATH",
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("bindings")
-                    .join("py"),
+                common::python_fixture_mypy_path(&fixture.0, true),
             )
             .current_dir(&fixture.0)
             .output()

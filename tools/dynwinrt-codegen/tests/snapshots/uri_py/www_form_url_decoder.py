@@ -79,7 +79,9 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
         if _bound is not None and isinstance(_bound[0], str):
             self._set_native(type(self).create_www_form_url_decoder(_bound[0])._obj)
             return
-        raise TypeError("No matching constructor for WwwFormUrlDecoder")
+        _type_name = type.__dict__['__name__'].__get__
+        _received = ', '.join([_type_name(type(arg)) for arg in args] + ['='.join((name, _type_name(type(value)))) for name, value in kwargs.items()])
+        raise TypeError("No matching constructor for WwwFormUrlDecoder(" + _received + "). Expected one of: WwwFormUrlDecoder(query: str)")
 
     @staticmethod
     def _get_f_IWwwFormUrlDecoderRuntimeClassFactory():

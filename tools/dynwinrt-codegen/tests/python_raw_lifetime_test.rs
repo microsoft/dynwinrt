@@ -70,7 +70,7 @@ impl Generated {
     fn run(&self, scenario: &str, script: &str) {
         let output = Command::new(self.python())
             .args(["-B", "-c", &script.replace("PY_PACKAGE", &self.package)])
-            .env("PYTHONPATH", self.root.parent().unwrap())
+            .env("PYTHONPATH", self.root.join("src"))
             .output()
             .expect("run isolated Python lifetime regression");
         let stdout = String::from_utf8_lossy(&output.stdout);

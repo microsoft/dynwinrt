@@ -17,8 +17,8 @@ from python_coverage import normalize_data, normalize_path, write_reports
 
 
 HERE = Path(__file__).resolve().parent
-STANDARD = Path("tests/e2e/e2e_generated/python_bindings")
-IMPLEMENTATIONS = Path("tests/e2e/e2e_generated/implementations/python_bindings")
+STANDARD = Path("tests/e2e/e2e_generated/python_bindings/src/python_bindings")
+IMPLEMENTATIONS = Path("tests/e2e/e2e_generated/implementations/python_bindings/src/python_bindings")
 RUNTIME = Path("bindings/py/python/dynwinrt/_implementation.py")
 
 
