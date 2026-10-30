@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 
-use windows::Storage::Streams::{Buffer, IBuffer};
+use windows::Storage::Streams::{Buffer, IBuffer, IBufferFactory};
 use windows_core::{HRESULT, IUnknown, Interface};
 
 use crate::{Error, Result, WinRTValue};
@@ -77,7 +77,18 @@ pub fn copy_from_ibuffer(value: &WinRTValue) -> Result<Vec<u8>> {
 pub fn copy_to_ibuffer(bytes: &[u8]) -> Result<WinRTValue> {
     let length =
         u32::try_from(bytes.len()).map_err(|_| Error::IBufferInputTooLarge(bytes.len()))?;
-    let buffer = Buffer::Create(length).map_err(Error::WindowsError)?;
+    // Buffer::Create caches a factory whose DLL can unload at RoUninitialize.
+    // Use the same activation loader, but keep the factory local to this call.
+    let buffer: Buffer = {
+        let factory =
+            windows_core::factory::<Buffer, IBufferFactory>().map_err(Error::WindowsError)?;
+        let mut result = std::ptr::null_mut();
+        unsafe {
+            (factory.vtable().Create)(factory.as_raw(), length, &mut result)
+                .and_then(|| windows_core::Type::from_abi(result))
+        }
+        .map_err(Error::WindowsError)?
+    };
     let ibuffer: IBuffer = buffer.cast().map_err(Error::WindowsError)?;
     let (_access, destination) = query_byte_pointer(&ibuffer)?;
 
