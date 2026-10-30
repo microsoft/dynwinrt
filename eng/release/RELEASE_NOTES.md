@@ -9,12 +9,12 @@ This preview improves Python package installation, async notification handling, 
 - `dynwinrt` - Native Python runtime.
 - `dynwinrt-codegen` - Standalone Python code generator.
 
-- **Runtime platforms:** Windows 10/11, x64 and ARM64.
+- **Runtime platforms:** Windows x64 and ARM64.
 - **JavaScript version:** Node.js 18 or later.
-- **Python version:** CPython 3.11-3.14 for the runtime and generated bindings. The standalone generator supports Python 3.8-3.14.
-- **Metadata and API availability:** Codegen needs `.winmd` metadata and can auto-detect an installed Windows SDK. Available APIs depend on Windows, installed components, package identity, permissions, and hardware.
-- **Package versions:** Use the matching runtime and codegen release for each language.
-- **Upgrade cleanup:** Fully regenerate old bindings in a fresh or cleaned codegen-owned output directory, then rebuild/reinstall them.
+- **Python version:** CPython 3.11-3.14 for the runtime and generated bindings.
+- **API availability:** Depends on the Windows version, installed SDK components, package identity, and hardware.
+- **Package versions:** Use the same runtime and codegen version for each language.
+- **Upgrade cleanup:** Clean old generated bindings before using the new version.
 
 Installation commands for this preview, once published:
 
