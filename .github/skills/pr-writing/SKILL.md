@@ -15,51 +15,63 @@ review, CI operation, merging, or release.
 1. Read the actual diff against the intended PR base, including pending changes
    that will be part of the PR. For an existing PR, also read its current title
    and body. Do not summarize only commit subjects or session history.
-2. Identify whether the change fixes a bug, adds a feature, changes documentation,
-   or is internal-only. For mixed changes, cover each relevant behavior without
-   repeating shared context.
+2. Identify the actual behavior impact: a bug fix, feature, pure text change,
+   refactor, build/dependency change, or a mixture. Do not classify only by file
+   extension; documentation can change executable examples or user workflows.
 3. Check the relevant code, documentation, issue, and validation evidence.
    Distinguish observed behavior from expectations and unverified claims.
    Never invent a root cause, reproduction, or successful check.
 4. Write a concise title naming the change or outcome, rather than a work log.
 
-## Fill the template
+## Select and fill sections
 
-Keep all of the template's section headings in their original order. Replace
-placeholders with meaningful content; adapt the subordinate labels to the change
-type and explain non-applicable items rather than inventing an example.
+Use the template's heading text and relative order for the sections selected.
+Only Summary is common to every PR. Delete inapplicable sections, including
+their headings and placeholders; do not fill them with "None" or "N/A".
 
-- In the summary, explain what changes for users or contributors and why.
-  For a bug, include the supported root cause and the key fix; if the cause
-  remains uncertain, state that explicitly. For a feature, explain its purpose
-  and implementation approach. Include only implementation details that aid
-  review, not a file-by-file change list. Link a relevant issue if one exists.
-- Make a bug reproducible: separate necessary prerequisites from exact steps or
-  runnable code, then describe the behavior before and after the fix. Give a
-  feature's minimal usage example and expected result. For documentation or
-  internal-only changes without a runnable example, explain why it does not
-  apply; do not invent one or silently omit the section.
-- Report focused validation as what was exercised and what was observed. Refer
-  back to the reproduction instead of copying it. Include relevant edge cases or
-  manual checks when they add evidence, and explain any necessary check not run.
-  Do not include CI status, workflow/job names, test counts, coverage statistics,
-  full logs, or a chronological command list. A minimal reproduction command
-  and its result are useful evidence, not an execution diary.
-- Explain compatibility impact, upgrade actions, limitations, and unverified
-  behavior only when they matter to this change. Write "None" when there are
-  none. Do not list unrelated subsystems or internal session coordination.
-  Mention dependencies only when they affect review or merge order; omit
-  irrelevant base hashes and independence statements. Keep versions or revision
-  identifiers when they are actually needed to reproduce the behavior.
+- Summary explains the change, its reason, and implementation details that aid
+  review, not a file-by-file work log. A bug needs its supported root cause and
+  key fix; state uncertainty instead of inventing a cause. A feature needs its
+  purpose and approach. Link a relevant issue if one exists.
+- Bug fixes require Reproduction: necessary prerequisites, exact runnable steps
+  or code, the actual failure, and the result after the fix.
+- Features require Usage: a minimal API call or command, necessary setup or
+  configuration, and an observable result. Do not use bug-style before/after
+  fields or combine the two purposes under a generic heading.
+- Pure text, formatting, and contribution-guidance changes normally need only
+  Summary. Do not invent usage, reproduction, validation, or risks to fill space.
+- For refactors, build/dependency changes, documentation with executable
+  examples, and mixed changes, choose only sections justified by actual behavior
+  impact. Include both Reproduction and Usage only for distinct needs, not every
+  section associated with every file type.
+
+Validation is optional. Include only focused behavioral evidence or important
+verification gaps that readers need and cannot already see in the reproduction
+or CI panel. Describe what was exercised and observed, or why an important check
+was not performed. Do not repeat earlier steps, routine proofreading, Markdown
+rendering, or heading checks. Do not include CI status, workflow/job names, test
+counts, coverage statistics, full logs, or a chronological command list.
+
+Compatibility and risks is optional. Keep it only for real compatibility
+impact, upgrade actions, important limitations, or unverified behavior. Do not
+invent risks or list unrelated subsystems or internal session coordination.
+Mention dependencies only when they affect review or merge order; omit
+irrelevant base hashes and independence statements. Keep versions or revision
+identifiers when they are actually needed to reproduce the behavior.
 
 ## Before submitting or updating
 
-Run the proportionate checks required by the repository; keeping CI reporting
-out of the body does not remove the obligation to validate the change. Keep raw
-logs and coordination evidence outside the PR description.
+Run the proportionate checks required by the repository even when the PR needs
+no Validation section. Doing a check does not make it useful PR content. Keep raw
+logs and coordination evidence outside the description.
 
-Reread the title and body against the diff and template. Confirm the sections
-are complete and ordered, the reproduction or non-applicability explanation is
-usable, claims match the evidence, and placeholders, repetition, and work-log
-details are gone. When updating an existing PR, preserve still-relevant content
-and make sure the description reflects the current change.
+In the published PR body, keep each ordinary prose paragraph on one continuous
+line and let the page wrap it. Preserve necessary line breaks for paragraphs,
+headings, lists, and code blocks. Source Markdown may be wrapped; do not carry
+those hard wraps into published prose.
+
+Reread the title and body against the diff and template. Confirm the selected
+sections serve the change, required reproductions or usage examples are usable,
+and claims match the evidence. Remove inapplicable sections, placeholders,
+repetition, and work-log details. When updating an existing PR, preserve
+still-relevant content and make sure the description reflects the current change.

@@ -1,3 +1,15 @@
+<!--
+Keep Summary and select only the other sections this change needs.
+Remove unused sections, including their headings and placeholders.
+
+Bug fixes need Reproduction; features need Usage. Pure text, formatting, or
+contribution-guidance changes normally need only Summary.
+
+For refactors, build/dependency changes, documentation with executable examples,
+and mixed changes, choose by actual behavior impact, not file extension.
+Include both Reproduction and Usage only when distinct changes need each.
+-->
+
 ## Summary
 
 <!--
@@ -10,48 +22,56 @@ Keep implementation details to what helps someone review the change.
 Link a relevant issue if one exists.
 -->
 
-## Reproduction or usage
+## Reproduction
 
 <!--
-Bug fix: provide the minimum setup and exact steps or code that reproduce
-the problem, followed by the behavior before and after the fix.
-
-Feature: provide a minimal usage example and its expected result.
-
-Documentation or internal-only change: explain why a runnable example
-does not apply. Do not invent a reproduction.
+Required for bug fixes. Provide exact steps or runnable code that reproduce
+the fault, the actual failure, and the expected result after the fix.
 
 Include versions, architecture, or other prerequisites only when needed
-to reproduce the behavior.
+to reproduce the behavior. Remove the prerequisites label if none are needed.
+Do not invent steps such as opening a PR or reading files.
 -->
 
 **Prerequisites:**
 
 ...
 
-**Steps or example:**
+**Steps:**
 
 1. ...
 2. ...
 
-**Before:**
+**Actual behavior:**
 
 ...
 
-**After:**
+**After the fix:**
+
+...
+
+## Usage
+
+<!--
+Required for features. Show the smallest useful API call or command and its
+observable result. Include necessary configuration or setup, but do not impose
+bug-style before/after fields.
+
+Also use this section when a change to documented commands or user workflows
+needs an example. Remove it when there is no meaningful usage to demonstrate.
+-->
 
 ...
 
 ## Validation
 
 <!--
-Describe the focused checks that demonstrate the change works:
-what was exercised and what was observed.
+Optional. Keep only focused behavioral evidence or important verification gaps
+that reviewers need and cannot already see from the reproduction or CI panel.
+Say what was exercised and observed; explain important checks not performed.
 
-Refer to the reproduction above rather than copying it again.
-Mention relevant edge cases or manual checks only when they add evidence.
-If a necessary check was not performed, say so and explain why.
-
+Do not repeat steps already given above or turn routine text/format checks
+into a validation section. Pure text changes normally omit this section.
 Do not include CI status, workflow/job names, test counts, coverage
 statistics, full logs, or a chronological list of commands.
 -->
@@ -59,11 +79,9 @@ statistics, full logs, or a chronological list of commands.
 ## Compatibility and risks
 
 <!--
-Describe any changed public behavior, compatibility impact, or upgrade
-action users must take. Include important limitations or unverified
-behavior that reviewers need to know.
-
-If there are none, write "None".
+Optional. Keep only real compatibility impact, upgrade actions, important
+limitations, or unverified behavior that reviewers need to know.
+If there are none, remove this section; do not write "None" or "N/A".
 
 Do not list unrelated subsystems, internal session coordination,
 irrelevant commit hashes, or unrelated PR independence statements.
