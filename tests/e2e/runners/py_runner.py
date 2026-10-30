@@ -1561,6 +1561,22 @@ async def run_check(
                     dw.release_projected(null_events[0][0])
                     del obj['null-element']
                 if cls.__name__ == 'PropertySet':
+                    for mode in (dw.RO_INIT_SINGLETHREADED, dw.RO_INIT_MULTITHREADED):
+                        child = subprocess.run(
+                            [
+                                sys.executable, '-I',
+                                os.path.join(os.path.dirname(__file__), 'py_async_events.py'),
+                                '--generated', generated_dir, '--mode', str(mode),
+                            ],
+                            capture_output=True, text=True, timeout=60, check=False,
+                        )
+                        if child.returncode or f'PASS async-events apartment={mode}' not in child.stdout:
+                            cr['error'] = (
+                                f'async-events apartment={mode} failed with '
+                                f'0x{child.returncode & 0xffffffff:08X}: '
+                                f'{child.stdout} {child.stderr}'
+                            )
+                            return cr
                     runner = os.path.join(
                         os.path.dirname(__file__), 'py_apartment_reentrancy.py'
                     )

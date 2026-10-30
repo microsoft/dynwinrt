@@ -1,7 +1,9 @@
+from asyncio import AbstractEventLoop
 from collections.abc import Coroutine
 from datetime import datetime, timedelta
 from os import PathLike
-from typing import Any, Awaitable, Callable, Final, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from types import TracebackType
+from typing import Any, Awaitable, Callable, Final, Generic, List, Literal, Mapping, Optional, ParamSpec, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -10,6 +12,7 @@ _Tracked = TypeVar("_Tracked")
 _Projected_co = TypeVar("_Projected_co", covariant=True)
 _ProjectableClass = TypeVar("_ProjectableClass", bound="_DynWinRTProjectableClass")
 _Handlers_contra = TypeVar("_Handlers_contra", contravariant=True)
+_EventArgs = ParamSpec("_EventArgs")
 
 
 class _DynWinRTProjector(Protocol[_Projected_co]):
@@ -24,6 +27,7 @@ class _DynWinRTRuntimeClass(_DynWinRTProjectableClass): ...
 
 
 __all__ = [
+    "AsyncEventScope",
     "WinAppSDKContext",
     "RoApartment",
     "RO_INIT_SINGLETHREADED",
@@ -65,6 +69,22 @@ __all__ = [
     "get_winappsdk_resource_pri_path",
     "get_computer_name",
 ]
+
+@final
+class AsyncEventScope:
+    def __init__(self, *, loop: AbstractEventLoop) -> None: ...
+    async def __aenter__(self) -> AsyncEventScope: ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+    def subscribe(
+        self,
+        subscribe: Callable[[Callable[_EventArgs, object]], Callable[[], None]],
+        handler: Callable[_EventArgs, Awaitable[object]],
+    ) -> Callable[[], None]: ...
 
 @final
 class WinAppSDKContext:

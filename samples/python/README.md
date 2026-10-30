@@ -2,11 +2,12 @@
 
 All Python samples use generated bindings and an installed `dynwinrt` runtime.
 Install `dynwinrt` and `dynwinrt-codegen` from PyPI, or build both from this
-checkout, then run each sample's `generate.ps1` before `run.ps1`.
+checkout, then follow the sample's README (usually `generate.ps1` before `run.ps1`).
 
 | Sample | Demonstrates |
 | --- | --- |
 | [`async-file-io`](async-file-io/) | Temporary files, storage interfaces, and native `asyncio` |
+| [`async-events`](async-events/) | Same-thread notifications, TaskGroup cleanup, and native async file I/O |
 | [`ocr-image`](ocr-image/) | Self-contained image creation, bitmap decoding, and Windows OCR |
 | [`app-lifecycle-single-instance`](app-lifecycle-single-instance/) | Multi-process activation redirection with Windows App SDK AppLifecycle |
 | [`cryptography`](cryptography/) | SHA-256, `IBuffer`, text encoding, and hex conversion |

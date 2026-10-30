@@ -14,6 +14,16 @@ def test_wheel_contains_typing_metadata():
     assert (package_dir / "py.typed").is_file()
 
 
+def test_wheel_exports_async_event_scope_without_changing_native_exports():
+    stub = (Path(dynwinrt.__file__).parent / "__init__.pyi").read_text(encoding="utf-8")
+    assert "class AsyncEventScope:" in stub
+    assert "AsyncEventScope" in dynwinrt.__all__
+    assert "AsyncEventScope" not in dynwinrt.dynwinrt.__all__
+    assert inspect.signature(dynwinrt.AsyncEventScope).parameters["loop"].kind == (
+        inspect.Parameter.KEYWORD_ONLY
+    )
+
+
 def test_wheel_exports_typed_implementation_surface():
     stub = (Path(dynwinrt.__file__).parent / "__init__.pyi").read_text(encoding="utf-8")
     for name in (
