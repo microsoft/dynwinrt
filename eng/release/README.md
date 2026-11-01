@@ -55,3 +55,12 @@ pip upgrade performed by the downloaded Python installer on a cold tool cache.
 The `--index-url` on the later wheel-verification command cannot configure the
 earlier setup task. `eng/ci/test_ci.py` checks the task's mirror configuration
 without installing Python or running a release.
+
+## ESRP task runner
+
+All npm and PyPI publishers use `EsrpRelease@11`, whose installed task uses the
+`Node20_1` handler. The `@10` task uses Node16 and is blocked before execution by
+the agent's end-of-life Node policy. The upgrade preserves the existing task
+inputs and does not change that policy or the Node version used by shipped
+packages. `eng/ci/test_ci.py` checks all three publisher task versions without
+invoking ESRP.

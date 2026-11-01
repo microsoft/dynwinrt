@@ -519,7 +519,7 @@ extends:
                   Write-Host "Packages:"
                   Get-ChildItem $(Pipeline.Workspace)/npm-packages/
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish to NPM via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
@@ -578,7 +578,7 @@ extends:
                   }
                   $wheels | Copy-Item -Destination $destination
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish dynwinrt to PyPI via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
@@ -629,7 +629,7 @@ extends:
                   }
                   $wheels | Copy-Item -Destination $destination
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish dynwinrt-codegen to PyPI via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
