@@ -14,6 +14,14 @@ pip upgrade tried the public index through a proxy that returned HTTP 403.
 The recovery sets `PIP_INDEX_URL` on **UsePythonVersion itself**, as well as
 retaining the approved index for the later `packaging` installation.
 
+Recovery run
+[162483081](https://dev.azure.com/microsoft/71503134-3b3d-4e75-aa3f-25519f1b7d3f/_build/results?buildId=162483081)
+passed collection and SDL, but the agent blocked `EsrpRelease@10` before
+execution because its Node16 handler is EOL. All three publishers now use
+`EsrpRelease@11` (installed version `11.0.0`, Node20 handler), which retains the
+existing task inputs and defaults. Publishing inputs, gates and artifact pins
+are unchanged; the agent's EOL policy remains enabled.
+
 The recovery inputs are fixed in the checked-in pipeline and validator; they
 are not queue-time version/build overrides:
 
@@ -49,7 +57,9 @@ No original artifact, tag, release, or attachment is modified.
 
 1. Open the existing ADO pipeline
    [dynwinrt-release (191586)](https://dev.azure.com/microsoft/71503134-3b3d-4e75-aa3f-25519f1b7d3f/_build?definitionId=191586)
-   and select **Run pipeline** (not rerun/retry on the failed tag run).
+   and select **Run pipeline** to create a new run, not rerun/retry on the failed
+   tag run or recovery run `162483081`. A retry keeps the old run's compiled
+   `@10` tasks; pushing this branch does not update those tasks.
 2. Select branch **`lei9444-release-preview24-recovery`**. Confirm the branch
    head is the reviewed recovery commit. Keep all stages selected.
 3. For collection/validation only, leave **`DoEsrp=false`** (the default).
@@ -79,7 +89,8 @@ python -m unittest discover -s eng\release -p test_preview24_recovery.py -v
 The historical release-note wiring validators below apply to the normal
 tag/create-release pipeline, not this intentionally non-mergeable recovery
 variant. Recovery checks instead compare every ESRP job with the original
-tagged pipeline and test the manual-only wiring and fail-closed guards.
+tagged pipeline, allowing only the intentional `EsrpRelease@10` to `@11`
+task-version change, and test the manual-only wiring and fail-closed guards.
 Local checks and ADO `previewRun: true` expansion do not execute a release or
 prove that hosted service authorization, Python setup, or ESRP publishing ran.
 

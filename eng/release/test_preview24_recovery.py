@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
+import copy
 import io
 import json
 from pathlib import Path
@@ -228,7 +229,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(self.stages), 3)
         tasks = [step.get("task") for step in self.steps]
         self.assertNotIn("GitHubRelease@1", tasks)
-        self.assertNotIn("EsrpRelease@10", tasks)
+        self.assertFalse(any(str(task).startswith("EsrpRelease@") for task in tasks))
         self.assertEqual(tasks.count("1ES.PublishPipelineArtifact@1"), 2)
         self.assertEqual(self.steps[0], {"checkout": "self", "fetchDepth": 0})
         self.assertEqual(self.collect["jobs"][0]["workspace"], {"clean": "all"})
@@ -261,11 +262,18 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.pipeline["variables"], self.original["variables"])
         self.assertEqual(self.pipeline["extends"]["template"], self.original["extends"]["template"])
         original_stages = self.original["extends"]["parameters"]["stages"]
+        upgraded_tasks = 0
         for current, original in zip(self.stages[1:], original_stages[-2:]):
             self.assertEqual(set(current), set(original))
             stage = next(iter(current.values()))[0]
             original_stage = next(iter(original.values()))[0]
-            self.assertEqual(stage["jobs"], original_stage["jobs"])
+            expected_jobs = copy.deepcopy(original_stage["jobs"])
+            for job in expected_jobs:
+                for step in job["steps"]:
+                    if step.get("task") == "EsrpRelease@10":
+                        step["task"] = "EsrpRelease@11"
+                        upgraded_tasks += 1
+            self.assertEqual(stage["jobs"], expected_jobs)
             self.assertEqual(
                 stage["dependsOn"], ["Collect_Python"]
                 + (["Release_Npm"] if stage["stage"] == "Release_PyPI" else []),
@@ -273,6 +281,7 @@ class PipelineTests(unittest.TestCase):
             self.assertNotIn("condition", stage)
             self.assertEqual(stage["variables"]["version"],
                              "$[ stageDependencies.Collect_Python.collect_python.outputs['SetMeta.version'] ]")
+        self.assertEqual(upgraded_tasks, 3)
         self.assertEqual(
             self.pipeline["parameters"][-1], self.original["parameters"][-1]
         )
