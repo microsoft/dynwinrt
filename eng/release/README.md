@@ -46,3 +46,12 @@ supplied `-RepositoryRoot` is still honored.
 The release job's 1ES SBOM validation remains enabled. Local configuration
 tests check the staging and publication paths; hosted 1ES execution is needed
 to verify SBOM generation and validation.
+
+## Python setup
+
+In `.pipelines/release.yml`, `Collect_Python` sets the approved package mirror
+through task-scoped `PIP_INDEX_URL` on `UsePythonVersion@0`. This configures the
+pip upgrade performed by the downloaded Python installer on a cold tool cache.
+The `--index-url` on the later wheel-verification command cannot configure the
+earlier setup task. `eng/ci/test_ci.py` checks the task's mirror configuration
+without installing Python or running a release.

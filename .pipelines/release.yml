@@ -462,6 +462,8 @@ extends:
             displayName: Setup Python 3.12
             inputs:
               versionSpec: '3.12'
+            env:
+              PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple/
 
           - task: PowerShell@2
             displayName: Verify complete Python release set
