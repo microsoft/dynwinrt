@@ -18,7 +18,7 @@ fn check_output(
     invoke: impl FnOnce(*mut *mut c_void, *mut u32) -> HRESULT,
 ) {
     const PREFIX: usize = 16;
-    let pattern = usize::from_ne_bytes([0xa5; size_of::<usize>()]);
+    let pattern = u64::from_ne_bytes([0xa5; size_of::<u64>()]);
     let mut storage = [pattern; 32];
     let bytes = unsafe {
         std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), size_of_val(&storage))
@@ -82,8 +82,13 @@ fn check_value_bulk(element: TypeHandle, items: Vec<Vec<u8>>) {
                 }
                 TypeKind::Struct(_) => {
                     let mut data = element.default_value();
-                    data.set_field(0, bytes[0]);
-                    data.set_field(1, bytes[1]);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            data.as_mut_ptr(),
+                            bytes.len(),
+                        )
+                    };
                     WinRTValue::Struct(data)
                 }
                 kind => panic!("unexpected bulk test type: {kind:?}"),
@@ -151,7 +156,7 @@ fn check_value_bulk(element: TypeHandle, items: Vec<Vec<u8>>) {
     }
 
     let replacement = items.iter().rev().flatten().copied().collect::<Vec<_>>();
-    let mut source = [usize::from_ne_bytes([0xa5; size_of::<usize>()]); 32];
+    let mut source = [u64::from_ne_bytes([0xa5; size_of::<u64>()]); 32];
     let source_bytes = unsafe {
         std::slice::from_raw_parts_mut(source.as_mut_ptr().cast::<u8>(), size_of_val(&source))
     };
@@ -215,6 +220,76 @@ fn value_bulk_operations_use_element_size() {
             .to_vec();
         check_value_bulk(element, values);
     }
+}
+
+#[test]
+fn pod_bulk_operations_preserve_layout_alignment_and_guards() {
+    let table = MetadataTable::new();
+    let point = table.struct_type("Windows.Foundation.Point", &vec![table.f32_type(); 2]);
+    for (typ, values) in [
+        (
+            point.clone(),
+            vec![1.0f32, 2.0, 3.0]
+                .into_iter()
+                .map(|x| [x.to_ne_bytes(), (x + 1.0).to_ne_bytes()].concat())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            table.struct_type("Windows.Graphics.RectInt32", &vec![table.i32_type(); 4]),
+            [1i32, -2, 300]
+                .into_iter()
+                .map(|x| {
+                    [x, x + 1, x + 2, x + 3]
+                        .into_iter()
+                        .flat_map(i32::to_ne_bytes)
+                        .collect()
+                })
+                .collect(),
+        ),
+        (
+            table.struct_type(
+                "Windows.Devices.Geolocation.BasicGeoposition",
+                &vec![table.f64_type(); 3],
+            ),
+            [1.25f64, -2.5, 300.75]
+                .into_iter()
+                .map(|x| {
+                    [x, x + 1.0, x + 2.0]
+                        .into_iter()
+                        .flat_map(f64::to_ne_bytes)
+                        .collect()
+                })
+                .collect(),
+        ),
+        (
+            table.struct_type("Test.NestedHfa", &[point.clone(), point]),
+            [1.25f32, -2.5, 300.75]
+                .into_iter()
+                .map(|x| {
+                    [x, x + 1.0, x + 2.0, x + 3.0]
+                        .into_iter()
+                        .flat_map(f32::to_ne_bytes)
+                        .collect()
+                })
+                .collect(),
+        ),
+    ] {
+        check_value_bulk(typ, values);
+    }
+    let inner = table.struct_type("Test.BulkInner", &[table.u8_type(), table.f64_type()]);
+    let padded = table.struct_type("Test.BulkPadded", &[inner, table.u8_type()]);
+    assert_eq!(padded.size_of(), 24);
+    let values = [1, 2, 3]
+        .into_iter()
+        .map(|byte| {
+            let mut bytes = vec![0xa5; 24];
+            bytes[0] = byte;
+            bytes[8..16].copy_from_slice(&(byte as f64).to_ne_bytes());
+            bytes[16] = byte + 1;
+            bytes
+        })
+        .collect();
+    check_value_bulk(padded, values);
 }
 
 #[test]

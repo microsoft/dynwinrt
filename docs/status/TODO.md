@@ -11,12 +11,17 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 - [ ] **Complete native struct collection producers**
       ([#161](https://github.com/microsoft/dynwinrt/issues/161)). Typed vector/map
       factories validate exact types, native layout, recursive ownership, and
-      complete closed IID sets. Non-POD structs, top-level F32/F64/GUID, ARM64
-      HFAs, and i686 values wider than 4 bytes are rejected even when empty.
-      Large POD structs remain empty-vector-only where the ABI passes them
-      indirectly: x64 >8 bytes; ARM64 non-HFA >16 bytes. Maps reject large
-      keys/values even when empty. Full native struct ABI/ownership support is
-      future work; see the [JS](../../bindings/js/README.md#creating-winrt-collections)
+      complete closed IID sets. **Phase one, proposed for this release:**
+      checked POD vectors have layout-aware storage and cached ABI-correct
+      callbacks on ARM64, x64, and i686, including HFAs, larger and nested
+      PODs. Release admission remains subject to PR review, final integration,
+      and platform CI. Empty vectors have the same complete ABI as populated ones.
+      See the [architecture](../architecture/winrt-pod-vectors.md).
+      Non-POD structs, top-level F32/F64/GUID and i686 top-level I64/U64 remain
+      rejected even when empty. Maps retain their original word-sized
+      admission and reject unsupported keys/values even when empty. Full
+      collection ABI/ownership support remains future work; see the
+      [JS](../../bindings/js/README.md#creating-winrt-collections)
       and [Python](../../bindings/py/README.md#creating-winrt-collections) matrices.
       These are producer limits, not restrictions on OS-returned collections.
       Metadata-free Rust `create_value_vector`, `create_vector`, and `create_map`

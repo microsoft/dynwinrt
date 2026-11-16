@@ -385,6 +385,56 @@ mod tests {
     }
 
     #[test]
+    fn pod_callback_panic_returns_hresult_and_allows_another_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use windows::Devices::Geolocation::BasicGeoposition;
+
+        unsafe fn dispatch(
+            _slot: usize,
+            _signature: &CallbackSignature,
+            args: *const *const c_void,
+            result: *mut c_void,
+        ) {
+            let calls = unsafe { &**(*args).cast::<*const AtomicUsize>() };
+            let value = unsafe { (*args.add(1)).cast::<BasicGeoposition>().read_unaligned() };
+            assert_eq!(value.Latitude, 1.25);
+            assert_eq!(value.Longitude, -2.5);
+            assert_eq!(value.Altitude, 300.0);
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("POD callback failure");
+            }
+            unsafe { result.cast::<i32>().write(0) };
+        }
+
+        let table = crate::MetadataTable::new();
+        let typ = table.struct_type(
+            "Windows.Devices.Geolocation.BasicGeoposition",
+            &vec![table.f64_type(); 3],
+        );
+        let signature = CallbackSignature::hresult(vec![(
+            CallbackAbiType::NativeStruct(typ.signature_string(), typ.size_of()),
+            typ.libffi_type(),
+        )]);
+        let code = callback_code(13, signature.clone(), dispatch).unwrap();
+        let callback: unsafe extern "system" fn(*mut c_void, BasicGeoposition) -> HRESULT =
+            unsafe { std::mem::transmute(code) };
+        let calls = AtomicUsize::new(0);
+        let this = std::ptr::from_ref(&calls).cast_mut().cast();
+        let value = BasicGeoposition {
+            Latitude: 1.25,
+            Longitude: -2.5,
+            Altitude: 300.0,
+        };
+        assert_eq!(unsafe { callback(this, value) }, E_FAIL);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(typ);
+        drop(table);
+        assert_eq!(callback_code(13, signature, dispatch).unwrap(), code);
+        assert_eq!(unsafe { callback(this, value) }, HRESULT(0));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn callback_cif_preparation_failure_is_returned() {
         let result = PreparedCallbackCif::new_with_abi(
             vec![Type::pointer()],
