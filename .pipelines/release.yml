@@ -462,6 +462,8 @@ extends:
             displayName: Setup Python 3.12
             inputs:
               versionSpec: '3.12'
+            env:
+              PIP_INDEX_URL: https://packagefeedproxy.microsoft.io/pypi/simple/
 
           - task: PowerShell@2
             displayName: Verify complete Python release set
@@ -517,7 +519,7 @@ extends:
                   Write-Host "Packages:"
                   Get-ChildItem $(Pipeline.Workspace)/npm-packages/
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish to NPM via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
@@ -576,7 +578,7 @@ extends:
                   }
                   $wheels | Copy-Item -Destination $destination
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish dynwinrt to PyPI via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
@@ -627,7 +629,7 @@ extends:
                   }
                   $wheels | Copy-Item -Destination $destination
 
-            - task: EsrpRelease@10
+            - task: EsrpRelease@11
               displayName: Publish dynwinrt-codegen to PyPI via ESRP
               inputs:
                 ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}

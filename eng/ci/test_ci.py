@@ -409,6 +409,42 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class ReleasePipelineTests(unittest.TestCase):
+    def test_python_setup_uses_approved_package_index(self):
+        pipeline = yaml.safe_load(
+            (ROOT / ".pipelines" / "release.yml").read_text(encoding="utf-8")
+        )
+        collect = next(stage for stage in pipeline["extends"]["parameters"]["stages"]
+                       if stage.get("stage") == "Collect_Python")
+        job = next(job for job in collect["jobs"] if job["job"] == "collect_python")
+        setup = [step for step in job["steps"] if step.get("task") == "UsePythonVersion@0"]
+        self.assertEqual(len(setup), 1)
+        self.assertEqual(setup[0]["inputs"]["versionSpec"], "3.12")
+        self.assertEqual(
+            setup[0].get("env", {}).get("PIP_INDEX_URL"),
+            "https://packagefeedproxy.microsoft.io/pypi/simple/",
+        )
+
+    def test_esrp_publishers_use_node20_task_version(self):
+        pipeline = yaml.safe_load(
+            (ROOT / ".pipelines" / "release.yml").read_text(encoding="utf-8")
+        )
+        publishers = []
+        for entry in pipeline["extends"]["parameters"]["stages"]:
+            stages = ([entry] if "stage" in entry else
+                      [stage for conditional in entry.values() for stage in conditional])
+            for stage in stages:
+                for job in stage["jobs"]:
+                    for step in job["steps"]:
+                        if step.get("task", "").startswith("EsrpRelease@"):
+                            publishers.append((job["job"], step["task"]))
+        self.assertCountEqual(publishers, [
+            ("publish_npm", "EsrpRelease@11"),
+            ("publish_python_runtime", "EsrpRelease@11"),
+            ("publish_python_codegen", "EsrpRelease@11"),
+        ])
+
+
 class NativeImportGateTests(unittest.TestCase):
     def test_prebuilt_python_gate_uses_node_and_installed_no_hooks_extension(self):
         steps = JOBS["e2e-runtime"]["steps"]
