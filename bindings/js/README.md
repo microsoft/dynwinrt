@@ -34,6 +34,12 @@ helper. Apartment, message-pumping, and shutdown requirements are unchanged.
 This is not a general older-Windows compatibility or addon feature-isolation
 guarantee.
 
+For a WinRT action converted to a Promise while the WinUI queue is registered,
+the completion notification schedules `GetResults` on the originating JS/UI
+thread. Its HRESULT determines whether the Promise resolves or rejects, even
+when queue shutdown routes settlement back through Node. Data-returning
+operations retain their existing off-thread result collection and marshaling.
+
 `npm run test:imports` checks every `.node` file in `dist` directly, including
 x64 and ARM64 artifacts, without loading it or requiring Visual Studio discovery
 or `dumpbin`. It rejects CoreMessaging DLL imports (including ordinal imports)

@@ -8,6 +8,7 @@ const fs = require('node:fs')
 const Module = require('node:module')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
+const createOwnerAction = require('./fixtures/owner-async-action.cjs')
 
 const applicationModule = process.argv[2]
 const bootstrapDll = process.argv[3]
@@ -242,6 +243,21 @@ async function main() {
       })
     }
     app = Application.create(() => {
+      let action
+      let actionResult
+      let actionError
+      if (startMode === 'scheduled') {
+        action = createOwnerAction(runtime, { completed: true })
+        action.operation.toPromise().then(
+          (result) => {
+            actionResult = result
+          },
+          (error) => {
+            actionError = error
+          },
+        )
+        assert.equal(action.resultCalls, 0)
+      }
       exitTimer = startExitTimer(runtime, 5000, () => {
         timerElapsed = performance.now() - startedAt
         order.push('timer')
@@ -250,6 +266,10 @@ async function main() {
         assert.ok(reactionElapsed < 4500, `Promise reaction was delayed ${reactionElapsed}ms`)
         assert.ok(reactionElapsed < timerElapsed - 500)
         if (startMode === 'scheduled') {
+          assert.ifError(actionError)
+          assert.equal(actionResult?.toNumber(), 0, 'action must settle inside Application.Start')
+          assert.equal(action.resultCalls, 1)
+          action.dispose()
           assert.ok(nextTickElapsed < 1000, `nextTick was delayed ${nextTickElapsed}ms`)
           assert.deepEqual(order, ['nextTick', 'promise', 'timer'])
         } else {

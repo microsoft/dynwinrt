@@ -4,8 +4,10 @@
 import assert from 'node:assert/strict'
 import asyncHooks from 'node:async_hooks'
 import { createRequire } from 'node:module'
+import createOwnerAction from './fixtures/owner-async-action.cjs'
 
 const require = createRequire(import.meta.url)
+const runtime = require(process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/winrt.js')
 const {
   DynWinRtMethodSig,
   DynWinRtType,
@@ -14,7 +16,7 @@ const {
   registerWinuiDispatcherQueue,
   roInitialize,
   unregisterWinuiDispatcherQueue,
-} = require(process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/winrt.js')
+} = runtime
 
 roInitialize(0)
 
@@ -35,6 +37,10 @@ const operations = Array.from({ length: 16 }, () =>
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
 
 registerWinuiDispatcherQueue()
+const queuedAction = createOwnerAction(runtime, { completed: true })
+const lateAction = createOwnerAction(runtime, { fail: true })
+const queuedPromise = queuedAction.operation.toPromise()
+const lateRejection = assert.rejects(lateAction.operation.toPromise(), /0x80004005/i)
 const settlementCounts = operations.map(() => 0)
 const order = []
 const asyncPromiseIds = new Set()
@@ -67,8 +73,11 @@ assert.deepEqual(
 )
 
 insideUnregister = true
+assert.equal(queuedAction.resultCalls, 0)
 unregisterWinuiDispatcherQueue()
 insideUnregister = false
+assert.equal(queuedAction.resultCalls, 1)
+lateAction.finish()
 order.push('unregister-returned')
 assert.equal(directSettlementCallbacks, operations.length)
 assert.deepEqual(
@@ -76,6 +85,11 @@ assert.deepEqual(
   operations.map(() => 0),
 )
 await Promise.all(promises)
+assert.equal((await queuedPromise).toNumber(), 0)
+await lateRejection
+assert.equal(lateAction.resultCalls, 1)
+queuedAction.dispose()
+lateAction.dispose()
 await new Promise((resolve) => setImmediate(resolve))
 hook.disable()
 assert.deepEqual(
