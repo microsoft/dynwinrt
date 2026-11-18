@@ -204,9 +204,7 @@ impl WinRTAsyncFuture {
             out.sanitize_null_object();
             Ok(out)
         } else {
-            let mut dummy: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hr =
-                crate::call::call_winrt_method_1(get_results_index, concrete.as_raw(), &mut dummy);
+            let hr = crate::call::call_winrt_method_0(get_results_index, concrete.as_raw());
             hr.ok().map_err(Error::WindowsError)?;
             Ok(WinRTValue::HResult(HRESULT(0)))
         }

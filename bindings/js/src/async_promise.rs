@@ -179,9 +179,9 @@ impl AgileObject {
   }
 }
 
-// GetResults runs away from the JavaScript apartment. COM interfaces, including
-// interfaces nested in arrays and structs, are carried back as agile references
-// and resolved only on the JavaScript thread.
+// Data-bearing GetResults calls run away from the JavaScript apartment. Carry
+// their COM interfaces, including those nested in arrays and structs, back as
+// agile references and resolve them only on the JavaScript thread.
 struct StoredStruct {
   data: dynwinrt::ValueTypeData,
   objects: Vec<(usize, AgileObject)>,
@@ -341,6 +341,11 @@ impl StoredWinRTValue {
 
 type StoredCompletion = Result<StoredWinRTValue, String>;
 
+enum Completion {
+  Collected(StoredCompletion),
+  WinuiActionReady,
+}
+
 struct AsyncPromiseState {
   id: u64,
   deferred: napi::sys::napi_deferred,
@@ -348,7 +353,7 @@ struct AsyncPromiseState {
   resource_ref: napi::sys::napi_ref,
   js_thread_id: u32,
   operation: Mutex<Option<dynwinrt::WinRTValue>>,
-  result: Mutex<Option<StoredCompletion>>,
+  result: Mutex<Option<Completion>>,
   settled: AtomicBool,
   fallback_queued: AtomicBool,
   dispatcher: Weak<EnvAsyncDispatcher>,
@@ -358,7 +363,7 @@ unsafe impl Send for AsyncPromiseState {}
 unsafe impl Sync for AsyncPromiseState {}
 
 impl AsyncPromiseState {
-  fn complete(self: &Arc<Self>, result: StoredCompletion) {
+  fn complete(self: &Arc<Self>, result: Completion) {
     let Some(dispatcher) = self.dispatcher.upgrade() else {
       self.abandon();
       return;
@@ -416,12 +421,11 @@ impl AsyncPromiseState {
       return;
     }
 
-    let result = self
+    let completion = self
       .result
       .lock()
       .unwrap_or_else(|error| error.into_inner())
-      .take()
-      .unwrap_or_else(|| Err("Async completion result was unavailable".to_string()));
+      .take();
 
     let mut resource = std::ptr::null_mut();
     let get_resource_status =
@@ -435,6 +439,14 @@ impl AsyncPromiseState {
       get_resource_status
     };
     if open_scope_status == napi::sys::Status::napi_ok {
+      let result = match completion {
+        Some(Completion::Collected(result)) => result,
+        Some(Completion::WinuiActionReady) => dispatcher
+          .take_owner_action(self.id)
+          .ok_or_else(|| "Async action was unavailable".to_string())
+          .and_then(|action| collect_async_result(self, &action)),
+        None => Err("Async completion result was unavailable".to_string()),
+      };
       self.settle_deferred(env, result);
       let close_status = unsafe { napi::sys::napi_close_callback_scope(env, callback_scope) };
       if close_status != napi::sys::Status::napi_ok {
@@ -512,13 +524,20 @@ struct QueueRegistration {
   pending: HashMap<u64, Arc<AsyncPromiseState>>,
 }
 
+struct RegisteredPromise {
+  state: Arc<AsyncPromiseState>,
+  // Only the JS thread takes or drops this reference, including at env cleanup.
+  // A completion callback can outlive the apartment; it retains only `state`.
+  owner_action: Option<dynwinrt::WinRTValue>,
+}
+
 struct EnvAsyncDispatcher {
   env: napi::sys::napi_env,
   js_thread_id: u32,
   tsfn: napi::sys::napi_threadsafe_function,
   closing: AtomicBool,
   next_id: AtomicU64,
-  registry: Mutex<HashMap<u64, Arc<AsyncPromiseState>>>,
+  registry: Mutex<HashMap<u64, RegisteredPromise>>,
   tsfn_referenced: AtomicBool,
   queue: Mutex<Option<QueueRegistration>>,
   result_workers: Mutex<Option<AsyncResultWorkerPool>>,
@@ -626,6 +645,7 @@ impl EnvAsyncDispatcher {
   fn register_promise(
     self: &Arc<Self>,
     state: Arc<AsyncPromiseState>,
+    owner_action: Option<dynwinrt::WinRTValue>,
     env: napi::sys::napi_env,
   ) -> napi::Result<()> {
     if self.closing.load(Ordering::Acquire) {
@@ -641,7 +661,13 @@ impl EnvAsyncDispatcher {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
       let should_ref = registry.is_empty();
-      registry.insert(state.id, state);
+      registry.insert(
+        state.id,
+        RegisteredPromise {
+          state,
+          owner_action,
+        },
+      );
       should_ref
     };
 
@@ -663,15 +689,30 @@ impl EnvAsyncDispatcher {
     Ok(())
   }
 
+  fn take_owner_action(&self, id: u64) -> Option<dynwinrt::WinRTValue> {
+    debug_assert_eq!(unsafe { GetCurrentThreadId() }, self.js_thread_id);
+    self
+      .registry
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .get_mut(&id)?
+      .owner_action
+      .take()
+  }
+
   fn finish_promise(&self, id: u64, env: napi::sys::napi_env) {
-    let should_unref = {
+    let (removed, should_unref) = {
       let mut registry = self
         .registry
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-      let removed = registry.remove(&id).is_some();
-      removed && registry.is_empty() && self.tsfn_referenced.swap(false, Ordering::AcqRel)
+      let removed = registry.remove(&id);
+      let should_unref = removed.is_some()
+        && registry.is_empty()
+        && self.tsfn_referenced.swap(false, Ordering::AcqRel);
+      (removed, should_unref)
     };
+    drop(removed);
     if should_unref && !self.closing.load(Ordering::Acquire) {
       let status = unsafe { napi::sys::napi_unref_threadsafe_function(env, self.tsfn) };
       if status != napi::sys::Status::napi_ok {
@@ -695,7 +736,7 @@ impl EnvAsyncDispatcher {
         match AsyncResultWorkerPool::new() {
           Ok(pool) => *workers = Some(pool),
           Err(error) => {
-            state.complete(Err(error));
+            state.complete(Completion::Collected(Err(error)));
             return;
           }
         }
@@ -705,15 +746,15 @@ impl EnvAsyncDispatcher {
         .expect("result workers initialized")
         .submit(Box::new(move |initialization| {
           if let Err(error) = initialization {
-            worker_state.complete(Err(error));
+            worker_state.complete(Completion::Collected(Err(error)));
             return;
           }
           let result = collect_async_result(&worker_state, &operation);
-          worker_state.complete(result);
+          worker_state.complete(Completion::Collected(result));
         }))
     };
     if let Err(error) = submit_result {
-      state.complete(Err(error));
+      state.complete(Completion::Collected(Err(error)));
     }
   }
 
@@ -950,8 +991,8 @@ impl EnvAsyncDispatcher {
       .drain()
       .map(|(_, state)| state)
       .collect::<Vec<_>>();
-    for state in pending {
-      state.abandon();
+    for promise in pending {
+      promise.state.abandon();
     }
     if let Some(workers) = self
       .result_workers
@@ -1033,7 +1074,7 @@ fn complete_async_operation(state: Arc<AsyncPromiseState>, operation: dynwinrt::
   let current_thread_id = unsafe { GetCurrentThreadId() };
   if current_thread_id != state.js_thread_id {
     let result = collect_async_result(&state, &operation);
-    state.complete(result);
+    state.complete(Completion::Collected(result));
     return;
   }
 
@@ -1050,7 +1091,7 @@ fn create_async_promise<'env>(
 ) -> napi::Result<(
   PromiseRaw<'env, DynWinRTValue>,
   Arc<AsyncPromiseState>,
-  Arc<EnvAsyncDispatcher>,
+  bool,
 )> {
   let raw_env = env.raw();
   let dispatcher = EnvAsyncDispatcher::get_or_create(env)?;
@@ -1103,19 +1144,34 @@ fn create_async_promise<'env>(
   }
 
   let id = dispatcher.next_id.fetch_add(1, Ordering::Relaxed);
+  // Choose the result apartment at registration, not at notification: the
+  // queue may have shut down by then, but the Node fallback still runs on the
+  // same JS thread. Never send these actions to the completion/result worker.
+  let collect_on_owner = matches!(&operation, dynwinrt::WinRTValue::Async(info)
+    if matches!(info.async_type.kind(), dynwinrt::TypeKind::IAsyncAction | dynwinrt::TypeKind::IAsyncActionWithProgress(_)))
+    && dispatcher
+      .queue
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .is_some();
+  let (operation, owner_action) = if collect_on_owner {
+    (None, Some(operation))
+  } else {
+    (Some(operation), None)
+  };
   let state = Arc::new(AsyncPromiseState {
     id,
     deferred,
     async_context,
     resource_ref,
     js_thread_id: unsafe { GetCurrentThreadId() },
-    operation: Mutex::new(Some(operation)),
+    operation: Mutex::new(operation),
     result: Mutex::new(None),
     settled: AtomicBool::new(false),
     fallback_queued: AtomicBool::new(false),
     dispatcher: Arc::downgrade(&dispatcher),
   });
-  if let Err(error) = dispatcher.register_promise(state.clone(), raw_env) {
+  if let Err(error) = dispatcher.register_promise(state.clone(), owner_action, raw_env) {
     unsafe {
       napi::sys::napi_async_destroy(raw_env, async_context);
       napi::sys::napi_delete_reference(raw_env, resource_ref);
@@ -1124,29 +1180,30 @@ fn create_async_promise<'env>(
   }
 
   trace_async(format!("registered promise {id}"));
-  Ok((PromiseRaw::new(raw_env, promise), state, dispatcher))
+  Ok((PromiseRaw::new(raw_env, promise), state, collect_on_owner))
 }
 
 pub fn to_promise<'env>(
   env: Env,
   operation: dynwinrt::WinRTValue,
 ) -> napi::Result<PromiseRaw<'env, DynWinRTValue>> {
-  let (promise, state, dispatcher) = create_async_promise(env, operation.clone())?;
+  let (promise, state, collect_on_owner) = create_async_promise(env, operation.clone())?;
   let completion_state = state.clone();
   let registration = dynwinrt::set_async_completed_handler(
     &operation,
     Box::new(move || {
-      if let Some(completion_operation) = completion_state.take_operation() {
+      if collect_on_owner {
+        completion_state.complete(Completion::WinuiActionReady);
+      } else if let Some(completion_operation) = completion_state.take_operation() {
         complete_async_operation(completion_state.clone(), completion_operation);
       }
     }),
   );
   if let Err(error) = registration {
     state.take_operation();
-    state.complete(Err(async_error_message(error)));
+    state.complete(Completion::Collected(Err(async_error_message(error))));
   }
 
-  drop(dispatcher);
   Ok(promise)
 }
 
